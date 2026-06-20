@@ -1,0 +1,27 @@
+[daemon]
+temp_dir = "/var/tmp/anvil"
+worker_count = 2
+log_level = "info"
+
+[[flows]]
+name = "av1-crf-search"
+steps = ["probe", "crf-search", "encode"]
+
+[[profiles]]
+name = "default-av1"
+
+[profiles.video]
+codec = "libsvtav1"
+preset = "6"
+pixel_format = "yuv420p10le"
+crf_min = 18
+crf_max = 40
+target_vmaf = 95
+
+[[libraries]]
+name = "movies"
+path = "/srv/media/movies"
+flow = "av1-crf-search"
+profile = "default-av1"
+include = ["*.mkv", "*.mp4"]
+exclude = ["**/.staging/**"]
