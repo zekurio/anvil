@@ -99,6 +99,7 @@ type AudioConfig struct {
 	LanguagesToKeep      []string `toml:"languages_to_keep"`
 	KeepOriginalLanguage bool     `toml:"keep_original_language"`
 	KeepCommentary       bool     `toml:"keep_commentary"`
+	KeepOtherTracks      bool     `toml:"keep_other_tracks"`
 	KeepDescriptiveAudio bool     `toml:"keep_descriptive_audio"`
 	KeepLossless         bool     `toml:"keep_lossless"`
 	MaxTracks            int      `toml:"max_tracks"`
