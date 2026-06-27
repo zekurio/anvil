@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/zekurio/anvil/pkg/domain"
@@ -50,6 +52,28 @@ func TestResolverGetsSonarrOriginalLanguageFromSeriesPath(t *testing.T) {
 	}
 	if got, want := result.OriginalLanguage, "jpn"; got != want {
 		t.Fatalf("original language = %q, want %q", got, want)
+	}
+}
+
+func TestResolverReadsAPIKeyFromFile(t *testing.T) {
+	server := metadataServer(t, "/api/v3/movie", `[{
+		"path": "/media/movies/Movie (2026)",
+		"originalLanguage": "eng"
+	}]`)
+	keyPath := filepath.Join(t.TempDir(), "radarr-api-key")
+	if err := os.WriteFile(keyPath, []byte("secret\n"), 0o600); err != nil {
+		t.Fatalf("write API key file: %v", err)
+	}
+
+	_, err := (Resolver{Client: server.Client()}).ResolveJobMetadata(context.Background(), domain.Library{
+		Metadata: domain.MetadataProviderPolicy{
+			Provider:   domain.MetadataProviderRadarr,
+			BaseURL:    server.URL,
+			APIKeyFile: keyPath,
+		},
+	}, domain.MediaSource{}, domain.MediaAsset{}, "/media/movies/Movie (2026)/Movie.mkv")
+	if err != nil {
+		t.Fatalf("ResolveJobMetadata() error = %v", err)
 	}
 }
 

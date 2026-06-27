@@ -27,6 +27,9 @@
         );
     in
     {
+      nixosModules.default = import ./nix/modules/anvil.nix;
+      nixosModules.anvil = import ./nix/modules/anvil.nix;
+
       devShells = forEachSystem (
         { pkgs, ... }:
         {
