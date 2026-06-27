@@ -34,6 +34,7 @@ mode = "cleanup"
 languages_to_keep = ["orig", "deu"]
 fallback = "keep_first"
 keep_commentary = false
+keep_other_tracks = false
 keep_descriptive_audio = false
 
 [profiles.subtitles]
