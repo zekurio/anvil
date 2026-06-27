@@ -111,7 +111,6 @@ func searchPlan(job *pipeline.JobContext) domain.EncodePlan {
 		Threads:      job.Resources.Threads,
 		Container:    job.Profile.Container,
 		CropFilter:   job.Metadata.CropFilter,
-		AudioMode:    job.Profile.Audio.Mode,
 		SubtitleMode: job.Profile.Subtitles.Mode,
 	}
 }

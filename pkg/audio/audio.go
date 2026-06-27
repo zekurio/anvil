@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/zekurio/anvil/pkg/domain"
+	"github.com/zekurio/anvil/pkg/language"
 	"github.com/zekurio/anvil/pkg/pipeline"
 )
 
@@ -21,34 +22,25 @@ func (Selector) Select(probe *domain.ProbeResult, profile domain.AudioProfile, m
 	}
 	audioStreams := audioStreams(probe.Streams)
 	selection := domain.AudioSelection{
-		OriginalLanguage: normalizeLanguage(metadata.OriginalLanguage),
+		OriginalLanguage: language.Normalize(metadata.OriginalLanguage),
 		LanguagesToKeep:  expandedLanguages(profile, metadata),
 	}
 	if len(audioStreams) == 0 {
 		return selection, nil
 	}
-	if !filtersEnabled(profile) {
-		selection.StreamIndexes = streamIndexes(audioStreams)
-		return selection, nil
-	}
 
 	keep := languageSet(selection.LanguagesToKeep)
-	filterLanguages := languageFilterEnabled(profile)
+	filterLanguages := len(profile.LanguagesToKeep) > 0
 	for _, stream := range audioStreams {
-		matchesLanguage := !filterLanguages || keep[normalizeLanguage(stream.Language)]
-		if !matchesLanguage && !profile.KeepOtherTracks {
+		streamLanguage := streamLanguage(stream.Language, selection.OriginalLanguage, profile.UnknownAsOriginal)
+		matchesLanguage := !filterLanguages || keep[streamLanguage]
+		if !matchesLanguage {
 			continue
 		}
 		if !profile.KeepCommentary && commentary(stream) {
 			continue
 		}
-		if !profile.KeepDescriptiveAudio && descriptiveAudio(stream) {
-			continue
-		}
 		selection.StreamIndexes = append(selection.StreamIndexes, stream.Index)
-		if profile.MaxTracks > 0 && len(selection.StreamIndexes) >= profile.MaxTracks {
-			break
-		}
 	}
 	if len(selection.StreamIndexes) > 0 {
 		return selection, nil
@@ -82,27 +74,8 @@ func (b Block) Run(_ context.Context, job *pipeline.JobContext) error {
 	return nil
 }
 
-func filtersEnabled(profile domain.AudioProfile) bool {
-	return profile.Mode == domain.StreamPolicyCleanup ||
-		profile.Mode == domain.StreamPolicyPrefer ||
-		languageFilterEnabled(profile) ||
-		profile.MaxTracks > 0
-}
-
-func languageFilterEnabled(profile domain.AudioProfile) bool {
-	return len(profile.LanguagesToKeep) > 0 ||
-		len(profile.PreferredLanguages) > 0 ||
-		profile.KeepOriginalLanguage
-}
-
 func expandedLanguages(profile domain.AudioProfile, metadata domain.JobMetadata) []string {
 	values := profile.LanguagesToKeep
-	if len(values) == 0 {
-		values = profile.PreferredLanguages
-	}
-	if len(values) == 0 && profile.KeepOriginalLanguage {
-		values = []string{OriginalLanguageToken}
-	}
 	expanded := make([]string, 0, len(values))
 	for _, value := range values {
 		value = strings.TrimSpace(strings.ToLower(value))
@@ -110,13 +83,13 @@ func expandedLanguages(profile domain.AudioProfile, metadata domain.JobMetadata)
 			continue
 		}
 		if value == OriginalLanguageToken {
-			original := normalizeLanguage(metadata.OriginalLanguage)
+			original := language.Normalize(metadata.OriginalLanguage)
 			if original == "" {
 				continue
 			}
 			value = original
 		} else {
-			value = normalizeLanguage(value)
+			value = language.Normalize(value)
 		}
 		if value != "" && !slices.Contains(expanded, value) {
 			expanded = append(expanded, value)
@@ -143,6 +116,13 @@ func streamIndexes(streams []domain.MediaStream) []int {
 	return indexes
 }
 
+func streamLanguage(value string, originalLanguage string, unknownAsOriginal bool) string {
+	if unknownAsOriginal && originalLanguage != "" && language.IsUnknown(value) {
+		return originalLanguage
+	}
+	return language.Normalize(value)
+}
+
 func languageSet(languages []string) map[string]bool {
 	set := make(map[string]bool, len(languages))
 	for _, language := range languages {
@@ -153,51 +133,10 @@ func languageSet(languages []string) map[string]bool {
 	return set
 }
 
-func normalizeLanguage(language string) string {
-	language = strings.ToLower(strings.TrimSpace(language))
-	language = strings.ReplaceAll(language, "_", "-")
-	if language == "" || language == "und" || language == "unknown" {
-		return ""
-	}
-	if i := strings.Index(language, "-"); i >= 0 {
-		language = language[:i]
-	}
-	switch language {
-	case "de", "ger", "deu":
-		return "deu"
-	case "en", "eng":
-		return "eng"
-	case "ja", "jpn", "jp":
-		return "jpn"
-	case "fr", "fre", "fra":
-		return "fra"
-	case "es", "spa":
-		return "spa"
-	case "it", "ita":
-		return "ita"
-	case "ko", "kor":
-		return "kor"
-	case "zh", "chi", "zho":
-		return "zho"
-	default:
-		return language
-	}
-}
-
 func commentary(stream domain.MediaStream) bool {
 	if stream.Disposition["comment"] || stream.Disposition["commentary"] {
 		return true
 	}
 	title := strings.ToLower(stream.Title)
 	return strings.Contains(title, "commentary") || strings.Contains(title, "commentar")
-}
-
-func descriptiveAudio(stream domain.MediaStream) bool {
-	if stream.Disposition["descriptions"] || stream.Disposition["visual_impaired"] {
-		return true
-	}
-	title := strings.ToLower(stream.Title)
-	return strings.Contains(title, "descriptive") ||
-		strings.Contains(title, "described") ||
-		strings.Contains(title, "audiodeskription")
 }

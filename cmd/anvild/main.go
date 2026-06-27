@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/zekurio/anvil/pkg/config"
+	"github.com/zekurio/anvil/pkg/metadata"
 	"github.com/zekurio/anvil/pkg/resources"
 	"github.com/zekurio/anvil/pkg/scanner"
 	"github.com/zekurio/anvil/pkg/scheduler"
@@ -178,12 +179,13 @@ func startSchedulerLoop(ctx context.Context, wg *sync.WaitGroup, cfg config.Conf
 	go func() {
 		defer wg.Done()
 		runner := worker.Runner{
-			Store:          state,
-			ConfigProvider: func() config.Config { return cfg },
-			Pipeline:       worker.DefaultPipeline(cfg.Daemon.TempDir),
-			TempDir:        cfg.Daemon.TempDir,
-			MaxAttempts:    cfg.Daemon.MaxAttempts,
-			LeaseDuration:  cfg.LeaseDuration(),
+			Store:            state,
+			ConfigProvider:   func() config.Config { return cfg },
+			MetadataResolver: metadata.Resolver{},
+			Pipeline:         worker.DefaultPipeline(cfg.Daemon.TempDir),
+			TempDir:          cfg.Daemon.TempDir,
+			MaxAttempts:      cfg.Daemon.MaxAttempts,
+			LeaseDuration:    cfg.LeaseDuration(),
 		}
 		planner := &scheduler.Scheduler{
 			Store:          state,
