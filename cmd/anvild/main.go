@@ -8,9 +8,14 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/zekurio/anvil/pkg/config"
+	"github.com/zekurio/anvil/pkg/scanner"
+	"github.com/zekurio/anvil/pkg/store"
 )
+
+const defaultMaxJobAttempts = 3
 
 type options struct {
 	configPath  string
@@ -49,8 +54,24 @@ func run(args []string) error {
 		mode = "daemon"
 	}
 
-	slog.Info("starting anvild", "mode", mode, "config", configPathLabel(opts.configPath), "temp_dir", cfg.Daemon.TempDir, "workers", cfg.Daemon.WorkerCount)
+	state, err := store.Open(ctx, cfg.Daemon.StorePath)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err := state.Close(); err != nil {
+			slog.Error("close store", "error", err)
+		}
+	}()
+
+	recovered, err := state.RecoverStaleJobs(ctx, defaultMaxJobAttempts, time.Now())
+	if err != nil {
+		return err
+	}
+
+	slog.Info("starting anvild", "mode", mode, "config", configPathLabel(opts.configPath), "temp_dir", cfg.Daemon.TempDir, "store", cfg.Daemon.StorePath, "workers", cfg.Daemon.WorkerCount, "recovered_jobs", recovered)
 	logConfiguredWork(cfg)
+	runInitialScan(ctx, cfg, state)
 
 	<-ctx.Done()
 
@@ -78,14 +99,23 @@ func parseOptions(args []string) (options, error) {
 
 func logConfiguredWork(cfg config.Config) {
 	if len(cfg.Libraries) == 0 {
-		slog.Info("no libraries configured; scanning and scheduling are not implemented yet")
+		slog.Info("no libraries configured; scanner and scheduler will stay idle")
 		return
 	}
 
 	for _, library := range cfg.Libraries {
-		slog.Info("library configured", "name", library.Name, "path", library.Path, "flow", library.Flow, "profile", library.Profile)
+		slog.Info("library configured", "name", library.Name, "kind", library.Kind, "path", library.Path, "flow", library.Flow, "profile", library.Profile)
 	}
-	slog.Info("scanning, scheduling, ab-av1, ffmpeg, SQLite, and replacement flows are not implemented yet")
+	slog.Info("scanning, scheduling, ab-av1, ffmpeg, and replacement flows are not implemented yet")
+}
+
+func runInitialScan(ctx context.Context, cfg config.Config, state *store.SQLiteStore) {
+	result, err := scanner.Scanner{Store: state}.Scan(ctx, cfg)
+	if err != nil {
+		slog.Error("initial scan failed", "error", err)
+		return
+	}
+	slog.Info("initial scan complete", "libraries", result.Libraries, "sources", result.Sources, "assets", result.Assets, "enqueued_jobs", result.EnqueuedJobs, "existing_jobs", result.ExistingJobs, "skipped_ignored", result.SkippedIgnored, "skipped_unstable", result.SkippedUnstable)
 }
 
 func configPathLabel(path string) string {

@@ -1,14 +1,20 @@
 [daemon]
 temp_dir = "/var/tmp/anvil"
+store_path = "/var/lib/anvil/anvil.db"
 worker_count = 2
 log_level = "info"
 
 [[flows]]
-name = "av1-crf-search"
-steps = ["probe", "crf-search", "encode"]
+name = "av1-replace"
+steps = ["probe", "stage", "crf-search", "encode", "validate", "replace", "cleanup"]
+
+[[flows]]
+name = "download-av1-handoff"
+steps = ["probe", "stage", "crf-search", "encode", "validate", "handoff", "cleanup"]
 
 [[profiles]]
 name = "default-av1"
+container = "mkv"
 
 [profiles.video]
 codec = "libsvtav1"
@@ -18,10 +24,53 @@ crf_min = 18
 crf_max = 40
 target_vmaf = 95
 
+[profiles.audio]
+mode = "preserve"
+fallback = "keep_all"
+
+[profiles.subtitles]
+mode = "preserve"
+fallback = "keep_all"
+keep_forced = true
+keep_external = true
+
+[profiles.metadata]
+mode = "preserve"
+
+[profiles.attachments]
+mode = "preserve"
+
+[profiles.chapters]
+mode = "preserve"
+
 [[libraries]]
 name = "movies"
+kind = "media"
 path = "/srv/media/movies"
-flow = "av1-crf-search"
+flow = "av1-replace"
 profile = "default-av1"
+priority = 0
 include = ["*.mkv", "*.mp4"]
 exclude = ["**/.staging/**"]
+
+[libraries.media]
+replacement_mode = "replace"
+
+[[libraries]]
+name = "usenet-tv"
+kind = "download"
+path = "/downloads/complete/tv"
+flow = "download-av1-handoff"
+profile = "default-av1"
+priority = 10
+include = ["*.mkv", "*.mp4"]
+exclude = ["**/sample*/**", "**/*sample*"]
+
+[libraries.download]
+handoff_path = "/imports/tv"
+stable_for = "5m"
+package_mode = "auto"
+handoff_mode = "move"
+preserve_relative_path = true
+cleanup_source_media = true
+prune_empty_dirs = true
