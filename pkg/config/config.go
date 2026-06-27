@@ -17,6 +17,10 @@ const (
 	DefaultProfileName     = "default-av1"
 	DefaultLibraryKind     = "media"
 	DefaultReplacementMode = "replace"
+	DefaultScanInterval    = "30m"
+	DefaultSchedulerTick   = "5s"
+	DefaultLeaseDuration   = "30m"
+	DefaultMaxAttempts     = 3
 	DefaultStableFor       = "5m"
 	DefaultPackageMode     = "auto"
 	DefaultHandoffMode     = "copy"
@@ -36,6 +40,7 @@ var DefaultIgnorableGlobs = []string{
 	"**/*.nzb",
 	"**/__MACOSX/**",
 	"**/.DS_Store",
+	"**/.nfs*",
 }
 
 // Config is the top-level Anvil daemon configuration.
@@ -48,10 +53,15 @@ type Config struct {
 
 // DaemonConfig contains process-wide runtime settings.
 type DaemonConfig struct {
-	TempDir     string `toml:"temp_dir"`
-	StorePath   string `toml:"store_path"`
-	WorkerCount int    `toml:"worker_count"`
-	LogLevel    string `toml:"log_level"`
+	TempDir           string `toml:"temp_dir"`
+	StorePath         string `toml:"store_path"`
+	WorkerCount       int    `toml:"worker_count"`
+	TotalThreads      int    `toml:"total_threads"`
+	MaxAttempts       int    `toml:"max_attempts"`
+	ScanInterval      string `toml:"scan_interval"`
+	SchedulerInterval string `toml:"scheduler_interval"`
+	LeaseDuration     string `toml:"lease_duration"`
+	LogLevel          string `toml:"log_level"`
 }
 
 // FlowConfig names an orchestration flow. The steps are declarative for now.
@@ -167,15 +177,20 @@ func Default() Config {
 
 	return Config{
 		Daemon: DaemonConfig{
-			TempDir:     tempDir,
-			StorePath:   filepath.Join(tempDir, "anvil.db"),
-			WorkerCount: max(runtime.NumCPU(), 1),
-			LogLevel:    "info",
+			TempDir:           tempDir,
+			StorePath:         filepath.Join(tempDir, "anvil.db"),
+			WorkerCount:       max(runtime.NumCPU(), 1),
+			TotalThreads:      max(runtime.NumCPU(), 1),
+			MaxAttempts:       DefaultMaxAttempts,
+			ScanInterval:      DefaultScanInterval,
+			SchedulerInterval: DefaultSchedulerTick,
+			LeaseDuration:     DefaultLeaseDuration,
+			LogLevel:          "info",
 		},
 		Flows: []FlowConfig{
 			{
 				Name:  DefaultFlowName,
-				Steps: []string{"probe", "crf-search", "encode"},
+				Steps: []string{"probe", "stage", "crf-search", "encode", "validate", "replace", "cleanup"},
 			},
 		},
 		Profiles: []ProfileConfig{
@@ -225,6 +240,15 @@ func (c Config) Validate() error {
 	if c.Daemon.WorkerCount < 1 {
 		problems = append(problems, "daemon.worker_count must be at least 1")
 	}
+	if c.Daemon.TotalThreads < 0 {
+		problems = append(problems, "daemon.total_threads must be non-negative")
+	}
+	if c.Daemon.MaxAttempts < 1 {
+		problems = append(problems, "daemon.max_attempts must be at least 1")
+	}
+	validatePositiveDuration(&problems, "daemon.scan_interval", c.Daemon.ScanInterval)
+	validatePositiveDuration(&problems, "daemon.scheduler_interval", c.Daemon.SchedulerInterval)
+	validatePositiveDuration(&problems, "daemon.lease_duration", c.Daemon.LeaseDuration)
 
 	flows := make(map[string]struct{}, len(c.Flows))
 	for i, flow := range c.Flows {
@@ -329,8 +353,10 @@ func (c Config) Validate() error {
 			if strings.TrimSpace(library.Download.HandoffPath) == "" {
 				problems = append(problems, fmt.Sprintf("download library %q download.handoff_path is required", name))
 			}
-			if _, err := time.ParseDuration(library.Download.StableFor); err != nil {
+			if stableFor, err := time.ParseDuration(library.Download.StableFor); err != nil {
 				problems = append(problems, fmt.Sprintf("download library %q download.stable_for is invalid: %v", name, err))
+			} else if stableFor < 0 {
+				problems = append(problems, fmt.Sprintf("download library %q download.stable_for must be non-negative", name))
 			}
 			if !validPackageMode(library.Download.PackageMode) {
 				problems = append(problems, fmt.Sprintf("download library %q download.package_mode %q is invalid", name, library.Download.PackageMode))
@@ -359,6 +385,21 @@ func applyDefaults(c *Config) {
 	}
 	if c.Daemon.WorkerCount == 0 {
 		c.Daemon.WorkerCount = defaults.Daemon.WorkerCount
+	}
+	if c.Daemon.TotalThreads == 0 {
+		c.Daemon.TotalThreads = defaults.Daemon.TotalThreads
+	}
+	if c.Daemon.MaxAttempts == 0 {
+		c.Daemon.MaxAttempts = defaults.Daemon.MaxAttempts
+	}
+	if strings.TrimSpace(c.Daemon.ScanInterval) == "" {
+		c.Daemon.ScanInterval = defaults.Daemon.ScanInterval
+	}
+	if strings.TrimSpace(c.Daemon.SchedulerInterval) == "" {
+		c.Daemon.SchedulerInterval = defaults.Daemon.SchedulerInterval
+	}
+	if strings.TrimSpace(c.Daemon.LeaseDuration) == "" {
+		c.Daemon.LeaseDuration = defaults.Daemon.LeaseDuration
 	}
 	if strings.TrimSpace(c.Daemon.LogLevel) == "" {
 		c.Daemon.LogLevel = defaults.Daemon.LogLevel
@@ -435,6 +476,17 @@ func applyLibraryPolicyDefaults(library *LibraryConfig) {
 
 func validLibraryKind(kind string) bool {
 	return kind == "media" || kind == "download"
+}
+
+func validatePositiveDuration(problems *[]string, name string, value string) {
+	duration, err := time.ParseDuration(value)
+	if err != nil {
+		*problems = append(*problems, fmt.Sprintf("%s is invalid: %v", name, err))
+		return
+	}
+	if duration <= 0 {
+		*problems = append(*problems, fmt.Sprintf("%s must be greater than zero", name))
+	}
 }
 
 func validReplacementMode(mode string) bool {
