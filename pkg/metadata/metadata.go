@@ -12,10 +12,13 @@ import (
 	pathpkg "path"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/zekurio/anvil/pkg/domain"
 	"github.com/zekurio/anvil/pkg/language"
 )
+
+const defaultHTTPTimeout = 15 * time.Second
 
 type Resolver struct {
 	Client *http.Client
@@ -52,11 +55,7 @@ func (r Resolver) resolveArr(ctx context.Context, policy domain.MetadataProvider
 	}
 	req.Header.Set("X-Api-Key", apiKey)
 
-	client := r.Client
-	if client == nil {
-		client = http.DefaultClient
-	}
-	resp, err := client.Do(req)
+	resp, err := r.client().Do(req)
 	if err != nil {
 		return domain.JobMetadata{}, fmt.Errorf("fetch metadata: %w", err)
 	}
@@ -76,6 +75,13 @@ func (r Resolver) resolveArr(ctx context.Context, policy domain.MetadataProvider
 	return domain.JobMetadata{
 		OriginalLanguage: parseLanguage(item.OriginalLanguage),
 	}, nil
+}
+
+func (r Resolver) client() *http.Client {
+	if r.Client != nil {
+		return r.Client
+	}
+	return &http.Client{Timeout: defaultHTTPTimeout}
 }
 
 func apiKey(policy domain.MetadataProviderPolicy) (string, error) {
