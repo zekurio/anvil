@@ -449,6 +449,15 @@ in
       description = "Anvil package to run. Required when the service is enabled.";
     };
 
+    runtimePackages = mkOption {
+      type = types.listOf types.package;
+      default = [
+        pkgs.ffmpeg
+        pkgs.ab-av1
+      ];
+      description = "Packages added to the Anvil service PATH for probe, crop detection, CRF search, and encoding.";
+    };
+
     user = mkOption {
       type = types.nullOr types.str;
       default = null;
@@ -583,6 +592,7 @@ in
       wantedBy = [ "multi-user.target" ];
       wants = [ "network-online.target" ];
       after = [ "network-online.target" ];
+      path = cfg.runtimePackages;
       serviceConfig =
         {
           ExecStart = "${packageExe} --config /etc/anvil/anvil.toml";
