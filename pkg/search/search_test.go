@@ -53,6 +53,21 @@ func TestABAV1BuildsCommandAndParsesOutput(t *testing.T) {
 	}
 }
 
+func TestSearchArgsIncludesCropFilter(t *testing.T) {
+	args := SearchArgs(domain.EncodePlan{
+		InputPath:   "/input.mkv",
+		CRFMin:      18,
+		CRFMax:      40,
+		CropFilter:  "crop=1920:800:0:140",
+		TargetVMAF:  95,
+		VideoCodec:  "libsvtav1",
+		PixelFormat: "yuv420p10le",
+	})
+	if !containsPair(args, "--vfilter", "crop=1920:800:0:140") {
+		t.Fatalf("SearchArgs() = %v, want crop vfilter", args)
+	}
+}
+
 type fakeRunner struct {
 	stdout []byte
 }
@@ -64,6 +79,15 @@ func (f fakeRunner) Run(_ context.Context, command process.Command) (process.Res
 func containsArg(args []string, want string) bool {
 	for _, arg := range args {
 		if arg == want {
+			return true
+		}
+	}
+	return false
+}
+
+func containsPair(args []string, key string, value string) bool {
+	for i := 0; i < len(args)-1; i++ {
+		if args[i] == key && args[i+1] == value {
 			return true
 		}
 	}

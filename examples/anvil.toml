@@ -11,11 +11,11 @@ log_level = "info"
 
 [[flows]]
 name = "av1-replace"
-steps = ["probe", "stage", "crf-search", "encode", "validate", "replace", "cleanup"]
+steps = ["probe", "crop-detect", "audio-cleanup", "stage", "crf-search", "encode", "validate", "replace", "cleanup"]
 
 [[flows]]
 name = "download-av1-handoff"
-steps = ["probe", "stage", "crf-search", "encode", "validate", "handoff", "cleanup"]
+steps = ["probe", "crop-detect", "audio-cleanup", "stage", "crf-search", "encode", "validate", "handoff", "cleanup"]
 
 [[profiles]]
 name = "default-av1"
@@ -30,8 +30,11 @@ crf_max = 40
 target_vmaf = 95
 
 [profiles.audio]
-mode = "preserve"
-fallback = "keep_all"
+mode = "cleanup"
+languages_to_keep = ["orig", "deu"]
+fallback = "keep_first"
+keep_commentary = false
+keep_descriptive_audio = false
 
 [profiles.subtitles]
 mode = "preserve"
@@ -52,6 +55,7 @@ mode = "preserve"
 name = "movies"
 kind = "media"
 path = "/srv/media/movies"
+original_language = "eng"
 flow = "av1-replace"
 profile = "default-av1"
 priority = 0
@@ -65,6 +69,7 @@ replacement_mode = "replace"
 name = "usenet-tv"
 kind = "download"
 path = "/downloads/complete/tv"
+original_language = "eng"
 flow = "download-av1-handoff"
 profile = "default-av1"
 priority = 10

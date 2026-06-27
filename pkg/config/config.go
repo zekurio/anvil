@@ -96,6 +96,7 @@ type VideoConfig struct {
 type AudioConfig struct {
 	Mode                 string   `toml:"mode"`
 	PreferredLanguages   []string `toml:"preferred_languages"`
+	LanguagesToKeep      []string `toml:"languages_to_keep"`
 	KeepOriginalLanguage bool     `toml:"keep_original_language"`
 	KeepCommentary       bool     `toml:"keep_commentary"`
 	KeepDescriptiveAudio bool     `toml:"keep_descriptive_audio"`
@@ -127,6 +128,7 @@ type LibraryConfig struct {
 	Name             string                `toml:"name"`
 	Kind             string                `toml:"kind"`
 	Path             string                `toml:"path"`
+	OriginalLanguage string                `toml:"original_language"`
 	Flow             string                `toml:"flow"`
 	Profile          string                `toml:"profile"`
 	Priority         int                   `toml:"priority"`
@@ -190,7 +192,7 @@ func Default() Config {
 		Flows: []FlowConfig{
 			{
 				Name:  DefaultFlowName,
-				Steps: []string{"probe", "stage", "crf-search", "encode", "validate", "replace", "cleanup"},
+				Steps: []string{"probe", "crop-detect", "audio-cleanup", "stage", "crf-search", "encode", "validate", "replace", "cleanup"},
 			},
 		},
 		Profiles: []ProfileConfig{

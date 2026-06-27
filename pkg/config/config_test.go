@@ -42,6 +42,12 @@ path = "/srv/media/movies"
 	if !containsString(cfg.Flows[0].Steps, "stage") {
 		t.Fatalf("default flow steps = %v, want stage before encode output is needed", cfg.Flows[0].Steps)
 	}
+	if !containsString(cfg.Flows[0].Steps, "crop-detect") {
+		t.Fatalf("default flow steps = %v, want crop detection before CRF search", cfg.Flows[0].Steps)
+	}
+	if !containsString(cfg.Flows[0].Steps, "audio-cleanup") {
+		t.Fatalf("default flow steps = %v, want audio cleanup before encode", cfg.Flows[0].Steps)
+	}
 }
 
 func TestLoadRejectsUnknownReferences(t *testing.T) {
