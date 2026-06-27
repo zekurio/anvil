@@ -30,12 +30,10 @@ crf_max = 40
 target_vmaf = 95
 
 [profiles.audio]
-mode = "cleanup"
 languages_to_keep = ["orig", "deu"]
 fallback = "keep_first"
 keep_commentary = false
-keep_other_tracks = false
-keep_descriptive_audio = false
+unknown_as_original = true
 
 [profiles.subtitles]
 mode = "preserve"
@@ -56,12 +54,16 @@ mode = "preserve"
 name = "movies"
 kind = "media"
 path = "/srv/media/movies"
-original_language = "eng"
 flow = "av1-replace"
 profile = "default-av1"
 priority = 0
 include = ["*.mkv", "*.mp4"]
 exclude = ["**/.staging/**"]
+
+[libraries.metadata]
+provider = "radarr"
+base_url = "http://radarr:7878"
+api_key = "replace-me"
 
 [libraries.media]
 replacement_mode = "replace"
@@ -70,12 +72,16 @@ replacement_mode = "replace"
 name = "usenet-tv"
 kind = "download"
 path = "/downloads/complete/tv"
-original_language = "eng"
 flow = "download-av1-handoff"
 profile = "default-av1"
 priority = 10
 include = ["*.mkv", "*.mp4"]
 exclude = ["**/sample*/**", "**/*sample*"]
+
+[libraries.metadata]
+provider = "sonarr"
+base_url = "http://sonarr:8989"
+api_key = "replace-me"
 
 [libraries.download]
 handoff_path = "/imports/tv"
