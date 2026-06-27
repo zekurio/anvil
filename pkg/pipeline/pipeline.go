@@ -19,12 +19,15 @@ type JobContext struct {
 	Flow       domain.Flow
 	Profile    domain.Profile
 	Resources  domain.ResourceAllocation
+	Metadata   domain.JobMetadata
 	InputPath  string
 	OutputPath string
 	StagingDir string
 	FinalPath  string
 
 	Probe      *domain.ProbeResult
+	Audio      *domain.AudioSelection
+	Crop       *domain.CropResult
 	Search     *domain.SearchResult
 	EncodePlan *domain.EncodePlan
 	Validation *domain.ValidationResult

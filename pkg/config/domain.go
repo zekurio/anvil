@@ -68,6 +68,7 @@ func (l LibraryConfig) ToDomain() domain.Library {
 		Name:             domain.LibraryName(l.Name),
 		Kind:             domain.LibraryKind(l.Kind),
 		Path:             l.Path,
+		OriginalLanguage: l.OriginalLanguage,
 		Priority:         l.Priority,
 		FlowName:         domain.FlowName(l.Flow),
 		ProfileName:      domain.ProfileName(l.Profile),
@@ -116,6 +117,7 @@ func (p ProfileConfig) ToDomain() domain.Profile {
 		Audio: domain.AudioProfile{
 			Mode:                 domain.StreamPolicyMode(p.Audio.Mode),
 			PreferredLanguages:   append([]string(nil), p.Audio.PreferredLanguages...),
+			LanguagesToKeep:      append([]string(nil), p.Audio.LanguagesToKeep...),
 			KeepOriginalLanguage: p.Audio.KeepOriginalLanguage,
 			KeepCommentary:       p.Audio.KeepCommentary,
 			KeepDescriptiveAudio: p.Audio.KeepDescriptiveAudio,

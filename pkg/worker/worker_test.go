@@ -28,6 +28,9 @@ func TestRunnerResolvesLatestConfigAndCompletesJob(t *testing.T) {
 				if job.InputPath == "" {
 					t.Fatal("input path was empty")
 				}
+				if got, want := job.Metadata.OriginalLanguage, "eng"; got != want {
+					t.Fatalf("original language = %q, want %q", got, want)
+				}
 				return nil
 			}}),
 		},
@@ -90,11 +93,12 @@ func workerConfig() config.Config {
 	cfg.Daemon.MaxAttempts = 2
 	cfg.Flows = []config.FlowConfig{{Name: "test-flow", Steps: []string{"noop"}}}
 	cfg.Libraries = []config.LibraryConfig{{
-		Name:    "movies",
-		Kind:    "media",
-		Path:    "/media/movies",
-		Flow:    "test-flow",
-		Profile: config.DefaultProfileName,
+		Name:             "movies",
+		Kind:             "media",
+		Path:             "/media/movies",
+		OriginalLanguage: "eng",
+		Flow:             "test-flow",
+		Profile:          config.DefaultProfileName,
 	}}
 	return cfg
 }

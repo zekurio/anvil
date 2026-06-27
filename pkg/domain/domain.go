@@ -23,6 +23,7 @@ type Library struct {
 	Name             LibraryName
 	Kind             LibraryKind
 	Path             string
+	OriginalLanguage string
 	Priority         int
 	FlowName         FlowName
 	ProfileName      ProfileName
@@ -118,6 +119,7 @@ const (
 type AudioProfile struct {
 	Mode                 StreamPolicyMode
 	PreferredLanguages   []string
+	LanguagesToKeep      []string
 	KeepOriginalLanguage bool
 	KeepCommentary       bool
 	KeepDescriptiveAudio bool
@@ -351,23 +353,38 @@ type SearchResult struct {
 	RawCommand []string
 }
 
+type AudioSelection struct {
+	OriginalLanguage string
+	LanguagesToKeep  []string
+	StreamIndexes    []int
+}
+
+type CropResult struct {
+	Filter     string
+	RawOutput  string
+	RawCommand []string
+}
+
 type EncodePlan struct {
-	InputPath      string
-	OutputPath     string
-	VideoCodec     string
-	Preset         string
-	PixelFormat    string
-	CRF            int
-	CRFMin         int
-	CRFMax         int
-	TargetVMAF     float64
-	Threads        int
-	Container      string
-	AudioMode      StreamPolicyMode
-	SubtitleMode   StreamPolicyMode
-	MetadataMode   MetadataMode
-	AttachmentMode MetadataMode
-	ChapterMode    MetadataMode
+	InputPath             string
+	OutputPath            string
+	VideoCodec            string
+	Preset                string
+	PixelFormat           string
+	CRF                   int
+	CRFMin                int
+	CRFMax                int
+	TargetVMAF            float64
+	Threads               int
+	Container             string
+	CropFilter            string
+	AudioMode             StreamPolicyMode
+	AudioSelectionApplied bool
+	AudioStreamIndexes    []int
+	SubtitleMode          StreamPolicyMode
+	MetadataMode          MetadataMode
+	AttachmentMode        MetadataMode
+	ChapterMode           MetadataMode
 }
 
 type ValidationResult struct {
@@ -376,6 +393,11 @@ type ValidationResult struct {
 	OutputDurationSeconds float64
 	OutputSizeBytes       int64
 	Errors                []string
+}
+
+type JobMetadata struct {
+	OriginalLanguage string
+	CropFilter       string
 }
 
 type AttemptEventType string

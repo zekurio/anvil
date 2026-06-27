@@ -10,7 +10,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/zekurio/anvil/pkg/audio"
 	"github.com/zekurio/anvil/pkg/config"
+	"github.com/zekurio/anvil/pkg/crop"
 	"github.com/zekurio/anvil/pkg/domain"
 	"github.com/zekurio/anvil/pkg/ffmpeg"
 	"github.com/zekurio/anvil/pkg/pipeline"
@@ -88,6 +90,9 @@ func (r Runner) Run(ctx context.Context, assignment scheduler.Assignment) error 
 		Flow:      flow,
 		Profile:   profile,
 		Resources: assignment.Resources,
+		Metadata: domain.JobMetadata{
+			OriginalLanguage: library.OriginalLanguage,
+		},
 		InputPath: InputPath(library.Path, source, asset),
 	}
 
@@ -113,6 +118,8 @@ func DefaultPipeline(tempDir string) pipeline.Runner {
 	return pipeline.Runner{
 		Registry: pipeline.NewRegistry(
 			probe.Block{Prober: prober},
+			crop.Block{},
+			audio.Block{},
 			staging.StageBlock{Manager: stageManager},
 			search.Block{},
 			ffmpeg.Block{},
