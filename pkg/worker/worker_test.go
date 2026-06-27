@@ -21,12 +21,16 @@ func TestRunnerResolvesLatestConfigAndCompletesJob(t *testing.T) {
 	store.asset = domain.MediaAsset{ID: 2, SourceID: 1, RelativePath: "Movie.mkv"}
 
 	runner := Runner{
-		Store:          store,
-		ConfigProvider: workerConfig,
+		Store:            store,
+		ConfigProvider:   workerConfig,
+		MetadataResolver: staticMetadataResolver{metadata: domain.JobMetadata{OriginalLanguage: "eng"}},
 		Pipeline: pipeline.Runner{
 			Registry: pipeline.NewRegistry(pipeline.BlockFunc{BlockName: "noop", Fn: func(_ context.Context, job *pipeline.JobContext) error {
 				if job.InputPath == "" {
 					t.Fatal("input path was empty")
+				}
+				if got, want := job.Metadata.OriginalLanguage, "eng"; got != want {
+					t.Fatalf("original language = %q, want %q", got, want)
 				}
 				return nil
 			}}),
@@ -88,15 +92,23 @@ func workerConfig() config.Config {
 	cfg := config.Default()
 	cfg.Daemon.LeaseDuration = "1m"
 	cfg.Daemon.MaxAttempts = 2
-	cfg.Flows = []config.FlowConfig{{Name: "test-flow", Steps: []string{"noop"}}}
-	cfg.Libraries = []config.LibraryConfig{{
-		Name:    "movies",
+	cfg.Flows = map[string]config.FlowConfig{"test-flow": {Steps: []string{"noop"}}}
+	cfg.Libraries = map[string]config.LibraryConfig{"movies": {
 		Kind:    "media",
 		Path:    "/media/movies",
 		Flow:    "test-flow",
 		Profile: config.DefaultProfileName,
 	}}
 	return cfg
+}
+
+type staticMetadataResolver struct {
+	metadata domain.JobMetadata
+	err      error
+}
+
+func (s staticMetadataResolver) ResolveJobMetadata(context.Context, domain.Library, domain.MediaSource, domain.MediaAsset, string) (domain.JobMetadata, error) {
+	return s.metadata, s.err
 }
 
 type fakeWorkerStore struct {

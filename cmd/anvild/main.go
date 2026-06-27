@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/zekurio/anvil/pkg/config"
+	"github.com/zekurio/anvil/pkg/metadata"
 	"github.com/zekurio/anvil/pkg/resources"
 	"github.com/zekurio/anvil/pkg/scanner"
 	"github.com/zekurio/anvil/pkg/scheduler"
@@ -112,8 +113,8 @@ func logConfiguredWork(cfg config.Config) {
 		return
 	}
 
-	for _, library := range cfg.Libraries {
-		slog.Info("library configured", "name", library.Name, "kind", library.Kind, "path", library.Path, "flow", library.Flow, "profile", library.Profile)
+	for name, library := range cfg.Libraries {
+		slog.Info("library configured", "name", name, "kind", library.Kind, "path", library.Path, "flow", library.Flow, "profile", library.Profile)
 	}
 	slog.Info("scanner, scheduler, worker, and built-in media pipeline are enabled")
 }
@@ -178,12 +179,13 @@ func startSchedulerLoop(ctx context.Context, wg *sync.WaitGroup, cfg config.Conf
 	go func() {
 		defer wg.Done()
 		runner := worker.Runner{
-			Store:          state,
-			ConfigProvider: func() config.Config { return cfg },
-			Pipeline:       worker.DefaultPipeline(cfg.Daemon.TempDir),
-			TempDir:        cfg.Daemon.TempDir,
-			MaxAttempts:    cfg.Daemon.MaxAttempts,
-			LeaseDuration:  cfg.LeaseDuration(),
+			Store:            state,
+			ConfigProvider:   func() config.Config { return cfg },
+			MetadataResolver: metadata.Resolver{},
+			Pipeline:         worker.DefaultPipeline(cfg.Daemon.TempDir),
+			TempDir:          cfg.Daemon.TempDir,
+			MaxAttempts:      cfg.Daemon.MaxAttempts,
+			LeaseDuration:    cfg.LeaseDuration(),
 		}
 		planner := &scheduler.Scheduler{
 			Store:          state,

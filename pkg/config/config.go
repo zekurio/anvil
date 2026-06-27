@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"time"
 
@@ -45,10 +46,11 @@ var DefaultIgnorableGlobs = []string{
 
 // Config is the top-level Anvil daemon configuration.
 type Config struct {
-	Daemon    DaemonConfig    `toml:"daemon"`
-	Flows     []FlowConfig    `toml:"flows"`
-	Profiles  []ProfileConfig `toml:"profiles"`
-	Libraries []LibraryConfig `toml:"libraries"`
+	Daemon    DaemonConfig             `toml:"daemon"`
+	Arrs      map[string]ArrConfig     `toml:"arrs"`
+	Flows     map[string]FlowConfig    `toml:"flows"`
+	Profiles  map[string]ProfileConfig `toml:"profiles"`
+	Libraries map[string]LibraryConfig `toml:"libraries"`
 }
 
 // DaemonConfig contains process-wide runtime settings.
@@ -66,13 +68,13 @@ type DaemonConfig struct {
 
 // FlowConfig names an orchestration flow. The steps are declarative for now.
 type FlowConfig struct {
-	Name  string   `toml:"name"`
+	Name  string   `toml:"-"`
 	Steps []string `toml:"steps"`
 }
 
 // ProfileConfig groups encode settings that libraries can reference.
 type ProfileConfig struct {
-	Name        string         `toml:"name"`
+	Name        string         `toml:"-"`
 	Container   string         `toml:"container"`
 	Video       VideoConfig    `toml:"video"`
 	Audio       AudioConfig    `toml:"audio"`
@@ -94,15 +96,10 @@ type VideoConfig struct {
 
 // AudioConfig declares track retention intent. It is conservative by default.
 type AudioConfig struct {
-	Mode                 string   `toml:"mode"`
-	PreferredLanguages   []string `toml:"preferred_languages"`
-	KeepOriginalLanguage bool     `toml:"keep_original_language"`
-	KeepCommentary       bool     `toml:"keep_commentary"`
-	KeepDescriptiveAudio bool     `toml:"keep_descriptive_audio"`
-	KeepLossless         bool     `toml:"keep_lossless"`
-	MaxTracks            int      `toml:"max_tracks"`
-	Fallback             string   `toml:"fallback"`
-	TranscodeUnsupported bool     `toml:"transcode_unsupported"`
+	LanguagesToKeep   []string `toml:"languages_to_keep"`
+	KeepCommentary    bool     `toml:"keep_commentary"`
+	Fallback          string   `toml:"fallback"`
+	UnknownAsOriginal bool     `toml:"unknown_as_original"`
 }
 
 // SubtitleConfig declares subtitle retention intent.
@@ -124,7 +121,7 @@ type MetadataConfig struct {
 
 // LibraryConfig describes a user-defined media library.
 type LibraryConfig struct {
-	Name             string                `toml:"name"`
+	Name             string                `toml:"-"`
 	Kind             string                `toml:"kind"`
 	Path             string                `toml:"path"`
 	Flow             string                `toml:"flow"`
@@ -133,8 +130,18 @@ type LibraryConfig struct {
 	Include          []string              `toml:"include"`
 	Exclude          []string              `toml:"exclude"`
 	ConcurrencyLimit int                   `toml:"concurrency_limit"`
+	Arr              string                `toml:"arr"`
 	Media            MediaLibraryConfig    `toml:"media"`
 	Download         DownloadLibraryConfig `toml:"download"`
+}
+
+// ArrConfig controls external metadata lookup through an Arr instance.
+type ArrConfig struct {
+	Name       string `toml:"-"`
+	Type       string `toml:"type"`
+	BaseURL    string `toml:"base_url"`
+	APIKey     string `toml:"api_key"`
+	APIKeyFile string `toml:"api_key_file"`
 }
 
 // MediaLibraryConfig controls in-place media-library completion behavior.
@@ -187,15 +194,13 @@ func Default() Config {
 			LeaseDuration:     DefaultLeaseDuration,
 			LogLevel:          "info",
 		},
-		Flows: []FlowConfig{
-			{
-				Name:  DefaultFlowName,
-				Steps: []string{"probe", "stage", "crf-search", "encode", "validate", "replace", "cleanup"},
+		Flows: map[string]FlowConfig{
+			DefaultFlowName: {
+				Steps: []string{"probe", "crop-detect", "audio-cleanup", "stage", "crf-search", "encode", "validate", "replace", "cleanup"},
 			},
 		},
-		Profiles: []ProfileConfig{
-			{
-				Name:      DefaultProfileName,
+		Profiles: map[string]ProfileConfig{
+			DefaultProfileName: {
 				Container: "mkv",
 				Video: VideoConfig{
 					Codec:       "libsvtav1",
@@ -206,7 +211,6 @@ func Default() Config {
 					TargetVMAF:  95,
 				},
 				Audio: AudioConfig{
-					Mode:     DefaultStreamMode,
 					Fallback: DefaultStreamFallback,
 				},
 				Subtitles: SubtitleConfig{
@@ -251,14 +255,11 @@ func (c Config) Validate() error {
 	validatePositiveDuration(&problems, "daemon.lease_duration", c.Daemon.LeaseDuration)
 
 	flows := make(map[string]struct{}, len(c.Flows))
-	for i, flow := range c.Flows {
-		name := strings.TrimSpace(flow.Name)
+	for _, name := range sortedKeys(c.Flows) {
+		flow := c.Flows[name]
+		name = strings.TrimSpace(name)
 		if name == "" {
-			problems = append(problems, fmt.Sprintf("flows[%d].name is required", i))
-			continue
-		}
-		if _, exists := flows[name]; exists {
-			problems = append(problems, fmt.Sprintf("duplicate flow %q", name))
+			problems = append(problems, "flow name is required")
 			continue
 		}
 		flows[name] = struct{}{}
@@ -268,14 +269,11 @@ func (c Config) Validate() error {
 	}
 
 	profiles := make(map[string]struct{}, len(c.Profiles))
-	for i, profile := range c.Profiles {
-		name := strings.TrimSpace(profile.Name)
+	for _, name := range sortedKeys(c.Profiles) {
+		profile := c.Profiles[name]
+		name = strings.TrimSpace(name)
 		if name == "" {
-			problems = append(problems, fmt.Sprintf("profiles[%d].name is required", i))
-			continue
-		}
-		if _, exists := profiles[name]; exists {
-			problems = append(problems, fmt.Sprintf("duplicate profile %q", name))
+			problems = append(problems, "profile name is required")
 			continue
 		}
 		profiles[name] = struct{}{}
@@ -289,14 +287,8 @@ func (c Config) Validate() error {
 		if profile.Video.TargetVMAF < 0 || profile.Video.TargetVMAF > 100 {
 			problems = append(problems, fmt.Sprintf("profile %q target_vmaf must be between 0 and 100", name))
 		}
-		if !validStreamMode(profile.Audio.Mode) {
-			problems = append(problems, fmt.Sprintf("profile %q audio.mode %q is invalid", name, profile.Audio.Mode))
-		}
 		if !validStreamFallback(profile.Audio.Fallback) {
 			problems = append(problems, fmt.Sprintf("profile %q audio.fallback %q is invalid", name, profile.Audio.Fallback))
-		}
-		if profile.Audio.MaxTracks < 0 {
-			problems = append(problems, fmt.Sprintf("profile %q audio.max_tracks must be non-negative", name))
 		}
 		if !validStreamMode(profile.Subtitles.Mode) {
 			problems = append(problems, fmt.Sprintf("profile %q subtitles.mode %q is invalid", name, profile.Subtitles.Mode))
@@ -318,19 +310,34 @@ func (c Config) Validate() error {
 		}
 	}
 
-	libraries := make(map[string]struct{}, len(c.Libraries))
-	for i, library := range c.Libraries {
-		name := strings.TrimSpace(library.Name)
+	arrs := make(map[string]struct{}, len(c.Arrs))
+	for _, name := range sortedKeys(c.Arrs) {
+		arr := c.Arrs[name]
+		name = strings.TrimSpace(name)
 		if name == "" {
-			problems = append(problems, fmt.Sprintf("libraries[%d].name is required", i))
+			problems = append(problems, "arr name is required")
 			continue
 		}
-		if _, exists := libraries[name]; exists {
-			problems = append(problems, fmt.Sprintf("duplicate library %q", name))
-			continue
+		arrs[name] = struct{}{}
+		provider := arrProvider(arr)
+		if !validArrProvider(provider) {
+			problems = append(problems, fmt.Sprintf("arr %q type %q is invalid", name, provider))
 		}
-		libraries[name] = struct{}{}
+		if strings.TrimSpace(arr.BaseURL) == "" {
+			problems = append(problems, fmt.Sprintf("arr %q base_url is required", name))
+		}
+		if strings.TrimSpace(arr.APIKey) == "" && strings.TrimSpace(arr.APIKeyFile) == "" {
+			problems = append(problems, fmt.Sprintf("arr %q api_key or api_key_file is required", name))
+		}
+	}
 
+	for _, name := range sortedKeys(c.Libraries) {
+		library := c.Libraries[name]
+		name = strings.TrimSpace(name)
+		if name == "" {
+			problems = append(problems, "library name is required")
+			continue
+		}
 		if !validLibraryKind(library.Kind) {
 			problems = append(problems, fmt.Sprintf("library %q kind %q is invalid", name, library.Kind))
 		}
@@ -345,6 +352,11 @@ func (c Config) Validate() error {
 		}
 		if library.ConcurrencyLimit < 0 {
 			problems = append(problems, fmt.Sprintf("library %q concurrency_limit must be non-negative", name))
+		}
+		if strings.TrimSpace(library.Arr) != "" {
+			if _, exists := arrs[library.Arr]; !exists {
+				problems = append(problems, fmt.Sprintf("library %q references unknown arr %q", name, library.Arr))
+			}
 		}
 		if !validReplacementMode(library.Media.ReplacementMode) {
 			problems = append(problems, fmt.Sprintf("library %q media.replacement_mode %q is invalid", name, library.Media.ReplacementMode))
@@ -410,31 +422,48 @@ func applyDefaults(c *Config) {
 	if len(c.Profiles) == 0 {
 		c.Profiles = defaults.Profiles
 	}
-
-	for i := range c.Profiles {
-		applyProfileDefaults(&c.Profiles[i])
+	if c.Arrs == nil {
+		c.Arrs = make(map[string]ArrConfig)
+	}
+	if c.Libraries == nil {
+		c.Libraries = make(map[string]LibraryConfig)
 	}
 
-	for i := range c.Libraries {
-		if strings.TrimSpace(c.Libraries[i].Kind) == "" {
-			c.Libraries[i].Kind = DefaultLibraryKind
+	for name, arr := range c.Arrs {
+		arr.Name = name
+		c.Arrs[name] = arr
+	}
+
+	for name, flow := range c.Flows {
+		flow.Name = name
+		c.Flows[name] = flow
+	}
+
+	for name, profile := range c.Profiles {
+		profile.Name = name
+		applyProfileDefaults(&profile)
+		c.Profiles[name] = profile
+	}
+
+	for name, library := range c.Libraries {
+		library.Name = name
+		if strings.TrimSpace(library.Kind) == "" {
+			library.Kind = DefaultLibraryKind
 		}
-		if strings.TrimSpace(c.Libraries[i].Flow) == "" {
-			c.Libraries[i].Flow = DefaultFlowName
+		if strings.TrimSpace(library.Flow) == "" {
+			library.Flow = DefaultFlowName
 		}
-		if strings.TrimSpace(c.Libraries[i].Profile) == "" {
-			c.Libraries[i].Profile = DefaultProfileName
+		if strings.TrimSpace(library.Profile) == "" {
+			library.Profile = DefaultProfileName
 		}
-		applyLibraryPolicyDefaults(&c.Libraries[i])
+		applyLibraryPolicyDefaults(&library)
+		c.Libraries[name] = library
 	}
 }
 
 func applyProfileDefaults(profile *ProfileConfig) {
 	if strings.TrimSpace(profile.Container) == "" {
 		profile.Container = "mkv"
-	}
-	if strings.TrimSpace(profile.Audio.Mode) == "" {
-		profile.Audio.Mode = DefaultStreamMode
 	}
 	if strings.TrimSpace(profile.Audio.Fallback) == "" {
 		profile.Audio.Fallback = DefaultStreamFallback
@@ -499,6 +528,23 @@ func validPackageMode(mode string) bool {
 
 func validHandoffMode(mode string) bool {
 	return mode == "move" || mode == "copy"
+}
+
+func validArrProvider(provider string) bool {
+	return provider == "radarr" || provider == "sonarr"
+}
+
+func arrProvider(arr ArrConfig) string {
+	return arr.Type
+}
+
+func sortedKeys[V any](values map[string]V) []string {
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 func validStreamMode(mode string) bool {

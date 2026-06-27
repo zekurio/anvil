@@ -90,8 +90,7 @@ An ordered set of pipeline blocks. Flow configuration should remain declarative 
 Example:
 
 ```toml
-[[flows]]
-name = "av1-replace"
+[flows.av1-replace]
 steps = ["probe", "stage", "crf-search", "encode", "validate", "replace", "cleanup"]
 ```
 

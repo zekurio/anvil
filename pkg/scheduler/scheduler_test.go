@@ -127,9 +127,9 @@ func scheduleConfig() config.Config {
 	cfg := config.Default()
 	cfg.Daemon.WorkerCount = 2
 	cfg.Daemon.LeaseDuration = "1m"
-	cfg.Libraries = []config.LibraryConfig{
-		{Name: "movies", Kind: "media", Path: "/media/movies", Flow: config.DefaultFlowName, Profile: config.DefaultProfileName, ConcurrencyLimit: 1},
-		{Name: "tv", Kind: "media", Path: "/media/tv", Flow: config.DefaultFlowName, Profile: config.DefaultProfileName, ConcurrencyLimit: 1},
+	cfg.Libraries = map[string]config.LibraryConfig{
+		"movies": {Kind: "media", Path: "/media/movies", Flow: config.DefaultFlowName, Profile: config.DefaultProfileName, ConcurrencyLimit: 1},
+		"tv":     {Kind: "media", Path: "/media/tv", Flow: config.DefaultFlowName, Profile: config.DefaultProfileName, ConcurrencyLimit: 1},
 	}
 	return cfg
 }

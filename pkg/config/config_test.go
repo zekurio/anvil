@@ -8,8 +8,7 @@ import (
 
 func TestLoadAppliesDefaults(t *testing.T) {
 	path := writeConfig(t, `
-[[libraries]]
-name = "movies"
+[libraries.movies]
 path = "/srv/media/movies"
 `)
 
@@ -27,27 +26,33 @@ path = "/srv/media/movies"
 	if cfg.Daemon.WorkerCount < 1 {
 		t.Fatalf("expected worker_count default, got %d", cfg.Daemon.WorkerCount)
 	}
-	if got := cfg.Profiles[0].Audio.Mode; got != DefaultStreamMode {
-		t.Fatalf("expected default audio mode %q, got %q", DefaultStreamMode, got)
+	if got := cfg.Profiles[DefaultProfileName].Audio.Fallback; got != DefaultStreamFallback {
+		t.Fatalf("expected default audio fallback %q, got %q", DefaultStreamFallback, got)
 	}
-	if got := cfg.Libraries[0].Flow; got != DefaultFlowName {
+	if got := cfg.Libraries["movies"].Flow; got != DefaultFlowName {
 		t.Fatalf("expected default flow %q, got %q", DefaultFlowName, got)
 	}
-	if got := cfg.Libraries[0].Profile; got != DefaultProfileName {
+	if got := cfg.Libraries["movies"].Profile; got != DefaultProfileName {
 		t.Fatalf("expected default profile %q, got %q", DefaultProfileName, got)
 	}
-	if got := cfg.Libraries[0].Kind; got != DefaultLibraryKind {
+	if got := cfg.Libraries["movies"].Kind; got != DefaultLibraryKind {
 		t.Fatalf("expected default library kind %q, got %q", DefaultLibraryKind, got)
 	}
-	if !containsString(cfg.Flows[0].Steps, "stage") {
-		t.Fatalf("default flow steps = %v, want stage before encode output is needed", cfg.Flows[0].Steps)
+	flow := cfg.Flows[DefaultFlowName]
+	if !containsString(flow.Steps, "stage") {
+		t.Fatalf("default flow steps = %v, want stage before encode output is needed", flow.Steps)
+	}
+	if !containsString(flow.Steps, "crop-detect") {
+		t.Fatalf("default flow steps = %v, want crop detection before CRF search", flow.Steps)
+	}
+	if !containsString(flow.Steps, "audio-cleanup") {
+		t.Fatalf("default flow steps = %v, want audio cleanup before encode", flow.Steps)
 	}
 }
 
 func TestLoadRejectsUnknownReferences(t *testing.T) {
 	path := writeConfig(t, `
-[[libraries]]
-name = "movies"
+[libraries.movies]
 path = "/srv/media/movies"
 flow = "missing-flow"
 profile = "missing-profile"
@@ -66,8 +71,7 @@ scan_interval = "0s"
 scheduler_interval = "-1s"
 lease_duration = "0s"
 
-[[libraries]]
-name = "movies"
+[libraries.movies]
 path = "/srv/media/movies"
 `)
 
@@ -79,16 +83,16 @@ path = "/srv/media/movies"
 
 func TestLoadDownloadLibrary(t *testing.T) {
 	path := writeConfig(t, `
-[[flows]]
-name = "download-av1-handoff"
+[flows.download-av1-handoff]
 steps = ["probe", "crf-search", "encode", "handoff"]
 
-[[libraries]]
-name = "usenet-tv"
+[libraries.usenet-tv]
 kind = "download"
 path = "/downloads/complete/tv"
 flow = "download-av1-handoff"
-download.handoff_path = "/imports/tv"
+
+[libraries.usenet-tv.download]
+handoff_path = "/imports/tv"
 `)
 
 	cfg, err := Load(path)
@@ -96,7 +100,7 @@ download.handoff_path = "/imports/tv"
 		t.Fatalf("Load() error = %v", err)
 	}
 
-	library := cfg.Libraries[0]
+	library := cfg.Libraries["usenet-tv"]
 	if got := library.Download.StableFor; got != DefaultStableFor {
 		t.Fatalf("expected default stable_for %q, got %q", DefaultStableFor, got)
 	}
@@ -108,10 +112,70 @@ download.handoff_path = "/imports/tv"
 	}
 }
 
+func TestLoadArrReference(t *testing.T) {
+	path := writeConfig(t, `
+[arrs.main-radarr]
+type = "radarr"
+base_url = "http://radarr:7878"
+api_key_file = "/run/secrets/radarr-api-key"
+
+[libraries.movies]
+path = "/srv/media/movies"
+arr = "main-radarr"
+`)
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+
+	arr := cfg.Arrs["main-radarr"]
+	if got, want := arr.Type, "radarr"; got != want {
+		t.Fatalf("arr type = %q, want %q", got, want)
+	}
+	if got, want := arr.BaseURL, "http://radarr:7878"; got != want {
+		t.Fatalf("arr base URL = %q, want %q", got, want)
+	}
+	if got, want := arr.APIKeyFile, "/run/secrets/radarr-api-key"; got != want {
+		t.Fatalf("arr API key file = %q, want %q", got, want)
+	}
+	if got, want := cfg.Libraries["movies"].Arr, "main-radarr"; got != want {
+		t.Fatalf("library arr = %q, want %q", got, want)
+	}
+}
+
+func TestLoadRejectsArrWithoutConnectionDetails(t *testing.T) {
+	path := writeConfig(t, `
+[arrs.sonarr]
+type = "sonarr"
+
+[libraries.tv]
+path = "/srv/media/tv"
+arr = "sonarr"
+`)
+
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("Load() error = nil, want missing arr connection details")
+	}
+}
+
+func TestLoadRejectsLibraryWithUnknownArr(t *testing.T) {
+	path := writeConfig(t, `
+[libraries.movies]
+path = "/srv/media/movies"
+arr = "missing"
+`)
+
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("Load() error = nil, want unknown arr reference")
+	}
+}
+
 func TestLoadRejectsDownloadLibraryWithoutHandoffPath(t *testing.T) {
 	path := writeConfig(t, `
-[[libraries]]
-name = "usenet-tv"
+[libraries.usenet-tv]
 kind = "download"
 path = "/downloads/complete/tv"
 `)
