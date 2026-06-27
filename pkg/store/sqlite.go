@@ -109,6 +109,16 @@ WHERE library_name = ? AND relative_path = ?
 	return scanMediaSource(row)
 }
 
+func (s *SQLiteStore) GetMediaSource(ctx context.Context, id domain.MediaSourceID) (domain.MediaSource, error) {
+	row := s.db.QueryRowContext(ctx, `
+SELECT id, library_name, kind, relative_path, status, size_bytes, mod_time,
+	hash_algorithm, hash_value, first_seen_at, last_seen_at
+FROM media_sources
+WHERE id = ?
+`, int64(id))
+	return scanMediaSource(row)
+}
+
 func (s *SQLiteStore) UpsertMediaAsset(ctx context.Context, asset domain.MediaAsset) (domain.MediaAsset, error) {
 	now := defaultNow(asset.LastSeenAt)
 	if asset.FirstSeenAt.IsZero() {
@@ -156,6 +166,16 @@ SELECT id, source_id, relative_path, role, status, size_bytes, mod_time,
 FROM media_assets
 WHERE source_id = ? AND relative_path = ?
 `, int64(sourceID), relativePath)
+	return scanMediaAsset(row)
+}
+
+func (s *SQLiteStore) GetMediaAsset(ctx context.Context, id domain.MediaAssetID) (domain.MediaAsset, error) {
+	row := s.db.QueryRowContext(ctx, `
+SELECT id, source_id, relative_path, role, status, size_bytes, mod_time,
+	hash_algorithm, hash_value, first_seen_at, last_seen_at
+FROM media_assets
+WHERE id = ?
+`, int64(id))
 	return scanMediaAsset(row)
 }
 
@@ -214,6 +234,10 @@ LIMIT 1
 }
 
 func (s *SQLiteStore) LeaseNextJob(ctx context.Context, workerID string, leaseDeadline time.Time, now time.Time) (*domain.Job, error) {
+	return s.LeaseNextJobForLibraries(ctx, workerID, leaseDeadline, now, nil)
+}
+
+func (s *SQLiteStore) LeaseNextJobForLibraries(ctx context.Context, workerID string, leaseDeadline time.Time, now time.Time, allowedLibraries []domain.LibraryName) (*domain.Job, error) {
 	if strings.TrimSpace(workerID) == "" {
 		return nil, errors.New("worker id is required")
 	}
@@ -229,13 +253,23 @@ func (s *SQLiteStore) LeaseNextJob(ctx context.Context, workerID string, leaseDe
 	defer rollback(tx)
 
 	var id int64
-	err = tx.QueryRowContext(ctx, `
+	query := `
 SELECT id
 FROM jobs
 WHERE state = ?
+`
+	args := []any{string(domain.JobStatePending)}
+	if len(allowedLibraries) > 0 {
+		query += " AND library_name IN (" + placeholders(len(allowedLibraries)) + ")\n"
+		for _, library := range allowedLibraries {
+			args = append(args, string(library))
+		}
+	}
+	query += `
 ORDER BY priority DESC, created_at ASC, id ASC
 LIMIT 1
-`, string(domain.JobStatePending)).Scan(&id)
+`
+	err = tx.QueryRowContext(ctx, query, args...).Scan(&id)
 	if errors.Is(err, sql.ErrNoRows) {
 		if err := tx.Commit(); err != nil {
 			return nil, fmt.Errorf("commit empty lease transaction: %w", err)
@@ -435,6 +469,59 @@ WHERE id = ? AND state = ?
 		return domain.Attempt{}, ErrNotFound
 	}
 	return s.GetAttempt(ctx, attemptID)
+}
+
+func (s *SQLiteStore) RecordAttemptEvent(ctx context.Context, event domain.AttemptEvent) (domain.AttemptEvent, error) {
+	if event.CreatedAt.IsZero() {
+		event.CreatedAt = time.Now().UTC()
+	}
+	result, err := s.db.ExecContext(ctx, `
+INSERT INTO attempt_events (attempt_id, type, name, message, payload, created_at)
+VALUES (?, ?, ?, ?, ?, ?)
+`, int64(event.AttemptID), string(event.Type), event.Name, event.Message, emptyBytesIfNil(event.Payload), encodeTime(event.CreatedAt))
+	if err != nil {
+		return domain.AttemptEvent{}, fmt.Errorf("record attempt event: %w", err)
+	}
+	id, err := result.LastInsertId()
+	if err != nil {
+		return domain.AttemptEvent{}, fmt.Errorf("attempt event id: %w", err)
+	}
+	return s.GetAttemptEvent(ctx, domain.AttemptEventID(id))
+}
+
+func (s *SQLiteStore) GetAttemptEvent(ctx context.Context, id domain.AttemptEventID) (domain.AttemptEvent, error) {
+	row := s.db.QueryRowContext(ctx, `
+SELECT id, attempt_id, type, name, message, payload, created_at
+FROM attempt_events
+WHERE id = ?
+`, int64(id))
+	return scanAttemptEvent(row)
+}
+
+func (s *SQLiteStore) ListAttemptEvents(ctx context.Context, attemptID domain.AttemptID) ([]domain.AttemptEvent, error) {
+	rows, err := s.db.QueryContext(ctx, `
+SELECT id, attempt_id, type, name, message, payload, created_at
+FROM attempt_events
+WHERE attempt_id = ?
+ORDER BY id ASC
+`, int64(attemptID))
+	if err != nil {
+		return nil, fmt.Errorf("list attempt events: %w", err)
+	}
+	defer rows.Close()
+
+	var events []domain.AttemptEvent
+	for rows.Next() {
+		event, err := scanAttemptEvent(rows)
+		if err != nil {
+			return nil, err
+		}
+		events = append(events, event)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate attempt events: %w", err)
+	}
+	return events, nil
 }
 
 func (s *SQLiteStore) RecoverStaleJobs(ctx context.Context, maxAttempts int, now time.Time) (int64, error) {
@@ -772,6 +859,28 @@ func scanAttempt(row scanner) (domain.Attempt, error) {
 	return attempt, nil
 }
 
+func scanAttemptEvent(row scanner) (domain.AttemptEvent, error) {
+	var event domain.AttemptEvent
+	var createdAt string
+	err := row.Scan(
+		&event.ID,
+		&event.AttemptID,
+		&event.Type,
+		&event.Name,
+		&event.Message,
+		&event.Payload,
+		&createdAt,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return domain.AttemptEvent{}, ErrNotFound
+	}
+	if err != nil {
+		return domain.AttemptEvent{}, err
+	}
+	event.CreatedAt = parseTime(createdAt)
+	return event, nil
+}
+
 func encodeTime(t time.Time) string {
 	return t.UTC().Format(time.RFC3339Nano)
 }
@@ -802,6 +911,17 @@ func emptyBytesIfNil(value []byte) []byte {
 		return []byte{}
 	}
 	return value
+}
+
+func placeholders(count int) string {
+	if count <= 0 {
+		return ""
+	}
+	parts := make([]string, count)
+	for i := range parts {
+		parts[i] = "?"
+	}
+	return strings.Join(parts, ",")
 }
 
 func parseTime(value string) time.Time {

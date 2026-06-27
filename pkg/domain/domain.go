@@ -10,6 +10,7 @@ type MediaSourceID int64
 type MediaAssetID int64
 type JobID int64
 type AttemptID int64
+type AttemptEventID int64
 
 type LibraryKind string
 
@@ -319,4 +320,79 @@ type ExecutionPlan struct {
 	ResolvedLibrary Library
 	ResolvedFlow    Flow
 	ResolvedProfile Profile
+}
+
+type ResourceAllocation struct {
+	WorkerID string
+	Threads  int
+}
+
+type MediaStream struct {
+	Index       int
+	Type        string
+	Codec       string
+	Language    string
+	Title       string
+	Disposition map[string]bool
+}
+
+type ProbeResult struct {
+	Path            string
+	FormatName      string
+	DurationSeconds float64
+	SizeBytes       int64
+	Streams         []MediaStream
+}
+
+type SearchResult struct {
+	CRF        int
+	VMAF       float64
+	RawOutput  string
+	RawCommand []string
+}
+
+type EncodePlan struct {
+	InputPath      string
+	OutputPath     string
+	VideoCodec     string
+	Preset         string
+	PixelFormat    string
+	CRF            int
+	CRFMin         int
+	CRFMax         int
+	TargetVMAF     float64
+	Threads        int
+	Container      string
+	AudioMode      StreamPolicyMode
+	SubtitleMode   StreamPolicyMode
+	MetadataMode   MetadataMode
+	AttachmentMode MetadataMode
+	ChapterMode    MetadataMode
+}
+
+type ValidationResult struct {
+	OK                    bool
+	SourceDurationSeconds float64
+	OutputDurationSeconds float64
+	OutputSizeBytes       int64
+	Errors                []string
+}
+
+type AttemptEventType string
+
+const (
+	AttemptEventBlockStarted  AttemptEventType = "block_started"
+	AttemptEventBlockFinished AttemptEventType = "block_finished"
+	AttemptEventBlockFailed   AttemptEventType = "block_failed"
+	AttemptEventArtifact      AttemptEventType = "artifact"
+)
+
+type AttemptEvent struct {
+	ID        AttemptEventID
+	AttemptID AttemptID
+	Type      AttemptEventType
+	Name      string
+	Message   string
+	Payload   []byte
+	CreatedAt time.Time
 }
