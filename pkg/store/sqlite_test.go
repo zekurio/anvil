@@ -141,6 +141,43 @@ func TestLeaseNextJobUsesPriorityThenCreatedOrder(t *testing.T) {
 	}
 }
 
+func TestLeaseNextJobForLibraries(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	now := testNow()
+
+	movies := upsertTestSource(t, ctx, store, "movies", "Movie.mkv")
+	tv := upsertTestSource(t, ctx, store, "tv", "Show.mkv")
+
+	if _, _, err := store.EnqueueJob(ctx, EnqueueJobInput{
+		SourceID:    movies.ID,
+		LibraryName: movies.LibraryName,
+		Priority:    100,
+		Now:         now,
+	}); err != nil {
+		t.Fatalf("enqueue movies job: %v", err)
+	}
+	if _, _, err := store.EnqueueJob(ctx, EnqueueJobInput{
+		SourceID:    tv.ID,
+		LibraryName: tv.LibraryName,
+		Priority:    1,
+		Now:         now,
+	}); err != nil {
+		t.Fatalf("enqueue tv job: %v", err)
+	}
+
+	job, err := store.LeaseNextJobForLibraries(ctx, "worker-1", now.Add(time.Minute), now, []domain.LibraryName{"tv"})
+	if err != nil {
+		t.Fatalf("LeaseNextJobForLibraries() error = %v", err)
+	}
+	if job == nil {
+		t.Fatal("LeaseNextJobForLibraries() = nil, want job")
+	}
+	if job.LibraryName != "tv" {
+		t.Fatalf("leased library = %q, want tv", job.LibraryName)
+	}
+}
+
 func TestHeartbeatRequiresLeaseOwner(t *testing.T) {
 	ctx := context.Background()
 	store := openTestStore(t)
@@ -226,6 +263,48 @@ WHERE id = ?
 	_, err = store.StartAttempt(ctx, job.ID, "worker-1", nil, nil, nil, now)
 	if !errors.Is(err, ErrNotFound) {
 		t.Fatalf("StartAttempt() error = %v, want ErrNotFound", err)
+	}
+}
+
+func TestRecordAttemptEvent(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	now := testNow()
+
+	source := upsertTestSource(t, ctx, store, "movies", "Movie.mkv")
+	if _, _, err := store.EnqueueJob(ctx, EnqueueJobInput{
+		SourceID:    source.ID,
+		LibraryName: source.LibraryName,
+		Now:         now,
+	}); err != nil {
+		t.Fatalf("enqueue job: %v", err)
+	}
+	_, attempt := leaseAndStartAttempt(t, ctx, store, now, "worker-1")
+
+	event, err := store.RecordAttemptEvent(ctx, domain.AttemptEvent{
+		AttemptID: attempt.ID,
+		Type:      domain.AttemptEventBlockStarted,
+		Name:      "probe",
+		Message:   "started",
+		Payload:   []byte(`{"ok":true}`),
+		CreatedAt: now,
+	})
+	if err != nil {
+		t.Fatalf("RecordAttemptEvent() error = %v", err)
+	}
+	if event.ID == 0 {
+		t.Fatal("event ID = 0, want stored event")
+	}
+
+	events, err := store.ListAttemptEvents(ctx, attempt.ID)
+	if err != nil {
+		t.Fatalf("ListAttemptEvents() error = %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("events len = %d, want 1", len(events))
+	}
+	if events[0].Name != "probe" {
+		t.Fatalf("event name = %q, want probe", events[0].Name)
 	}
 }
 

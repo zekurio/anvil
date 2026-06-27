@@ -2,7 +2,7 @@
 
 ## Current State
 
-`cmd/anvild` can load TOML config, validate it, open the SQLite store, recover stale jobs, run an initial scanner pass, print startup details, and stay alive until `SIGINT` or `SIGTERM`.
+`cmd/anvild` can load and validate config, open SQLite, recover stale jobs, run an initial scan, and then keep scanner, recovery, and scheduler loops active until `SIGINT` or `SIGTERM`.
 
 Supported flags:
 
@@ -12,11 +12,9 @@ Supported flags:
 --check-config
 ```
 
-`--daemon` currently means "run the daemon loop and stay active"; it does not fork into the background yet.
+`--daemon` still means foreground daemon mode. It does not fork into the background.
 
-## Runtime Goals
-
-The daemon should be a simple, reliable process:
+## Runtime Flow
 
 ```text
 start
@@ -25,104 +23,57 @@ start
   -> recover stale jobs
   -> run initial scan
   -> start scanner loop
+  -> start stale recovery loop
   -> start scheduler loop
-  -> start workers
+  -> scheduler leases pending jobs for eligible libraries
+  -> workers resolve latest config and run pipeline blocks
   -> handle shutdown signal
-  -> stop accepting work
-  -> cancel or drain workers according to policy
-  -> persist final state
-  -> exit
+  -> exit foreground process
 ```
 
-## Config Reload
+## Config Resolution
 
-Later, `SIGHUP` can reload config.
+Workers resolve the latest library, flow, and profile after a job is leased, then snapshot the resolved config onto the attempt. This matches the desired Tdarr/FileFlows-style behavior where queued work does not freeze old config until execution starts.
 
-Reload should be conservative:
-
-- validate the full new config before applying it
-- update library/profile/flow definitions
-- avoid killing running jobs unless required
-- let removed libraries stop contributing new work
-- keep old job metadata readable
+Later, `SIGHUP` can reload config. Reload should validate the whole file before applying it, stop removed libraries from contributing new work, and avoid killing running jobs unless a future policy explicitly asks for that.
 
 ## Persistence
 
-SQLite is now the source of truth for:
+SQLite is the source of truth for:
 
 - discovered sources and assets
-- jobs and attempts
-- job leases and heartbeats
+- jobs, leases, attempts, and attempt events
+- stale lease recovery state
 
-SQLite should later also store:
+Likely next persistence additions:
 
-- libraries as last-seen config snapshots
-- block-level progress
-- process logs or log references
-- probe/search/encode/validation summaries
-- replacement and handoff state
-
-This avoids in-memory queues becoming the real state of the system.
-
-## Worker Leases
-
-Workers lease jobs from SQLite rather than receive jobs only through memory channels.
-
-Implemented lease behavior:
-
-- worker claims a pending job
-- job records worker id, lease deadline, and heartbeat time
-- worker heartbeats while search/encode is running
-- daemon startup recovers stale leases
-- stale jobs return to pending or failed based on max attempts
-
-Remaining lease work:
-
-- expose retry/max-attempt policy in config
-- persist block-level progress and process logs
-- decide graceful shutdown drain versus cancel semantics
+- structured probe/search/encode/validation summaries
+- external process log references
+- retained staging/artifact records
+- last-seen library/profile/flow snapshots outside attempts
 
 ## Resource Allocation
 
-The first CPU allocator can be simple:
+The first allocator splits configured `total_threads` across active workers:
 
 ```text
-total_threads = configured value or runtime.NumCPU()
-active_workers = number of running encode jobs
 threads_per_job = max(1, floor(total_threads / active_workers))
 ```
 
-The important part is that thread allocation is centralized in `pkg/resources`, not scattered through ffmpeg command construction.
+The allocation is passed through the worker context into search and encode planning. Later allocator inputs can include flow cost, library cost, encoder-specific thread behavior, cgroup CPU limits, and `nice` / `ionice`.
 
-Later allocator inputs:
+## Shutdown And Cleanup
 
-- per-library concurrency
-- per-flow concurrency
-- search versus encode cost
-- encoder-specific thread behavior
-- cgroup CPU limits
-- manual thread caps
-- `nice` / `ionice`
+Current shutdown cancels daemon loops through context cancellation. Remaining policy work:
 
-## Logging
-
-Early logging uses the standard library `slog`. Before real encode work starts, decide whether to keep the current logging surface or add richer structured fields around jobs and external processes.
-
-Useful log fields later:
-
-- job id
-- library
-- file path
-- flow
-- profile
-- worker id
-- external command name
-- attempt number
+- decide drain versus cancel behavior for active workers
+- decide whether failed attempts retain staging directories for debugging
+- add stale temp cleanup for abandoned staging directories
+- improve process log capture around cancellation and failures
 
 ## Non-Goals For V1
 
 - No HTTP API.
 - No web UI.
-- No live flow editing.
 - No distributed workers.
-- No background forking until the foreground daemon behavior is solid.
+- No background forking until foreground daemon behavior is solid.

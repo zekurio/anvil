@@ -2,20 +2,23 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
 	"github.com/zekurio/anvil/pkg/config"
+	"github.com/zekurio/anvil/pkg/resources"
 	"github.com/zekurio/anvil/pkg/scanner"
+	"github.com/zekurio/anvil/pkg/scheduler"
 	"github.com/zekurio/anvil/pkg/store"
+	"github.com/zekurio/anvil/pkg/worker"
 )
-
-const defaultMaxJobAttempts = 3
 
 type options struct {
 	configPath  string
@@ -64,18 +67,24 @@ func run(args []string) error {
 		}
 	}()
 
-	recovered, err := state.RecoverStaleJobs(ctx, defaultMaxJobAttempts, time.Now())
+	recovered, err := state.RecoverStaleJobs(ctx, cfg.Daemon.MaxAttempts, time.Now())
 	if err != nil {
 		return err
 	}
 
-	slog.Info("starting anvild", "mode", mode, "config", configPathLabel(opts.configPath), "temp_dir", cfg.Daemon.TempDir, "store", cfg.Daemon.StorePath, "workers", cfg.Daemon.WorkerCount, "recovered_jobs", recovered)
+	slog.Info("starting anvild", "mode", mode, "config", configPathLabel(opts.configPath), "temp_dir", cfg.Daemon.TempDir, "store", cfg.Daemon.StorePath, "workers", cfg.Daemon.WorkerCount, "threads", cfg.Daemon.TotalThreads, "recovered_jobs", recovered)
 	logConfiguredWork(cfg)
 	runInitialScan(ctx, cfg, state)
+
+	var wg sync.WaitGroup
+	startScannerLoop(ctx, &wg, cfg, state)
+	startRecoveryLoop(ctx, &wg, cfg, state)
+	startSchedulerLoop(ctx, &wg, cfg, state)
 
 	<-ctx.Done()
 
 	slog.Info("stopping anvild", "reason", ctx.Err())
+	wg.Wait()
 	return nil
 }
 
@@ -106,7 +115,7 @@ func logConfiguredWork(cfg config.Config) {
 	for _, library := range cfg.Libraries {
 		slog.Info("library configured", "name", library.Name, "kind", library.Kind, "path", library.Path, "flow", library.Flow, "profile", library.Profile)
 	}
-	slog.Info("scanning, scheduling, ab-av1, ffmpeg, and replacement flows are not implemented yet")
+	slog.Info("scanner, scheduler, worker, and built-in media pipeline are enabled")
 }
 
 func runInitialScan(ctx context.Context, cfg config.Config, state *store.SQLiteStore) {
@@ -116,6 +125,79 @@ func runInitialScan(ctx context.Context, cfg config.Config, state *store.SQLiteS
 		return
 	}
 	slog.Info("initial scan complete", "libraries", result.Libraries, "sources", result.Sources, "assets", result.Assets, "enqueued_jobs", result.EnqueuedJobs, "existing_jobs", result.ExistingJobs, "skipped_ignored", result.SkippedIgnored, "skipped_unstable", result.SkippedUnstable)
+}
+
+func startScannerLoop(ctx context.Context, wg *sync.WaitGroup, cfg config.Config, state *store.SQLiteStore) {
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		ticker := time.NewTicker(cfg.ScanInterval())
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				result, err := scanner.Scanner{Store: state}.Scan(ctx, cfg)
+				if err != nil {
+					slog.Error("scan failed", "error", err)
+					continue
+				}
+				slog.Info("scan complete", "libraries", result.Libraries, "sources", result.Sources, "assets", result.Assets, "enqueued_jobs", result.EnqueuedJobs, "existing_jobs", result.ExistingJobs, "skipped_ignored", result.SkippedIgnored, "skipped_unstable", result.SkippedUnstable)
+			}
+		}
+	}()
+}
+
+func startRecoveryLoop(ctx context.Context, wg *sync.WaitGroup, cfg config.Config, state *store.SQLiteStore) {
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		ticker := time.NewTicker(cfg.SchedulerInterval())
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				recovered, err := state.RecoverStaleJobs(ctx, cfg.Daemon.MaxAttempts, time.Now())
+				if err != nil {
+					slog.Error("stale job recovery failed", "error", err)
+					continue
+				}
+				if recovered > 0 {
+					slog.Info("stale jobs recovered", "count", recovered)
+				}
+			}
+		}
+	}()
+}
+
+func startSchedulerLoop(ctx context.Context, wg *sync.WaitGroup, cfg config.Config, state *store.SQLiteStore) {
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		runner := worker.Runner{
+			Store:          state,
+			ConfigProvider: func() config.Config { return cfg },
+			Pipeline:       worker.DefaultPipeline(cfg.Daemon.TempDir),
+			TempDir:        cfg.Daemon.TempDir,
+			MaxAttempts:    cfg.Daemon.MaxAttempts,
+			LeaseDuration:  cfg.LeaseDuration(),
+		}
+		planner := &scheduler.Scheduler{
+			Store:          state,
+			Worker:         runner,
+			ConfigProvider: func() config.Config { return cfg },
+			Allocator:      resources.NewAllocator(cfg.Daemon.TotalThreads),
+			WorkerCount:    cfg.Daemon.WorkerCount,
+			LeaseDuration:  cfg.LeaseDuration(),
+			Interval:       cfg.SchedulerInterval(),
+		}
+		if err := planner.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
+			slog.Error("scheduler stopped", "error", err)
+		}
+	}()
 }
 
 func configPathLabel(path string) string {

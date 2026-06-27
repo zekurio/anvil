@@ -85,4 +85,21 @@ CREATE TABLE attempts (
 );
 `,
 	},
+	{
+		version: 2,
+		sql: `
+CREATE TABLE attempt_events (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	attempt_id INTEGER NOT NULL REFERENCES attempts(id) ON DELETE CASCADE,
+	type TEXT NOT NULL CHECK (type IN ('block_started', 'block_finished', 'block_failed', 'artifact')),
+	name TEXT NOT NULL,
+	message TEXT NOT NULL DEFAULT '',
+	payload BLOB NOT NULL DEFAULT x'',
+	created_at TEXT NOT NULL
+);
+
+CREATE INDEX attempt_events_attempt_idx
+ON attempt_events(attempt_id, id);
+`,
+	},
 }
