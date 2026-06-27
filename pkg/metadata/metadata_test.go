@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/zekurio/anvil/pkg/domain"
 )
@@ -84,6 +85,21 @@ func TestResolverSkipsHTTPWhenProviderIsUnset(t *testing.T) {
 	}
 	if result.OriginalLanguage != "" {
 		t.Fatalf("original language = %q, want empty", result.OriginalLanguage)
+	}
+}
+
+func TestResolverDefaultClientHasTimeout(t *testing.T) {
+	client := (Resolver{}).client()
+	if client.Timeout != defaultHTTPTimeout {
+		t.Fatalf("default client timeout = %v, want %v", client.Timeout, defaultHTTPTimeout)
+	}
+}
+
+func TestResolverKeepsConfiguredClient(t *testing.T) {
+	configured := &http.Client{Timeout: time.Second}
+	client := (Resolver{Client: configured}).client()
+	if client != configured {
+		t.Fatal("client() did not preserve configured HTTP client")
 	}
 }
 
