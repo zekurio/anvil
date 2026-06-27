@@ -2,156 +2,64 @@
 
 ## Why Flows Exist
 
-Anvil should be expandable without rewriting the worker every time we add a media operation. Video encode, audio policy, remuxing, HDR handling, metadata preservation, validation, replacement, and download handoff should be separate pipeline blocks that operate on a shared job context.
+Anvil needs to grow media behavior without rewriting the worker every time. Video encode, audio policy, subtitle cleanup, HDR handling, metadata preservation, validation, replacement, and download handoff are separate blocks over one shared job context.
 
-The worker should execute a configured flow:
+Current default media flow:
 
 ```text
-flow: ["probe", "stage", "crf-search", "encode", "validate", "replace", "cleanup"]
+probe -> stage -> crf-search -> encode -> validate -> replace -> cleanup
 ```
 
-Each step contributes to or consumes a shared `JobContext`.
+Download libraries use the same shape with `handoff` instead of `replace`.
 
-## Current Inputs
+## Implemented Shape
 
-The scanner and store now provide:
+The worker now executes configured flow steps through a static block registry:
 
-- `MediaSource`: a file or download package root.
-- `MediaAsset`: an asset inside that source, usually a primary video for early jobs.
-- `Job`: a durable source/asset target with lease state.
-- `Attempt`: one worker execution with room for resolved config snapshots.
+- `probe`: ffprobe JSON wrapper
+- `stage`: per-job temp output directory
+- `crf-search`: `ab-av1 crf-search`
+- `encode`: Anvil-owned final `ffmpeg` command
+- `validate`: output existence, non-empty file, ffprobe readability, and duration tolerance
+- `replace`: media-library backup and install workflow
+- `handoff`: download-library copy/move into Arr watch paths
+- `cleanup`: staging cleanup after successful full flow completion
 
-Workers should resolve latest library, flow, and profile config when a job is leased. Attempts should record what was actually used.
+Attempts record resolved config snapshots and block start/finish/failure events.
 
-## Planned Job Context
+## Job Context
 
-The exact Go shape can evolve, but the context should carry:
+The current context carries:
 
-- job metadata
-- source and asset metadata
-- latest library config
-- latest flow config
-- latest profile config
-- original input path
-- staged input path
-- temp output path
-- final candidate path
-- probe result
-- search result
-- encode plan
-- validation result
+- job, attempt, source, and asset metadata
+- resolved library, flow, and profile
+- input path, staging dir, output path, and final path
+- probe result, search result, encode plan, validation result
 - resource allocation
-- logger/process hooks
 
-## Block Interface Direction
+This is intentionally broad enough for future audio/subtitle/HDR policy without changing the worker contract.
 
-A block should be small and explicit.
+## Search And Encode Strategy
 
-Possible shape:
+`ab-av1 crf-search` remains the first search backend. The wrapper uses the profile CRF range, target VMAF, encoder, preset, pixel format, and resource allocation.
 
-```go
-type Block interface {
-    Name() string
-    Run(ctx context.Context, job *JobContext) error
-}
-```
+Anvil owns the final `ffmpeg` args so stream mapping, metadata, chapters, attachments, subtitles, audio, and replacement semantics stay predictable as profile policy gets deeper.
 
-The first implementation can use a static registry:
+## Current Limits
 
-```text
-probe       -> pkg/probe
-stage       -> pkg/staging
-crf-search  -> pkg/search
-encode      -> pkg/ffmpeg
-validate    -> pkg/validate
-replace     -> pkg/replace
-handoff     -> download handoff package
-cleanup     -> pkg/staging / source cleanup
-```
+- Audio and subtitle profile sections are parsed and carried, but detailed retention/cleanup is not implemented yet.
+- Metadata, chapter, and attachment policy is only the first conservative command-shaping pass.
+- Probe parsing captures core format and stream fields, not full HDR, chapter, or attachment details.
+- Validation is intentionally modest and does not yet enforce required stream layout, savings, or post-encode VMAF.
+- Cleanup is a normal success-path block; failed attempts can leave staging artifacts for inspection until a cleanup policy is chosen.
 
-Avoid dynamic plugins until the built-in block model has proven itself.
+## Next Blocks
 
-## Search Strategy
-
-Use `ab-av1 crf-search` first. It already handles the hardest early part: searching for a CRF that meets target quality.
-
-Anvil should wrap it behind an interface:
-
-```go
-type CRFSearchBackend interface {
-    Search(ctx context.Context, plan EncodePlan) (SearchResult, error)
-}
-```
-
-This leaves room for a native ffmpeg/libvmaf search backend later.
-
-## Final Encode Strategy
-
-Anvil should own the final `ffmpeg` command builder.
-
-Reason:
-
-- audio policy will become Anvil-specific
-- stream mapping must be predictable
-- subtitles, chapters, metadata, and attachments need explicit policy
-- HDR handling will require careful command construction
-- replacement, handoff, and validation need to understand exactly what was produced
-
-The search command and final command must come from the same `EncodePlan`. If they diverge, the CRF found during search may not represent the final encode.
-
-## Initial Encode Plan Fields
-
-Likely first fields:
-
-- input path
-- output path
-- video codec
-- preset
-- pixel format
-- CRF
-- target VMAF
-- thread budget
-- stream map policy
-- metadata policy
-- container/output format
-
-## Future Blocks
-
-Potential later blocks:
-
-- audio copy/transcode policy
-- audio language preference
-- subtitle retention/filtering
-- attachment retention
-- chapter preservation
-- HDR metadata preservation
-- tonemapping
-- crop detection
-- post-encode VMAF spot check
+- audio language and commentary/descriptive-audio retention
+- subtitle forced/SDH/commentary cleanup
+- attachment and chapter preservation policy
+- HDR metadata preservation and tonemapping
+- crop detection or filter planning
+- post-encode VMAF spot checks
 - notification hooks
-
-Download-specific future blocks:
-
-- package handoff to Sonarr/Radarr watched paths
-- source media cleanup after successful handoff
-- safe upward directory pruning using configured ignorable globs
-
-## Validation Policy
-
-Validation should start modest and become stricter.
-
-Initial checks:
-
-- output file exists
-- output file is non-empty
-- ffprobe can read it
-- duration is close to source duration
-- required streams are present
-- output passes minimum savings / encode percentage policy
-
-Later checks:
-
-- compare stream layout against policy
-- confirm metadata/chapter retention
-- spot-check VMAF
-- detect severe bitrate or duration anomalies
+- Arr-aware track and naming decisions
