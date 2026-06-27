@@ -34,7 +34,7 @@ func (e Encoder) Encode(ctx context.Context, plan domain.EncodePlan) (process.Re
 	return runner.Run(ctx, process.Command{Name: binary, Args: Args(plan)})
 }
 
-func BuildPlan(profile domain.Profile, inputPath string, outputPath string, allocation domain.ResourceAllocation, search *domain.SearchResult) (domain.EncodePlan, error) {
+func BuildPlan(profile domain.Profile, inputPath string, outputPath string, allocation domain.ResourceAllocation, search *domain.SearchResult, audio *domain.AudioSelection, cropFilter string) (domain.EncodePlan, error) {
 	if inputPath == "" {
 		return domain.EncodePlan{}, errors.New("input path is required")
 	}
@@ -45,7 +45,7 @@ func BuildPlan(profile domain.Profile, inputPath string, outputPath string, allo
 	if search != nil && search.CRF > 0 {
 		crf = search.CRF
 	}
-	return domain.EncodePlan{
+	plan := domain.EncodePlan{
 		InputPath:      inputPath,
 		OutputPath:     outputPath,
 		VideoCodec:     profile.Video.Codec,
@@ -57,12 +57,17 @@ func BuildPlan(profile domain.Profile, inputPath string, outputPath string, allo
 		TargetVMAF:     profile.Video.TargetVMAF,
 		Threads:        allocation.Threads,
 		Container:      profile.Container,
-		AudioMode:      profile.Audio.Mode,
+		CropFilter:     cropFilter,
 		SubtitleMode:   profile.Subtitles.Mode,
 		MetadataMode:   profile.Metadata.Mode,
 		AttachmentMode: profile.Attachments.Mode,
 		ChapterMode:    profile.Chapters.Mode,
-	}, nil
+	}
+	if audio != nil {
+		plan.AudioSelectionApplied = true
+		plan.AudioStreamIndexes = append([]int(nil), audio.StreamIndexes...)
+	}
+	return plan, nil
 }
 
 func Args(plan domain.EncodePlan) []string {
@@ -70,10 +75,15 @@ func Args(plan domain.EncodePlan) []string {
 		"-hide_banner",
 		"-y",
 		"-i", plan.InputPath,
-		"-map", "0",
+	}
+	args = append(args, mapArgs(plan)...)
+	if plan.CropFilter != "" {
+		args = append(args, "-vf", plan.CropFilter)
+	}
+	args = append(args,
 		"-c:v", valueOr(plan.VideoCodec, "libsvtav1"),
 		"-crf", strconv.Itoa(plan.CRF),
-	}
+	)
 	if plan.Preset != "" {
 		args = append(args, "-preset", plan.Preset)
 	}
@@ -83,13 +93,15 @@ func Args(plan domain.EncodePlan) []string {
 	if plan.Threads > 0 {
 		args = append(args, "-threads", strconv.Itoa(plan.Threads))
 	}
-	args = append(args, audioArgs(plan.AudioMode)...)
+	args = append(args, audioArgs()...)
 	args = append(args, subtitleArgs(plan.SubtitleMode)...)
 	if plan.MetadataMode == domain.MetadataModeStrip {
 		args = append(args, "-map_metadata", "-1")
 	}
 	if plan.AttachmentMode == domain.MetadataModeStrip {
-		args = append(args, "-map", "-0:t?")
+		args = append(args, "-dn")
+	} else {
+		args = append(args, "-c:t", "copy")
 	}
 	if plan.ChapterMode == domain.MetadataModeStrip {
 		args = append(args, "-map_chapters", "-1")
@@ -107,7 +119,7 @@ func (Block) Name() string {
 }
 
 func (b Block) Run(ctx context.Context, job *pipeline.JobContext) error {
-	plan, err := BuildPlan(job.Profile, job.InputPath, job.OutputPath, job.Resources, job.Search)
+	plan, err := BuildPlan(job.Profile, job.InputPath, job.OutputPath, job.Resources, job.Search, job.Audio, job.Metadata.CropFilter)
 	if err != nil {
 		return err
 	}
@@ -119,13 +131,24 @@ func (b Block) Run(ctx context.Context, job *pipeline.JobContext) error {
 	return nil
 }
 
-func audioArgs(mode domain.StreamPolicyMode) []string {
-	switch mode {
-	case domain.StreamPolicyCleanup:
-		return []string{"-c:a", "copy"}
-	default:
-		return []string{"-c:a", "copy"}
+func mapArgs(plan domain.EncodePlan) []string {
+	args := []string{"-map", "0:v?"}
+	if plan.AudioSelectionApplied {
+		for _, streamIndex := range plan.AudioStreamIndexes {
+			args = append(args, "-map", "0:"+strconv.Itoa(streamIndex))
+		}
+	} else {
+		args = append(args, "-map", "0:a?")
 	}
+	args = append(args, "-map", "0:s?")
+	if plan.AttachmentMode != domain.MetadataModeStrip {
+		args = append(args, "-map", "0:t?")
+	}
+	return args
+}
+
+func audioArgs() []string {
+	return []string{"-c:a", "copy"}
 }
 
 func subtitleArgs(mode domain.StreamPolicyMode) []string {
