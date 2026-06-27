@@ -66,6 +66,9 @@ func SearchArgs(plan domain.EncodePlan) []string {
 	if plan.PixelFormat != "" {
 		args = append(args, "--pix-format", plan.PixelFormat)
 	}
+	if plan.CropFilter != "" {
+		args = append(args, "--vfilter", plan.CropFilter)
+	}
 	if plan.Threads > 0 {
 		threads := strconv.Itoa(plan.Threads)
 		args = append(args, "--enc", "threads="+threads, "--vmaf", "n_threads="+threads)
@@ -107,7 +110,7 @@ func searchPlan(job *pipeline.JobContext) domain.EncodePlan {
 		TargetVMAF:   job.Profile.Video.TargetVMAF,
 		Threads:      job.Resources.Threads,
 		Container:    job.Profile.Container,
-		AudioMode:    job.Profile.Audio.Mode,
+		CropFilter:   job.Metadata.CropFilter,
 		SubtitleMode: job.Profile.Subtitles.Mode,
 	}
 }
