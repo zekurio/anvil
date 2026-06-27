@@ -35,9 +35,10 @@ type Library struct {
 }
 
 type MetadataProviderPolicy struct {
-	Provider MetadataProviderKind
-	BaseURL  string
-	APIKey   string
+	Provider   MetadataProviderKind
+	BaseURL    string
+	APIKey     string
+	APIKeyFile string
 }
 
 type MetadataProviderKind string

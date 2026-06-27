@@ -161,8 +161,8 @@ func (s *Scheduler) validate() error {
 func (s *Scheduler) eligibleLibraries(cfg config.Config) []domain.LibraryName {
 	activeByLibrary := s.activeByLibrary()
 	allowed := make([]domain.LibraryName, 0, len(cfg.Libraries))
-	for _, library := range cfg.Libraries {
-		name := domain.LibraryName(library.Name)
+	for libraryName, library := range cfg.Libraries {
+		name := domain.LibraryName(libraryName)
 		if library.ConcurrencyLimit > 0 && activeByLibrary[name] >= library.ConcurrencyLimit {
 			continue
 		}

@@ -113,8 +113,8 @@ func logConfiguredWork(cfg config.Config) {
 		return
 	}
 
-	for _, library := range cfg.Libraries {
-		slog.Info("library configured", "name", library.Name, "kind", library.Kind, "path", library.Path, "flow", library.Flow, "profile", library.Profile)
+	for name, library := range cfg.Libraries {
+		slog.Info("library configured", "name", name, "kind", library.Kind, "path", library.Path, "flow", library.Flow, "profile", library.Profile)
 	}
 	slog.Info("scanner, scheduler, worker, and built-in media pipeline are enabled")
 }

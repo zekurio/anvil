@@ -38,7 +38,10 @@ type ScanResult struct {
 
 func (s Scanner) Scan(ctx context.Context, cfg config.Config) (ScanResult, error) {
 	var result ScanResult
-	for _, library := range cfg.Libraries {
+	for name, library := range cfg.Libraries {
+		if library.Name == "" {
+			library.Name = name
+		}
 		libraryResult, err := s.ScanLibrary(ctx, library)
 		if err != nil {
 			return result, fmt.Errorf("scan library %q: %w", library.Name, err)

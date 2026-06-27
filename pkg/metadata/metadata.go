@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"os"
 	pathpkg "path"
 	"path/filepath"
 	"strings"
@@ -37,8 +38,9 @@ func (r Resolver) resolveArr(ctx context.Context, policy domain.MetadataProvider
 	if strings.TrimSpace(policy.BaseURL) == "" {
 		return domain.JobMetadata{}, errors.New("metadata base URL is required")
 	}
-	if strings.TrimSpace(policy.APIKey) == "" {
-		return domain.JobMetadata{}, errors.New("metadata API key is required")
+	apiKey, err := apiKey(policy)
+	if err != nil {
+		return domain.JobMetadata{}, err
 	}
 	endpoint, err := arrURL(policy.BaseURL, apiPath, query)
 	if err != nil {
@@ -48,7 +50,7 @@ func (r Resolver) resolveArr(ctx context.Context, policy domain.MetadataProvider
 	if err != nil {
 		return domain.JobMetadata{}, fmt.Errorf("create metadata request: %w", err)
 	}
-	req.Header.Set("X-Api-Key", policy.APIKey)
+	req.Header.Set("X-Api-Key", apiKey)
 
 	client := r.Client
 	if client == nil {
@@ -74,6 +76,25 @@ func (r Resolver) resolveArr(ctx context.Context, policy domain.MetadataProvider
 	return domain.JobMetadata{
 		OriginalLanguage: parseLanguage(item.OriginalLanguage),
 	}, nil
+}
+
+func apiKey(policy domain.MetadataProviderPolicy) (string, error) {
+	if strings.TrimSpace(policy.APIKeyFile) != "" {
+		data, err := os.ReadFile(policy.APIKeyFile)
+		if err != nil {
+			return "", fmt.Errorf("read metadata API key file: %w", err)
+		}
+		key := strings.TrimSpace(string(data))
+		if key == "" {
+			return "", fmt.Errorf("metadata API key file %q is empty", policy.APIKeyFile)
+		}
+		return key, nil
+	}
+	key := strings.TrimSpace(policy.APIKey)
+	if key == "" {
+		return "", errors.New("metadata API key is required")
+	}
+	return key, nil
 }
 
 type arrItem struct {

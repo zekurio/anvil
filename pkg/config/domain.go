@@ -8,30 +8,38 @@ import (
 )
 
 func (c Config) FindLibrary(name domain.LibraryName) (LibraryConfig, bool) {
-	for _, library := range c.Libraries {
-		if library.Name == string(name) {
-			return library, true
-		}
+	library, ok := c.Libraries[string(name)]
+	if ok {
+		library.Name = string(name)
+		return library, true
 	}
 	return LibraryConfig{}, false
 }
 
 func (c Config) FindFlow(name string) (FlowConfig, bool) {
-	for _, flow := range c.Flows {
-		if flow.Name == name {
-			return flow, true
-		}
+	flow, ok := c.Flows[name]
+	if ok {
+		flow.Name = name
+		return flow, true
 	}
 	return FlowConfig{}, false
 }
 
 func (c Config) FindProfile(name string) (ProfileConfig, bool) {
-	for _, profile := range c.Profiles {
-		if profile.Name == name {
-			return profile, true
-		}
+	profile, ok := c.Profiles[name]
+	if ok {
+		profile.Name = name
+		return profile, true
 	}
 	return ProfileConfig{}, false
+}
+
+func (c Config) FindArr(name string) (ArrConfig, bool) {
+	arr, ok := c.Arrs[name]
+	if ok {
+		arr.Name = name
+	}
+	return arr, ok
 }
 
 func (c Config) ResolveForLibrary(name domain.LibraryName) (domain.Library, domain.Flow, domain.Profile, error) {
@@ -47,7 +55,15 @@ func (c Config) ResolveForLibrary(name domain.LibraryName) (domain.Library, doma
 	if !ok {
 		return domain.Library{}, domain.Flow{}, domain.Profile{}, fmt.Errorf("profile %q not found", library.Profile)
 	}
-	return library.ToDomain(), flow.ToDomain(), profile.ToDomain(), nil
+	var arr ArrConfig
+	if library.Arr != "" {
+		var ok bool
+		arr, ok = c.FindArr(library.Arr)
+		if !ok {
+			return domain.Library{}, domain.Flow{}, domain.Profile{}, fmt.Errorf("arr %q not found", library.Arr)
+		}
+	}
+	return library.ToDomain(arr), flow.ToDomain(), profile.ToDomain(), nil
 }
 
 func (c Config) ScanInterval() time.Duration {
@@ -62,7 +78,7 @@ func (c Config) LeaseDuration() time.Duration {
 	return mustDuration(c.Daemon.LeaseDuration)
 }
 
-func (l LibraryConfig) ToDomain() domain.Library {
+func (l LibraryConfig) ToDomain(arr ArrConfig) domain.Library {
 	stableFor, _ := time.ParseDuration(l.Download.StableFor)
 	return domain.Library{
 		Name:             domain.LibraryName(l.Name),
@@ -75,9 +91,10 @@ func (l LibraryConfig) ToDomain() domain.Library {
 		ExcludeGlobs:     append([]string(nil), l.Exclude...),
 		ConcurrencyLimit: l.ConcurrencyLimit,
 		Metadata: domain.MetadataProviderPolicy{
-			Provider: domain.MetadataProviderKind(l.Metadata.Provider),
-			BaseURL:  l.Metadata.BaseURL,
-			APIKey:   l.Metadata.APIKey,
+			Provider:   domain.MetadataProviderKind(arrProvider(arr)),
+			BaseURL:    arr.BaseURL,
+			APIKey:     arr.APIKey,
+			APIKeyFile: arr.APIKeyFile,
 		},
 		Media: domain.MediaLibraryPolicy{
 			ReplacementMode: domain.ReplacementMode(l.Media.ReplacementMode),

@@ -9,19 +9,16 @@ scheduler_interval = "5s"
 lease_duration = "30m"
 log_level = "info"
 
-[[flows]]
-name = "av1-replace"
+[flows.av1-replace]
 steps = ["probe", "crop-detect", "audio-cleanup", "stage", "crf-search", "encode", "validate", "replace", "cleanup"]
 
-[[flows]]
-name = "download-av1-handoff"
+[flows.download-av1-handoff]
 steps = ["probe", "crop-detect", "audio-cleanup", "stage", "crf-search", "encode", "validate", "handoff", "cleanup"]
 
-[[profiles]]
-name = "default-av1"
+[profiles.default-av1]
 container = "mkv"
 
-[profiles.video]
+[profiles.default-av1.video]
 codec = "libsvtav1"
 preset = "6"
 pixel_format = "yuv420p10le"
@@ -29,61 +26,61 @@ crf_min = 18
 crf_max = 40
 target_vmaf = 95
 
-[profiles.audio]
+[profiles.default-av1.audio]
 languages_to_keep = ["orig", "deu"]
 fallback = "keep_first"
 keep_commentary = false
 unknown_as_original = true
 
-[profiles.subtitles]
+[profiles.default-av1.subtitles]
 mode = "preserve"
 fallback = "keep_all"
 keep_forced = true
 keep_external = true
 
-[profiles.metadata]
+[profiles.default-av1.metadata]
 mode = "preserve"
 
-[profiles.attachments]
+[profiles.default-av1.attachments]
 mode = "preserve"
 
-[profiles.chapters]
+[profiles.default-av1.chapters]
 mode = "preserve"
 
-[[libraries]]
-name = "movies"
+[arrs.movies]
+type = "radarr"
+base_url = "http://radarr:7878"
+api_key_file = "/run/secrets/radarr-api-key"
+
+[arrs.tv]
+type = "sonarr"
+base_url = "http://sonarr:8989"
+api_key_file = "/run/secrets/sonarr-api-key"
+
+[libraries.movies]
 kind = "media"
 path = "/srv/media/movies"
+arr = "movies"
 flow = "av1-replace"
 profile = "default-av1"
 priority = 0
 include = ["*.mkv", "*.mp4"]
 exclude = ["**/.staging/**"]
 
-[libraries.metadata]
-provider = "radarr"
-base_url = "http://radarr:7878"
-api_key = "replace-me"
-
-[libraries.media]
+[libraries.movies.media]
 replacement_mode = "replace"
 
-[[libraries]]
-name = "usenet-tv"
+[libraries.usenet-tv]
 kind = "download"
 path = "/downloads/complete/tv"
+arr = "tv"
 flow = "download-av1-handoff"
 profile = "default-av1"
 priority = 10
 include = ["*.mkv", "*.mp4"]
 exclude = ["**/sample*/**", "**/*sample*"]
 
-[libraries.metadata]
-provider = "sonarr"
-base_url = "http://sonarr:8989"
-api_key = "replace-me"
-
-[libraries.download]
+[libraries.usenet-tv.download]
 handoff_path = "/imports/tv"
 stable_for = "5m"
 package_mode = "auto"
