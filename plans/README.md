@@ -1,20 +1,24 @@
 # Anvil Plans
 
-This directory tracks the working plans for Anvil. These documents are not hard specs; they are the current design direction and should be updated as implementation teaches us more.
+This directory tracks Anvil's working design direction. The docs are intentionally light: implementation has started teaching us the real boundaries, so plans should stay current rather than exhaustive.
 
 ## Documents
 
-- [Architecture](architecture.md): high-level decisions, boundaries, and package responsibilities.
-- [Daemon Runtime](daemon-runtime.md): daemon-first execution model, lifecycle, config, and persistence.
-- [Flows And Pipeline Blocks](flows-and-pipeline.md): expandable flow model and command-building strategy.
-- [Roadmap](roadmap.md): completed foundation work, next implementation phases, and open questions.
+- [Architecture](architecture.md): package boundaries and high-level daemon shape.
+- [Daemon Runtime](daemon-runtime.md): lifecycle, scheduling, leases, and operations.
+- [Flows And Pipeline Blocks](flows-and-pipeline.md): block model and media pipeline strategy.
+- [Roadmap](roadmap.md): completed work and remaining implementation tracks.
 
 ## Current Direction
 
-Anvil is a Linux-first Go daemon for orchestrating AV1 encodes across user-defined media and download libraries. Media libraries process files in place. Download libraries act as intake roots for completed downloader output, encode stable package assets, and later hand off staged results to paths watched by Sonarr or Radarr.
+Anvil is a Go daemon for orchestrating AV1 encodes across media libraries and download libraries. Media libraries process files in place. Download libraries act as intake roots for completed downloader output, encode stable package assets, then hand completed files to paths watched by Sonarr or Radarr.
 
-The foundation now exists: config loading, domain types, SQLite state, leases, attempts, stale recovery, scanner discovery, source/asset records, and initial job enqueueing. The next major work is scheduler/resources, worker flow execution, probing/search, final ffmpeg command construction, validation, replacement, and download handoff.
+The current implementation has the core loop in place: scan, enqueue, lease, resolve latest config, run a flow, validate output, replace or hand off safely, and recover stale leases. The next work should deepen media policy and operations rather than add another broad skeleton.
 
-The first practical encode version should use `ab-av1 crf-search` to find quality settings, then let Anvil own the final `ffmpeg` command plan and execution.
+The first practical encode path remains:
 
-The v1 surface is the daemon. A separate CLI, API, or web UI can come later once the state model and flow engine are real.
+```text
+probe -> stage -> crf-search -> encode -> validate -> replace/handoff -> cleanup
+```
+
+The profile shape is deliberately expandable so audio, subtitles, metadata, chapters, attachments, HDR, and Arr-aware cleanup can be added without replacing the worker model.

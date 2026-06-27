@@ -1,126 +1,65 @@
 # Roadmap
 
-## Done
+## Implemented
 
-### Phase 0: Project Foundation
+### Foundation
 
-- Initialized Go module and `pkg/` package layout.
-- Added daemon entrypoint.
-- Added TOML config loading, defaults, validation, and example config.
-- Added Nix/devenv development environment.
-- Created GitHub repository.
+- Go daemon entrypoint, TOML config, defaults, validation, example config, and Nix/devenv setup.
+- Durable domain model for libraries, flows, profiles, sources, assets, jobs, attempts, attempt events, probes, searches, encode plans, validation results, and resource allocations.
+- SQLite store with migrations, source/asset upserts, idempotent job enqueueing, library-scoped leasing, attempts, event recording, heartbeats, state transitions, and stale lease recovery.
 
-### Phase 1: Domain And Store
+### Discovery And Scheduling
 
-- Added durable domain concepts for libraries, flows, profiles, media sources, media assets, jobs, attempts, and states.
-- Added expandable profile sections for video, audio, subtitles, metadata, attachments, and chapters.
-- Added media and download library concepts.
-- Added SQLite store using `modernc.org/sqlite`.
-- Added migrations and schema setup.
-- Added source/asset upsert primitives.
-- Added idempotent job enqueueing.
-- Added job leases, heartbeats, attempts, state transitions, and stale lease recovery.
-- Wired `anvild` to open the store and recover stale jobs on startup.
+- Scanner walks media and download libraries with `**` include/exclude support.
+- Download libraries apply `ignorable_globs`, stability windows, and package grouping for nested releases such as `SomeShowS01/SomeShowS01E01/episode_1.mkv`.
+- Scheduler fills available worker slots, respects worker count and per-library concurrency, leases only eligible libraries, and passes thread allocations into workers.
+- Daemon now runs initial scan, scan loop, stale recovery loop, and scheduler loop.
 
-### Phase 2: Scanner Foundation
+### Worker Pipeline
 
-- Walk configured library paths.
-- Apply include/exclude globs with `**` support.
-- Apply download `ignorable_globs`.
-- Filter likely media files.
-- Skip samples.
-- Fingerprint sources/assets with path, size, and mtime.
-- Group nested download packages such as `SomeShowS01/SomeShowS01E01/episode_1.mkv`.
-- Use all non-excluded package files for download stability checks.
-- Insert/update media sources and assets.
-- Enqueue source/asset jobs with library priority.
-- Run one initial non-fatal scanner pass from `anvild`.
+- Workers resolve the latest library, flow, and profile after leasing and snapshot that config on the attempt.
+- Static block registry executes configured flows with block start/finish/failure attempt events.
+- Built-in blocks cover probe, stage, `ab-av1 crf-search`, final `ffmpeg` encode, validation, media replacement, download handoff, and staging cleanup.
+- External process execution is cancellable and testable through a small process runner.
 
-## Next
+### File Completion
 
-### Phase 3: Scheduler And Resources
+- Validation checks output existence, non-empty output, ffprobe readability, and duration tolerance.
+- Media replacement uses a backup workflow and refuses existing backup destinations.
+- Handoff copy/move refuses existing destinations and keeps source cleanup explicit.
+- Download cleanup removes only the processed source media, then prunes upward only while directories contain no kept files or only configured ignorable leftovers.
 
-Goal: lease work fairly and pass resource allocations into workers.
+## Remaining Tracks
 
-- Add scheduler loop.
-- Respect daemon worker count.
-- Respect library priority.
-- Add per-library concurrency.
-- Add `pkg/resources` thread allocator.
-- Pass resource allocations into worker contexts.
-- Decide how to split threads between `ab-av1 crf-search` and final `ffmpeg` encode.
+### Stream Policy Depth
 
-### Phase 4: Worker Pipeline Skeleton
+- Implement real audio/subtitle retention and cleanup from the expandable profile sections.
+- Preserve or strip chapters, attachments, metadata, and HDR data intentionally instead of with the current conservative first pass.
+- Add Sonarr/Radarr-aware language and track decisions.
 
-Goal: execute configured flows without real encode work first.
+### Encode Quality And Validation
 
-- Add `pkg/pipeline` block registry.
-- Add `JobContext`.
-- Resolve latest library, flow, and profile config when a job is leased.
-- Start attempts with resolved config snapshots.
-- Implement no-op or stub blocks for configured flow steps.
-- Persist block start/finish/failure.
-- Make failed blocks produce useful job errors.
+- Persist probe/search/encode/validation summaries beyond attempt events.
+- Add minimum savings or max encoded percentage policy.
+- Add post-encode spot checks, richer stream-layout validation, and better parse support for structured `ab-av1` output.
+- Reconcile final `ffmpeg` settings with `ab-av1` search settings as profiles become more expressive.
 
-### Phase 5: Probe And Search
+### Runtime Operations
 
-Goal: produce real media metadata and a CRF result.
-
-- Add ffprobe wrapper.
-- Parse duration, streams, codec, pixel format, HDR-ish metadata, chapters, and attachments.
-- Add `ab-av1 crf-search` backend.
-- Parse search output into `SearchResult`.
-- Persist probe/search results on attempts.
-
-### Phase 6: Final Ffmpeg Encode
-
-Goal: encode a candidate with an Anvil-owned ffmpeg command.
-
-- Add `EncodePlan`.
-- Render final ffmpeg args from `EncodePlan`.
-- Use chosen CRF from search result.
-- Add initial stream mapping policy.
-- Add temp output path handling.
-- Execute process with cancellation.
-- Capture logs.
-
-### Phase 7: Validation, Replacement, And Handoff
-
-Goal: safely finish jobs only when output is acceptable.
-
-- Validate output existence, probeability, duration, and required streams.
-- Add minimum encode percentage / savings policy.
-- For media libraries, replace originals with a backup workflow:
-
-```text
-movie.mkv -> movie.mkv.anvil-backup
-movie.mkv.anvil-new -> movie.mkv
-```
-
-- For download libraries, build a staged handoff tree and copy or move it to the configured import path.
-- Keep handoff separate from source cleanup.
-- Delete source media only when `cleanup_source_media` is explicitly enabled.
-- Prune source directories upward only while they are empty or contain only configured ignorable files.
-- Preserve timestamps and permissions where practical.
-
-### Phase 8: Operations
-
-Goal: make the daemon comfortable to run.
-
-- Add scanner and scheduler intervals.
-- Add structured logs or a clear logging format.
-- Add systemd unit example.
-- Add graceful shutdown policy.
+- Define graceful shutdown semantics: drain, cancel, or resume leases.
+- Add stale temp/staging cleanup policy, including whether failed attempts keep artifacts for debugging.
 - Add config reload via `SIGHUP`.
-- Add `nice` / `ionice` support.
-- Add basic CLI commands if needed.
+- Add structured process logs, systemd packaging, `nice` / `ionice`, and basic operational CLI commands.
+
+### Reprocessing And Integrations
+
+- Detect file changes after terminal jobs and decide when to requeue.
+- Add normalized metadata providers for Arr context, path conventions, `.nfo`, or APIs.
+- Decide if future management UI edits config files, SQLite state, or a separate flow model.
 
 ## Open Questions
 
-- What exact meaning should "minimum encode percentage" have?
-- Should output always preserve the original container extension, or follow profile container?
-- Should all audio, subtitle, chapter, and attachment streams be preserved by default until explicit cleanup policies are implemented?
-- How should file changes after a terminal job be detected and requeued?
-- How aggressive should retries be for failed search/encode jobs, and should that be configurable per library/profile?
-- Should Sonarr/Radarr context come from APIs, `.nfo` files, path conventions, or a normalized metadata provider interface first?
-- Should the future management UI edit config files, write to SQLite, or manage a separate flow model?
+- Should failed attempts keep staging directories by default for debugging, or should cleanup run in a best-effort defer?
+- Should profile container always decide output extension, or should media libraries preserve original extensions unless explicitly changed?
+- How aggressive should retries be per library/profile, beyond the daemon-wide max attempts?
+- What is the first useful CLI surface: inspect jobs, retry failed jobs, rescan libraries, or dry-run flows?
