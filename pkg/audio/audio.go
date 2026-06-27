@@ -35,7 +35,8 @@ func (Selector) Select(probe *domain.ProbeResult, profile domain.AudioProfile, m
 	keep := languageSet(selection.LanguagesToKeep)
 	filterLanguages := languageFilterEnabled(profile)
 	for _, stream := range audioStreams {
-		if filterLanguages && !keep[normalizeLanguage(stream.Language)] {
+		matchesLanguage := !filterLanguages || keep[normalizeLanguage(stream.Language)]
+		if !matchesLanguage && !profile.KeepOtherTracks {
 			continue
 		}
 		if !profile.KeepCommentary && commentary(stream) {

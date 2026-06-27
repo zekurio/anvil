@@ -122,6 +122,7 @@ type AudioProfile struct {
 	LanguagesToKeep      []string
 	KeepOriginalLanguage bool
 	KeepCommentary       bool
+	KeepOtherTracks      bool
 	KeepDescriptiveAudio bool
 	KeepLossless         bool
 	MaxTracks            int

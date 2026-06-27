@@ -120,6 +120,7 @@ func (p ProfileConfig) ToDomain() domain.Profile {
 			LanguagesToKeep:      append([]string(nil), p.Audio.LanguagesToKeep...),
 			KeepOriginalLanguage: p.Audio.KeepOriginalLanguage,
 			KeepCommentary:       p.Audio.KeepCommentary,
+			KeepOtherTracks:      p.Audio.KeepOtherTracks,
 			KeepDescriptiveAudio: p.Audio.KeepDescriptiveAudio,
 			KeepLossless:         p.Audio.KeepLossless,
 			MaxTracks:            p.Audio.MaxTracks,
