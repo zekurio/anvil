@@ -39,6 +39,9 @@ path = "/srv/media/movies"
 	if got := cfg.Libraries[0].Kind; got != DefaultLibraryKind {
 		t.Fatalf("expected default library kind %q, got %q", DefaultLibraryKind, got)
 	}
+	if !containsString(cfg.Flows[0].Steps, "stage") {
+		t.Fatalf("default flow steps = %v, want stage before encode output is needed", cfg.Flows[0].Steps)
+	}
 }
 
 func TestLoadRejectsUnknownReferences(t *testing.T) {
@@ -53,6 +56,24 @@ profile = "missing-profile"
 	_, err := Load(path)
 	if err == nil {
 		t.Fatal("Load() error = nil, want invalid references")
+	}
+}
+
+func TestLoadRejectsNonPositiveDaemonDurations(t *testing.T) {
+	path := writeConfig(t, `
+[daemon]
+scan_interval = "0s"
+scheduler_interval = "-1s"
+lease_duration = "0s"
+
+[[libraries]]
+name = "movies"
+path = "/srv/media/movies"
+`)
+
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("Load() error = nil, want invalid daemon durations")
 	}
 }
 
@@ -110,4 +131,13 @@ func writeConfig(t *testing.T, body string) string {
 	}
 
 	return path
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }
