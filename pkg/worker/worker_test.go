@@ -92,9 +92,8 @@ func workerConfig() config.Config {
 	cfg := config.Default()
 	cfg.Daemon.LeaseDuration = "1m"
 	cfg.Daemon.MaxAttempts = 2
-	cfg.Flows = []config.FlowConfig{{Name: "test-flow", Steps: []string{"noop"}}}
-	cfg.Libraries = []config.LibraryConfig{{
-		Name:    "movies",
+	cfg.Flows = map[string]config.FlowConfig{"test-flow": {Steps: []string{"noop"}}}
+	cfg.Libraries = map[string]config.LibraryConfig{"movies": {
 		Kind:    "media",
 		Path:    "/media/movies",
 		Flow:    "test-flow",
