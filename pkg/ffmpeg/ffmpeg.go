@@ -58,7 +58,6 @@ func BuildPlan(profile domain.Profile, inputPath string, outputPath string, allo
 		Threads:        allocation.Threads,
 		Container:      profile.Container,
 		CropFilter:     cropFilter,
-		AudioMode:      profile.Audio.Mode,
 		SubtitleMode:   profile.Subtitles.Mode,
 		MetadataMode:   profile.Metadata.Mode,
 		AttachmentMode: profile.Attachments.Mode,
@@ -94,7 +93,7 @@ func Args(plan domain.EncodePlan) []string {
 	if plan.Threads > 0 {
 		args = append(args, "-threads", strconv.Itoa(plan.Threads))
 	}
-	args = append(args, audioArgs(plan.AudioMode)...)
+	args = append(args, audioArgs()...)
 	args = append(args, subtitleArgs(plan.SubtitleMode)...)
 	if plan.MetadataMode == domain.MetadataModeStrip {
 		args = append(args, "-map_metadata", "-1")
@@ -148,13 +147,8 @@ func mapArgs(plan domain.EncodePlan) []string {
 	return args
 }
 
-func audioArgs(mode domain.StreamPolicyMode) []string {
-	switch mode {
-	case domain.StreamPolicyCleanup:
-		return []string{"-c:a", "copy"}
-	default:
-		return []string{"-c:a", "copy"}
-	}
+func audioArgs() []string {
+	return []string{"-c:a", "copy"}
 }
 
 func subtitleArgs(mode domain.StreamPolicyMode) []string {

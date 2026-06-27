@@ -94,17 +94,10 @@ type VideoConfig struct {
 
 // AudioConfig declares track retention intent. It is conservative by default.
 type AudioConfig struct {
-	Mode                 string   `toml:"mode"`
-	PreferredLanguages   []string `toml:"preferred_languages"`
-	LanguagesToKeep      []string `toml:"languages_to_keep"`
-	KeepOriginalLanguage bool     `toml:"keep_original_language"`
-	KeepCommentary       bool     `toml:"keep_commentary"`
-	KeepOtherTracks      bool     `toml:"keep_other_tracks"`
-	KeepDescriptiveAudio bool     `toml:"keep_descriptive_audio"`
-	KeepLossless         bool     `toml:"keep_lossless"`
-	MaxTracks            int      `toml:"max_tracks"`
-	Fallback             string   `toml:"fallback"`
-	TranscodeUnsupported bool     `toml:"transcode_unsupported"`
+	LanguagesToKeep   []string `toml:"languages_to_keep"`
+	KeepCommentary    bool     `toml:"keep_commentary"`
+	Fallback          string   `toml:"fallback"`
+	UnknownAsOriginal bool     `toml:"unknown_as_original"`
 }
 
 // SubtitleConfig declares subtitle retention intent.
@@ -126,18 +119,25 @@ type MetadataConfig struct {
 
 // LibraryConfig describes a user-defined media library.
 type LibraryConfig struct {
-	Name             string                `toml:"name"`
-	Kind             string                `toml:"kind"`
-	Path             string                `toml:"path"`
-	OriginalLanguage string                `toml:"original_language"`
-	Flow             string                `toml:"flow"`
-	Profile          string                `toml:"profile"`
-	Priority         int                   `toml:"priority"`
-	Include          []string              `toml:"include"`
-	Exclude          []string              `toml:"exclude"`
-	ConcurrencyLimit int                   `toml:"concurrency_limit"`
-	Media            MediaLibraryConfig    `toml:"media"`
-	Download         DownloadLibraryConfig `toml:"download"`
+	Name             string                 `toml:"name"`
+	Kind             string                 `toml:"kind"`
+	Path             string                 `toml:"path"`
+	Flow             string                 `toml:"flow"`
+	Profile          string                 `toml:"profile"`
+	Priority         int                    `toml:"priority"`
+	Include          []string               `toml:"include"`
+	Exclude          []string               `toml:"exclude"`
+	ConcurrencyLimit int                    `toml:"concurrency_limit"`
+	Metadata         MetadataProviderConfig `toml:"metadata"`
+	Media            MediaLibraryConfig     `toml:"media"`
+	Download         DownloadLibraryConfig  `toml:"download"`
+}
+
+// MetadataProviderConfig controls external metadata lookup for a library.
+type MetadataProviderConfig struct {
+	Provider string `toml:"provider"`
+	BaseURL  string `toml:"base_url"`
+	APIKey   string `toml:"api_key"`
 }
 
 // MediaLibraryConfig controls in-place media-library completion behavior.
@@ -209,7 +209,6 @@ func Default() Config {
 					TargetVMAF:  95,
 				},
 				Audio: AudioConfig{
-					Mode:     DefaultStreamMode,
 					Fallback: DefaultStreamFallback,
 				},
 				Subtitles: SubtitleConfig{
@@ -292,14 +291,8 @@ func (c Config) Validate() error {
 		if profile.Video.TargetVMAF < 0 || profile.Video.TargetVMAF > 100 {
 			problems = append(problems, fmt.Sprintf("profile %q target_vmaf must be between 0 and 100", name))
 		}
-		if !validStreamMode(profile.Audio.Mode) {
-			problems = append(problems, fmt.Sprintf("profile %q audio.mode %q is invalid", name, profile.Audio.Mode))
-		}
 		if !validStreamFallback(profile.Audio.Fallback) {
 			problems = append(problems, fmt.Sprintf("profile %q audio.fallback %q is invalid", name, profile.Audio.Fallback))
-		}
-		if profile.Audio.MaxTracks < 0 {
-			problems = append(problems, fmt.Sprintf("profile %q audio.max_tracks must be non-negative", name))
 		}
 		if !validStreamMode(profile.Subtitles.Mode) {
 			problems = append(problems, fmt.Sprintf("profile %q subtitles.mode %q is invalid", name, profile.Subtitles.Mode))
@@ -348,6 +341,17 @@ func (c Config) Validate() error {
 		}
 		if library.ConcurrencyLimit < 0 {
 			problems = append(problems, fmt.Sprintf("library %q concurrency_limit must be non-negative", name))
+		}
+		if !validMetadataProvider(library.Metadata.Provider) {
+			problems = append(problems, fmt.Sprintf("library %q metadata.provider %q is invalid", name, library.Metadata.Provider))
+		}
+		if strings.TrimSpace(library.Metadata.Provider) != "" {
+			if strings.TrimSpace(library.Metadata.BaseURL) == "" {
+				problems = append(problems, fmt.Sprintf("library %q metadata.base_url is required when metadata.provider is set", name))
+			}
+			if strings.TrimSpace(library.Metadata.APIKey) == "" {
+				problems = append(problems, fmt.Sprintf("library %q metadata.api_key is required when metadata.provider is set", name))
+			}
 		}
 		if !validReplacementMode(library.Media.ReplacementMode) {
 			problems = append(problems, fmt.Sprintf("library %q media.replacement_mode %q is invalid", name, library.Media.ReplacementMode))
@@ -436,9 +440,6 @@ func applyProfileDefaults(profile *ProfileConfig) {
 	if strings.TrimSpace(profile.Container) == "" {
 		profile.Container = "mkv"
 	}
-	if strings.TrimSpace(profile.Audio.Mode) == "" {
-		profile.Audio.Mode = DefaultStreamMode
-	}
 	if strings.TrimSpace(profile.Audio.Fallback) == "" {
 		profile.Audio.Fallback = DefaultStreamFallback
 	}
@@ -502,6 +503,10 @@ func validPackageMode(mode string) bool {
 
 func validHandoffMode(mode string) bool {
 	return mode == "move" || mode == "copy"
+}
+
+func validMetadataProvider(provider string) bool {
+	return provider == "" || provider == "radarr" || provider == "sonarr"
 }
 
 func validStreamMode(mode string) bool {

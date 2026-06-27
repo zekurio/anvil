@@ -68,7 +68,6 @@ func testProfile() domain.Profile {
 			CRFMax:      40,
 			TargetVMAF:  95,
 		},
-		Audio:     domain.AudioProfile{Mode: domain.StreamPolicyPreserve},
 		Subtitles: domain.SubtitleProfile{Mode: domain.StreamPolicyPreserve},
 		Metadata:  domain.MetadataPolicy{Mode: domain.MetadataModeStrip},
 		Chapters:  domain.ChapterPolicy{Mode: domain.MetadataModeStrip},

@@ -27,8 +27,8 @@ path = "/srv/media/movies"
 	if cfg.Daemon.WorkerCount < 1 {
 		t.Fatalf("expected worker_count default, got %d", cfg.Daemon.WorkerCount)
 	}
-	if got := cfg.Profiles[0].Audio.Mode; got != DefaultStreamMode {
-		t.Fatalf("expected default audio mode %q, got %q", DefaultStreamMode, got)
+	if got := cfg.Profiles[0].Audio.Fallback; got != DefaultStreamFallback {
+		t.Fatalf("expected default audio fallback %q, got %q", DefaultStreamFallback, got)
 	}
 	if got := cfg.Libraries[0].Flow; got != DefaultFlowName {
 		t.Fatalf("expected default flow %q, got %q", DefaultFlowName, got)
@@ -111,6 +111,51 @@ download.handoff_path = "/imports/tv"
 	}
 	if library.Download.CleanupSourceMedia {
 		t.Fatal("cleanup_source_media default = true, want explicit opt-in")
+	}
+}
+
+func TestLoadMetadataProvider(t *testing.T) {
+	path := writeConfig(t, `
+[[libraries]]
+name = "movies"
+path = "/srv/media/movies"
+
+[libraries.metadata]
+provider = "radarr"
+base_url = "http://radarr:7878"
+api_key = "secret"
+`)
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+
+	metadata := cfg.Libraries[0].Metadata
+	if got, want := metadata.Provider, "radarr"; got != want {
+		t.Fatalf("metadata provider = %q, want %q", got, want)
+	}
+	if got, want := metadata.BaseURL, "http://radarr:7878"; got != want {
+		t.Fatalf("metadata base URL = %q, want %q", got, want)
+	}
+	if got, want := metadata.APIKey, "secret"; got != want {
+		t.Fatalf("metadata API key = %q, want %q", got, want)
+	}
+}
+
+func TestLoadRejectsMetadataProviderWithoutConnectionDetails(t *testing.T) {
+	path := writeConfig(t, `
+[[libraries]]
+name = "movies"
+path = "/srv/media/movies"
+
+[libraries.metadata]
+provider = "sonarr"
+`)
+
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("Load() error = nil, want missing metadata connection details")
 	}
 }
 

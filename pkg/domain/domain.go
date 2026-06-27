@@ -23,16 +23,30 @@ type Library struct {
 	Name             LibraryName
 	Kind             LibraryKind
 	Path             string
-	OriginalLanguage string
 	Priority         int
 	FlowName         FlowName
 	ProfileName      ProfileName
 	IncludeGlobs     []string
 	ExcludeGlobs     []string
 	ConcurrencyLimit int
+	Metadata         MetadataProviderPolicy
 	Media            MediaLibraryPolicy
 	Download         DownloadLibraryPolicy
 }
+
+type MetadataProviderPolicy struct {
+	Provider MetadataProviderKind
+	BaseURL  string
+	APIKey   string
+}
+
+type MetadataProviderKind string
+
+const (
+	MetadataProviderNone   MetadataProviderKind = ""
+	MetadataProviderRadarr MetadataProviderKind = "radarr"
+	MetadataProviderSonarr MetadataProviderKind = "sonarr"
+)
 
 type MediaLibraryPolicy struct {
 	ReplacementMode ReplacementMode
@@ -117,17 +131,10 @@ const (
 )
 
 type AudioProfile struct {
-	Mode                 StreamPolicyMode
-	PreferredLanguages   []string
-	LanguagesToKeep      []string
-	KeepOriginalLanguage bool
-	KeepCommentary       bool
-	KeepOtherTracks      bool
-	KeepDescriptiveAudio bool
-	KeepLossless         bool
-	MaxTracks            int
-	Fallback             StreamFallback
-	TranscodeUnsupported bool
+	LanguagesToKeep   []string
+	KeepCommentary    bool
+	Fallback          StreamFallback
+	UnknownAsOriginal bool
 }
 
 type SubtitleProfile struct {
@@ -379,7 +386,6 @@ type EncodePlan struct {
 	Threads               int
 	Container             string
 	CropFilter            string
-	AudioMode             StreamPolicyMode
 	AudioSelectionApplied bool
 	AudioStreamIndexes    []int
 	SubtitleMode          StreamPolicyMode

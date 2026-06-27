@@ -36,9 +36,14 @@ type Store interface {
 
 type ConfigProvider func() config.Config
 
+type MetadataResolver interface {
+	ResolveJobMetadata(context.Context, domain.Library, domain.MediaSource, domain.MediaAsset, string) (domain.JobMetadata, error)
+}
+
 type Runner struct {
 	Store             Store
 	ConfigProvider    ConfigProvider
+	MetadataResolver  MetadataResolver
 	Pipeline          pipeline.Runner
 	TempDir           string
 	MaxAttempts       int
@@ -81,6 +86,12 @@ func (r Runner) Run(ctx context.Context, assignment scheduler.Assignment) error 
 		}
 	}
 
+	inputPath := InputPath(library.Path, source, asset)
+	metadata, err := r.resolveMetadata(ctx, library, source, asset, inputPath)
+	if err != nil {
+		return r.fail(ctx, assignment.Job, attempt, cfg, err)
+	}
+
 	jobContext := &pipeline.JobContext{
 		Job:       assignment.Job,
 		Attempt:   attempt,
@@ -90,10 +101,8 @@ func (r Runner) Run(ctx context.Context, assignment scheduler.Assignment) error 
 		Flow:      flow,
 		Profile:   profile,
 		Resources: assignment.Resources,
-		Metadata: domain.JobMetadata{
-			OriginalLanguage: library.OriginalLanguage,
-		},
-		InputPath: InputPath(library.Path, source, asset),
+		Metadata:  metadata,
+		InputPath: inputPath,
 	}
 
 	pipelineRunner := r.Pipeline
@@ -136,6 +145,17 @@ func InputPath(root string, source domain.MediaSource, asset domain.MediaAsset) 
 		return filepath.Join(root, filepath.FromSlash(source.RelativePath), filepath.FromSlash(asset.RelativePath))
 	}
 	return filepath.Join(root, filepath.FromSlash(source.RelativePath))
+}
+
+func (r Runner) resolveMetadata(ctx context.Context, library domain.Library, source domain.MediaSource, asset domain.MediaAsset, inputPath string) (domain.JobMetadata, error) {
+	if r.MetadataResolver == nil {
+		return domain.JobMetadata{}, nil
+	}
+	metadata, err := r.MetadataResolver.ResolveJobMetadata(ctx, library, source, asset, inputPath)
+	if err != nil {
+		return domain.JobMetadata{}, fmt.Errorf("resolve job metadata: %w", err)
+	}
+	return metadata, nil
 }
 
 func (r Runner) complete(ctx context.Context, jobID domain.JobID, flow domain.Flow) error {
