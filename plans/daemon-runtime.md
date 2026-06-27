@@ -2,7 +2,7 @@
 
 ## Current State
 
-`cmd/anvild` can load TOML config, validate it, print startup details, and stay alive until `SIGINT` or `SIGTERM`.
+`cmd/anvild` can load TOML config, validate it, open the SQLite store, recover stale jobs, run an initial scanner pass, print startup details, and stay alive until `SIGINT` or `SIGTERM`.
 
 Supported flags:
 
@@ -23,6 +23,7 @@ start
   -> load config
   -> open store
   -> recover stale jobs
+  -> run initial scan
   -> start scanner loop
   -> start scheduler loop
   -> start workers
@@ -47,29 +48,39 @@ Reload should be conservative:
 
 ## Persistence
 
-SQLite should become the source of truth for:
+SQLite is now the source of truth for:
 
-- libraries as last-seen config snapshots
-- discovered files
+- discovered sources and assets
 - jobs and attempts
 - job leases and heartbeats
+
+SQLite should later also store:
+
+- libraries as last-seen config snapshots
+- block-level progress
 - process logs or log references
-- output validation summaries
-- replacement state
+- probe/search/encode/validation summaries
+- replacement and handoff state
 
 This avoids in-memory queues becoming the real state of the system.
 
 ## Worker Leases
 
-Workers should lease jobs from SQLite rather than receive jobs only through memory channels.
+Workers lease jobs from SQLite rather than receive jobs only through memory channels.
 
-Planned lease behavior:
+Implemented lease behavior:
 
 - worker claims a pending job
 - job records worker id, lease deadline, and heartbeat time
 - worker heartbeats while search/encode is running
 - daemon startup recovers stale leases
-- retry policy decides whether a stale job returns to pending or failed
+- stale jobs return to pending or failed based on max attempts
+
+Remaining lease work:
+
+- expose retry/max-attempt policy in config
+- persist block-level progress and process logs
+- decide graceful shutdown drain versus cancel semantics
 
 ## Resource Allocation
 
@@ -95,7 +106,7 @@ Later allocator inputs:
 
 ## Logging
 
-Early logging can use the standard library. Before real encode work starts, decide whether to keep stdlib logging or move to structured logs.
+Early logging uses the standard library `slog`. Before real encode work starts, decide whether to keep the current logging surface or add richer structured fields around jobs and external processes.
 
 Useful log fields later:
 

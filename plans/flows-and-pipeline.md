@@ -2,7 +2,7 @@
 
 ## Why Flows Exist
 
-Anvil should be expandable without rewriting the worker every time we add a media operation. Video encode, audio policy, remuxing, HDR handling, metadata preservation, validation, and replacement should be separate pipeline blocks that operate on a shared job context.
+Anvil should be expandable without rewriting the worker every time we add a media operation. Video encode, audio policy, remuxing, HDR handling, metadata preservation, validation, replacement, and download handoff should be separate pipeline blocks that operate on a shared job context.
 
 The worker should execute a configured flow:
 
@@ -12,14 +12,26 @@ flow: ["probe", "stage", "crf-search", "encode", "validate", "replace", "cleanup
 
 Each step contributes to or consumes a shared `JobContext`.
 
+## Current Inputs
+
+The scanner and store now provide:
+
+- `MediaSource`: a file or download package root.
+- `MediaAsset`: an asset inside that source, usually a primary video for early jobs.
+- `Job`: a durable source/asset target with lease state.
+- `Attempt`: one worker execution with room for resolved config snapshots.
+
+Workers should resolve latest library, flow, and profile config when a job is leased. Attempts should record what was actually used.
+
 ## Planned Job Context
 
 The exact Go shape can evolve, but the context should carry:
 
 - job metadata
-- library config snapshot
-- flow config snapshot
-- profile config snapshot
+- source and asset metadata
+- latest library config
+- latest flow config
+- latest profile config
 - original input path
 - staged input path
 - temp output path
@@ -53,7 +65,8 @@ crf-search  -> pkg/search
 encode      -> pkg/ffmpeg
 validate    -> pkg/validate
 replace     -> pkg/replace
-cleanup     -> pkg/staging
+handoff     -> download handoff package
+cleanup     -> pkg/staging / source cleanup
 ```
 
 Avoid dynamic plugins until the built-in block model has proven itself.
@@ -82,7 +95,7 @@ Reason:
 - stream mapping must be predictable
 - subtitles, chapters, metadata, and attachments need explicit policy
 - HDR handling will require careful command construction
-- replacement and validation need to understand exactly what was produced
+- replacement, handoff, and validation need to understand exactly what was produced
 
 The search command and final command must come from the same `EncodePlan`. If they diverge, the CRF found during search may not represent the final encode.
 
@@ -115,8 +128,13 @@ Potential later blocks:
 - tonemapping
 - crop detection
 - post-encode VMAF spot check
-- manual review/quarantine
 - notification hooks
+
+Download-specific future blocks:
+
+- package handoff to Sonarr/Radarr watched paths
+- source media cleanup after successful handoff
+- safe upward directory pruning using configured ignorable globs
 
 ## Validation Policy
 
