@@ -85,6 +85,11 @@ func (Block) Name() string {
 }
 
 func (b Block) Run(ctx context.Context, job *pipeline.JobContext) error {
+	if job.Metadata.VideoAlreadyEncoded {
+		result := domain.SearchResult{RawOutput: "skipped: compatible Anvil video marker"}
+		job.Search = &result
+		return nil
+	}
 	searcher := b.Searcher
 	if searcher == nil {
 		searcher = ABAV1{}

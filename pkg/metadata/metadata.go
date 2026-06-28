@@ -11,6 +11,7 @@ import (
 	"os"
 	pathpkg "path"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -24,57 +25,108 @@ type Resolver struct {
 	Client *http.Client
 }
 
-func (r Resolver) ResolveJobMetadata(ctx context.Context, library domain.Library, _ domain.MediaSource, _ domain.MediaAsset, inputPath string) (domain.JobMetadata, error) {
+func (r Resolver) ResolveJobMetadata(ctx context.Context, library domain.Library, source domain.MediaSource, asset domain.MediaAsset, inputPath string) (domain.JobMetadata, error) {
 	switch library.Metadata.Provider {
 	case domain.MetadataProviderNone:
 		return domain.JobMetadata{}, nil
 	case domain.MetadataProviderRadarr:
-		return r.resolveArr(ctx, library.Metadata, "/api/v3/movie", map[string]string{"includeMovieFile": "true"}, inputPath)
+		return r.resolveRadarr(ctx, library.Metadata, inputPath, source, asset)
 	case domain.MetadataProviderSonarr:
-		return r.resolveArr(ctx, library.Metadata, "/api/v3/series", nil, inputPath)
+		return r.resolveSonarr(ctx, library.Metadata, inputPath, source, asset)
 	default:
 		return domain.JobMetadata{}, fmt.Errorf("unsupported metadata provider %q", library.Metadata.Provider)
 	}
 }
 
-func (r Resolver) resolveArr(ctx context.Context, policy domain.MetadataProviderPolicy, apiPath string, query map[string]string, inputPath string) (domain.JobMetadata, error) {
+func (r Resolver) resolveRadarr(ctx context.Context, policy domain.MetadataProviderPolicy, inputPath string, source domain.MediaSource, asset domain.MediaAsset) (domain.JobMetadata, error) {
+	metadata, found, err := r.resolveArrList(ctx, policy, "/api/v3/movie", map[string]string{"includeMovieFile": "true"}, inputPath)
+	if err != nil || found {
+		return metadata, err
+	}
+	metadata, found, err = r.resolveArrParse(ctx, policy, domain.MetadataProviderRadarr, inputPath, releaseTitleCandidates(source, asset, inputPath))
+	if err != nil || found {
+		return metadata, err
+	}
+	return noArrMatchMetadata(domain.MetadataProviderRadarr), nil
+}
+
+func (r Resolver) resolveSonarr(ctx context.Context, policy domain.MetadataProviderPolicy, inputPath string, source domain.MediaSource, asset domain.MediaAsset) (domain.JobMetadata, error) {
+	metadata, found, err := r.resolveArrList(ctx, policy, "/api/v3/series", nil, inputPath)
+	if err != nil || found {
+		return metadata, err
+	}
+	metadata, found, err = r.resolveArrParse(ctx, policy, domain.MetadataProviderSonarr, inputPath, releaseTitleCandidates(source, asset, inputPath))
+	if err != nil || found {
+		return metadata, err
+	}
+	return noArrMatchMetadata(domain.MetadataProviderSonarr), nil
+}
+
+func (r Resolver) resolveArrList(ctx context.Context, policy domain.MetadataProviderPolicy, apiPath string, query map[string]string, inputPath string) (domain.JobMetadata, bool, error) {
+	var items []arrItem
+	if err := r.getJSON(ctx, policy, apiPath, query, &items); err != nil {
+		return domain.JobMetadata{}, false, err
+	}
+	item := bestMatch(items, inputPath)
+	if item == nil {
+		return domain.JobMetadata{}, false, nil
+	}
+	return domain.JobMetadata{
+		OriginalLanguage: parseLanguage(item.OriginalLanguage),
+	}, true, nil
+}
+
+func (r Resolver) resolveArrParse(ctx context.Context, policy domain.MetadataProviderPolicy, provider domain.MetadataProviderKind, inputPath string, titles []string) (domain.JobMetadata, bool, error) {
+	for _, title := range titles {
+		query := map[string]string{"title": title}
+		if provider == domain.MetadataProviderSonarr && inputPath != "" {
+			query["path"] = inputPath
+		}
+		var parsed arrParseResult
+		if err := r.getJSON(ctx, policy, "/api/v3/parse", query, &parsed); err != nil {
+			return domain.JobMetadata{}, false, err
+		}
+		item := parsed.Item(provider)
+		if item == nil {
+			continue
+		}
+		if original := parseLanguage(item.OriginalLanguage); original != "" {
+			return domain.JobMetadata{OriginalLanguage: original}, true, nil
+		}
+	}
+	return domain.JobMetadata{}, false, nil
+}
+
+func (r Resolver) getJSON(ctx context.Context, policy domain.MetadataProviderPolicy, apiPath string, query map[string]string, target any) error {
 	if strings.TrimSpace(policy.BaseURL) == "" {
-		return domain.JobMetadata{}, errors.New("metadata base URL is required")
+		return errors.New("metadata base URL is required")
 	}
 	apiKey, err := apiKey(policy)
 	if err != nil {
-		return domain.JobMetadata{}, err
+		return err
 	}
 	endpoint, err := arrURL(policy.BaseURL, apiPath, query)
 	if err != nil {
-		return domain.JobMetadata{}, err
+		return err
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
-		return domain.JobMetadata{}, fmt.Errorf("create metadata request: %w", err)
+		return fmt.Errorf("create metadata request: %w", err)
 	}
 	req.Header.Set("X-Api-Key", apiKey)
 
 	resp, err := r.client().Do(req)
 	if err != nil {
-		return domain.JobMetadata{}, fmt.Errorf("fetch metadata: %w", err)
+		return fmt.Errorf("fetch metadata: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return domain.JobMetadata{}, fmt.Errorf("fetch metadata: unexpected status %s", resp.Status)
+		return fmt.Errorf("fetch metadata: unexpected status %s", resp.Status)
 	}
-
-	var items []arrItem
-	if err := json.NewDecoder(resp.Body).Decode(&items); err != nil {
-		return domain.JobMetadata{}, fmt.Errorf("decode metadata response: %w", err)
+	if err := json.NewDecoder(resp.Body).Decode(target); err != nil {
+		return fmt.Errorf("decode metadata response: %w", err)
 	}
-	item := bestMatch(items, inputPath)
-	if item == nil {
-		return domain.JobMetadata{}, nil
-	}
-	return domain.JobMetadata{
-		OriginalLanguage: parseLanguage(item.OriginalLanguage),
-	}, nil
+	return nil
 }
 
 func (r Resolver) client() *http.Client {
@@ -113,6 +165,29 @@ type arrFile struct {
 	Path string `json:"path"`
 }
 
+type arrParseResult struct {
+	Movie  *arrItem `json:"movie"`
+	Series *arrItem `json:"series"`
+}
+
+func (r arrParseResult) Item(provider domain.MetadataProviderKind) *arrItem {
+	switch provider {
+	case domain.MetadataProviderRadarr:
+		return r.Movie
+	case domain.MetadataProviderSonarr:
+		return r.Series
+	default:
+		return nil
+	}
+}
+
+func noArrMatchMetadata(provider domain.MetadataProviderKind) domain.JobMetadata {
+	return domain.JobMetadata{
+		StreamCleanupDisabled:       true,
+		StreamCleanupDisabledReason: fmt.Sprintf("%s metadata did not match input path or release title", provider),
+	}
+}
+
 func arrURL(baseURL string, apiPath string, query map[string]string) (string, error) {
 	parsed, err := url.Parse(baseURL)
 	if err != nil {
@@ -128,6 +203,46 @@ func arrURL(baseURL string, apiPath string, query map[string]string) (string, er
 	}
 	parsed.RawQuery = values.Encode()
 	return parsed.String(), nil
+}
+
+func releaseTitleCandidates(source domain.MediaSource, asset domain.MediaAsset, inputPath string) []string {
+	var candidates []string
+	for _, value := range []string{
+		source.RelativePath,
+		asset.RelativePath,
+		fileTitle(asset.RelativePath),
+		fileTitle(source.RelativePath),
+		fileTitle(inputPath),
+		fileTitle(filepath.Dir(inputPath)),
+	} {
+		value = cleanReleaseTitle(value)
+		if value != "" && !slices.Contains(candidates, value) {
+			candidates = append(candidates, value)
+		}
+	}
+	return candidates
+}
+
+func fileTitle(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	base := filepath.Base(filepath.Clean(value))
+	ext := filepath.Ext(base)
+	if ext != "" {
+		base = strings.TrimSuffix(base, ext)
+	}
+	return base
+}
+
+func cleanReleaseTitle(value string) string {
+	value = strings.TrimSpace(filepath.ToSlash(value))
+	value = strings.Trim(value, "/")
+	if value == "." || value == "" {
+		return ""
+	}
+	return value
 }
 
 func bestMatch(items []arrItem, inputPath string) *arrItem {

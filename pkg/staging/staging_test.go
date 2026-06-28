@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/zekurio/anvil/pkg/domain"
 	"github.com/zekurio/anvil/pkg/pipeline"
@@ -28,5 +29,66 @@ func TestManagerPrepareCreatesOutputPath(t *testing.T) {
 	}
 	if filepath.Ext(job.OutputPath) != ".mkv" {
 		t.Fatalf("output path = %q, want .mkv extension", job.OutputPath)
+	}
+}
+
+func TestCleanupStaleRemovesOnlyOldAnvilStagingDirs(t *testing.T) {
+	root := t.TempDir()
+	now := time.Date(2026, 6, 28, 12, 0, 0, 0, time.UTC)
+	oldDir := filepath.Join(root, "job-1-attempt-2")
+	newDir := filepath.Join(root, "job-3-attempt-4")
+	otherDir := filepath.Join(root, "scratch")
+	for _, dir := range []string{oldDir, newDir, otherDir} {
+		if err := os.MkdirAll(dir, 0o750); err != nil {
+			t.Fatalf("mkdir %s: %v", dir, err)
+		}
+	}
+	oldTime := now.Add(-25 * time.Hour)
+	newTime := now.Add(-time.Hour)
+	if err := os.Chtimes(oldDir, oldTime, oldTime); err != nil {
+		t.Fatalf("chtimes old: %v", err)
+	}
+	if err := os.Chtimes(newDir, newTime, newTime); err != nil {
+		t.Fatalf("chtimes new: %v", err)
+	}
+
+	result, err := (Manager{Root: root}).CleanupStale(24*time.Hour, now, false)
+	if err != nil {
+		t.Fatalf("CleanupStale() error = %v", err)
+	}
+	if result.Candidates != 1 || result.Removed != 1 || len(result.Errors) != 0 {
+		t.Fatalf("result = %+v, want one removed candidate with no errors", result)
+	}
+	if _, err := os.Stat(oldDir); !os.IsNotExist(err) {
+		t.Fatalf("old dir stat error = %v, want not exist", err)
+	}
+	for _, dir := range []string{newDir, otherDir} {
+		if _, err := os.Stat(dir); err != nil {
+			t.Fatalf("expected %s to remain: %v", dir, err)
+		}
+	}
+}
+
+func TestCleanupStaleDryRunKeepsCandidates(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "job-1-attempt-2")
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	now := time.Date(2026, 6, 28, 12, 0, 0, 0, time.UTC)
+	oldTime := now.Add(-25 * time.Hour)
+	if err := os.Chtimes(dir, oldTime, oldTime); err != nil {
+		t.Fatalf("chtimes: %v", err)
+	}
+
+	result, err := (Manager{Root: root}).CleanupStale(24*time.Hour, now, true)
+	if err != nil {
+		t.Fatalf("CleanupStale() error = %v", err)
+	}
+	if result.Candidates != 1 || result.Removed != 0 {
+		t.Fatalf("result = %+v, want one dry-run candidate", result)
+	}
+	if _, err := os.Stat(dir); err != nil {
+		t.Fatalf("expected dry-run dir to remain: %v", err)
 	}
 }

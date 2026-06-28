@@ -8,6 +8,7 @@ import (
 	"strconv"
 
 	"github.com/zekurio/anvil/pkg/domain"
+	"github.com/zekurio/anvil/pkg/marker"
 	"github.com/zekurio/anvil/pkg/pipeline"
 	"github.com/zekurio/anvil/pkg/process"
 )
@@ -65,6 +66,14 @@ func (b Block) Run(ctx context.Context, job *pipeline.JobContext) error {
 		return err
 	}
 	job.Probe = &result
+	match := marker.Detect(result, job.Profile)
+	if match.Compatible {
+		job.Metadata.VideoAlreadyEncoded = true
+		job.Metadata.AnvilTags = match.Tags
+		if match.CropFilter != "" {
+			job.Metadata.CropFilter = match.CropFilter
+		}
+	}
 	return nil
 }
 
@@ -108,8 +117,17 @@ func parseFFProbe(path string, data []byte) (domain.ProbeResult, error) {
 			Codec:       stream.CodecName,
 			Language:    stream.Tags["language"],
 			Title:       stream.Tags["title"],
+			Tags:        copyTags(stream.Tags),
 			Disposition: disposition,
 		})
 	}
 	return probed, nil
+}
+
+func copyTags(tags map[string]string) map[string]string {
+	copied := make(map[string]string, len(tags))
+	for key, value := range tags {
+		copied[key] = value
+	}
+	return copied
 }

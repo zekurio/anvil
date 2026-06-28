@@ -21,6 +21,9 @@ const (
 	DefaultScanInterval    = "30m"
 	DefaultSchedulerTick   = "5s"
 	DefaultLeaseDuration   = "30m"
+	DefaultShutdownPolicy  = "drain"
+	DefaultShutdownTimeout = "0s"
+	DefaultStagingCleanup  = "0s"
 	DefaultMaxAttempts     = 3
 	DefaultStableFor       = "5m"
 	DefaultPackageMode     = "auto"
@@ -63,6 +66,9 @@ type DaemonConfig struct {
 	ScanInterval      string `toml:"scan_interval"`
 	SchedulerInterval string `toml:"scheduler_interval"`
 	LeaseDuration     string `toml:"lease_duration"`
+	ShutdownPolicy    string `toml:"shutdown_policy"`
+	ShutdownTimeout   string `toml:"shutdown_timeout"`
+	StagingCleanupAge string `toml:"staging_cleanup_age"`
 	LogLevel          string `toml:"log_level"`
 }
 
@@ -192,6 +198,9 @@ func Default() Config {
 			ScanInterval:      DefaultScanInterval,
 			SchedulerInterval: DefaultSchedulerTick,
 			LeaseDuration:     DefaultLeaseDuration,
+			ShutdownPolicy:    DefaultShutdownPolicy,
+			ShutdownTimeout:   DefaultShutdownTimeout,
+			StagingCleanupAge: DefaultStagingCleanup,
 			LogLevel:          "info",
 		},
 		Flows: map[string]FlowConfig{
@@ -253,6 +262,11 @@ func (c Config) Validate() error {
 	validatePositiveDuration(&problems, "daemon.scan_interval", c.Daemon.ScanInterval)
 	validatePositiveDuration(&problems, "daemon.scheduler_interval", c.Daemon.SchedulerInterval)
 	validatePositiveDuration(&problems, "daemon.lease_duration", c.Daemon.LeaseDuration)
+	validateNonNegativeDuration(&problems, "daemon.shutdown_timeout", c.Daemon.ShutdownTimeout)
+	validateNonNegativeDuration(&problems, "daemon.staging_cleanup_age", c.Daemon.StagingCleanupAge)
+	if !validShutdownPolicy(c.Daemon.ShutdownPolicy) {
+		problems = append(problems, fmt.Sprintf("daemon.shutdown_policy %q is invalid", c.Daemon.ShutdownPolicy))
+	}
 
 	flows := make(map[string]struct{}, len(c.Flows))
 	for _, name := range sortedKeys(c.Flows) {
@@ -413,6 +427,15 @@ func applyDefaults(c *Config) {
 	if strings.TrimSpace(c.Daemon.LeaseDuration) == "" {
 		c.Daemon.LeaseDuration = defaults.Daemon.LeaseDuration
 	}
+	if strings.TrimSpace(c.Daemon.ShutdownPolicy) == "" {
+		c.Daemon.ShutdownPolicy = defaults.Daemon.ShutdownPolicy
+	}
+	if strings.TrimSpace(c.Daemon.ShutdownTimeout) == "" {
+		c.Daemon.ShutdownTimeout = defaults.Daemon.ShutdownTimeout
+	}
+	if strings.TrimSpace(c.Daemon.StagingCleanupAge) == "" {
+		c.Daemon.StagingCleanupAge = defaults.Daemon.StagingCleanupAge
+	}
 	if strings.TrimSpace(c.Daemon.LogLevel) == "" {
 		c.Daemon.LogLevel = defaults.Daemon.LogLevel
 	}
@@ -516,6 +539,21 @@ func validatePositiveDuration(problems *[]string, name string, value string) {
 	if duration <= 0 {
 		*problems = append(*problems, fmt.Sprintf("%s must be greater than zero", name))
 	}
+}
+
+func validateNonNegativeDuration(problems *[]string, name string, value string) {
+	duration, err := time.ParseDuration(value)
+	if err != nil {
+		*problems = append(*problems, fmt.Sprintf("%s is invalid: %v", name, err))
+		return
+	}
+	if duration < 0 {
+		*problems = append(*problems, fmt.Sprintf("%s must be non-negative", name))
+	}
+}
+
+func validShutdownPolicy(policy string) bool {
+	return policy == "drain" || policy == "cancel"
 }
 
 func validReplacementMode(mode string) bool {

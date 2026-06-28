@@ -178,6 +178,128 @@ func TestLeaseNextJobForLibraries(t *testing.T) {
 	}
 }
 
+func TestListJobsFiltersByLibraryStateAndLimit(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	now := testNow()
+
+	movie := upsertTestSource(t, ctx, store, "movies", "Movie.mkv")
+	movieAsset := upsertTestAsset(t, ctx, store, movie.ID, "Movie.mkv")
+	show := upsertTestSource(t, ctx, store, "tv", "Show.mkv")
+
+	if _, _, err := store.EnqueueJob(ctx, EnqueueJobInput{
+		SourceID:    movie.ID,
+		AssetID:     movieAsset.ID,
+		LibraryName: movie.LibraryName,
+		Now:         now,
+	}); err != nil {
+		t.Fatalf("enqueue movie: %v", err)
+	}
+	tvJob, _, err := store.EnqueueJob(ctx, EnqueueJobInput{
+		SourceID:    show.ID,
+		LibraryName: show.LibraryName,
+		Now:         now.Add(time.Second),
+	})
+	if err != nil {
+		t.Fatalf("enqueue tv: %v", err)
+	}
+	if _, err := store.TransitionJob(ctx, tvJob.ID, domain.JobStateSkipped, now.Add(2*time.Second), "manual skip"); err != nil {
+		t.Fatalf("skip tv job: %v", err)
+	}
+
+	jobs, err := store.ListJobs(ctx, JobListFilter{
+		LibraryName: "tv",
+		States:      []domain.JobState{domain.JobStateSkipped},
+		Limit:       1,
+	})
+	if err != nil {
+		t.Fatalf("ListJobs() error = %v", err)
+	}
+	if len(jobs) != 1 {
+		t.Fatalf("jobs len = %d, want 1", len(jobs))
+	}
+	if jobs[0].Job.ID != tvJob.ID {
+		t.Fatalf("job id = %d, want %d", jobs[0].Job.ID, tvJob.ID)
+	}
+	if got, want := jobs[0].SourcePath, "Show.mkv"; got != want {
+		t.Fatalf("source path = %q, want %q", got, want)
+	}
+	if got := jobs[0].AssetPath; got != "" {
+		t.Fatalf("asset path = %q, want empty", got)
+	}
+}
+
+func TestRetryJobReturnsFailedJobToPending(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	now := testNow()
+
+	source := upsertTestSource(t, ctx, store, "movies", "Movie.mkv")
+	if _, _, err := store.EnqueueJob(ctx, EnqueueJobInput{
+		SourceID:    source.ID,
+		LibraryName: source.LibraryName,
+		Now:         now,
+	}); err != nil {
+		t.Fatalf("enqueue job: %v", err)
+	}
+	job, err := store.LeaseNextJob(ctx, "worker-1", now.Add(time.Minute), now)
+	if err != nil {
+		t.Fatalf("LeaseNextJob() error = %v", err)
+	}
+	if _, err := store.TransitionJob(ctx, job.ID, domain.JobStateRunning, now, ""); err != nil {
+		t.Fatalf("running transition: %v", err)
+	}
+	if _, err := store.TransitionJob(ctx, job.ID, domain.JobStateFailed, now.Add(time.Second), "encode failed"); err != nil {
+		t.Fatalf("failed transition: %v", err)
+	}
+
+	retried, err := store.RetryJob(ctx, job.ID, now.Add(2*time.Second))
+	if err != nil {
+		t.Fatalf("RetryJob() error = %v", err)
+	}
+	if retried.State != domain.JobStatePending {
+		t.Fatalf("state = %q, want pending", retried.State)
+	}
+	if retried.LastError != "" {
+		t.Fatalf("last error = %q, want empty", retried.LastError)
+	}
+	if retried.CompletedAt != nil {
+		t.Fatalf("completed at = %v, want nil", retried.CompletedAt)
+	}
+}
+
+func TestRetryFailedJobsCanFilterByLibrary(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	now := testNow()
+
+	movieJob := enqueueFailedJob(t, ctx, store, "movies", "Movie.mkv", now)
+	tvJob := enqueueFailedJob(t, ctx, store, "tv", "Show.mkv", now.Add(time.Minute))
+
+	retried, err := store.RetryFailedJobs(ctx, "movies", now.Add(2*time.Minute))
+	if err != nil {
+		t.Fatalf("RetryFailedJobs() error = %v", err)
+	}
+	if retried != 1 {
+		t.Fatalf("retried = %d, want 1", retried)
+	}
+
+	movieJob, err = store.GetJob(ctx, movieJob.ID)
+	if err != nil {
+		t.Fatalf("get movie job: %v", err)
+	}
+	tvJob, err = store.GetJob(ctx, tvJob.ID)
+	if err != nil {
+		t.Fatalf("get tv job: %v", err)
+	}
+	if movieJob.State != domain.JobStatePending {
+		t.Fatalf("movie state = %q, want pending", movieJob.State)
+	}
+	if tvJob.State != domain.JobStateFailed {
+		t.Fatalf("tv state = %q, want failed", tvJob.State)
+	}
+}
+
 func TestHeartbeatRequiresLeaseOwner(t *testing.T) {
 	ctx := context.Background()
 	store := openTestStore(t)
@@ -415,6 +537,31 @@ func upsertTestAsset(t *testing.T, ctx context.Context, store *SQLiteStore, sour
 		t.Fatalf("UpsertMediaAsset() error = %v", err)
 	}
 	return asset
+}
+
+func enqueueFailedJob(t *testing.T, ctx context.Context, store *SQLiteStore, libraryName, relativePath string, now time.Time) domain.Job {
+	t.Helper()
+
+	source := upsertTestSource(t, ctx, store, libraryName, relativePath)
+	if _, _, err := store.EnqueueJob(ctx, EnqueueJobInput{
+		SourceID:    source.ID,
+		LibraryName: source.LibraryName,
+		Now:         now,
+	}); err != nil {
+		t.Fatalf("enqueue job: %v", err)
+	}
+	job, err := store.LeaseNextJob(ctx, "worker-"+libraryName, now.Add(time.Minute), now)
+	if err != nil {
+		t.Fatalf("LeaseNextJob() error = %v", err)
+	}
+	if _, err := store.TransitionJob(ctx, job.ID, domain.JobStateRunning, now, ""); err != nil {
+		t.Fatalf("running transition: %v", err)
+	}
+	failed, err := store.TransitionJob(ctx, job.ID, domain.JobStateFailed, now.Add(time.Second), "failed")
+	if err != nil {
+		t.Fatalf("failed transition: %v", err)
+	}
+	return failed
 }
 
 func leaseAndStartAttempt(t *testing.T, ctx context.Context, store *SQLiteStore, now time.Time, workerID string) (domain.Job, domain.Attempt) {

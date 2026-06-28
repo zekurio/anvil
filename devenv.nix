@@ -1,26 +1,35 @@
 { pkgs, lib, ... }:
 
-{
-  languages.go = {
-    enable = true;
-    package = pkgs.go;
-  };
-
-  packages =
+let
+  goPackage = pkgs.go;
+  devPackages =
     with pkgs;
     [
+      goPackage
+      ab-av1
+      coreutils
+      curl
       ffmpeg
       git
+      gnumake
       golangci-lint
       gopls
       gotools
-      sqlite
-    ]
-    ++ lib.optionals (lib.hasAttr "ab-av1" pkgs) [
-      pkgs.ab-av1
+      jq
+      sqlite-interactive
     ];
+in
+
+{
+  languages.go = {
+    enable = true;
+    package = goPackage;
+  };
+
+  packages = devPackages;
 
   enterShell = ''
+    export PATH="${lib.makeBinPath devPackages}:$PATH"
     echo "Anvil development shell"
     go version
   '';

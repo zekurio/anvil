@@ -18,6 +18,7 @@ scan library
   -> lease job to worker
   -> resolve latest config
   -> probe media
+  -> detect crop and audio policy
   -> stage input/output as needed
   -> run CRF search
   -> build final ffmpeg command
@@ -45,6 +46,7 @@ scan library
 
 ```text
 cmd/anvild/       daemon entrypoint
+cmd/anvil-mockarr/ local mock Radarr/Sonarr server for smoke tests
 pkg/config/       TOML config loading, defaults, validation
 pkg/domain/       core media, job, library, flow, and encode concepts
 pkg/store/        SQLite-backed sources, assets, jobs, attempts, leases, recovery
@@ -60,6 +62,9 @@ pkg/staging/      temp directories and disk-friendly staging
 pkg/replace/      safe original replacement workflow
 pkg/validate/     encoded output validation
 pkg/process/      external process execution, logs, cancellation
+pkg/metadata/     Arr metadata lookup for per-job original language
+pkg/language/     language normalization shared by streams and metadata
+pkg/marker/       Anvil-owned stream metadata markers for reruns
 ```
 
 ## Core Abstractions
@@ -91,7 +96,7 @@ Example:
 
 ```toml
 [flows.av1-replace]
-steps = ["probe", "stage", "crf-search", "encode", "validate", "replace", "cleanup"]
+steps = ["probe", "crop-detect", "audio-cleanup", "stage", "crf-search", "encode", "validate", "replace", "cleanup"]
 ```
 
 ### Profile
@@ -102,7 +107,7 @@ Initial fields:
 
 - container
 - video codec, preset, pixel format, CRF search bounds, target VMAF
-- expandable audio policy
+- expandable audio policy, preserving streams unless an explicit cleanup policy is configured
 - expandable subtitle policy
 - metadata, attachment, and chapter policy
 - minimum encode percentage / size policy later
@@ -139,3 +144,11 @@ config + probe result
 ```
 
 This keeps search, encode, validation, and later audio/HDR work aligned.
+
+Anvil marks encoded video streams with operational metadata so reruns can detect compatible prior Anvil output. A compatible marker skips crop detection, CRF search, and video re-encode; the final command copies video and can still apply safe stream remux work.
+
+## Local Verification
+
+The mock library fixture under `scripts/mock-library.sh` builds generated media, mock media/download libraries, mock Arr endpoints, API key files, SQLite state, and handoff/import paths. It validates the daemon loop and current Radarr/Sonarr response parsing without touching real libraries.
+
+The fixture is intentionally not a full Arr emulator. It follows the response fields Anvil currently consumes (`path`, `movieFile.path`, and `originalLanguage`) and exercises `/api/v3/parse` fallback for completed-download paths that do not match final library paths. Real Arr integration still needs hardening around ambiguous parses, no-match behavior, and richer history/queue or sidecar metadata flows.
