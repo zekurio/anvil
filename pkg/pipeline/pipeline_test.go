@@ -77,6 +77,31 @@ func TestRunnerStopsAndRecordsFailedEvent(t *testing.T) {
 	}
 }
 
+func TestRunnerAppliesStepContext(t *testing.T) {
+	ctx := context.Background()
+	type stepKey struct{}
+	var gotStep string
+	runner := Runner{
+		Registry: NewRegistry(BlockFunc{BlockName: "encode", Fn: func(ctx context.Context, _ *JobContext) error {
+			gotStep, _ = ctx.Value(stepKey{}).(string)
+			return nil
+		}}),
+		StepContext: func(ctx context.Context, step string) context.Context {
+			return context.WithValue(ctx, stepKey{}, step)
+		},
+	}
+	job := &JobContext{
+		Flow: domain.Flow{Steps: []domain.FlowStep{{Name: "encode"}}},
+	}
+
+	if err := runner.Run(ctx, job); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if gotStep != "encode" {
+		t.Fatalf("step context = %q, want encode", gotStep)
+	}
+}
+
 type fakeEventRecorder struct {
 	events []domain.AttemptEvent
 }
