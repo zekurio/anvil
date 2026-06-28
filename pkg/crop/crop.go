@@ -81,6 +81,11 @@ func (Block) Name() string {
 }
 
 func (b Block) Run(ctx context.Context, job *pipeline.JobContext) error {
+	if job.Metadata.VideoAlreadyEncoded {
+		result := domain.CropResult{Filter: job.Metadata.CropFilter}
+		job.Crop = &result
+		return nil
+	}
 	detector := b.Detector
 	if detector == nil {
 		detector = FFmpegDetector{}

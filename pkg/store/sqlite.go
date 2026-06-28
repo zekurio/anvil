@@ -28,6 +28,20 @@ type EnqueueJobInput struct {
 	Now         time.Time
 }
 
+type JobListFilter struct {
+	LibraryName domain.LibraryName
+	States      []domain.JobState
+	Limit       int
+}
+
+type JobSummary struct {
+	Job        domain.Job
+	SourceKind domain.SourceKind
+	SourcePath string
+	AssetPath  string
+	AssetRole  domain.MediaAssetRole
+}
+
 func Open(ctx context.Context, path string) (*SQLiteStore, error) {
 	if strings.TrimSpace(path) == "" {
 		return nil, errors.New("store path is required")
@@ -214,6 +228,117 @@ ORDER BY id DESC
 LIMIT 1
 `, int64(sourceID), int64(assetID))
 	return scanJob(row)
+}
+
+func (s *SQLiteStore) ListJobs(ctx context.Context, filter JobListFilter) ([]JobSummary, error) {
+	query := `
+SELECT j.id, j.source_id, j.asset_id, j.library_name, j.priority, j.state,
+	j.lease_owner, j.lease_deadline, j.heartbeat_at, j.attempt_count,
+	j.last_error, j.created_at, j.updated_at, j.completed_at,
+	s.kind, s.relative_path, a.relative_path, a.role
+FROM jobs j
+JOIN media_sources s ON s.id = j.source_id
+LEFT JOIN media_assets a ON a.id = j.asset_id
+WHERE 1 = 1
+`
+	var args []any
+	if filter.LibraryName != "" {
+		query += " AND j.library_name = ?\n"
+		args = append(args, string(filter.LibraryName))
+	}
+	if len(filter.States) > 0 {
+		query += " AND j.state IN (" + placeholders(len(filter.States)) + ")\n"
+		for _, state := range filter.States {
+			args = append(args, string(state))
+		}
+	}
+	query += "ORDER BY j.created_at DESC, j.id DESC\n"
+	if filter.Limit > 0 {
+		query += "LIMIT ?\n"
+		args = append(args, filter.Limit)
+	}
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list jobs: %w", err)
+	}
+	defer rows.Close()
+
+	var jobs []JobSummary
+	for rows.Next() {
+		job, err := scanJobSummary(rows)
+		if err != nil {
+			return nil, err
+		}
+		jobs = append(jobs, job)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate jobs: %w", err)
+	}
+	return jobs, nil
+}
+
+func (s *SQLiteStore) RetryJob(ctx context.Context, id domain.JobID, now time.Time) (domain.Job, error) {
+	now = defaultNow(now)
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return domain.Job{}, fmt.Errorf("begin retry transaction: %w", err)
+	}
+	defer rollback(tx)
+
+	job, err := getJobTx(ctx, tx, id)
+	if err != nil {
+		return domain.Job{}, err
+	}
+	switch job.State {
+	case domain.JobStateFailed, domain.JobStateSkipped, domain.JobStateRetrying:
+	default:
+		return domain.Job{}, fmt.Errorf("cannot retry job %d from state %q", id, job.State)
+	}
+
+	_, err = tx.ExecContext(ctx, `
+UPDATE jobs
+SET state = ?, lease_owner = '', lease_deadline = NULL, heartbeat_at = NULL,
+	last_error = '', updated_at = ?, completed_at = NULL
+WHERE id = ?
+`, string(domain.JobStatePending), encodeTime(now), int64(id))
+	if err != nil {
+		return domain.Job{}, fmt.Errorf("retry job: %w", err)
+	}
+
+	job, err = getJobTx(ctx, tx, id)
+	if err != nil {
+		return domain.Job{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return domain.Job{}, fmt.Errorf("commit retry transaction: %w", err)
+	}
+	return job, nil
+}
+
+func (s *SQLiteStore) RetryFailedJobs(ctx context.Context, libraryName domain.LibraryName, now time.Time) (int64, error) {
+	now = defaultNow(now)
+	query := `
+UPDATE jobs
+SET state = ?, lease_owner = '', lease_deadline = NULL, heartbeat_at = NULL,
+	last_error = '', updated_at = ?, completed_at = NULL
+WHERE state = ?
+`
+	args := []any{string(domain.JobStatePending), encodeTime(now), string(domain.JobStateFailed)}
+	if libraryName != "" {
+		query += " AND library_name = ?"
+		args = append(args, string(libraryName))
+	}
+	result, err := s.db.ExecContext(ctx, query, args...)
+	if err != nil {
+		return 0, fmt.Errorf("retry failed jobs: %w", err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("retry failed rows affected: %w", err)
+	}
+	return rows, nil
 }
 
 func (s *SQLiteStore) GetActiveJobForTarget(ctx context.Context, sourceID domain.MediaSourceID, assetID domain.MediaAssetID) (domain.Job, error) {
@@ -829,6 +954,59 @@ func scanJob(row scanner) (domain.Job, error) {
 	job.UpdatedAt = parseTime(updatedAt)
 	job.CompletedAt = parseNullTimePtr(completedAt)
 	return job, nil
+}
+
+func scanJobSummary(row scanner) (JobSummary, error) {
+	var summary JobSummary
+	var assetID sql.NullInt64
+	var leaseDeadline sql.NullString
+	var heartbeatAt sql.NullString
+	var completedAt sql.NullString
+	var createdAt string
+	var updatedAt string
+	var assetPath sql.NullString
+	var assetRole sql.NullString
+	err := row.Scan(
+		&summary.Job.ID,
+		&summary.Job.SourceID,
+		&assetID,
+		&summary.Job.LibraryName,
+		&summary.Job.Priority,
+		&summary.Job.State,
+		&summary.Job.LeaseOwner,
+		&leaseDeadline,
+		&heartbeatAt,
+		&summary.Job.AttemptCount,
+		&summary.Job.LastError,
+		&createdAt,
+		&updatedAt,
+		&completedAt,
+		&summary.SourceKind,
+		&summary.SourcePath,
+		&assetPath,
+		&assetRole,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return JobSummary{}, ErrNotFound
+	}
+	if err != nil {
+		return JobSummary{}, err
+	}
+	if assetID.Valid {
+		summary.Job.AssetID = domain.MediaAssetID(assetID.Int64)
+	}
+	summary.Job.LeaseDeadline = parseNullTimePtr(leaseDeadline)
+	summary.Job.HeartbeatAt = parseNullTimePtr(heartbeatAt)
+	summary.Job.CreatedAt = parseTime(createdAt)
+	summary.Job.UpdatedAt = parseTime(updatedAt)
+	summary.Job.CompletedAt = parseNullTimePtr(completedAt)
+	if assetPath.Valid {
+		summary.AssetPath = assetPath.String
+	}
+	if assetRole.Valid {
+		summary.AssetRole = domain.MediaAssetRole(assetRole.String)
+	}
+	return summary, nil
 }
 
 func scanAttempt(row scanner) (domain.Attempt, error) {
