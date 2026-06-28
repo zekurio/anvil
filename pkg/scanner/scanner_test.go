@@ -154,7 +154,7 @@ func TestScanDownloadLibrarySkipsUnstablePackage(t *testing.T) {
 	}
 }
 
-func TestScanDownloadLibraryStabilityIncludesSidecarFiles(t *testing.T) {
+func TestScanDownloadLibraryStabilityIncludesCompanionFiles(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
 	now := testNow()
@@ -224,6 +224,56 @@ func TestScanDownloadLibraryIgnoresConfiguredIgnorableFiles(t *testing.T) {
 	}
 	if result.SkippedUnstable != 0 {
 		t.Fatalf("skipped unstable = %d, want 0", result.SkippedUnstable)
+	}
+}
+
+func TestPlanLibraryReportsIgnoredAndEnqueueableCandidates(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	now := testNow()
+
+	writeTestFile(t, root, "Movie.mkv", now.Add(-time.Hour))
+	writeTestFile(t, root, "sample.mkv", now.Add(-time.Hour))
+	writeTestFile(t, root, "Trailer.avi", now.Add(-time.Hour))
+	writeTestFile(t, root, "Ignored.mkv", now.Add(-time.Hour))
+
+	plan, err := (Scanner{
+		Now: func() time.Time {
+			return now
+		},
+	}).PlanLibrary(ctx, config.LibraryConfig{
+		Name:    "movies",
+		Kind:    "media",
+		Path:    root,
+		Include: []string{"*.mkv"},
+		Exclude: []string{"Ignored.mkv"},
+	})
+	if err != nil {
+		t.Fatalf("PlanLibrary() error = %v", err)
+	}
+	if len(plan.Candidates) != 4 {
+		t.Fatalf("candidates len = %d, want 4", len(plan.Candidates))
+	}
+
+	byPath := make(map[string]CandidatePlan)
+	for _, candidate := range plan.Candidates {
+		byPath[candidate.LibraryRelativePath] = candidate
+	}
+	if !byPath["Movie.mkv"].Enqueueable || byPath["Movie.mkv"].Ignored {
+		t.Fatalf("Movie.mkv plan = %+v, want enqueueable", byPath["Movie.mkv"])
+	}
+	for path, reason := range map[string]string{
+		"sample.mkv":  "sample",
+		"Trailer.avi": "not_included",
+		"Ignored.mkv": "excluded",
+	} {
+		candidate := byPath[path]
+		if !candidate.Ignored || candidate.IgnoreReason != reason || candidate.Enqueueable {
+			t.Fatalf("%s plan = %+v, want ignored reason %q", path, candidate, reason)
+		}
+	}
+	if plan.SkippedIgnored != 3 {
+		t.Fatalf("skipped ignored = %d, want 3", plan.SkippedIgnored)
 	}
 }
 

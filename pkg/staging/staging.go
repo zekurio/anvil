@@ -23,21 +23,44 @@ type CleanupStaleResult struct {
 	Errors     []string
 }
 
+type PathPlan struct {
+	StagingDir string
+	OutputPath string
+}
+
 func (m Manager) Prepare(job *pipeline.JobContext) error {
 	if job == nil {
 		return errors.New("staging job context is required")
 	}
-	root := strings.TrimSpace(m.Root)
-	if root == "" {
-		return errors.New("staging root is required")
+	plan, err := m.Plan(fmt.Sprintf("%d", job.Job.ID), fmt.Sprintf("%d", job.Attempt.ID), job.Profile.Container, job.InputPath)
+	if err != nil {
+		return err
 	}
-	dir := filepath.Join(root, fmt.Sprintf("job-%d-attempt-%d", job.Job.ID, job.Attempt.ID))
+	dir := plan.StagingDir
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return fmt.Errorf("create staging dir: %w", err)
 	}
 	job.StagingDir = dir
-	job.OutputPath = filepath.Join(dir, "output"+containerExt(job.Profile.Container, job.InputPath))
+	job.OutputPath = plan.OutputPath
 	return nil
+}
+
+func (m Manager) Plan(jobLabel string, attemptLabel string, container string, inputPath string) (PathPlan, error) {
+	root := strings.TrimSpace(m.Root)
+	if root == "" {
+		return PathPlan{}, errors.New("staging root is required")
+	}
+	if strings.TrimSpace(jobLabel) == "" {
+		jobLabel = "<new>"
+	}
+	if strings.TrimSpace(attemptLabel) == "" {
+		attemptLabel = "<new>"
+	}
+	dir := filepath.Join(root, fmt.Sprintf("job-%s-attempt-%s", jobLabel, attemptLabel))
+	return PathPlan{
+		StagingDir: dir,
+		OutputPath: filepath.Join(dir, "output"+containerExt(container, inputPath)),
+	}, nil
 }
 
 func (m Manager) Cleanup(job *pipeline.JobContext) error {

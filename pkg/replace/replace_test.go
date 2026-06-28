@@ -63,42 +63,96 @@ func TestHandoffMoveCleansOnlyProcessedEpisodeFolder(t *testing.T) {
 	}
 }
 
-func TestReplaceSidecarLeavesInputInPlace(t *testing.T) {
+func TestPlanReplacementCopyAndReplace(t *testing.T) {
+	copyPlan, err := PlanReplacement("/media/movie.mkv", "/tmp/output.mp4", domain.ReplacementModeCopy)
+	if err != nil {
+		t.Fatalf("PlanReplacement(copy) error = %v", err)
+	}
+	if copyPlan.Action != "copy" || copyPlan.CopyPath != "/media/movie.anvil.mp4" {
+		t.Fatalf("copy plan = %+v, want copy path", copyPlan)
+	}
+
+	replace, err := PlanReplacement("/media/movie.mkv", "/tmp/output.mkv", domain.ReplacementModeReplace)
+	if err != nil {
+		t.Fatalf("PlanReplacement(replace) error = %v", err)
+	}
+	if replace.Action != "replace" || replace.ReplaceTarget != "/media/movie.mkv" || replace.BackupPath != "/media/movie.mkv.anvil.bak" {
+		t.Fatalf("replace plan = %+v, want target and backup", replace)
+	}
+}
+
+func TestPlanHandoffDestinationAndCleanup(t *testing.T) {
+	job := &pipeline.JobContext{
+		Source: domain.MediaSource{
+			Kind:         domain.SourceKindPackage,
+			RelativePath: "SomeShowS01",
+		},
+		Asset: domain.MediaAsset{
+			RelativePath: "SomeShowS01E01/episode_1.mkv",
+		},
+		Library: domain.Library{
+			Kind: domain.LibraryKindDownload,
+			Path: "/downloads",
+			Download: domain.DownloadLibraryPolicy{
+				HandoffPath:          "/imports/tv",
+				HandoffMode:          domain.HandoffModeMove,
+				PreserveRelativePath: true,
+				CleanupSourceMedia:   true,
+				PruneEmptyDirs:       true,
+			},
+		},
+		InputPath:  "/downloads/SomeShowS01/SomeShowS01E01/episode_1.mkv",
+		OutputPath: "/tmp/staging/output.mp4",
+	}
+	plan, err := PlanHandoff(job)
+	if err != nil {
+		t.Fatalf("PlanHandoff() error = %v", err)
+	}
+	wantDestination := filepath.Join("/imports/tv", "SomeShowS01", "SomeShowS01E01", "episode_1.mp4")
+	if plan.Destination != wantDestination || plan.Action != "move" {
+		t.Fatalf("handoff plan = %+v, want move to %q", plan, wantDestination)
+	}
+	if !plan.CleanupSourceMedia || !plan.PruneEmptyDirs || plan.PruneStart != filepath.Dir(job.InputPath) {
+		t.Fatalf("cleanup plan = %+v, want source cleanup and prune start", plan)
+	}
+}
+
+func TestReplaceCopyLeavesInputInPlace(t *testing.T) {
 	dir := t.TempDir()
 	input := filepath.Join(dir, "movie.mkv")
 	candidate := filepath.Join(dir, "candidate.mkv")
 	writeFile(t, input, "source")
 	writeFile(t, candidate, "encoded")
 
-	finalPath, err := (Manager{}).Replace(context.Background(), input, candidate, domain.ReplacementModeSidecar)
+	finalPath, err := (Manager{}).Replace(context.Background(), input, candidate, domain.ReplacementModeCopy)
 	if err != nil {
 		t.Fatalf("Replace() error = %v", err)
 	}
 	if finalPath == input {
-		t.Fatalf("sidecar final path = input path %q", input)
+		t.Fatalf("copy final path = input path %q", input)
 	}
 	if got := readFile(t, input); got != "source" {
 		t.Fatalf("input content = %q, want source", got)
 	}
 	if got := readFile(t, finalPath); got != "encoded" {
-		t.Fatalf("sidecar content = %q, want encoded", got)
+		t.Fatalf("copy content = %q, want encoded", got)
 	}
 }
 
-func TestReplaceSidecarRefusesExistingDestination(t *testing.T) {
+func TestReplaceCopyRefusesExistingDestination(t *testing.T) {
 	dir := t.TempDir()
 	input := filepath.Join(dir, "movie.mkv")
 	candidate := filepath.Join(dir, "candidate.mkv")
-	sidecar := filepath.Join(dir, "movie.anvil.mkv")
+	copyPath := filepath.Join(dir, "movie.anvil.mkv")
 	writeFile(t, input, "source")
 	writeFile(t, candidate, "encoded")
-	writeFile(t, sidecar, "existing")
+	writeFile(t, copyPath, "existing")
 
-	if _, err := (Manager{}).Replace(context.Background(), input, candidate, domain.ReplacementModeSidecar); err == nil {
-		t.Fatal("Replace() error = nil, want existing sidecar refusal")
+	if _, err := (Manager{}).Replace(context.Background(), input, candidate, domain.ReplacementModeCopy); err == nil {
+		t.Fatal("Replace() error = nil, want existing copy refusal")
 	}
-	if got := readFile(t, sidecar); got != "existing" {
-		t.Fatalf("sidecar content = %q, want existing", got)
+	if got := readFile(t, copyPath); got != "existing" {
+		t.Fatalf("copy content = %q, want existing", got)
 	}
 }
 

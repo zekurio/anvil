@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/zekurio/anvil/pkg/domain"
+	"github.com/zekurio/anvil/pkg/marker"
 )
 
 func TestBuildPlanUsesSearchCRF(t *testing.T) {
@@ -36,7 +37,7 @@ func TestArgsPreserveStreamsAndStripMetadata(t *testing.T) {
 	if containsPair(args, "-map", "0") {
 		t.Fatalf("Args() = %v, did not expect global stream map", args)
 	}
-	for _, pair := range [][2]string{{"-metadata:s:v:0", "anvil.encoded=true"}, {"-metadata:s:v:0", "anvil.profile=default-av1"}, {"-metadata:s:v:0", "anvil.video.crf=24"}} {
+	for _, pair := range [][2]string{{"-metadata:s:v:0", "anvil.processed=true"}, {"-metadata:s:v:0", "anvil.encoded=true"}, {"-metadata:s:v:0", "anvil.profile=default-av1"}, {"-metadata:s:v:0", "anvil.video.action=encode"}, {"-metadata:s:v:0", "anvil.video.crf=24"}} {
 		if !containsPair(args, pair[0], pair[1]) {
 			t.Fatalf("Args() = %v, missing Anvil marker %v", args, pair)
 		}
@@ -85,7 +86,13 @@ func TestArgsCopiesVideoWhenInputHasCompatibleAnvilMarker(t *testing.T) {
 	plan, err := BuildPlan(testProfile(), "/in.mkv", "/out.mkv", domain.ResourceAllocation{Threads: 2}, nil, nil, domain.JobMetadata{
 		VideoAlreadyEncoded: true,
 		CropFilter:          "crop=1920:800:0:140",
-		AnvilTags:           map[string]string{"anvil.video.crf": "29"},
+		AnvilTags: map[string]string{
+			"anvil.encoded":            "true",
+			"anvil.profile":            "default-av1",
+			"anvil.video.codec":        "libsvtav1",
+			"anvil.video.pixel_format": "yuv420p10le",
+			"anvil.video.crf":          "29",
+		},
 	})
 	if err != nil {
 		t.Fatalf("BuildPlan() error = %v", err)
@@ -105,6 +112,54 @@ func TestArgsCopiesVideoWhenInputHasCompatibleAnvilMarker(t *testing.T) {
 	}
 	if !containsPair(args, "-metadata:s:v:0", "anvil.video.crf=29") {
 		t.Fatalf("Args() = %v, missing preserved CRF marker", args)
+	}
+	if !containsPair(args, "-metadata:s:v:0", "anvil.encoded=true") {
+		t.Fatalf("Args() = %v, missing preserved encoded marker", args)
+	}
+	if !containsPair(args, "-metadata:s:v:0", marker.TagVideoAction+"=copy") {
+		t.Fatalf("Args() = %v, missing video copy marker", args)
+	}
+}
+
+func TestArgsCopiesVideoWhenSearchSkipsEncode(t *testing.T) {
+	audio := &domain.AudioSelection{StreamIndexes: []int{1}}
+	reason := "ab-av1 did not find a CRF satisfying VMAF/size constraints"
+	plan, err := BuildPlan(testProfile(), "/in.mkv", "/out.mkv", domain.ResourceAllocation{Threads: 2}, &domain.SearchResult{
+		SkipVideoEncode:       true,
+		VideoEncodeSkipReason: reason,
+	}, audio, domain.JobMetadata{CropFilter: "crop=1920:800:0:140"})
+	if err != nil {
+		t.Fatalf("BuildPlan() error = %v", err)
+	}
+	if !plan.VideoCopy {
+		t.Fatal("VideoCopy = false, want true")
+	}
+	if plan.CRF != 0 {
+		t.Fatalf("CRF = %d, want 0", plan.CRF)
+	}
+	args := Args(plan)
+	if !containsPair(args, "-c:v", "copy") {
+		t.Fatalf("Args() = %v, missing video copy", args)
+	}
+	for _, unexpected := range []string{"-crf", "-vf"} {
+		if containsArg(args, unexpected) {
+			t.Fatalf("Args() = %v, did not expect %q for skipped video encode", args, unexpected)
+		}
+	}
+	if !containsPair(args, "-map", "0:1") {
+		t.Fatalf("Args() = %v, missing selected audio map", args)
+	}
+	for _, pair := range [][2]string{
+		{"-metadata:s:v:0", marker.TagProcessed + "=true"},
+		{"-metadata:s:v:0", marker.TagVideoAction + "=copy"},
+		{"-metadata:s:v:0", marker.TagProcessReason + "=" + reason},
+	} {
+		if !containsPair(args, pair[0], pair[1]) {
+			t.Fatalf("Args() = %v, missing metadata %v", args, pair)
+		}
+	}
+	if containsPair(args, "-metadata:s:v:0", marker.TagEncoded+"=true") {
+		t.Fatalf("Args() = %v, did not expect encoded marker for skipped video encode", args)
 	}
 }
 

@@ -82,6 +82,7 @@ type ffprobeJSON struct {
 		Index       int               `json:"index"`
 		CodecType   string            `json:"codec_type"`
 		CodecName   string            `json:"codec_name"`
+		PixelFormat string            `json:"pix_fmt"`
 		Tags        map[string]string `json:"tags"`
 		Disposition map[string]int    `json:"disposition"`
 	} `json:"streams"`
@@ -115,6 +116,7 @@ func parseFFProbe(path string, data []byte) (domain.ProbeResult, error) {
 			Index:       stream.Index,
 			Type:        stream.CodecType,
 			Codec:       stream.CodecName,
+			PixelFormat: stream.PixelFormat,
 			Language:    stream.Tags["language"],
 			Title:       stream.Tags["title"],
 			Tags:        copyTags(stream.Tags),

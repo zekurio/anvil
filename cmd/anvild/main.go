@@ -31,12 +31,16 @@ const (
 	commandRun         = "run"
 	commandCheckConfig = "check-config"
 	commandScan        = "scan"
+	commandPreflight   = "preflight"
 	commandJobs        = "jobs"
+	commandInspect     = "inspect"
 	commandRetry       = "retry"
 	commandRecover     = "recover"
 	commandCleanup     = "cleanup-staging"
 	commandHelp        = "help"
 )
+
+var activeLogLevel slog.LevelVar
 
 type options struct {
 	command         string
@@ -49,6 +53,7 @@ type options struct {
 	jobStates       []domain.JobState
 	jobStateFilter  string
 	jobLimit        int
+	preflightLimit  int
 	jsonOutput      bool
 	retryFailed     bool
 	jobIDs          []domain.JobID
@@ -98,6 +103,9 @@ func run(args []string) error {
 	if err != nil {
 		return err
 	}
+	if err := configureLogging(cfg.Daemon.LogLevel); err != nil {
+		return err
+	}
 
 	switch opts.command {
 	case commandRun:
@@ -106,8 +114,12 @@ func run(args []string) error {
 		return runCheckConfig(cfg, opts)
 	case commandScan:
 		return runScanCommand(context.Background(), cfg, opts)
+	case commandPreflight:
+		return runPreflightCommand(context.Background(), cfg, opts)
 	case commandJobs:
 		return runJobsCommand(context.Background(), cfg, opts)
+	case commandInspect:
+		return runInspectCommand(context.Background(), cfg, opts)
 	case commandRetry:
 		return runRetryCommand(context.Background(), cfg, opts)
 	case commandRecover:
@@ -162,10 +174,16 @@ func parseCommandOptions(opts options, args []string) (options, error) {
 	case commandCheckConfig:
 	case commandScan:
 		flags.StringVar(&opts.libraryName, "library", "", "scan one configured library")
+	case commandPreflight:
+		flags.StringVar(&opts.libraryName, "library", "", "preflight one configured library")
+		flags.IntVar(&opts.preflightLimit, "limit", 0, "maximum candidates to show; 0 means no limit")
+		flags.BoolVar(&opts.jsonOutput, "json", false, "write JSON output")
 	case commandJobs:
 		flags.StringVar(&opts.libraryName, "library", "", "filter by library name")
 		flags.StringVar(&opts.jobStateFilter, "state", "", "comma-separated job states to show")
 		flags.IntVar(&opts.jobLimit, "limit", opts.jobLimit, "maximum jobs to show; 0 means no limit")
+		flags.BoolVar(&opts.jsonOutput, "json", false, "write JSON output")
+	case commandInspect:
 		flags.BoolVar(&opts.jsonOutput, "json", false, "write JSON output")
 	case commandRetry:
 		flags.BoolVar(&opts.retryFailed, "failed", false, "retry all failed jobs")
@@ -183,6 +201,13 @@ func parseCommandOptions(opts options, args []string) (options, error) {
 	}
 
 	switch opts.command {
+	case commandPreflight:
+		if opts.preflightLimit < 0 {
+			return options{}, errors.New("preflight --limit must be non-negative")
+		}
+		if flags.NArg() > 0 {
+			return options{}, fmt.Errorf("preflight does not accept arguments: %v", flags.Args())
+		}
 	case commandJobs:
 		states, err := parseJobStates(opts.jobStateFilter)
 		if err != nil {
@@ -192,6 +217,15 @@ func parseCommandOptions(opts options, args []string) (options, error) {
 		if flags.NArg() > 0 {
 			return options{}, fmt.Errorf("jobs does not accept arguments: %v", flags.Args())
 		}
+	case commandInspect:
+		ids, err := parseJobIDs(flags.Args())
+		if err != nil {
+			return options{}, err
+		}
+		if len(ids) != 1 {
+			return options{}, errors.New("inspect requires exactly one job ID")
+		}
+		opts.jobIDs = ids
 	case commandRetry:
 		ids, err := parseJobIDs(flags.Args())
 		if err != nil {
@@ -265,7 +299,7 @@ func runDaemon(cfg config.Config, opts options) error {
 
 	runConfiguredStagingCleanup(cfg)
 
-	slog.Info("starting anvild", "mode", mode, "config", configPathLabel(opts.configPath), "temp_dir", cfg.Daemon.TempDir, "store", cfg.Daemon.StorePath, "workers", cfg.Daemon.WorkerCount, "threads", cfg.Daemon.TotalThreads, "shutdown_policy", cfg.Daemon.ShutdownPolicy, "shutdown_timeout", cfg.Daemon.ShutdownTimeout, "recovered_jobs", recovered)
+	slog.Info("starting anvild", "mode", mode, "config", configPathLabel(opts.configPath), "temp_dir", cfg.Daemon.TempDir, "store", cfg.Daemon.StorePath, "workers", cfg.Daemon.WorkerCount, "threads", cfg.Daemon.TotalThreads, "shutdown_policy", cfg.Daemon.ShutdownPolicy, "shutdown_timeout", cfg.Daemon.ShutdownTimeout, "log_level", cfg.Daemon.LogLevel, "recovered_jobs", recovered)
 	logConfiguredWork(cfg)
 
 	var wg sync.WaitGroup
@@ -325,7 +359,7 @@ func waitForShutdown(done <-chan struct{}, signals <-chan os.Signal, timeout tim
 }
 
 func runCheckConfig(cfg config.Config, opts options) error {
-	slog.Info("config ok", "config", configPathLabel(opts.configPath), "libraries", len(cfg.Libraries), "flows", len(cfg.Flows), "profiles", len(cfg.Profiles))
+	slog.Info("config ok", "config", configPathLabel(opts.configPath), "libraries", len(cfg.Libraries), "flows", len(cfg.Flows), "profiles", len(cfg.Profiles), "log_level", cfg.Daemon.LogLevel)
 	return nil
 }
 
@@ -494,11 +528,52 @@ func startReloadLoop(ctx context.Context, wg *sync.WaitGroup, opts options, runt
 					slog.Error("config reload rejected", "error", err)
 					continue
 				}
+				if _, err := applyLogLevel(&activeLogLevel, next.Daemon.LogLevel); err != nil {
+					slog.Error("config reload rejected", "error", err)
+					continue
+				}
 				runtimeCfg.Set(next)
-				slog.Info("config reloaded", "config", configPathLabel(opts.configPath), "libraries", len(next.Libraries), "flows", len(next.Flows), "profiles", len(next.Profiles), "workers", next.Daemon.WorkerCount, "threads", next.Daemon.TotalThreads)
+				slog.Info("config reloaded", "config", configPathLabel(opts.configPath), "libraries", len(next.Libraries), "flows", len(next.Flows), "profiles", len(next.Profiles), "workers", next.Daemon.WorkerCount, "threads", next.Daemon.TotalThreads, "log_level", next.Daemon.LogLevel)
 			}
 		}
 	}()
+}
+
+func configureLogging(logLevel string) error {
+	if _, err := applyLogLevel(&activeLogLevel, logLevel); err != nil {
+		return err
+	}
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: &activeLogLevel})))
+	return nil
+}
+
+func applyLogLevel(levelVar *slog.LevelVar, logLevel string) (string, error) {
+	level, normalized, err := parseLogLevel(logLevel)
+	if err != nil {
+		return "", err
+	}
+	levelVar.Set(level)
+	return normalized, nil
+}
+
+func parseLogLevel(logLevel string) (slog.Level, string, error) {
+	normalized, ok := config.NormalizeLogLevel(logLevel)
+	if !ok {
+		return 0, "", fmt.Errorf("daemon.log_level %q is invalid (must be debug, info, warn, or error)", logLevel)
+	}
+
+	switch normalized {
+	case "debug":
+		return slog.LevelDebug, normalized, nil
+	case "info":
+		return slog.LevelInfo, normalized, nil
+	case "warn":
+		return slog.LevelWarn, normalized, nil
+	case "error":
+		return slog.LevelError, normalized, nil
+	default:
+		return 0, "", fmt.Errorf("daemon.log_level %q is invalid (must be debug, info, warn, or error)", logLevel)
+	}
 }
 
 func startScannerLoop(ctx context.Context, wg *sync.WaitGroup, cfgProvider func() config.Config, state *store.SQLiteStore) {
@@ -724,7 +799,7 @@ func parseJobIDs(args []string) ([]domain.JobID, error) {
 
 func isCommand(value string) bool {
 	switch value {
-	case commandRun, commandCheckConfig, commandScan, commandJobs, commandRetry, commandRecover, commandCleanup, commandHelp:
+	case commandRun, commandCheckConfig, commandScan, commandPreflight, commandJobs, commandInspect, commandRetry, commandRecover, commandCleanup, commandHelp:
 		return true
 	default:
 		return false
@@ -737,7 +812,9 @@ func printUsage() {
   anvild run [--config PATH] [--daemon] [--shutdown-policy drain|cancel] [--shutdown-timeout DURATION]
   anvild check-config [--config PATH]
   anvild scan [--config PATH] [--library NAME]
+  anvild preflight [--config PATH] [--library NAME] [--limit N] [--json]
   anvild jobs [--config PATH] [--library NAME] [--state pending,failed] [--limit N] [--json]
+  anvild inspect [--config PATH] [--json] JOB_ID
   anvild retry [--config PATH] JOB_ID...
   anvild retry [--config PATH] --failed [--library NAME]
   anvild recover [--config PATH]

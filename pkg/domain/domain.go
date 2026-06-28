@@ -57,7 +57,7 @@ type ReplacementMode string
 
 const (
 	ReplacementModeReplace ReplacementMode = "replace"
-	ReplacementModeSidecar ReplacementMode = "sidecar"
+	ReplacementModeCopy    ReplacementMode = "copy"
 )
 
 type DownloadLibraryPolicy struct {
@@ -101,18 +101,20 @@ type Profile struct {
 	Video       VideoProfile
 	Audio       AudioProfile
 	Subtitles   SubtitleProfile
+	Validation  ValidationPolicy
 	Metadata    MetadataPolicy
 	Attachments AttachmentPolicy
 	Chapters    ChapterPolicy
 }
 
 type VideoProfile struct {
-	Codec       string
-	Preset      string
-	PixelFormat string
-	CRFMin      int
-	CRFMax      int
-	TargetVMAF  float64
+	Codec             string
+	Preset            string
+	PixelFormat       string
+	CRFMin            int
+	CRFMax            int
+	TargetVMAF        float64
+	MinSavingsPercent float64
 }
 
 type StreamPolicyMode string
@@ -147,6 +149,10 @@ type SubtitleProfile struct {
 	KeepExternal       bool
 	MaxTracks          int
 	Fallback           StreamFallback
+}
+
+type ValidationPolicy struct {
+	DurationToleranceSeconds float64
 }
 
 type MetadataMode string
@@ -342,6 +348,7 @@ type MediaStream struct {
 	Index       int
 	Type        string
 	Codec       string
+	PixelFormat string
 	Language    string
 	Title       string
 	Tags        map[string]string
@@ -357,10 +364,12 @@ type ProbeResult struct {
 }
 
 type SearchResult struct {
-	CRF        int
-	VMAF       float64
-	RawOutput  string
-	RawCommand []string
+	CRF                   int
+	VMAF                  float64
+	SkipVideoEncode       bool
+	VideoEncodeSkipReason string
+	RawOutput             string
+	RawCommand            []string
 }
 
 type AudioSelection struct {
@@ -381,12 +390,14 @@ type EncodePlan struct {
 	ProfileName           ProfileName
 	VideoCodec            string
 	VideoCopy             bool
+	VideoCopyReason       string
 	Preset                string
 	PixelFormat           string
 	CRF                   int
 	CRFMin                int
 	CRFMax                int
 	TargetVMAF            float64
+	MinSavingsPercent     float64
 	Threads               int
 	Container             string
 	CropFilter            string
@@ -400,11 +411,27 @@ type EncodePlan struct {
 }
 
 type ValidationResult struct {
-	OK                    bool
-	SourceDurationSeconds float64
-	OutputDurationSeconds float64
-	OutputSizeBytes       int64
-	Errors                []string
+	OK                          bool
+	SourceDurationSeconds       float64
+	SourceSizeBytes             int64
+	OutputDurationSeconds       float64
+	OutputSizeBytes             int64
+	SizeSavingsBytes            int64
+	SizeSavingsPercent          float64
+	OutputVideoStreamCount      int
+	OutputAudioStreamCount      int
+	OutputSubtitleStreamCount   int
+	ExpectedVideoCodec          string
+	OutputVideoCodec            string
+	ExpectedVideoPixelFormat    string
+	OutputVideoPixelFormat      string
+	SourceAudioStreamCount      int
+	ExpectedAudioStreamCount    int
+	SourceSubtitleStreamCount   int
+	ExpectedSubtitleStreamCount int
+	AnvilMarkerCompatible       bool
+	AnvilProcessedMarkerPresent bool
+	Errors                      []string
 }
 
 type JobMetadata struct {
