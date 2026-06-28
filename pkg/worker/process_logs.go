@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/zekurio/anvil/pkg/domain"
@@ -23,6 +24,8 @@ type processLogRecorder struct {
 	attemptID domain.AttemptID
 	events    processLogStore
 	now       func() time.Time
+	mu        sync.Mutex
+	names     map[string]int
 }
 
 type processLogArtifact struct {
@@ -37,7 +40,7 @@ type processLogArtifact struct {
 	Error          string   `json:"error,omitempty"`
 }
 
-func (r processLogRecorder) LogProcess(ctx context.Context, command process.Command, result process.Result, runErr error) error {
+func (r *processLogRecorder) LogProcess(ctx context.Context, command process.Command, result process.Result, runErr error) error {
 	if !shouldCaptureProcess(command, result, runErr) {
 		return nil
 	}
@@ -57,7 +60,7 @@ func (r processLogRecorder) LogProcess(ctx context.Context, command process.Comm
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return fmt.Errorf("create process log dir: %w", err)
 	}
-	baseName := sanitizeLogName(step) + "-" + sanitizeLogName(filepath.Base(commandName))
+	baseName := r.uniqueLogBaseName(sanitizeLogName(step) + "-" + sanitizeLogName(filepath.Base(commandName)))
 	stdoutPath := filepath.Join(dir, baseName+".stdout.log")
 	stderrPath := filepath.Join(dir, baseName+".stderr.log")
 	if err := os.WriteFile(stdoutPath, result.Stdout, 0o640); err != nil {
@@ -103,6 +106,19 @@ func (r processLogRecorder) LogProcess(ctx context.Context, command process.Comm
 	return nil
 }
 
+func (r *processLogRecorder) uniqueLogBaseName(baseName string) string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.names == nil {
+		r.names = make(map[string]int)
+	}
+	r.names[baseName]++
+	if r.names[baseName] == 1 {
+		return baseName
+	}
+	return fmt.Sprintf("%s-%d", baseName, r.names[baseName])
+}
+
 func shouldCaptureProcess(command process.Command, result process.Result, runErr error) bool {
 	name := filepath.Base(command.Name)
 	if name == "" && len(result.Command) > 0 {
@@ -114,7 +130,7 @@ func shouldCaptureProcess(command process.Command, result process.Result, runErr
 	return runErr != nil || len(result.Stdout) > 0 || len(result.Stderr) > 0
 }
 
-func (r processLogRecorder) timestamp() time.Time {
+func (r *processLogRecorder) timestamp() time.Time {
 	if r.now != nil {
 		return r.now().UTC()
 	}
