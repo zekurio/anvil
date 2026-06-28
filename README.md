@@ -119,7 +119,7 @@ nix build .#default
 nix run .#anvild -- --help
 ```
 
-The flake exposes `packages.default`, `apps.default`, `apps.anvild`, and `nixosModules.anvil`. The package and dev shell prefer `jellyfin-ffmpeg` on Linux when nixpkgs provides it, and fall back to stock ffmpeg elsewhere. The NixOS module adds Jellyfin ffmpeg, `ab-av1`, `dovi-tool`, and MKVToolNix to the service PATH by default, writes the generated TOML to `/etc/anvil/anvil.toml`, hardens the systemd service with a writable path allowlist, and exposes `services.anvil.service.*` knobs for nice/IO/CPU weighting and extra writable paths.
+The flake exposes `packages.default`, `apps.default`, `apps.anvild`, and `nixosModules.anvil`. The package and dev shell prefer `jellyfin-ffmpeg` on Linux when nixpkgs provides it, and fall back to stock ffmpeg elsewhere. The NixOS module adds Jellyfin ffmpeg, `ab-av1`, `dovi-tool`, and MKVToolNix to the service PATH by default, writes the generated TOML to `/etc/anvil/anvil.toml`, creates `/var/lib/anvil/tmp` with `StateDirectory`, hardens the systemd service with a writable path allowlist, and exposes `services.anvil.service.*` knobs for nice/IO/CPU weighting and extra writable paths.
 
 With direnv:
 

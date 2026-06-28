@@ -601,7 +601,7 @@ in
     daemon = {
       tempDir = mkOption {
         type = types.str;
-        default = "/var/tmp/anvil";
+        default = "/var/lib/anvil/tmp";
         description = "Temporary working directory.";
       };
       storePath = mkOption {
@@ -783,7 +783,7 @@ in
         {
           ExecStart = "${packageExe} --config /etc/anvil/anvil.toml";
           Restart = "on-failure";
-          StateDirectory = "anvil";
+          StateDirectory = [ "anvil" "anvil/tmp" ];
           RuntimeDirectory = "anvil";
           UMask = "0027";
           ReadWritePaths = readWritePaths;

@@ -1,5 +1,5 @@
 [daemon]
-temp_dir = "/var/tmp/anvil"
+temp_dir = "/var/lib/anvil/tmp"
 store_path = "/var/lib/anvil/anvil.db"
 worker_count = 2
 total_threads = 8
