@@ -27,7 +27,7 @@ func TestSelectExpandsOriginalAndDeduplicatesLanguages(t *testing.T) {
 	}
 }
 
-func TestSelectWithoutLanguageFilterKeepsNonCommentaryAudioStreams(t *testing.T) {
+func TestSelectWithoutLanguageFilterPreservesAllAudioStreams(t *testing.T) {
 	probe := &domain.ProbeResult{Streams: []domain.MediaStream{
 		{Index: 1, Type: "audio", Language: "eng", Title: "Director commentary"},
 		{Index: 2, Type: "audio", Language: "deu", Title: "Main"},
@@ -38,7 +38,7 @@ func TestSelectWithoutLanguageFilterKeepsNonCommentaryAudioStreams(t *testing.T)
 	if err != nil {
 		t.Fatalf("Select() error = %v", err)
 	}
-	if got, want := selection.StreamIndexes, []int{2}; !equalInts(got, want) {
+	if got, want := selection.StreamIndexes, []int{1, 2}; !equalInts(got, want) {
 		t.Fatalf("stream indexes = %v, want %v", got, want)
 	}
 }
