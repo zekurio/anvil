@@ -281,12 +281,16 @@ run_smoke() {
   local daemon_pid=""
 
   cleanup_processes() {
-    if [ -n "$daemon_pid" ]; then
-      kill "$daemon_pid" 2>/dev/null || true
-      wait "$daemon_pid" 2>/dev/null || true
+    local daemon="${daemon_pid:-}"
+    local arr="${arr_pid:-}"
+    if [ -n "$daemon" ]; then
+      kill "$daemon" 2>/dev/null || true
+      wait "$daemon" 2>/dev/null || true
     fi
-    kill "$arr_pid" 2>/dev/null || true
-    wait "$arr_pid" 2>/dev/null || true
+    if [ -n "$arr" ]; then
+      kill "$arr" 2>/dev/null || true
+      wait "$arr" 2>/dev/null || true
+    fi
   }
   trap cleanup_processes EXIT INT TERM
 
@@ -310,6 +314,8 @@ clean_run_outputs() {
   local root="$1"
   rm -f \
     "$root/state/anvil.db" \
+    "$root/state/anvil.db-shm" \
+    "$root/state/anvil.db-wal" \
     "$root/media/movies/Mock Movie (2026)/Mock Movie (2026).anvil.mkv" \
     "$root/media/tv/Mock Anime/Season 01/Mock Anime S01E01.anvil.mkv"
   rm -rf \

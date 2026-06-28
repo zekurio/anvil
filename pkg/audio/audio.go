@@ -34,11 +34,9 @@ func (Selector) Select(probe *domain.ProbeResult, profile domain.AudioProfile, m
 	}
 
 	keep := languageSet(selection.LanguagesToKeep)
-	filterLanguages := len(profile.LanguagesToKeep) > 0
 	for _, stream := range audioStreams {
 		streamLanguage := streamLanguage(stream.Language, selection.OriginalLanguage, profile.UnknownAsOriginal)
-		matchesLanguage := !filterLanguages || keep[streamLanguage]
-		if !matchesLanguage {
+		if !keep[streamLanguage] {
 			continue
 		}
 		if !profile.KeepCommentary && commentary(stream) {
@@ -80,6 +78,7 @@ func (b Block) Run(_ context.Context, job *pipeline.JobContext) error {
 
 func cleanupDisabled(profile domain.AudioProfile, metadata domain.JobMetadata, selection domain.AudioSelection) bool {
 	return metadata.StreamCleanupDisabled ||
+		len(selection.LanguagesToKeep) == 0 ||
 		(requiresOriginalLanguage(profile) && selection.OriginalLanguage == "")
 }
 
