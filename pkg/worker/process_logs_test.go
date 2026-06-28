@@ -65,6 +65,53 @@ func TestProcessLogRecorderWritesFFmpegOutputAndArtifact(t *testing.T) {
 	}
 }
 
+func TestProcessLogRecorderKeepsRepeatedCommandLogsUnique(t *testing.T) {
+	root := t.TempDir()
+	store := newFakeWorkerStore()
+	recorder := processLogRecorder{
+		root:      root,
+		jobID:     99,
+		attemptID: 7,
+		events:    store,
+	}
+	ctx := process.WithStep(context.Background(), "encode")
+
+	if err := recorder.LogProcess(ctx, process.Command{Name: "ffmpeg"}, process.Result{
+		Command: []string{"ffmpeg", "-i", "first.mkv", "out.mkv"},
+		Stdout:  []byte("first"),
+	}, nil); err != nil {
+		t.Fatalf("first LogProcess() error = %v", err)
+	}
+	if err := recorder.LogProcess(ctx, process.Command{Name: "ffmpeg"}, process.Result{
+		Command: []string{"ffmpeg", "-i", "second.mkv", "out.mkv"},
+		Stdout:  []byte("second"),
+	}, nil); err != nil {
+		t.Fatalf("second LogProcess() error = %v", err)
+	}
+
+	firstPath := filepath.Join(root, "job-99-attempt-7", "encode-ffmpeg.stdout.log")
+	secondPath := filepath.Join(root, "job-99-attempt-7", "encode-ffmpeg-2.stdout.log")
+	if got, err := os.ReadFile(firstPath); err != nil || string(got) != "first" {
+		t.Fatalf("first stdout log = %q, err = %v", got, err)
+	}
+	if got, err := os.ReadFile(secondPath); err != nil || string(got) != "second" {
+		t.Fatalf("second stdout log = %q, err = %v", got, err)
+	}
+	if len(store.events) != 2 {
+		t.Fatalf("recorded events = %d, want 2", len(store.events))
+	}
+	var firstArtifact, secondArtifact processLogArtifact
+	if err := json.Unmarshal(store.events[0].Payload, &firstArtifact); err != nil {
+		t.Fatalf("decode first artifact payload: %v", err)
+	}
+	if err := json.Unmarshal(store.events[1].Payload, &secondArtifact); err != nil {
+		t.Fatalf("decode second artifact payload: %v", err)
+	}
+	if firstArtifact.StdoutPath != firstPath || secondArtifact.StdoutPath != secondPath {
+		t.Fatalf("artifact stdout paths = %q/%q, want %q/%q", firstArtifact.StdoutPath, secondArtifact.StdoutPath, firstPath, secondPath)
+	}
+}
+
 func TestProcessLogRecorderIgnoresFFProbeOutput(t *testing.T) {
 	root := t.TempDir()
 	store := newFakeWorkerStore()
