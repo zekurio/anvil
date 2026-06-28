@@ -39,8 +39,8 @@ func TestBuildPreflightReportShowsPlansWithoutExistingStore(t *testing.T) {
 	if !strings.Contains(item.Paths.StagingDir, "job-<new>-attempt-<new>") {
 		t.Fatalf("staging dir = %q, want new placeholders", item.Paths.StagingDir)
 	}
-	if item.Publish.Action != "sidecar" || !strings.HasSuffix(item.Publish.SidecarPath, "Movie.anvil.mkv") {
-		t.Fatalf("publish = %+v, want sidecar plan", item.Publish)
+	if item.Publish.Action != "copy" || !strings.HasSuffix(item.Publish.CopyPath, "Movie.anvil.mkv") {
+		t.Fatalf("publish = %+v, want copy plan", item.Publish)
 	}
 	if !strings.Contains(item.Search.SavingsPolicy, "ab-av1/search") {
 		t.Fatalf("savings policy = %q, want ab-av1/search language", item.Search.SavingsPolicy)
@@ -104,7 +104,7 @@ func TestPrintPreflightReportHumanBasics(t *testing.T) {
 			Search:      preflightSearchPolicy{Enabled: true, Tool: "ab-av1 crf-search", CRFMin: 18, CRFMax: 40, TargetVMAF: "95", SavingsPolicy: "ab-av1/search policy; explicit min-savings is not configured", NoFitBehavior: "if search decides AV1 fitting is not worthwhile, continue remaining configured actions as video-copy/remux/metadata processing without applying an AV1 CRF encode"},
 			Encode:      preflightEncode{Enabled: true, VideoAction: "AV1 encode using CRF selected by search", Output: "/tmp/staging/job-<new>-attempt-<new>/output.mkv", NoFitAction: "if search policy decides AV1 fitting is not worthwhile, skip AV1 CRF encode and continue remaining configured actions as video-copy/remux/metadata processing"},
 			Paths:       preflightPaths{Input: "/media/Movie.mkv", StagingDir: "/tmp/staging/job-<new>-attempt-<new>", Output: "/tmp/staging/job-<new>-attempt-<new>/output.mkv"},
-			Publish:     preflightPublish{Action: "sidecar", SidecarPath: "/media/Movie.anvil.mkv"},
+			Publish:     preflightPublish{Action: "copy", CopyPath: "/media/Movie.anvil.mkv"},
 			Cleanup:     preflightCleanup{StagingCleanupAction: "remove staging dir after configured cleanup step"},
 			Description: "would enqueue new job",
 		}},
@@ -112,7 +112,7 @@ func TestPrintPreflightReportHumanBasics(t *testing.T) {
 	output := captureStdout(t, func() {
 		printPreflightReport(report)
 	})
-	for _, want := range []string{"preflight libraries=1", "savings_policy=ab-av1/search", "no-fit:", "video-copy/remux", "encode: enabled=true", "publish: sidecar"} {
+	for _, want := range []string{"preflight libraries=1", "savings_policy=ab-av1/search", "no-fit:", "video-copy/remux", "encode: enabled=true", "publish: copy"} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("human output missing %q:\n%s", want, output)
 		}
@@ -159,7 +159,7 @@ func testPreflightConfig(t *testing.T, root string) config.Config {
 			Flow:    config.DefaultFlowName,
 			Profile: config.DefaultProfileName,
 			Media: config.MediaLibraryConfig{
-				ReplacementMode: string(domain.ReplacementModeSidecar),
+				ReplacementMode: string(domain.ReplacementModeCopy),
 			},
 		},
 	}

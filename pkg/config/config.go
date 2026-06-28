@@ -590,7 +590,7 @@ func NormalizeLogLevel(level string) (string, bool) {
 }
 
 func validReplacementMode(mode string) bool {
-	return mode == "replace" || mode == "sidecar"
+	return mode == "replace" || mode == "copy"
 }
 
 func validPackageMode(mode string) bool {

@@ -63,13 +63,13 @@ func TestHandoffMoveCleansOnlyProcessedEpisodeFolder(t *testing.T) {
 	}
 }
 
-func TestPlanReplacementSidecarAndReplace(t *testing.T) {
-	sidecar, err := PlanReplacement("/media/movie.mkv", "/tmp/output.mp4", domain.ReplacementModeSidecar)
+func TestPlanReplacementCopyAndReplace(t *testing.T) {
+	copyPlan, err := PlanReplacement("/media/movie.mkv", "/tmp/output.mp4", domain.ReplacementModeCopy)
 	if err != nil {
-		t.Fatalf("PlanReplacement(sidecar) error = %v", err)
+		t.Fatalf("PlanReplacement(copy) error = %v", err)
 	}
-	if sidecar.Action != "sidecar" || sidecar.SidecarPath != "/media/movie.anvil.mp4" {
-		t.Fatalf("sidecar plan = %+v, want sidecar path", sidecar)
+	if copyPlan.Action != "copy" || copyPlan.CopyPath != "/media/movie.anvil.mp4" {
+		t.Fatalf("copy plan = %+v, want copy path", copyPlan)
 	}
 
 	replace, err := PlanReplacement("/media/movie.mkv", "/tmp/output.mkv", domain.ReplacementModeReplace)
@@ -117,42 +117,42 @@ func TestPlanHandoffDestinationAndCleanup(t *testing.T) {
 	}
 }
 
-func TestReplaceSidecarLeavesInputInPlace(t *testing.T) {
+func TestReplaceCopyLeavesInputInPlace(t *testing.T) {
 	dir := t.TempDir()
 	input := filepath.Join(dir, "movie.mkv")
 	candidate := filepath.Join(dir, "candidate.mkv")
 	writeFile(t, input, "source")
 	writeFile(t, candidate, "encoded")
 
-	finalPath, err := (Manager{}).Replace(context.Background(), input, candidate, domain.ReplacementModeSidecar)
+	finalPath, err := (Manager{}).Replace(context.Background(), input, candidate, domain.ReplacementModeCopy)
 	if err != nil {
 		t.Fatalf("Replace() error = %v", err)
 	}
 	if finalPath == input {
-		t.Fatalf("sidecar final path = input path %q", input)
+		t.Fatalf("copy final path = input path %q", input)
 	}
 	if got := readFile(t, input); got != "source" {
 		t.Fatalf("input content = %q, want source", got)
 	}
 	if got := readFile(t, finalPath); got != "encoded" {
-		t.Fatalf("sidecar content = %q, want encoded", got)
+		t.Fatalf("copy content = %q, want encoded", got)
 	}
 }
 
-func TestReplaceSidecarRefusesExistingDestination(t *testing.T) {
+func TestReplaceCopyRefusesExistingDestination(t *testing.T) {
 	dir := t.TempDir()
 	input := filepath.Join(dir, "movie.mkv")
 	candidate := filepath.Join(dir, "candidate.mkv")
-	sidecar := filepath.Join(dir, "movie.anvil.mkv")
+	copyPath := filepath.Join(dir, "movie.anvil.mkv")
 	writeFile(t, input, "source")
 	writeFile(t, candidate, "encoded")
-	writeFile(t, sidecar, "existing")
+	writeFile(t, copyPath, "existing")
 
-	if _, err := (Manager{}).Replace(context.Background(), input, candidate, domain.ReplacementModeSidecar); err == nil {
-		t.Fatal("Replace() error = nil, want existing sidecar refusal")
+	if _, err := (Manager{}).Replace(context.Background(), input, candidate, domain.ReplacementModeCopy); err == nil {
+		t.Fatal("Replace() error = nil, want existing copy refusal")
 	}
-	if got := readFile(t, sidecar); got != "existing" {
-		t.Fatalf("sidecar content = %q, want existing", got)
+	if got := readFile(t, copyPath); got != "existing" {
+		t.Fatalf("copy content = %q, want existing", got)
 	}
 }
 
