@@ -36,6 +36,7 @@ let
         crf_min = profile.video.crfMin;
         crf_max = profile.video.crfMax;
         target_vmaf = profile.video.targetVmaf;
+        min_savings_percent = profile.video.minSavingsPercent;
       };
       audio = {
         languages_to_keep = profile.audio.languagesToKeep;
@@ -205,6 +206,11 @@ let
           type = types.number;
           default = 95;
           description = "Target VMAF for CRF search.";
+        };
+        minSavingsPercent = mkOption {
+          type = types.number;
+          default = 20;
+          description = "Minimum input-size savings percentage required during CRF search. Written as ab-av1 --max-encoded-percent = 100 - this value.";
         };
       };
 

@@ -80,6 +80,10 @@ Daemon mode currently stays in-process and waits for `SIGINT` or `SIGTERM`. It d
 
 `ffmpeg` and `ab-av1` stdout/stderr are captured under `daemon.temp_dir/process-logs/job-<job_id>-attempt-<attempt_id>/` and recorded as attempt artifact events with command, exit code, duration, byte counts, and log paths.
 
+Profiles can require AV1 encodes to save space during `ab-av1 crf-search` with `profiles.<name>.video.min_savings_percent`. Anvil maps this to `ab-av1 --max-encoded-percent`, so `min_savings_percent = 20` requires the fitted encode to be no larger than 80% of the input. If ab-av1 cannot find a CRF that satisfies the configured VMAF and savings policy, Anvil treats that as a non-fatal video-copy/remux path: audio, subtitle, metadata, attachment, chapter, validation, replacement, and handoff steps still run, but no AV1 CRF encode is applied.
+
+Anvil writes `anvil.processed=true` to outputs it processes. Outputs with a newly encoded video also keep the compatibility marker `anvil.encoded=true`; remux-only outputs use `anvil.video.action=copy` and `anvil.process.reason` instead of claiming a new AV1 encode.
+
 Useful operator commands:
 
 ```sh

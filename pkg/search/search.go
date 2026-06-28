@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"regexp"
 	"strconv"
+	"strings"
 
 	"github.com/zekurio/anvil/pkg/domain"
 	"github.com/zekurio/anvil/pkg/pipeline"
@@ -36,11 +37,16 @@ func (s ABAV1) Search(ctx context.Context, plan domain.EncodePlan) (domain.Searc
 	args := SearchArgs(plan)
 	result, err := runner.Run(ctx, process.Command{Name: binary, Args: args})
 	if err != nil {
-		return domain.SearchResult{}, err
+		if search, ok := ParseSkipResult(combinedOutput(result)); ok {
+			search.RawOutput = combinedOutput(result)
+			search.RawCommand = result.Command
+			return search, nil
+		}
+		return domain.SearchResult{}, fmt.Errorf("ab-av1 crf-search failed: %w%s", err, outputHint(result))
 	}
 	search, err := ParseResult(result.Stdout)
 	if err != nil {
-		return domain.SearchResult{}, err
+		return domain.SearchResult{}, fmt.Errorf("%w%s", err, outputHint(result))
 	}
 	search.RawOutput = string(result.Stdout)
 	search.RawCommand = result.Command
@@ -56,6 +62,13 @@ func SearchArgs(plan domain.EncodePlan) []string {
 	}
 	if plan.TargetVMAF > 0 {
 		args = append(args, "--min-vmaf", strconv.FormatFloat(plan.TargetVMAF, 'f', -1, 64))
+	}
+	if plan.MinSavingsPercent > 0 {
+		maxEncodedPercent := 100 - plan.MinSavingsPercent
+		if maxEncodedPercent < 0 {
+			maxEncodedPercent = 0
+		}
+		args = append(args, "--max-encoded-percent", strconv.FormatFloat(maxEncodedPercent, 'f', -1, 64))
 	}
 	if plan.VideoCodec != "" {
 		args = append(args, "--encoder", plan.VideoCodec)
@@ -86,7 +99,11 @@ func (Block) Name() string {
 
 func (b Block) Run(ctx context.Context, job *pipeline.JobContext) error {
 	if job.Metadata.VideoAlreadyEncoded {
-		result := domain.SearchResult{RawOutput: "skipped: compatible Anvil video marker"}
+		result := domain.SearchResult{
+			SkipVideoEncode:       true,
+			VideoEncodeSkipReason: "compatible Anvil video marker",
+			RawOutput:             "skipped: compatible Anvil video marker",
+		}
 		job.Search = &result
 		return nil
 	}
@@ -105,18 +122,19 @@ func (b Block) Run(ctx context.Context, job *pipeline.JobContext) error {
 
 func searchPlan(job *pipeline.JobContext) domain.EncodePlan {
 	return domain.EncodePlan{
-		InputPath:    job.InputPath,
-		OutputPath:   job.OutputPath,
-		VideoCodec:   job.Profile.Video.Codec,
-		Preset:       job.Profile.Video.Preset,
-		PixelFormat:  job.Profile.Video.PixelFormat,
-		CRFMin:       job.Profile.Video.CRFMin,
-		CRFMax:       job.Profile.Video.CRFMax,
-		TargetVMAF:   job.Profile.Video.TargetVMAF,
-		Threads:      job.Resources.Threads,
-		Container:    job.Profile.Container,
-		CropFilter:   job.Metadata.CropFilter,
-		SubtitleMode: job.Profile.Subtitles.Mode,
+		InputPath:         job.InputPath,
+		OutputPath:        job.OutputPath,
+		VideoCodec:        job.Profile.Video.Codec,
+		Preset:            job.Profile.Video.Preset,
+		PixelFormat:       job.Profile.Video.PixelFormat,
+		CRFMin:            job.Profile.Video.CRFMin,
+		CRFMax:            job.Profile.Video.CRFMax,
+		TargetVMAF:        job.Profile.Video.TargetVMAF,
+		MinSavingsPercent: job.Profile.Video.MinSavingsPercent,
+		Threads:           job.Resources.Threads,
+		Container:         job.Profile.Container,
+		CropFilter:        job.Metadata.CropFilter,
+		SubtitleMode:      job.Profile.Subtitles.Mode,
 	}
 }
 
@@ -135,12 +153,16 @@ func crfMax(plan domain.EncodePlan) int {
 }
 
 var (
-	crfPattern  = regexp.MustCompile(`(?i)\bcrf\b[^0-9]*(\d{1,3})`)
-	vmafPattern = regexp.MustCompile(`(?i)\bvmaf\b[^0-9]*(\d+(?:\.\d+)?)`)
+	crfPattern       = regexp.MustCompile(`(?i)\bcrf\b[^0-9]*(\d{1,3})`)
+	vmafPattern      = regexp.MustCompile(`(?i)\bvmaf\b[^0-9]*(\d+(?:\.\d+)?)`)
+	noGoodCRFPattern = regexp.MustCompile(`(?i)(failed to find a suitable crf|no suitable crf|no good crf|not worth (?:av1 )?encoding)`)
 )
 
 func ParseResult(output []byte) (domain.SearchResult, error) {
 	text := string(output)
+	if search, ok := ParseSkipResult(text); ok {
+		return search, nil
+	}
 	crf, ok := lastIntMatch(crfPattern, text)
 	if !ok {
 		return domain.SearchResult{}, fmt.Errorf("parse ab-av1 output: CRF not found")
@@ -150,6 +172,16 @@ func ParseResult(output []byte) (domain.SearchResult, error) {
 		CRF:  crf,
 		VMAF: vmaf,
 	}, nil
+}
+
+func ParseSkipResult(text string) (domain.SearchResult, bool) {
+	if !noGoodCRFPattern.MatchString(text) {
+		return domain.SearchResult{}, false
+	}
+	return domain.SearchResult{
+		SkipVideoEncode:       true,
+		VideoEncodeSkipReason: noGoodCRFReason(text),
+	}, true
 }
 
 func lastIntMatch(pattern *regexp.Regexp, text string) (int, bool) {
@@ -168,4 +200,39 @@ func lastFloatMatch(pattern *regexp.Regexp, text string) (float64, bool) {
 	}
 	value, err := strconv.ParseFloat(matches[len(matches)-1][1], 64)
 	return value, err == nil
+}
+
+func noGoodCRFReason(text string) string {
+	for _, line := range strings.Split(text, "\n") {
+		line = strings.TrimSpace(line)
+		if noGoodCRFPattern.MatchString(line) {
+			return "ab-av1 did not find a CRF satisfying VMAF/size constraints: " + line
+		}
+	}
+	return "ab-av1 did not find a CRF satisfying VMAF/size constraints"
+}
+
+func combinedOutput(result process.Result) string {
+	stdout := strings.TrimSpace(string(result.Stdout))
+	stderr := strings.TrimSpace(string(result.Stderr))
+	switch {
+	case stdout == "":
+		return stderr
+	case stderr == "":
+		return stdout
+	default:
+		return stdout + "\n" + stderr
+	}
+}
+
+func outputHint(result process.Result) string {
+	text := combinedOutput(result)
+	if text == "" {
+		return ""
+	}
+	text = strings.ReplaceAll(text, "\n", " ")
+	if len(text) > 500 {
+		text = text[:500] + "..."
+	}
+	return ": " + text
 }

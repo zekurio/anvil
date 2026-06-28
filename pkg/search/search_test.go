@@ -2,6 +2,7 @@ package search
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/zekurio/anvil/pkg/domain"
@@ -25,14 +26,15 @@ func TestParseResultUsesLastCRFAndVMAF(t *testing.T) {
 func TestABAV1BuildsCommandAndParsesOutput(t *testing.T) {
 	runner := fakeRunner{stdout: []byte("crf 30 vmaf 96.2")}
 	result, err := ABAV1{Runner: runner}.Search(context.Background(), domain.EncodePlan{
-		InputPath:   "/input.mkv",
-		VideoCodec:  "libsvtav1",
-		Preset:      "6",
-		CRFMin:      18,
-		CRFMax:      40,
-		TargetVMAF:  95,
-		Threads:     4,
-		PixelFormat: "yuv420p10le",
+		InputPath:         "/input.mkv",
+		VideoCodec:        "libsvtav1",
+		Preset:            "6",
+		CRFMin:            18,
+		CRFMax:            40,
+		TargetVMAF:        95,
+		Threads:           4,
+		PixelFormat:       "yuv420p10le",
+		MinSavingsPercent: 20,
 	})
 	if err != nil {
 		t.Fatalf("Search() error = %v", err)
@@ -45,6 +47,9 @@ func TestABAV1BuildsCommandAndParsesOutput(t *testing.T) {
 	}
 	if !containsArg(result.RawCommand, "--min-vmaf") {
 		t.Fatalf("raw command = %v, want --min-vmaf", result.RawCommand)
+	}
+	if !containsPair(result.RawCommand, "--max-encoded-percent", "80") {
+		t.Fatalf("raw command = %v, want --max-encoded-percent 80", result.RawCommand)
 	}
 	if containsArg(result.RawCommand, "--threads") {
 		t.Fatalf("raw command = %v, did not expect unsupported --threads", result.RawCommand)
@@ -69,6 +74,71 @@ func TestSearchArgsIncludesCropFilter(t *testing.T) {
 	}
 }
 
+func TestSearchArgsMapsMinimumSavingsToMaxEncodedPercent(t *testing.T) {
+	args := SearchArgs(domain.EncodePlan{
+		InputPath:         "/input.mkv",
+		CRFMin:            18,
+		CRFMax:            40,
+		MinSavingsPercent: 12.5,
+	})
+	if !containsPair(args, "--max-encoded-percent", "87.5") {
+		t.Fatalf("SearchArgs() = %v, want --max-encoded-percent 87.5", args)
+	}
+}
+
+func TestParseResultReturnsSkipForNoSuitableCRF(t *testing.T) {
+	result, err := ParseResult([]byte("crf 18 vmaf 94.7 (103%)\nError: Failed to find a suitable crf\n"))
+	if err != nil {
+		t.Fatalf("ParseResult() error = %v", err)
+	}
+	if !result.SkipVideoEncode {
+		t.Fatal("SkipVideoEncode = false, want true")
+	}
+	if result.CRF != 0 {
+		t.Fatalf("CRF = %d, want 0", result.CRF)
+	}
+	if result.VideoEncodeSkipReason == "" {
+		t.Fatal("VideoEncodeSkipReason is empty")
+	}
+}
+
+func TestABAV1ConvertsExpectedNoSuitableCRFErrorToSkip(t *testing.T) {
+	runner := fakeRunner{
+		stdout: []byte("crf 18 vmaf 94.7 (103%)\n"),
+		stderr: []byte("Error: Failed to find a suitable crf\n"),
+		err:    errors.New("exit status 1"),
+	}
+	result, err := ABAV1{Runner: runner}.Search(context.Background(), domain.EncodePlan{
+		InputPath: "/input.mkv",
+		CRFMin:    18,
+		CRFMax:    40,
+	})
+	if err != nil {
+		t.Fatalf("Search() error = %v", err)
+	}
+	if !result.SkipVideoEncode {
+		t.Fatal("SkipVideoEncode = false, want true")
+	}
+	if result.RawOutput == "" || len(result.RawCommand) == 0 {
+		t.Fatalf("result = %#v, want captured output and command", result)
+	}
+}
+
+func TestABAV1KeepsUnrelatedFailuresFatal(t *testing.T) {
+	runner := fakeRunner{
+		stderr: []byte("Error: Invalid --min-crf & --max-crf\n"),
+		err:    errors.New("exit status 2"),
+	}
+	_, err := ABAV1{Runner: runner}.Search(context.Background(), domain.EncodePlan{
+		InputPath: "/input.mkv",
+		CRFMin:    40,
+		CRFMax:    18,
+	})
+	if err == nil {
+		t.Fatal("Search() error = nil, want fatal error")
+	}
+}
+
 func TestBlockSkipsSearchForAnvilEncodedVideo(t *testing.T) {
 	job := &pipeline.JobContext{
 		InputPath: "/input.mkv",
@@ -84,10 +154,21 @@ func TestBlockSkipsSearchForAnvilEncodedVideo(t *testing.T) {
 
 type fakeRunner struct {
 	stdout []byte
+	stderr []byte
+	err    error
 }
 
 func (f fakeRunner) Run(_ context.Context, command process.Command) (process.Result, error) {
-	return process.Result{Command: command.ArgsWithName(), Stdout: f.stdout}, nil
+	exitCode := 0
+	if f.err != nil {
+		exitCode = 1
+	}
+	return process.Result{
+		Command:  command.ArgsWithName(),
+		Stdout:   f.stdout,
+		Stderr:   f.stderr,
+		ExitCode: exitCode,
+	}, f.err
 }
 
 type failingSearcher struct{}

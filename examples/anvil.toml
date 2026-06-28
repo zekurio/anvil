@@ -28,6 +28,7 @@ pixel_format = "yuv420p10le"
 crf_min = 18
 crf_max = 40
 target_vmaf = 95
+min_savings_percent = 20
 
 [profiles.default-av1.audio]
 languages_to_keep = ["orig", "deu"]

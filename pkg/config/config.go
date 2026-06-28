@@ -32,6 +32,7 @@ const (
 	DefaultStreamMode      = "preserve"
 	DefaultStreamFallback  = "keep_all"
 	DefaultMetadataMode    = "preserve"
+	DefaultMinSavingsPct   = 20
 )
 
 var DefaultIgnorableGlobs = []string{
@@ -93,12 +94,13 @@ type ProfileConfig struct {
 
 // VideoConfig contains the initial video settings shape for AV1 search work.
 type VideoConfig struct {
-	Codec       string  `toml:"codec"`
-	Preset      string  `toml:"preset"`
-	PixelFormat string  `toml:"pixel_format"`
-	CRFMin      int     `toml:"crf_min"`
-	CRFMax      int     `toml:"crf_max"`
-	TargetVMAF  float64 `toml:"target_vmaf"`
+	Codec             string  `toml:"codec"`
+	Preset            string  `toml:"preset"`
+	PixelFormat       string  `toml:"pixel_format"`
+	CRFMin            int     `toml:"crf_min"`
+	CRFMax            int     `toml:"crf_max"`
+	TargetVMAF        float64 `toml:"target_vmaf"`
+	MinSavingsPercent float64 `toml:"min_savings_percent"`
 }
 
 // AudioConfig declares track retention intent. It is conservative by default.
@@ -213,12 +215,13 @@ func Default() Config {
 			DefaultProfileName: {
 				Container: "mkv",
 				Video: VideoConfig{
-					Codec:       "libsvtav1",
-					Preset:      "6",
-					PixelFormat: "yuv420p10le",
-					CRFMin:      18,
-					CRFMax:      40,
-					TargetVMAF:  95,
+					Codec:             "libsvtav1",
+					Preset:            "6",
+					PixelFormat:       "yuv420p10le",
+					CRFMin:            18,
+					CRFMax:            40,
+					TargetVMAF:        95,
+					MinSavingsPercent: DefaultMinSavingsPct,
 				},
 				Audio: AudioConfig{
 					Fallback: DefaultStreamFallback,
@@ -304,6 +307,9 @@ func (c Config) Validate() error {
 		}
 		if profile.Video.TargetVMAF < 0 || profile.Video.TargetVMAF > 100 {
 			problems = append(problems, fmt.Sprintf("profile %q target_vmaf must be between 0 and 100", name))
+		}
+		if profile.Video.MinSavingsPercent < 0 || profile.Video.MinSavingsPercent > 100 {
+			problems = append(problems, fmt.Sprintf("profile %q min_savings_percent must be between 0 and 100", name))
 		}
 		if !validStreamFallback(profile.Audio.Fallback) {
 			problems = append(problems, fmt.Sprintf("profile %q audio.fallback %q is invalid", name, profile.Audio.Fallback))
