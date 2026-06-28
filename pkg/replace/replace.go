@@ -17,60 +17,116 @@ import (
 
 type Manager struct{}
 
+type ReplacementPlan struct {
+	Action        string
+	Mode          domain.ReplacementMode
+	SidecarPath   string
+	ReplaceTarget string
+	BackupPath    string
+}
+
+type HandoffPlan struct {
+	Action             string
+	Mode               domain.HandoffMode
+	Destination        string
+	CleanupSourceMedia bool
+	PruneEmptyDirs     bool
+	SourceMediaPath    string
+	PruneStart         string
+}
+
 func (Manager) Replace(_ context.Context, inputPath string, candidatePath string, mode domain.ReplacementMode) (string, error) {
-	if inputPath == "" {
-		return "", errors.New("replace input path is required")
+	plan, err := PlanReplacement(inputPath, candidatePath, mode)
+	if err != nil {
+		return "", err
 	}
-	if candidatePath == "" {
-		return "", errors.New("replace candidate path is required")
-	}
-	switch mode {
-	case domain.ReplacementModeSidecar:
-		finalPath := sidecarPath(inputPath, filepath.Ext(candidatePath))
-		if err := copyFile(candidatePath, finalPath); err != nil {
+	switch plan.Action {
+	case "sidecar":
+		if err := copyFile(candidatePath, plan.SidecarPath); err != nil {
 			return "", err
 		}
-		return finalPath, nil
+		return plan.SidecarPath, nil
 	default:
 		return replaceFile(inputPath, candidatePath)
 	}
 }
 
+func PlanReplacement(inputPath string, candidatePath string, mode domain.ReplacementMode) (ReplacementPlan, error) {
+	if inputPath == "" {
+		return ReplacementPlan{}, errors.New("replace input path is required")
+	}
+	if candidatePath == "" {
+		return ReplacementPlan{}, errors.New("replace candidate path is required")
+	}
+	plan := ReplacementPlan{Mode: mode}
+	switch mode {
+	case domain.ReplacementModeSidecar:
+		plan.Action = "sidecar"
+		plan.SidecarPath = sidecarPath(inputPath, filepath.Ext(candidatePath))
+	default:
+		plan.Action = "replace"
+		plan.ReplaceTarget = inputPath
+		plan.BackupPath = inputPath + ".anvil.bak"
+	}
+	return plan, nil
+}
+
 func (m Manager) Handoff(_ context.Context, job *pipeline.JobContext) (string, error) {
-	if job == nil {
-		return "", errors.New("handoff job context is required")
-	}
-	if strings.TrimSpace(job.Library.Download.HandoffPath) == "" {
-		return "", errors.New("download handoff path is required")
-	}
-	destination, err := handoffDestination(job, filepath.Ext(job.OutputPath))
+	plan, err := PlanHandoff(job)
 	if err != nil {
 		return "", err
 	}
-	if err := os.MkdirAll(filepath.Dir(destination), 0o750); err != nil {
+	if err := os.MkdirAll(filepath.Dir(plan.Destination), 0o750); err != nil {
 		return "", fmt.Errorf("create handoff destination dir: %w", err)
 	}
-	switch job.Library.Download.HandoffMode {
+	switch plan.Mode {
 	case domain.HandoffModeMove:
-		if err := moveFile(job.OutputPath, destination); err != nil {
+		if err := moveFile(job.OutputPath, plan.Destination); err != nil {
 			return "", err
 		}
 	default:
-		if err := copyFile(job.OutputPath, destination); err != nil {
+		if err := copyFile(job.OutputPath, plan.Destination); err != nil {
 			return "", err
 		}
 	}
-	if job.Library.Download.CleanupSourceMedia {
-		if err := os.Remove(job.InputPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+	if plan.CleanupSourceMedia {
+		if err := os.Remove(plan.SourceMediaPath); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return "", fmt.Errorf("remove source media after handoff: %w", err)
 		}
-		if job.Library.Download.PruneEmptyDirs {
-			if err := PruneEmptyDirs(job.Library.Path, filepath.Dir(job.InputPath), job.Library.Download.IgnorableGlobs); err != nil {
+		if plan.PruneEmptyDirs {
+			if err := PruneEmptyDirs(job.Library.Path, plan.PruneStart, job.Library.Download.IgnorableGlobs); err != nil {
 				return "", err
 			}
 		}
 	}
-	return destination, nil
+	return plan.Destination, nil
+}
+
+func PlanHandoff(job *pipeline.JobContext) (HandoffPlan, error) {
+	if job == nil {
+		return HandoffPlan{}, errors.New("handoff job context is required")
+	}
+	if strings.TrimSpace(job.Library.Download.HandoffPath) == "" {
+		return HandoffPlan{}, errors.New("download handoff path is required")
+	}
+	destination, err := handoffDestination(job, filepath.Ext(job.OutputPath))
+	if err != nil {
+		return HandoffPlan{}, err
+	}
+	mode := job.Library.Download.HandoffMode
+	action := "copy"
+	if mode == domain.HandoffModeMove {
+		action = "move"
+	}
+	return HandoffPlan{
+		Action:             action,
+		Mode:               mode,
+		Destination:        destination,
+		CleanupSourceMedia: job.Library.Download.CleanupSourceMedia,
+		PruneEmptyDirs:     job.Library.Download.PruneEmptyDirs,
+		SourceMediaPath:    job.InputPath,
+		PruneStart:         filepath.Dir(job.InputPath),
+	}, nil
 }
 
 type ReplaceBlock struct {

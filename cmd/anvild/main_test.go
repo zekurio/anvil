@@ -103,6 +103,34 @@ func TestParseOptionsRejectsInspectWithoutSingleJob(t *testing.T) {
 	}
 }
 
+func TestParseOptionsParsesPreflightCommand(t *testing.T) {
+	opts, err := parseOptions([]string{"preflight", "--config", "anvil.toml", "--library", "movies", "--limit", "10", "--json"})
+	if err != nil {
+		t.Fatalf("parseOptions() error = %v", err)
+	}
+	if opts.command != commandPreflight {
+		t.Fatalf("command = %q, want preflight", opts.command)
+	}
+	if opts.configPath != "anvil.toml" {
+		t.Fatalf("config path = %q, want anvil.toml", opts.configPath)
+	}
+	if opts.libraryName != "movies" {
+		t.Fatalf("library = %q, want movies", opts.libraryName)
+	}
+	if opts.preflightLimit != 10 {
+		t.Fatalf("preflight limit = %d, want 10", opts.preflightLimit)
+	}
+	if !opts.jsonOutput {
+		t.Fatal("json output = false, want true")
+	}
+}
+
+func TestParseOptionsRejectsNegativePreflightLimit(t *testing.T) {
+	if _, err := parseOptions([]string{"preflight", "--limit", "-1"}); err == nil {
+		t.Fatal("parseOptions() error = nil, want negative limit rejection")
+	}
+}
+
 func TestParseOptionsParsesRetryCommand(t *testing.T) {
 	opts, err := parseOptions([]string{"retry", "12", "13"})
 	if err != nil {
