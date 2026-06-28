@@ -10,7 +10,7 @@ The implemented default path is:
 probe -> crop-detect -> audio-cleanup -> stage -> crf-search -> encode -> validate -> replace/handoff -> cleanup
 ```
 
-The mock library smoke test exercises generated media, mock Radarr/Sonarr metadata, media sidecar output, download handoff, SQLite state, staging cleanup, and captured process logs.
+The mock library smoke test exercises generated media, mock Radarr/Sonarr metadata, media copy output, download handoff, SQLite state, staging cleanup, and captured process logs.
 
 ## Durable State
 

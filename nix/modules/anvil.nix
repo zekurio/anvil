@@ -385,7 +385,7 @@ let
       media.replacementMode = mkOption {
         type = types.enum [
           "replace"
-          "sidecar"
+          "copy"
         ];
         default = "replace";
         description = "Completion behavior for media libraries.";

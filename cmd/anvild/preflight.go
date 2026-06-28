@@ -147,7 +147,7 @@ type preflightPaths struct {
 type preflightPublish struct {
 	Action             string            `json:"action"`
 	Mode               string            `json:"mode,omitempty"`
-	SidecarPath        string            `json:"sidecar_path,omitempty"`
+	CopyPath           string            `json:"copy_path,omitempty"`
 	ReplaceTarget      string            `json:"replace_target,omitempty"`
 	ReplacementBackup  string            `json:"replacement_backup,omitempty"`
 	HandoffDestination string            `json:"handoff_destination,omitempty"`
@@ -397,7 +397,7 @@ func preflightPublishPlan(flow domain.Flow, library domain.Library, job *pipelin
 		}
 		publish.Action = plan.Action
 		publish.Mode = string(plan.Mode)
-		publish.SidecarPath = plan.SidecarPath
+		publish.CopyPath = plan.CopyPath
 		publish.ReplaceTarget = plan.ReplaceTarget
 		publish.ReplacementBackup = plan.BackupPath
 		publish.Destructive = plan.Action == "replace"
@@ -471,7 +471,7 @@ func preflightExcludeWarnings(candidate scanner.CandidatePlan) []string {
 	lower := strings.ToLower(candidate.LibraryRelativePath)
 	var warnings []string
 	if strings.Contains(lower, ".anvil") && !candidate.Ignored {
-		warnings = append(warnings, "candidate path looks like an Anvil output or sidecar; add an explicit exclude for .anvil outputs")
+		warnings = append(warnings, "candidate path looks like an Anvil output; add an explicit exclude for .anvil outputs")
 	}
 	if (strings.Contains(lower, "/.staging/") || strings.HasPrefix(lower, ".staging/")) && !candidate.Ignored {
 		warnings = append(warnings, "candidate path appears to be under staging; add an explicit staging exclude")
@@ -628,8 +628,8 @@ func printPreflightReport(report preflightReport) {
 
 func printPreflightPublish(publish preflightPublish) {
 	switch publish.Action {
-	case "sidecar":
-		fmt.Fprintf(os.Stdout, "  publish: sidecar %s\n", publish.SidecarPath)
+	case "copy":
+		fmt.Fprintf(os.Stdout, "  publish: copy %s\n", publish.CopyPath)
 	case "replace":
 		fmt.Fprintf(os.Stdout, "  publish: replace target=%s backup=%s\n", publish.ReplaceTarget, publish.ReplacementBackup)
 	case "handoff":

@@ -57,7 +57,7 @@ type ReplacementMode string
 
 const (
 	ReplacementModeReplace ReplacementMode = "replace"
-	ReplacementModeSidecar ReplacementMode = "sidecar"
+	ReplacementModeCopy    ReplacementMode = "copy"
 )
 
 type DownloadLibraryPolicy struct {

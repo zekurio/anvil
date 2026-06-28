@@ -154,7 +154,7 @@ func TestScanDownloadLibrarySkipsUnstablePackage(t *testing.T) {
 	}
 }
 
-func TestScanDownloadLibraryStabilityIncludesSidecarFiles(t *testing.T) {
+func TestScanDownloadLibraryStabilityIncludesCompanionFiles(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
 	now := testNow()
