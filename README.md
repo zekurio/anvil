@@ -91,6 +91,8 @@ Useful operator commands:
 ```sh
 go run ./cmd/anvild scan --config examples/anvil.toml
 go run ./cmd/anvild scan --config examples/anvil.toml --library movies
+go run ./cmd/anvild preflight --config examples/anvil.toml --library movies --limit 20
+go run ./cmd/anvild preflight --config examples/anvil.toml --json
 go run ./cmd/anvild jobs --config examples/anvil.toml --state pending,failed
 go run ./cmd/anvild jobs --config examples/anvil.toml --json
 go run ./cmd/anvild inspect --config examples/anvil.toml 42
@@ -102,6 +104,8 @@ go run ./cmd/anvild cleanup-staging --config examples/anvil.toml --older-than 24
 ```
 
 Send `SIGHUP` to reload config without restarting. Reload can update libraries, flows, profiles, Arr settings, worker count, thread count, intervals, retry policy, shutdown policy, and log level. Changes to `daemon.store_path` or `daemon.temp_dir` are rejected and require a restart.
+
+`preflight` is read-only: it does not migrate or mutate SQLite and does not create, copy, move, delete, or write media, staging, or log files. It reports scan candidates, existing job status, resolved flow/profile steps, staging/output paths with `job-<new>-attempt-<new>` placeholders where needed, planned publish and cleanup actions, and warnings for destructive settings. Search policy output is described as `ab-av1`/CRF-search driven; when search decides AV1 fitting is not worthwhile, the preflight plan represents the remaining configured actions as video-copy/remux/metadata processing without applying an AV1 CRF encode.
 
 With Nix:
 

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -69,6 +70,35 @@ func Open(ctx context.Context, path string) (*SQLiteStore, error) {
 	return store, nil
 }
 
+func OpenReadOnly(ctx context.Context, path string) (*SQLiteStore, error) {
+	if strings.TrimSpace(path) == "" {
+		return nil, errors.New("store path is required")
+	}
+	if path == ":memory:" {
+		return nil, ErrNotFound
+	}
+	if !strings.HasPrefix(path, "file:") {
+		if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
+			return nil, ErrNotFound
+		} else if err != nil {
+			return nil, fmt.Errorf("stat sqlite store %q: %w", path, err)
+		}
+	}
+
+	db, err := sql.Open("sqlite", readOnlyDSN(path))
+	if err != nil {
+		return nil, fmt.Errorf("open read-only sqlite store: %w", err)
+	}
+	db.SetMaxOpenConns(1)
+
+	store := &SQLiteStore{db: db}
+	if err := store.configureReadOnly(ctx); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	return store, nil
+}
+
 func (s *SQLiteStore) Close() error {
 	if s == nil || s.db == nil {
 		return nil
@@ -121,6 +151,17 @@ FROM media_sources
 WHERE library_name = ? AND relative_path = ?
 `, string(libraryName), relativePath)
 	return scanMediaSource(row)
+}
+
+func (s *SQLiteStore) FindMediaSourceByPath(ctx context.Context, libraryName domain.LibraryName, relativePath string) (domain.MediaSource, bool, error) {
+	source, err := s.GetMediaSourceByPath(ctx, libraryName, relativePath)
+	if errors.Is(err, ErrNotFound) {
+		return domain.MediaSource{}, false, nil
+	}
+	if err != nil {
+		return domain.MediaSource{}, false, err
+	}
+	return source, true, nil
 }
 
 func (s *SQLiteStore) GetMediaSource(ctx context.Context, id domain.MediaSourceID) (domain.MediaSource, error) {
@@ -183,6 +224,17 @@ WHERE source_id = ? AND relative_path = ?
 	return scanMediaAsset(row)
 }
 
+func (s *SQLiteStore) FindMediaAssetByPath(ctx context.Context, sourceID domain.MediaSourceID, relativePath string) (domain.MediaAsset, bool, error) {
+	asset, err := s.GetMediaAssetByPath(ctx, sourceID, relativePath)
+	if errors.Is(err, ErrNotFound) {
+		return domain.MediaAsset{}, false, nil
+	}
+	if err != nil {
+		return domain.MediaAsset{}, false, err
+	}
+	return asset, true, nil
+}
+
 func (s *SQLiteStore) GetMediaAsset(ctx context.Context, id domain.MediaAssetID) (domain.MediaAsset, error) {
 	row := s.db.QueryRowContext(ctx, `
 SELECT id, source_id, relative_path, role, status, size_bytes, mod_time,
@@ -228,6 +280,17 @@ ORDER BY id DESC
 LIMIT 1
 `, int64(sourceID), int64(assetID))
 	return scanJob(row)
+}
+
+func (s *SQLiteStore) FindJobForTarget(ctx context.Context, sourceID domain.MediaSourceID, assetID domain.MediaAssetID) (domain.Job, bool, error) {
+	job, err := s.GetJobForTarget(ctx, sourceID, assetID)
+	if errors.Is(err, ErrNotFound) {
+		return domain.Job{}, false, nil
+	}
+	if err != nil {
+		return domain.Job{}, false, err
+	}
+	return job, true, nil
 }
 
 func (s *SQLiteStore) ListJobs(ctx context.Context, filter JobListFilter) ([]JobSummary, error) {
@@ -811,6 +874,19 @@ func (s *SQLiteStore) configure(ctx context.Context) error {
 	return nil
 }
 
+func (s *SQLiteStore) configureReadOnly(ctx context.Context) error {
+	pragmas := []string{
+		"PRAGMA foreign_keys = ON",
+		"PRAGMA busy_timeout = 5000",
+	}
+	for _, pragma := range pragmas {
+		if _, err := s.db.ExecContext(ctx, pragma); err != nil {
+			return fmt.Errorf("configure read-only sqlite %q: %w", pragma, err)
+		}
+	}
+	return nil
+}
+
 func (s *SQLiteStore) migrate(ctx context.Context) error {
 	if _, err := s.db.ExecContext(ctx, `
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -1192,4 +1268,25 @@ func ensureParentDir(path string) error {
 		return fmt.Errorf("create store directory %q: %w", dir, err)
 	}
 	return nil
+}
+
+func readOnlyDSN(path string) string {
+	if strings.HasPrefix(path, "file:") {
+		parsed, err := url.Parse(path)
+		if err != nil {
+			return path
+		}
+		query := parsed.Query()
+		query.Set("mode", "ro")
+		parsed.RawQuery = query.Encode()
+		return parsed.String()
+	}
+	uri := url.URL{
+		Scheme: "file",
+		Path:   path,
+	}
+	query := uri.Query()
+	query.Set("mode", "ro")
+	uri.RawQuery = query.Encode()
+	return uri.String()
 }

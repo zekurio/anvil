@@ -31,6 +31,7 @@ const (
 	commandRun         = "run"
 	commandCheckConfig = "check-config"
 	commandScan        = "scan"
+	commandPreflight   = "preflight"
 	commandJobs        = "jobs"
 	commandInspect     = "inspect"
 	commandRetry       = "retry"
@@ -52,6 +53,7 @@ type options struct {
 	jobStates       []domain.JobState
 	jobStateFilter  string
 	jobLimit        int
+	preflightLimit  int
 	jsonOutput      bool
 	retryFailed     bool
 	jobIDs          []domain.JobID
@@ -112,6 +114,8 @@ func run(args []string) error {
 		return runCheckConfig(cfg, opts)
 	case commandScan:
 		return runScanCommand(context.Background(), cfg, opts)
+	case commandPreflight:
+		return runPreflightCommand(context.Background(), cfg, opts)
 	case commandJobs:
 		return runJobsCommand(context.Background(), cfg, opts)
 	case commandInspect:
@@ -170,6 +174,10 @@ func parseCommandOptions(opts options, args []string) (options, error) {
 	case commandCheckConfig:
 	case commandScan:
 		flags.StringVar(&opts.libraryName, "library", "", "scan one configured library")
+	case commandPreflight:
+		flags.StringVar(&opts.libraryName, "library", "", "preflight one configured library")
+		flags.IntVar(&opts.preflightLimit, "limit", 0, "maximum candidates to show; 0 means no limit")
+		flags.BoolVar(&opts.jsonOutput, "json", false, "write JSON output")
 	case commandJobs:
 		flags.StringVar(&opts.libraryName, "library", "", "filter by library name")
 		flags.StringVar(&opts.jobStateFilter, "state", "", "comma-separated job states to show")
@@ -193,6 +201,13 @@ func parseCommandOptions(opts options, args []string) (options, error) {
 	}
 
 	switch opts.command {
+	case commandPreflight:
+		if opts.preflightLimit < 0 {
+			return options{}, errors.New("preflight --limit must be non-negative")
+		}
+		if flags.NArg() > 0 {
+			return options{}, fmt.Errorf("preflight does not accept arguments: %v", flags.Args())
+		}
 	case commandJobs:
 		states, err := parseJobStates(opts.jobStateFilter)
 		if err != nil {
@@ -784,7 +799,7 @@ func parseJobIDs(args []string) ([]domain.JobID, error) {
 
 func isCommand(value string) bool {
 	switch value {
-	case commandRun, commandCheckConfig, commandScan, commandJobs, commandInspect, commandRetry, commandRecover, commandCleanup, commandHelp:
+	case commandRun, commandCheckConfig, commandScan, commandPreflight, commandJobs, commandInspect, commandRetry, commandRecover, commandCleanup, commandHelp:
 		return true
 	default:
 		return false
@@ -797,6 +812,7 @@ func printUsage() {
   anvild run [--config PATH] [--daemon] [--shutdown-policy drain|cancel] [--shutdown-timeout DURATION]
   anvild check-config [--config PATH]
   anvild scan [--config PATH] [--library NAME]
+  anvild preflight [--config PATH] [--library NAME] [--limit N] [--json]
   anvild jobs [--config PATH] [--library NAME] [--state pending,failed] [--limit N] [--json]
   anvild inspect [--config PATH] [--json] JOB_ID
   anvild retry [--config PATH] JOB_ID...
