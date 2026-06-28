@@ -29,6 +29,15 @@ path = "/srv/media/movies"
 	if got := cfg.Profiles[DefaultProfileName].Audio.Fallback; got != DefaultStreamFallback {
 		t.Fatalf("expected default audio fallback %q, got %q", DefaultStreamFallback, got)
 	}
+	if got := cfg.Daemon.ShutdownPolicy; got != DefaultShutdownPolicy {
+		t.Fatalf("expected default shutdown policy %q, got %q", DefaultShutdownPolicy, got)
+	}
+	if got := cfg.Daemon.ShutdownTimeout; got != DefaultShutdownTimeout {
+		t.Fatalf("expected default shutdown timeout %q, got %q", DefaultShutdownTimeout, got)
+	}
+	if got := cfg.Daemon.StagingCleanupAge; got != DefaultStagingCleanup {
+		t.Fatalf("expected default staging cleanup age %q, got %q", DefaultStagingCleanup, got)
+	}
 	if got := cfg.Libraries["movies"].Flow; got != DefaultFlowName {
 		t.Fatalf("expected default flow %q, got %q", DefaultFlowName, got)
 	}
@@ -78,6 +87,23 @@ path = "/srv/media/movies"
 	_, err := Load(path)
 	if err == nil {
 		t.Fatal("Load() error = nil, want invalid daemon durations")
+	}
+}
+
+func TestLoadRejectsInvalidShutdownPolicy(t *testing.T) {
+	path := writeConfig(t, `
+[daemon]
+shutdown_policy = "hibernate"
+shutdown_timeout = "-1s"
+staging_cleanup_age = "-1s"
+
+[libraries.movies]
+path = "/srv/media/movies"
+`)
+
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("Load() error = nil, want invalid shutdown settings")
 	}
 }
 
