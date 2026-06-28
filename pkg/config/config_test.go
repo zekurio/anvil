@@ -30,6 +30,9 @@ path = "/srv/media/movies"
 	if got := cfg.Profiles[DefaultProfileName].Audio.Fallback; got != DefaultStreamFallback {
 		t.Fatalf("expected default audio fallback %q, got %q", DefaultStreamFallback, got)
 	}
+	if got := cfg.Profiles[DefaultProfileName].Video.MinSavingsPercent; got != DefaultMinSavingsPct {
+		t.Fatalf("expected default min_savings_percent %d, got %v", DefaultMinSavingsPct, got)
+	}
 	if got := cfg.Daemon.ShutdownPolicy; got != DefaultShutdownPolicy {
 		t.Fatalf("expected default shutdown policy %q, got %q", DefaultShutdownPolicy, got)
 	}
@@ -126,6 +129,44 @@ profile = "missing-profile"
 	_, err := Load(path)
 	if err == nil {
 		t.Fatal("Load() error = nil, want invalid references")
+	}
+}
+
+func TestLoadMapsMinimumSavingsPolicyToDomainProfile(t *testing.T) {
+	path := writeConfig(t, `
+[profiles.default-av1.video]
+min_savings_percent = 25
+
+[libraries.movies]
+path = "/srv/media/movies"
+`)
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+
+	_, _, profile, err := cfg.ResolveForLibrary("movies")
+	if err != nil {
+		t.Fatalf("ResolveForLibrary() error = %v", err)
+	}
+	if got, want := profile.Video.MinSavingsPercent, 25.0; got != want {
+		t.Fatalf("MinSavingsPercent = %v, want %v", got, want)
+	}
+}
+
+func TestLoadRejectsInvalidMinimumSavingsPolicy(t *testing.T) {
+	path := writeConfig(t, `
+[profiles.default-av1.video]
+min_savings_percent = 120
+
+[libraries.movies]
+path = "/srv/media/movies"
+`)
+
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("Load() error = nil, want invalid min_savings_percent")
 	}
 }
 
