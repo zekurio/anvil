@@ -278,6 +278,20 @@ WHERE 1 = 1
 	return jobs, nil
 }
 
+func (s *SQLiteStore) GetJobSummary(ctx context.Context, id domain.JobID) (JobSummary, error) {
+	row := s.db.QueryRowContext(ctx, `
+SELECT j.id, j.source_id, j.asset_id, j.library_name, j.priority, j.state,
+	j.lease_owner, j.lease_deadline, j.heartbeat_at, j.attempt_count,
+	j.last_error, j.created_at, j.updated_at, j.completed_at,
+	s.kind, s.relative_path, a.relative_path, a.role
+FROM jobs j
+JOIN media_sources s ON s.id = j.source_id
+LEFT JOIN media_assets a ON a.id = j.asset_id
+WHERE j.id = ?
+`, int64(id))
+	return scanJobSummary(row)
+}
+
 func (s *SQLiteStore) RetryJob(ctx context.Context, id domain.JobID, now time.Time) (domain.Job, error) {
 	now = defaultNow(now)
 
@@ -754,6 +768,33 @@ FROM attempts
 WHERE id = ?
 `, int64(id))
 	return scanAttempt(row)
+}
+
+func (s *SQLiteStore) ListAttemptsForJob(ctx context.Context, jobID domain.JobID) ([]domain.Attempt, error) {
+	rows, err := s.db.QueryContext(ctx, `
+SELECT id, job_id, number, worker_id, state, resolved_library_json,
+	resolved_flow_json, resolved_profile_json, started_at, finished_at, error
+FROM attempts
+WHERE job_id = ?
+ORDER BY number ASC, id ASC
+`, int64(jobID))
+	if err != nil {
+		return nil, fmt.Errorf("list attempts for job: %w", err)
+	}
+	defer rows.Close()
+
+	var attempts []domain.Attempt
+	for rows.Next() {
+		attempt, err := scanAttempt(rows)
+		if err != nil {
+			return nil, err
+		}
+		attempts = append(attempts, attempt)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate attempts for job: %w", err)
+	}
+	return attempts, nil
 }
 
 func (s *SQLiteStore) configure(ctx context.Context) error {
