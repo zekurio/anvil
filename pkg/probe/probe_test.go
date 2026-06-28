@@ -12,7 +12,7 @@ import (
 func TestFFProbeParsesJSON(t *testing.T) {
 	runner := fakeRunner{stdout: []byte(`{
 		"streams": [
-			{"index":0,"codec_type":"video","codec_name":"hevc","tags":{"language":"eng","title":"Main"},"disposition":{"default":1}},
+			{"index":0,"codec_type":"video","codec_name":"hevc","pix_fmt":"yuv420p10le","tags":{"language":"eng","title":"Main"},"disposition":{"default":1}},
 			{"index":1,"codec_type":"audio","codec_name":"aac","tags":{"language":"jpn"},"disposition":{"default":0}}
 		],
 		"format": {"format_name":"matroska,webm","duration":"123.456","size":"98765"}
@@ -29,6 +29,9 @@ func TestFFProbeParsesJSON(t *testing.T) {
 	}
 	if result.Streams[0].Codec != "hevc" || !result.Streams[0].Disposition["default"] {
 		t.Fatalf("first stream = %+v, want hevc default", result.Streams[0])
+	}
+	if got, want := result.Streams[0].PixelFormat, "yuv420p10le"; got != want {
+		t.Fatalf("first stream pixel format = %q, want %q", got, want)
 	}
 	if got, want := result.Streams[0].Tags["title"], "Main"; got != want {
 		t.Fatalf("first stream title tag = %q, want %q", got, want)

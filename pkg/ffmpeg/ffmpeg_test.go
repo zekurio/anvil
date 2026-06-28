@@ -37,7 +37,7 @@ func TestArgsPreserveStreamsAndStripMetadata(t *testing.T) {
 	if containsPair(args, "-map", "0") {
 		t.Fatalf("Args() = %v, did not expect global stream map", args)
 	}
-	for _, pair := range [][2]string{{"-metadata:s:v:0", "anvil.encoded=true"}, {"-metadata:s:v:0", "anvil.profile=default-av1"}, {"-metadata:s:v:0", "anvil.video.crf=24"}} {
+	for _, pair := range [][2]string{{"-metadata:s:v:0", "anvil.processed=true"}, {"-metadata:s:v:0", "anvil.encoded=true"}, {"-metadata:s:v:0", "anvil.profile=default-av1"}, {"-metadata:s:v:0", "anvil.video.action=encode"}, {"-metadata:s:v:0", "anvil.video.crf=24"}} {
 		if !containsPair(args, pair[0], pair[1]) {
 			t.Fatalf("Args() = %v, missing Anvil marker %v", args, pair)
 		}
@@ -86,7 +86,13 @@ func TestArgsCopiesVideoWhenInputHasCompatibleAnvilMarker(t *testing.T) {
 	plan, err := BuildPlan(testProfile(), "/in.mkv", "/out.mkv", domain.ResourceAllocation{Threads: 2}, nil, nil, domain.JobMetadata{
 		VideoAlreadyEncoded: true,
 		CropFilter:          "crop=1920:800:0:140",
-		AnvilTags:           map[string]string{"anvil.encoded": "true", "anvil.video.crf": "29"},
+		AnvilTags: map[string]string{
+			"anvil.encoded":            "true",
+			"anvil.profile":            "default-av1",
+			"anvil.video.codec":        "libsvtav1",
+			"anvil.video.pixel_format": "yuv420p10le",
+			"anvil.video.crf":          "29",
+		},
 	})
 	if err != nil {
 		t.Fatalf("BuildPlan() error = %v", err)
@@ -109,6 +115,9 @@ func TestArgsCopiesVideoWhenInputHasCompatibleAnvilMarker(t *testing.T) {
 	}
 	if !containsPair(args, "-metadata:s:v:0", "anvil.encoded=true") {
 		t.Fatalf("Args() = %v, missing preserved encoded marker", args)
+	}
+	if !containsPair(args, "-metadata:s:v:0", marker.TagVideoAction+"=copy") {
+		t.Fatalf("Args() = %v, missing video copy marker", args)
 	}
 }
 

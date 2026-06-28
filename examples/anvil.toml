@@ -42,6 +42,9 @@ fallback = "keep_all"
 keep_forced = true
 keep_external = true
 
+[profiles.default-av1.validation]
+duration_tolerance_seconds = 2
+
 [profiles.default-av1.metadata]
 mode = "preserve"
 

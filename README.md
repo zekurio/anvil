@@ -84,6 +84,8 @@ Profiles can require AV1 encodes to save space during `ab-av1 crf-search` with `
 
 Anvil writes `anvil.processed=true` to outputs it processes. Outputs with a newly encoded video also keep the compatibility marker `anvil.encoded=true`; remux-only outputs use `anvil.video.action=copy` and `anvil.process.reason` instead of claiming a new AV1 encode.
 
+Before replace or handoff, Anvil validates the staged output against the resolved job context: probe success, duration tolerance, video codec/pixel-format intent, Anvil encoded or processed markers, audio/subtitle stream counts, and observed size savings. `profiles.<name>.validation.duration_tolerance_seconds` can override the default two-second duration tolerance. Validation records larger outputs in its size metrics but does not reject them solely for being larger than the source.
+
 Useful operator commands:
 
 ```sh
