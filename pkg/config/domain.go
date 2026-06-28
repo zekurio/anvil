@@ -136,12 +136,13 @@ func (p ProfileConfig) ToDomain() domain.Profile {
 		Name:      domain.ProfileName(p.Name),
 		Container: p.Container,
 		Video: domain.VideoProfile{
-			Codec:       p.Video.Codec,
-			Preset:      p.Video.Preset,
-			PixelFormat: p.Video.PixelFormat,
-			CRFMin:      p.Video.CRFMin,
-			CRFMax:      p.Video.CRFMax,
-			TargetVMAF:  p.Video.TargetVMAF,
+			Codec:             p.Video.Codec,
+			Preset:            p.Video.Preset,
+			PixelFormat:       p.Video.PixelFormat,
+			CRFMin:            p.Video.CRFMin,
+			CRFMax:            p.Video.CRFMax,
+			TargetVMAF:        p.Video.TargetVMAF,
+			MinSavingsPercent: p.Video.MinSavingsPercent,
 		},
 		Audio: domain.AudioProfile{
 			LanguagesToKeep:   append([]string(nil), p.Audio.LanguagesToKeep...),
@@ -158,6 +159,9 @@ func (p ProfileConfig) ToDomain() domain.Profile {
 			KeepExternal:       p.Subtitles.KeepExternal,
 			MaxTracks:          p.Subtitles.MaxTracks,
 			Fallback:           domain.StreamFallback(p.Subtitles.Fallback),
+		},
+		Validation: domain.ValidationPolicy{
+			DurationToleranceSeconds: p.Validation.DurationToleranceSeconds,
 		},
 		Metadata: domain.MetadataPolicy{
 			Mode: domain.MetadataMode(p.Metadata.Mode),

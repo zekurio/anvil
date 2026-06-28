@@ -36,6 +36,32 @@ type ScanResult struct {
 	SkippedUnstable int
 }
 
+type LibraryPlan struct {
+	Library         config.LibraryConfig
+	Candidates      []CandidatePlan
+	SkippedIgnored  int
+	SkippedUnstable int
+}
+
+type CandidatePlan struct {
+	LibraryName         domain.LibraryName
+	LibraryKind         string
+	LibraryRoot         string
+	LibraryRelativePath string
+	SourceRelativePath  string
+	AssetRelativePath   string
+	SourceKind          domain.SourceKind
+	Role                domain.MediaAssetRole
+	SizeBytes           int64
+	ModTime             time.Time
+	SourceSizeBytes     int64
+	SourceModTime       time.Time
+	Ignored             bool
+	IgnoreReason        string
+	Unstable            bool
+	Enqueueable         bool
+}
+
 func (s Scanner) Scan(ctx context.Context, cfg config.Config) (ScanResult, error) {
 	var result ScanResult
 	for name, library := range cfg.Libraries {
@@ -55,87 +81,142 @@ func (s Scanner) ScanLibrary(ctx context.Context, library config.LibraryConfig) 
 	if s.Store == nil {
 		return ScanResult{}, fmt.Errorf("scanner store is required")
 	}
+
+	plan, err := s.PlanLibrary(ctx, library)
+	if err != nil {
+		return ScanResult{}, err
+	}
+	return s.applyPlan(ctx, plan)
+}
+
+func (s Scanner) PlanLibrary(ctx context.Context, library config.LibraryConfig) (LibraryPlan, error) {
 	root := strings.TrimSpace(library.Path)
 	if root == "" {
-		return ScanResult{}, fmt.Errorf("library path is required")
+		return LibraryPlan{}, fmt.Errorf("library path is required")
 	}
 
 	now := s.now()
 	candidates, sourceStats, skipped, err := discoverCandidates(ctx, root, library)
 	if err != nil {
-		return ScanResult{}, err
-	}
-
-	discovered := groupCandidates(library, candidates, sourceStats)
-	result := ScanResult{
-		Libraries:      1,
-		SkippedIgnored: skipped,
+		return LibraryPlan{}, err
 	}
 
 	stableFor, err := parseStableFor(library)
 	if err != nil {
-		return result, err
+		return LibraryPlan{}, err
 	}
 
-	for _, source := range discovered {
-		if source.isDownload && !source.stable(now, stableFor) {
-			result.SkippedUnstable += len(source.assets)
+	plan := LibraryPlan{
+		Library:        library,
+		SkippedIgnored: skipped,
+	}
+	for _, candidate := range candidates {
+		stat := sourceStats[sourceKey(candidate.sourceKind, candidate.sourceRelativePath)]
+		if stat.modTime.IsZero() {
+			stat.sizeBytes = candidate.info.Size()
+			stat.modTime = candidate.info.ModTime()
+		}
+		unstable := library.Kind == "download" && !stable(stat.modTime, now, stableFor)
+		if candidate.ignored {
+			unstable = false
+		}
+		enqueueable := !candidate.ignored && !unstable && enqueueableRole(candidate.role)
+		if unstable {
+			plan.SkippedUnstable++
+		}
+		plan.Candidates = append(plan.Candidates, CandidatePlan{
+			LibraryName:         domain.LibraryName(library.Name),
+			LibraryKind:         library.Kind,
+			LibraryRoot:         root,
+			LibraryRelativePath: candidate.libraryRelativePath,
+			SourceRelativePath:  candidate.sourceRelativePath,
+			AssetRelativePath:   candidate.assetRelativePath,
+			SourceKind:          candidate.sourceKind,
+			Role:                candidate.role,
+			SizeBytes:           candidate.info.Size(),
+			ModTime:             candidate.info.ModTime().UTC(),
+			SourceSizeBytes:     stat.sizeBytes,
+			SourceModTime:       stat.modTime.UTC(),
+			Ignored:             candidate.ignored,
+			IgnoreReason:        candidate.ignoreReason,
+			Unstable:            unstable,
+			Enqueueable:         enqueueable,
+		})
+	}
+	return plan, nil
+}
+
+func (s Scanner) applyPlan(ctx context.Context, plan LibraryPlan) (ScanResult, error) {
+	result := ScanResult{
+		Libraries:       1,
+		SkippedIgnored:  plan.SkippedIgnored,
+		SkippedUnstable: plan.SkippedUnstable,
+	}
+	sourceByKey := make(map[string]domain.MediaSource)
+	now := s.now()
+
+	for _, candidate := range plan.Candidates {
+		if candidate.Ignored || candidate.Unstable {
 			continue
 		}
 
-		storedSource, err := s.Store.UpsertMediaSource(ctx, domain.MediaSource{
-			LibraryName:  domain.LibraryName(library.Name),
-			Kind:         source.kind,
-			RelativePath: source.relativePath,
-			Status:       domain.MediaSourceActive,
-			Fingerprint: domain.FileFingerprint{
-				SizeBytes: source.sizeBytes,
-				ModTime:   source.modTime,
-			},
-			LastSeenAt: now,
-		})
-		if err != nil {
-			return result, fmt.Errorf("upsert source %q: %w", source.relativePath, err)
-		}
-		result.Sources++
-
-		for _, asset := range source.assets {
-			storedAsset, err := s.Store.UpsertMediaAsset(ctx, domain.MediaAsset{
-				SourceID:     storedSource.ID,
-				RelativePath: asset.assetRelativePath,
-				Role:         asset.role,
-				Status:       domain.MediaAssetActive,
+		key := sourceKey(candidate.SourceKind, candidate.SourceRelativePath)
+		storedSource, exists := sourceByKey[key]
+		if !exists {
+			var err error
+			storedSource, err = s.Store.UpsertMediaSource(ctx, domain.MediaSource{
+				LibraryName:  candidate.LibraryName,
+				Kind:         candidate.SourceKind,
+				RelativePath: candidate.SourceRelativePath,
+				Status:       domain.MediaSourceActive,
 				Fingerprint: domain.FileFingerprint{
-					SizeBytes: asset.info.Size(),
-					ModTime:   asset.info.ModTime(),
+					SizeBytes: candidate.SourceSizeBytes,
+					ModTime:   candidate.SourceModTime,
 				},
 				LastSeenAt: now,
 			})
 			if err != nil {
-				return result, fmt.Errorf("upsert asset %q: %w", asset.libraryRelativePath, err)
+				return result, fmt.Errorf("upsert source %q: %w", candidate.SourceRelativePath, err)
 			}
-			result.Assets++
+			sourceByKey[key] = storedSource
+			result.Sources++
+		}
 
-			if !enqueueableRole(asset.role) {
-				result.SkippedIgnored++
-				continue
-			}
+		storedAsset, err := s.Store.UpsertMediaAsset(ctx, domain.MediaAsset{
+			SourceID:     storedSource.ID,
+			RelativePath: candidate.AssetRelativePath,
+			Role:         candidate.Role,
+			Status:       domain.MediaAssetActive,
+			Fingerprint: domain.FileFingerprint{
+				SizeBytes: candidate.SizeBytes,
+				ModTime:   candidate.ModTime,
+			},
+			LastSeenAt: now,
+		})
+		if err != nil {
+			return result, fmt.Errorf("upsert asset %q: %w", candidate.LibraryRelativePath, err)
+		}
+		result.Assets++
 
-			_, inserted, err := s.Store.EnqueueJob(ctx, store.EnqueueJobInput{
-				SourceID:    storedSource.ID,
-				AssetID:     storedAsset.ID,
-				LibraryName: storedSource.LibraryName,
-				Priority:    library.Priority,
-				Now:         now,
-			})
-			if err != nil {
-				return result, fmt.Errorf("enqueue asset %q: %w", asset.libraryRelativePath, err)
-			}
-			if inserted {
-				result.EnqueuedJobs++
-			} else {
-				result.ExistingJobs++
-			}
+		if !enqueueableRole(candidate.Role) {
+			result.SkippedIgnored++
+			continue
+		}
+
+		_, inserted, err := s.Store.EnqueueJob(ctx, store.EnqueueJobInput{
+			SourceID:    storedSource.ID,
+			AssetID:     storedAsset.ID,
+			LibraryName: storedSource.LibraryName,
+			Priority:    plan.Library.Priority,
+			Now:         now,
+		})
+		if err != nil {
+			return result, fmt.Errorf("enqueue asset %q: %w", candidate.LibraryRelativePath, err)
+		}
+		if inserted {
+			result.EnqueuedJobs++
+		} else {
+			result.ExistingJobs++
 		}
 	}
 
@@ -166,15 +247,8 @@ type candidate struct {
 	sourceKind          domain.SourceKind
 	role                domain.MediaAssetRole
 	info                fs.FileInfo
-}
-
-type discoveredSource struct {
-	relativePath string
-	kind         domain.SourceKind
-	isDownload   bool
-	sizeBytes    int64
-	modTime      time.Time
-	assets       []candidate
+	ignored             bool
+	ignoreReason        string
 }
 
 type sourceStat struct {
@@ -214,6 +288,13 @@ func discoverCandidates(ctx context.Context, root string, library config.Library
 			if entry.IsDir() {
 				return filepath.SkipDir
 			}
+			info, err := entry.Info()
+			if err != nil {
+				return err
+			}
+			if likelyMediaFile(rel) {
+				candidates = append(candidates, buildCandidate(library, rel, info, true, "excluded"))
+			}
 			skipped++
 			return nil
 		}
@@ -246,25 +327,19 @@ func discoverCandidates(ctx context.Context, root string, library config.Library
 			return err
 		}
 		if !included {
+			candidates = append(candidates, buildCandidate(library, rel, info, true, "not_included"))
 			skipped++
 			return nil
 		}
 
 		role := classifyMediaAsset(rel)
 		if role == domain.MediaAssetRoleSample {
+			candidates = append(candidates, buildCandidate(library, rel, info, true, "sample"))
 			skipped++
 			return nil
 		}
 
-		sourceRel, assetRel, sourceKind := sourceFor(library, rel)
-		candidates = append(candidates, candidate{
-			libraryRelativePath: rel,
-			assetRelativePath:   assetRel,
-			sourceRelativePath:  sourceRel,
-			sourceKind:          sourceKind,
-			role:                role,
-			info:                info,
-		})
+		candidates = append(candidates, buildCandidate(library, rel, info, false, ""))
 		return nil
 	})
 	if err != nil {
@@ -272,6 +347,20 @@ func discoverCandidates(ctx context.Context, root string, library config.Library
 	}
 
 	return candidates, sourceStats, skipped, nil
+}
+
+func buildCandidate(library config.LibraryConfig, rel string, info fs.FileInfo, ignored bool, ignoreReason string) candidate {
+	sourceRel, assetRel, sourceKind := sourceFor(library, rel)
+	return candidate{
+		libraryRelativePath: rel,
+		assetRelativePath:   assetRel,
+		sourceRelativePath:  sourceRel,
+		sourceKind:          sourceKind,
+		role:                classifyMediaAsset(rel),
+		info:                info,
+		ignored:             ignored,
+		ignoreReason:        ignoreReason,
+	}
 }
 
 func effectiveExcludeGlobs(library config.LibraryConfig) []string {
@@ -282,46 +371,9 @@ func effectiveExcludeGlobs(library config.LibraryConfig) []string {
 	return exclude
 }
 
-func groupCandidates(library config.LibraryConfig, candidates []candidate, sourceStats map[string]sourceStat) []discoveredSource {
-	bySource := make(map[string]*discoveredSource)
-	var order []string
-
-	for _, asset := range candidates {
-		key := string(asset.sourceKind) + "\x00" + asset.sourceRelativePath
-		source, exists := bySource[key]
-		if !exists {
-			source = &discoveredSource{
-				relativePath: asset.sourceRelativePath,
-				kind:         asset.sourceKind,
-				isDownload:   library.Kind == "download",
-			}
-			if stat, ok := sourceStats[key]; ok {
-				source.sizeBytes = stat.sizeBytes
-				source.modTime = stat.modTime
-			}
-			bySource[key] = source
-			order = append(order, key)
-		}
-
-		if _, ok := sourceStats[key]; !ok {
-			source.sizeBytes += asset.info.Size()
-			if asset.info.ModTime().After(source.modTime) {
-				source.modTime = asset.info.ModTime()
-			}
-		}
-		source.assets = append(source.assets, asset)
-	}
-
-	sources := make([]discoveredSource, 0, len(order))
-	for _, key := range order {
-		sources = append(sources, *bySource[key])
-	}
-	return sources
-}
-
 func recordSourceStat(stats map[string]sourceStat, library config.LibraryConfig, rel string, info fs.FileInfo) {
 	sourceRel, _, sourceKind := sourceFor(library, rel)
-	key := string(sourceKind) + "\x00" + sourceRel
+	key := sourceKey(sourceKind, sourceRel)
 	stat := stats[key]
 	stat.sizeBytes += info.Size()
 	if info.ModTime().After(stat.modTime) {
@@ -330,11 +382,15 @@ func recordSourceStat(stats map[string]sourceStat, library config.LibraryConfig,
 	stats[key] = stat
 }
 
-func (s discoveredSource) stable(now time.Time, stableFor time.Duration) bool {
+func stable(modTime time.Time, now time.Time, stableFor time.Duration) bool {
 	if stableFor <= 0 {
 		return true
 	}
-	return !s.modTime.After(now.Add(-stableFor))
+	return !modTime.After(now.Add(-stableFor))
+}
+
+func sourceKey(kind domain.SourceKind, relativePath string) string {
+	return string(kind) + "\x00" + relativePath
 }
 
 func sourceFor(library config.LibraryConfig, rel string) (string, string, domain.SourceKind) {

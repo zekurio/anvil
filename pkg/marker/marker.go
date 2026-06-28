@@ -10,13 +10,20 @@ import (
 const (
 	Version = "1"
 
+	TagProcessed        = "anvil.processed"
 	TagEncoded          = "anvil.encoded"
+	TagProcessReason    = "anvil.process.reason"
 	TagVersion          = "anvil.version"
 	TagProfile          = "anvil.profile"
+	TagVideoAction      = "anvil.video.action"
 	TagVideoCodec       = "anvil.video.codec"
 	TagVideoPixelFormat = "anvil.video.pixel_format"
 	TagVideoCRF         = "anvil.video.crf"
 	TagCrop             = "anvil.crop"
+
+	VideoActionEncode = "encode"
+	VideoActionCopy   = "copy"
+	VideoActionRemux  = "remux"
 )
 
 type Match struct {
@@ -42,6 +49,23 @@ func Detect(probe domain.ProbeResult, profile domain.Profile) Match {
 	return Match{}
 }
 
+func DetectProcessed(probe domain.ProbeResult, profile domain.Profile) Match {
+	for _, stream := range probe.Streams {
+		if stream.Type != "video" {
+			continue
+		}
+		tags := NormalizeTags(stream.Tags)
+		if !truthy(tags[TagProcessed]) {
+			continue
+		}
+		if profile.Name != "" && tags[TagProfile] != string(profile.Name) {
+			return Match{Tags: tags, CropFilter: tags[TagCrop]}
+		}
+		return Match{Compatible: true, Tags: tags, CropFilter: tags[TagCrop]}
+	}
+	return Match{}
+}
+
 func NormalizeTags(tags map[string]string) map[string]string {
 	normalized := make(map[string]string, len(tags))
 	for key, value := range tags {
@@ -55,7 +79,7 @@ func NormalizeTags(tags map[string]string) map[string]string {
 }
 
 func OutputTags(plan domain.EncodePlan) map[string]string {
-	tags := make(map[string]string, len(plan.AnvilTags)+6)
+	tags := make(map[string]string, len(plan.AnvilTags)+9)
 	for key, value := range plan.AnvilTags {
 		key = strings.ToLower(strings.TrimSpace(key))
 		value = strings.TrimSpace(value)
@@ -63,18 +87,29 @@ func OutputTags(plan domain.EncodePlan) map[string]string {
 			tags[key] = value
 		}
 	}
-	tags[TagEncoded] = "true"
+	tags[TagProcessed] = "true"
 	tags[TagVersion] = Version
 	if plan.ProfileName != "" {
 		tags[TagProfile] = string(plan.ProfileName)
 	}
+
+	if plan.VideoCopy {
+		tags[TagVideoAction] = VideoActionCopy
+		if plan.VideoCopyReason != "" {
+			tags[TagProcessReason] = plan.VideoCopyReason
+		}
+		return tags
+	}
+
+	tags[TagEncoded] = "true"
+	tags[TagVideoAction] = VideoActionEncode
 	if plan.VideoCodec != "" {
 		tags[TagVideoCodec] = plan.VideoCodec
 	}
 	if plan.PixelFormat != "" {
 		tags[TagVideoPixelFormat] = plan.PixelFormat
 	}
-	if plan.CRF > 0 && !plan.VideoCopy {
+	if plan.CRF > 0 {
 		tags[TagVideoCRF] = strconv.Itoa(plan.CRF)
 	}
 	if plan.CropFilter != "" {

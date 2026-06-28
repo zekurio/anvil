@@ -36,6 +36,7 @@ let
         crf_min = profile.video.crfMin;
         crf_max = profile.video.crfMax;
         target_vmaf = profile.video.targetVmaf;
+        min_savings_percent = profile.video.minSavingsPercent;
       };
       audio = {
         languages_to_keep = profile.audio.languagesToKeep;
@@ -52,6 +53,7 @@ let
         keep_external = profile.subtitles.keepExternal;
         max_tracks = profile.subtitles.maxTracks;
       };
+      validation.duration_tolerance_seconds = profile.validation.durationToleranceSeconds;
       metadata.mode = profile.metadataMode;
       attachments.mode = profile.attachmentsMode;
       chapters.mode = profile.chaptersMode;
@@ -206,6 +208,11 @@ let
           default = 95;
           description = "Target VMAF for CRF search.";
         };
+        minSavingsPercent = mkOption {
+          type = types.number;
+          default = 20;
+          description = "Minimum input-size savings percentage required during CRF search. Written as ab-av1 --max-encoded-percent = 100 - this value.";
+        };
       };
 
       audio = {
@@ -290,6 +297,14 @@ let
         };
       };
 
+      validation = {
+        durationToleranceSeconds = mkOption {
+          type = types.number;
+          default = 0;
+          description = "Allowed source/output duration delta in seconds before validation fails. Zero uses Anvil's default.";
+        };
+      };
+
       metadataMode = mkOption {
         type = types.enum [
           "preserve"
@@ -370,7 +385,7 @@ let
       media.replacementMode = mkOption {
         type = types.enum [
           "replace"
-          "sidecar"
+          "copy"
         ];
         default = "replace";
         description = "Completion behavior for media libraries.";
@@ -521,7 +536,7 @@ in
       logLevel = mkOption {
         type = types.str;
         default = "info";
-        description = "Log level.";
+        description = "Daemon stderr log level: debug, info, warn, or error.";
       };
     };
 

@@ -24,6 +24,7 @@ const (
 	DefaultShutdownPolicy  = "drain"
 	DefaultShutdownTimeout = "0s"
 	DefaultStagingCleanup  = "0s"
+	DefaultLogLevel        = "info"
 	DefaultMaxAttempts     = 3
 	DefaultStableFor       = "5m"
 	DefaultPackageMode     = "auto"
@@ -31,6 +32,7 @@ const (
 	DefaultStreamMode      = "preserve"
 	DefaultStreamFallback  = "keep_all"
 	DefaultMetadataMode    = "preserve"
+	DefaultMinSavingsPct   = 20
 )
 
 var DefaultIgnorableGlobs = []string{
@@ -80,24 +82,26 @@ type FlowConfig struct {
 
 // ProfileConfig groups encode settings that libraries can reference.
 type ProfileConfig struct {
-	Name        string         `toml:"-"`
-	Container   string         `toml:"container"`
-	Video       VideoConfig    `toml:"video"`
-	Audio       AudioConfig    `toml:"audio"`
-	Subtitles   SubtitleConfig `toml:"subtitles"`
-	Metadata    MetadataConfig `toml:"metadata"`
-	Attachments MetadataConfig `toml:"attachments"`
-	Chapters    MetadataConfig `toml:"chapters"`
+	Name        string           `toml:"-"`
+	Container   string           `toml:"container"`
+	Video       VideoConfig      `toml:"video"`
+	Audio       AudioConfig      `toml:"audio"`
+	Subtitles   SubtitleConfig   `toml:"subtitles"`
+	Validation  ValidationConfig `toml:"validation"`
+	Metadata    MetadataConfig   `toml:"metadata"`
+	Attachments MetadataConfig   `toml:"attachments"`
+	Chapters    MetadataConfig   `toml:"chapters"`
 }
 
 // VideoConfig contains the initial video settings shape for AV1 search work.
 type VideoConfig struct {
-	Codec       string  `toml:"codec"`
-	Preset      string  `toml:"preset"`
-	PixelFormat string  `toml:"pixel_format"`
-	CRFMin      int     `toml:"crf_min"`
-	CRFMax      int     `toml:"crf_max"`
-	TargetVMAF  float64 `toml:"target_vmaf"`
+	Codec             string  `toml:"codec"`
+	Preset            string  `toml:"preset"`
+	PixelFormat       string  `toml:"pixel_format"`
+	CRFMin            int     `toml:"crf_min"`
+	CRFMax            int     `toml:"crf_max"`
+	TargetVMAF        float64 `toml:"target_vmaf"`
+	MinSavingsPercent float64 `toml:"min_savings_percent"`
 }
 
 // AudioConfig declares track retention intent. It is conservative by default.
@@ -118,6 +122,11 @@ type SubtitleConfig struct {
 	KeepExternal       bool     `toml:"keep_external"`
 	MaxTracks          int      `toml:"max_tracks"`
 	Fallback           string   `toml:"fallback"`
+}
+
+// ValidationConfig declares post-encode safety gates.
+type ValidationConfig struct {
+	DurationToleranceSeconds float64 `toml:"duration_tolerance_seconds"`
 }
 
 // MetadataConfig is shared by metadata, attachments, and chapters.
@@ -201,7 +210,7 @@ func Default() Config {
 			ShutdownPolicy:    DefaultShutdownPolicy,
 			ShutdownTimeout:   DefaultShutdownTimeout,
 			StagingCleanupAge: DefaultStagingCleanup,
-			LogLevel:          "info",
+			LogLevel:          DefaultLogLevel,
 		},
 		Flows: map[string]FlowConfig{
 			DefaultFlowName: {
@@ -212,12 +221,13 @@ func Default() Config {
 			DefaultProfileName: {
 				Container: "mkv",
 				Video: VideoConfig{
-					Codec:       "libsvtav1",
-					Preset:      "6",
-					PixelFormat: "yuv420p10le",
-					CRFMin:      18,
-					CRFMax:      40,
-					TargetVMAF:  95,
+					Codec:             "libsvtav1",
+					Preset:            "6",
+					PixelFormat:       "yuv420p10le",
+					CRFMin:            18,
+					CRFMax:            40,
+					TargetVMAF:        95,
+					MinSavingsPercent: DefaultMinSavingsPct,
 				},
 				Audio: AudioConfig{
 					Fallback: DefaultStreamFallback,
@@ -267,6 +277,9 @@ func (c Config) Validate() error {
 	if !validShutdownPolicy(c.Daemon.ShutdownPolicy) {
 		problems = append(problems, fmt.Sprintf("daemon.shutdown_policy %q is invalid", c.Daemon.ShutdownPolicy))
 	}
+	if _, ok := NormalizeLogLevel(c.Daemon.LogLevel); !ok {
+		problems = append(problems, fmt.Sprintf("daemon.log_level %q is invalid (must be debug, info, warn, or error)", c.Daemon.LogLevel))
+	}
 
 	flows := make(map[string]struct{}, len(c.Flows))
 	for _, name := range sortedKeys(c.Flows) {
@@ -301,6 +314,9 @@ func (c Config) Validate() error {
 		if profile.Video.TargetVMAF < 0 || profile.Video.TargetVMAF > 100 {
 			problems = append(problems, fmt.Sprintf("profile %q target_vmaf must be between 0 and 100", name))
 		}
+		if profile.Video.MinSavingsPercent < 0 || profile.Video.MinSavingsPercent > 100 {
+			problems = append(problems, fmt.Sprintf("profile %q min_savings_percent must be between 0 and 100", name))
+		}
 		if !validStreamFallback(profile.Audio.Fallback) {
 			problems = append(problems, fmt.Sprintf("profile %q audio.fallback %q is invalid", name, profile.Audio.Fallback))
 		}
@@ -312,6 +328,9 @@ func (c Config) Validate() error {
 		}
 		if profile.Subtitles.MaxTracks < 0 {
 			problems = append(problems, fmt.Sprintf("profile %q subtitles.max_tracks must be non-negative", name))
+		}
+		if profile.Validation.DurationToleranceSeconds < 0 {
+			problems = append(problems, fmt.Sprintf("profile %q validation.duration_tolerance_seconds must be non-negative", name))
 		}
 		if !validMetadataMode(profile.Metadata.Mode) {
 			problems = append(problems, fmt.Sprintf("profile %q metadata.mode %q is invalid", name, profile.Metadata.Mode))
@@ -439,6 +458,9 @@ func applyDefaults(c *Config) {
 	if strings.TrimSpace(c.Daemon.LogLevel) == "" {
 		c.Daemon.LogLevel = defaults.Daemon.LogLevel
 	}
+	if logLevel, ok := NormalizeLogLevel(c.Daemon.LogLevel); ok {
+		c.Daemon.LogLevel = logLevel
+	}
 	if len(c.Flows) == 0 {
 		c.Flows = defaults.Flows
 	}
@@ -556,8 +578,19 @@ func validShutdownPolicy(policy string) bool {
 	return policy == "drain" || policy == "cancel"
 }
 
+// NormalizeLogLevel trims and canonicalizes a configured daemon log level.
+func NormalizeLogLevel(level string) (string, bool) {
+	normalized := strings.ToLower(strings.TrimSpace(level))
+	switch normalized {
+	case "debug", "info", "warn", "error":
+		return normalized, true
+	default:
+		return "", false
+	}
+}
+
 func validReplacementMode(mode string) bool {
-	return mode == "replace" || mode == "sidecar"
+	return mode == "replace" || mode == "copy"
 }
 
 func validPackageMode(mode string) bool {
