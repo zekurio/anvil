@@ -89,8 +89,10 @@ func (r Runner) Run(ctx context.Context, assignment scheduler.Assignment) error 
 	inputPath := InputPath(library.Path, source, asset)
 	metadata, err := r.resolveMetadata(ctx, library, source, asset, inputPath)
 	if err != nil {
-		return r.fail(ctx, assignment.Job, attempt, cfg, err)
+		metadata.StreamCleanupDisabled = true
+		metadata.StreamCleanupDisabledReason = err.Error()
 	}
+	disableUnsafeStreamCleanup(profile, &metadata)
 
 	jobContext := &pipeline.JobContext{
 		Job:       assignment.Job,
@@ -149,6 +151,9 @@ func InputPath(root string, source domain.MediaSource, asset domain.MediaAsset) 
 
 func (r Runner) resolveMetadata(ctx context.Context, library domain.Library, source domain.MediaSource, asset domain.MediaAsset, inputPath string) (domain.JobMetadata, error) {
 	if r.MetadataResolver == nil {
+		if library.Metadata.Provider != domain.MetadataProviderNone {
+			return domain.JobMetadata{}, errors.New("metadata resolver is unavailable")
+		}
 		return domain.JobMetadata{}, nil
 	}
 	metadata, err := r.MetadataResolver.ResolveJobMetadata(ctx, library, source, asset, inputPath)
@@ -156,6 +161,25 @@ func (r Runner) resolveMetadata(ctx context.Context, library domain.Library, sou
 		return domain.JobMetadata{}, fmt.Errorf("resolve job metadata: %w", err)
 	}
 	return metadata, nil
+}
+
+func disableUnsafeStreamCleanup(profile domain.Profile, metadata *domain.JobMetadata) {
+	if metadata == nil || !usesOriginalLanguage(profile) || metadata.OriginalLanguage != "" {
+		return
+	}
+	metadata.StreamCleanupDisabled = true
+	if metadata.StreamCleanupDisabledReason == "" {
+		metadata.StreamCleanupDisabledReason = "original language metadata is unavailable"
+	}
+}
+
+func usesOriginalLanguage(profile domain.Profile) bool {
+	for _, value := range profile.Audio.LanguagesToKeep {
+		if strings.EqualFold(strings.TrimSpace(value), audio.OriginalLanguageToken) {
+			return true
+		}
+	}
+	return false
 }
 
 func (r Runner) complete(ctx context.Context, jobID domain.JobID, flow domain.Flow) error {

@@ -19,8 +19,9 @@
 
 - Workers resolve the latest library, flow, and profile after leasing and snapshot that config on the attempt.
 - Static block registry executes configured flows with block start/finish/failure attempt events.
-- Built-in blocks cover probe, stage, `ab-av1 crf-search`, final `ffmpeg` encode, validation, media replacement, download handoff, and staging cleanup.
+- Built-in blocks cover probe, crop detection, audio cleanup, stage, `ab-av1 crf-search`, final `ffmpeg` encode, validation, media replacement, download handoff, and staging cleanup.
 - External process execution is cancellable and testable through a small process runner.
+- Final encodes write Anvil-owned video stream markers. Compatible reruns can skip crop detection, CRF search, and video re-encode, then remux/copy the marked video while applying safe stream cleanup.
 
 ### File Completion
 
@@ -33,9 +34,9 @@
 
 ### Stream Policy Depth
 
-- Implement real audio/subtitle retention and cleanup from the expandable profile sections.
+- Implement subtitle retention and cleanup from the expandable profile section.
 - Preserve or strip chapters, attachments, metadata, and HDR data intentionally instead of with the current conservative first pass.
-- Add Sonarr/Radarr-aware language and track decisions.
+- Deepen Sonarr/Radarr-aware track decisions beyond original-language audio cleanup.
 
 ### Encode Quality And Validation
 
@@ -43,6 +44,7 @@
 - Add minimum savings or max encoded percentage policy.
 - Add post-encode spot checks, richer stream-layout validation, and better parse support for structured `ab-av1` output.
 - Reconcile final `ffmpeg` settings with `ab-av1` search settings as profiles become more expressive.
+- Decide how profile changes should invalidate or reuse existing Anvil video markers.
 
 ### Runtime Operations
 
@@ -54,7 +56,7 @@
 ### Reprocessing And Integrations
 
 - Detect file changes after terminal jobs and decide when to requeue.
-- Add normalized metadata providers for Arr context, path conventions, `.nfo`, or APIs.
+- Expand metadata providers beyond the first Arr original-language resolver, including path conventions, `.nfo`, or richer APIs.
 - Decide if future management UI edits config files, SQLite state, or a separate flow model.
 
 ## Open Questions

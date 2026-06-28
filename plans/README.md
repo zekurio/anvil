@@ -15,10 +15,10 @@ Anvil is a Go daemon for orchestrating AV1 encodes across media libraries and do
 
 The current implementation has the core loop in place: scan, enqueue, lease, resolve latest config, run a flow, validate output, replace or hand off safely, and recover stale leases. The next work should deepen media policy and operations rather than add another broad skeleton.
 
-The first practical encode path remains:
+The first practical encode path is:
 
 ```text
-probe -> stage -> crf-search -> encode -> validate -> replace/handoff -> cleanup
+probe -> crop-detect -> audio-cleanup -> stage -> crf-search -> encode -> validate -> replace/handoff -> cleanup
 ```
 
-The profile shape is deliberately expandable so audio, subtitles, metadata, chapters, attachments, HDR, and Arr-aware cleanup can be added without replacing the worker model.
+The profile shape is deliberately expandable so subtitles, metadata, chapters, attachments, HDR, and deeper Arr-aware cleanup can be added without replacing the worker model. Audio cleanup is intentionally conservative for v1: if Arr metadata is unavailable for an `orig`-based profile, Anvil preserves streams instead of making destructive guesses.
