@@ -107,12 +107,13 @@ type Profile struct {
 }
 
 type VideoProfile struct {
-	Codec       string
-	Preset      string
-	PixelFormat string
-	CRFMin      int
-	CRFMax      int
-	TargetVMAF  float64
+	Codec             string
+	Preset            string
+	PixelFormat       string
+	CRFMin            int
+	CRFMax            int
+	TargetVMAF        float64
+	MinSavingsPercent float64
 }
 
 type StreamPolicyMode string
@@ -357,10 +358,12 @@ type ProbeResult struct {
 }
 
 type SearchResult struct {
-	CRF        int
-	VMAF       float64
-	RawOutput  string
-	RawCommand []string
+	CRF                   int
+	VMAF                  float64
+	SkipVideoEncode       bool
+	VideoEncodeSkipReason string
+	RawOutput             string
+	RawCommand            []string
 }
 
 type AudioSelection struct {
@@ -381,12 +384,14 @@ type EncodePlan struct {
 	ProfileName           ProfileName
 	VideoCodec            string
 	VideoCopy             bool
+	VideoCopyReason       string
 	Preset                string
 	PixelFormat           string
 	CRF                   int
 	CRFMin                int
 	CRFMax                int
 	TargetVMAF            float64
+	MinSavingsPercent     float64
 	Threads               int
 	Container             string
 	CropFilter            string

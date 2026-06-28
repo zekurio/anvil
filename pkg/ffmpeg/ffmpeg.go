@@ -43,30 +43,47 @@ func BuildPlan(profile domain.Profile, inputPath string, outputPath string, allo
 	if outputPath == "" {
 		return domain.EncodePlan{}, errors.New("output path is required")
 	}
-	crf := profile.Video.CRFMin
-	if search != nil && search.CRF > 0 {
-		crf = search.CRF
+	videoCopy := metadata.VideoAlreadyEncoded
+	videoCopyReason := ""
+	if metadata.VideoAlreadyEncoded {
+		videoCopyReason = "compatible Anvil video marker"
+	}
+	if search != nil && search.SkipVideoEncode {
+		videoCopy = true
+		videoCopyReason = search.VideoEncodeSkipReason
+		if videoCopyReason == "" {
+			videoCopyReason = "CRF search skipped video encode"
+		}
+	}
+	crf := 0
+	if !videoCopy {
+		crf = profile.Video.CRFMin
+		if search != nil && search.CRF > 0 {
+			crf = search.CRF
+		}
 	}
 	plan := domain.EncodePlan{
-		InputPath:      inputPath,
-		OutputPath:     outputPath,
-		ProfileName:    profile.Name,
-		VideoCodec:     profile.Video.Codec,
-		VideoCopy:      metadata.VideoAlreadyEncoded,
-		Preset:         profile.Video.Preset,
-		PixelFormat:    profile.Video.PixelFormat,
-		CRF:            crf,
-		CRFMin:         profile.Video.CRFMin,
-		CRFMax:         profile.Video.CRFMax,
-		TargetVMAF:     profile.Video.TargetVMAF,
-		Threads:        allocation.Threads,
-		Container:      profile.Container,
-		CropFilter:     metadata.CropFilter,
-		SubtitleMode:   profile.Subtitles.Mode,
-		MetadataMode:   profile.Metadata.Mode,
-		AttachmentMode: profile.Attachments.Mode,
-		ChapterMode:    profile.Chapters.Mode,
-		AnvilTags:      copyTags(metadata.AnvilTags),
+		InputPath:         inputPath,
+		OutputPath:        outputPath,
+		ProfileName:       profile.Name,
+		VideoCodec:        profile.Video.Codec,
+		VideoCopy:         videoCopy,
+		VideoCopyReason:   videoCopyReason,
+		Preset:            profile.Video.Preset,
+		PixelFormat:       profile.Video.PixelFormat,
+		CRF:               crf,
+		CRFMin:            profile.Video.CRFMin,
+		CRFMax:            profile.Video.CRFMax,
+		TargetVMAF:        profile.Video.TargetVMAF,
+		MinSavingsPercent: profile.Video.MinSavingsPercent,
+		Threads:           allocation.Threads,
+		Container:         profile.Container,
+		CropFilter:        metadata.CropFilter,
+		SubtitleMode:      profile.Subtitles.Mode,
+		MetadataMode:      profile.Metadata.Mode,
+		AttachmentMode:    profile.Attachments.Mode,
+		ChapterMode:       profile.Chapters.Mode,
+		AnvilTags:         copyTags(metadata.AnvilTags),
 	}
 	if audio != nil {
 		plan.AudioSelectionApplied = true
