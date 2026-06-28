@@ -36,5 +36,5 @@ func Normalize(value string) string {
 
 func IsUnknown(value string) bool {
 	value = strings.ToLower(strings.TrimSpace(value))
-	return value == "" || value == "und" || value == "unknown"
+	return value == "" || value == "und" || value == "unknown" || value == "undefined"
 }

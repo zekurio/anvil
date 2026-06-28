@@ -344,6 +344,7 @@ type MediaStream struct {
 	Codec       string
 	Language    string
 	Title       string
+	Tags        map[string]string
 	Disposition map[string]bool
 }
 
@@ -377,7 +378,9 @@ type CropResult struct {
 type EncodePlan struct {
 	InputPath             string
 	OutputPath            string
+	ProfileName           ProfileName
 	VideoCodec            string
+	VideoCopy             bool
 	Preset                string
 	PixelFormat           string
 	CRF                   int
@@ -393,6 +396,7 @@ type EncodePlan struct {
 	MetadataMode          MetadataMode
 	AttachmentMode        MetadataMode
 	ChapterMode           MetadataMode
+	AnvilTags             map[string]string
 }
 
 type ValidationResult struct {
@@ -404,8 +408,12 @@ type ValidationResult struct {
 }
 
 type JobMetadata struct {
-	OriginalLanguage string
-	CropFilter       string
+	OriginalLanguage            string
+	CropFilter                  string
+	StreamCleanupDisabled       bool
+	StreamCleanupDisabledReason string
+	VideoAlreadyEncoded         bool
+	AnvilTags                   map[string]string
 }
 
 type AttemptEventType string

@@ -143,7 +143,26 @@ func TestSelectFallsBackWhenOriginalLanguageIsUnavailable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Select() error = %v", err)
 	}
-	if got, want := selection.StreamIndexes, []int{1}; !equalInts(got, want) {
+	if got, want := selection.StreamIndexes, []int{1, 2}; !equalInts(got, want) {
+		t.Fatalf("stream indexes = %v, want %v", got, want)
+	}
+}
+
+func TestSelectPreservesAllAudioWhenStreamCleanupIsDisabled(t *testing.T) {
+	probe := &domain.ProbeResult{Streams: []domain.MediaStream{
+		{Index: 1, Type: "audio", Language: "eng", Title: "Director commentary"},
+		{Index: 2, Type: "audio", Language: "jpn", Title: "Main"},
+	}}
+	selection, err := (Selector{}).Select(probe, domain.AudioProfile{
+		LanguagesToKeep: []string{"orig"},
+		Fallback:        domain.StreamFallbackFailJob,
+	}, domain.JobMetadata{
+		StreamCleanupDisabled: true,
+	})
+	if err != nil {
+		t.Fatalf("Select() error = %v", err)
+	}
+	if got, want := selection.StreamIndexes, []int{1, 2}; !equalInts(got, want) {
 		t.Fatalf("stream indexes = %v, want %v", got, want)
 	}
 }

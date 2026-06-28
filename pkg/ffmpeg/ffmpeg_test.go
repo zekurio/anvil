@@ -7,7 +7,7 @@ import (
 )
 
 func TestBuildPlanUsesSearchCRF(t *testing.T) {
-	plan, err := BuildPlan(testProfile(), "/in.mkv", "/out.mkv", domain.ResourceAllocation{Threads: 6}, &domain.SearchResult{CRF: 29}, nil, "")
+	plan, err := BuildPlan(testProfile(), "/in.mkv", "/out.mkv", domain.ResourceAllocation{Threads: 6}, &domain.SearchResult{CRF: 29}, nil, domain.JobMetadata{})
 	if err != nil {
 		t.Fatalf("BuildPlan() error = %v", err)
 	}
@@ -20,7 +20,7 @@ func TestBuildPlanUsesSearchCRF(t *testing.T) {
 }
 
 func TestArgsPreserveStreamsAndStripMetadata(t *testing.T) {
-	plan, _ := BuildPlan(testProfile(), "/in.mkv", "/out.mkv", domain.ResourceAllocation{Threads: 2}, &domain.SearchResult{CRF: 24}, nil, "")
+	plan, _ := BuildPlan(testProfile(), "/in.mkv", "/out.mkv", domain.ResourceAllocation{Threads: 2}, &domain.SearchResult{CRF: 24}, nil, domain.JobMetadata{})
 	args := Args(plan)
 	want := []string{"-c:v", "libsvtav1", "-crf", "24", "-threads", "2", "-c:a", "copy", "-c:s", "copy", "-map_metadata", "-1", "-map_chapters", "-1", "/out.mkv"}
 	for _, token := range want {
@@ -36,11 +36,16 @@ func TestArgsPreserveStreamsAndStripMetadata(t *testing.T) {
 	if containsPair(args, "-map", "0") {
 		t.Fatalf("Args() = %v, did not expect global stream map", args)
 	}
+	for _, pair := range [][2]string{{"-metadata:s:v:0", "anvil.encoded=true"}, {"-metadata:s:v:0", "anvil.profile=default-av1"}, {"-metadata:s:v:0", "anvil.video.crf=24"}} {
+		if !containsPair(args, pair[0], pair[1]) {
+			t.Fatalf("Args() = %v, missing Anvil marker %v", args, pair)
+		}
+	}
 }
 
 func TestArgsMapsSelectedAudioAndAppliesCrop(t *testing.T) {
 	audio := &domain.AudioSelection{StreamIndexes: []int{2, 4}}
-	plan, err := BuildPlan(testProfile(), "/in.mkv", "/out.mkv", domain.ResourceAllocation{Threads: 2}, &domain.SearchResult{CRF: 24}, audio, "crop=1920:800:0:140")
+	plan, err := BuildPlan(testProfile(), "/in.mkv", "/out.mkv", domain.ResourceAllocation{Threads: 2}, &domain.SearchResult{CRF: 24}, audio, domain.JobMetadata{CropFilter: "crop=1920:800:0:140"})
 	if err != nil {
 		t.Fatalf("BuildPlan() error = %v", err)
 	}
@@ -58,8 +63,36 @@ func TestArgsMapsSelectedAudioAndAppliesCrop(t *testing.T) {
 	}
 }
 
+func TestArgsCopiesVideoWhenInputHasCompatibleAnvilMarker(t *testing.T) {
+	plan, err := BuildPlan(testProfile(), "/in.mkv", "/out.mkv", domain.ResourceAllocation{Threads: 2}, nil, nil, domain.JobMetadata{
+		VideoAlreadyEncoded: true,
+		CropFilter:          "crop=1920:800:0:140",
+		AnvilTags:           map[string]string{"anvil.video.crf": "29"},
+	})
+	if err != nil {
+		t.Fatalf("BuildPlan() error = %v", err)
+	}
+	if !plan.VideoCopy {
+		t.Fatal("VideoCopy = false, want true")
+	}
+	args := Args(plan)
+	if !containsPair(args, "-c:v", "copy") {
+		t.Fatalf("Args() = %v, missing video copy", args)
+	}
+	if containsArg(args, "-crf") {
+		t.Fatalf("Args() = %v, did not expect CRF for copied video", args)
+	}
+	if containsArg(args, "-vf") {
+		t.Fatalf("Args() = %v, did not expect crop filter for copied video", args)
+	}
+	if !containsPair(args, "-metadata:s:v:0", "anvil.video.crf=29") {
+		t.Fatalf("Args() = %v, missing preserved CRF marker", args)
+	}
+}
+
 func testProfile() domain.Profile {
 	return domain.Profile{
+		Name: domain.ProfileName("default-av1"),
 		Video: domain.VideoProfile{
 			Codec:       "libsvtav1",
 			Preset:      "6",

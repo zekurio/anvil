@@ -28,6 +28,10 @@ func (Selector) Select(probe *domain.ProbeResult, profile domain.AudioProfile, m
 	if len(audioStreams) == 0 {
 		return selection, nil
 	}
+	if cleanupDisabled(profile, metadata, selection) {
+		selection.StreamIndexes = streamIndexes(audioStreams)
+		return selection, nil
+	}
 
 	keep := languageSet(selection.LanguagesToKeep)
 	filterLanguages := len(profile.LanguagesToKeep) > 0
@@ -74,6 +78,11 @@ func (b Block) Run(_ context.Context, job *pipeline.JobContext) error {
 	return nil
 }
 
+func cleanupDisabled(profile domain.AudioProfile, metadata domain.JobMetadata, selection domain.AudioSelection) bool {
+	return metadata.StreamCleanupDisabled ||
+		(requiresOriginalLanguage(profile) && selection.OriginalLanguage == "")
+}
+
 func expandedLanguages(profile domain.AudioProfile, metadata domain.JobMetadata) []string {
 	values := profile.LanguagesToKeep
 	expanded := make([]string, 0, len(values))
@@ -96,6 +105,15 @@ func expandedLanguages(profile domain.AudioProfile, metadata domain.JobMetadata)
 		}
 	}
 	return expanded
+}
+
+func requiresOriginalLanguage(profile domain.AudioProfile) bool {
+	for _, value := range profile.LanguagesToKeep {
+		if strings.EqualFold(strings.TrimSpace(value), OriginalLanguageToken) {
+			return true
+		}
+	}
+	return false
 }
 
 func audioStreams(streams []domain.MediaStream) []domain.MediaStream {
