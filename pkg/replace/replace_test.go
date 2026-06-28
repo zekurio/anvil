@@ -63,6 +63,60 @@ func TestHandoffMoveCleansOnlyProcessedEpisodeFolder(t *testing.T) {
 	}
 }
 
+func TestPlanReplacementSidecarAndReplace(t *testing.T) {
+	sidecar, err := PlanReplacement("/media/movie.mkv", "/tmp/output.mp4", domain.ReplacementModeSidecar)
+	if err != nil {
+		t.Fatalf("PlanReplacement(sidecar) error = %v", err)
+	}
+	if sidecar.Action != "sidecar" || sidecar.SidecarPath != "/media/movie.anvil.mp4" {
+		t.Fatalf("sidecar plan = %+v, want sidecar path", sidecar)
+	}
+
+	replace, err := PlanReplacement("/media/movie.mkv", "/tmp/output.mkv", domain.ReplacementModeReplace)
+	if err != nil {
+		t.Fatalf("PlanReplacement(replace) error = %v", err)
+	}
+	if replace.Action != "replace" || replace.ReplaceTarget != "/media/movie.mkv" || replace.BackupPath != "/media/movie.mkv.anvil.bak" {
+		t.Fatalf("replace plan = %+v, want target and backup", replace)
+	}
+}
+
+func TestPlanHandoffDestinationAndCleanup(t *testing.T) {
+	job := &pipeline.JobContext{
+		Source: domain.MediaSource{
+			Kind:         domain.SourceKindPackage,
+			RelativePath: "SomeShowS01",
+		},
+		Asset: domain.MediaAsset{
+			RelativePath: "SomeShowS01E01/episode_1.mkv",
+		},
+		Library: domain.Library{
+			Kind: domain.LibraryKindDownload,
+			Path: "/downloads",
+			Download: domain.DownloadLibraryPolicy{
+				HandoffPath:          "/imports/tv",
+				HandoffMode:          domain.HandoffModeMove,
+				PreserveRelativePath: true,
+				CleanupSourceMedia:   true,
+				PruneEmptyDirs:       true,
+			},
+		},
+		InputPath:  "/downloads/SomeShowS01/SomeShowS01E01/episode_1.mkv",
+		OutputPath: "/tmp/staging/output.mp4",
+	}
+	plan, err := PlanHandoff(job)
+	if err != nil {
+		t.Fatalf("PlanHandoff() error = %v", err)
+	}
+	wantDestination := filepath.Join("/imports/tv", "SomeShowS01", "SomeShowS01E01", "episode_1.mp4")
+	if plan.Destination != wantDestination || plan.Action != "move" {
+		t.Fatalf("handoff plan = %+v, want move to %q", plan, wantDestination)
+	}
+	if !plan.CleanupSourceMedia || !plan.PruneEmptyDirs || plan.PruneStart != filepath.Dir(job.InputPath) {
+		t.Fatalf("cleanup plan = %+v, want source cleanup and prune start", plan)
+	}
+}
+
 func TestReplaceSidecarLeavesInputInPlace(t *testing.T) {
 	dir := t.TempDir()
 	input := filepath.Join(dir, "movie.mkv")
