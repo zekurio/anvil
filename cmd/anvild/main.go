@@ -32,6 +32,7 @@ const (
 	commandCheckConfig = "check-config"
 	commandScan        = "scan"
 	commandJobs        = "jobs"
+	commandInspect     = "inspect"
 	commandRetry       = "retry"
 	commandRecover     = "recover"
 	commandCleanup     = "cleanup-staging"
@@ -108,6 +109,8 @@ func run(args []string) error {
 		return runScanCommand(context.Background(), cfg, opts)
 	case commandJobs:
 		return runJobsCommand(context.Background(), cfg, opts)
+	case commandInspect:
+		return runInspectCommand(context.Background(), cfg, opts)
 	case commandRetry:
 		return runRetryCommand(context.Background(), cfg, opts)
 	case commandRecover:
@@ -167,6 +170,8 @@ func parseCommandOptions(opts options, args []string) (options, error) {
 		flags.StringVar(&opts.jobStateFilter, "state", "", "comma-separated job states to show")
 		flags.IntVar(&opts.jobLimit, "limit", opts.jobLimit, "maximum jobs to show; 0 means no limit")
 		flags.BoolVar(&opts.jsonOutput, "json", false, "write JSON output")
+	case commandInspect:
+		flags.BoolVar(&opts.jsonOutput, "json", false, "write JSON output")
 	case commandRetry:
 		flags.BoolVar(&opts.retryFailed, "failed", false, "retry all failed jobs")
 		flags.StringVar(&opts.libraryName, "library", "", "limit --failed to one library")
@@ -192,6 +197,15 @@ func parseCommandOptions(opts options, args []string) (options, error) {
 		if flags.NArg() > 0 {
 			return options{}, fmt.Errorf("jobs does not accept arguments: %v", flags.Args())
 		}
+	case commandInspect:
+		ids, err := parseJobIDs(flags.Args())
+		if err != nil {
+			return options{}, err
+		}
+		if len(ids) != 1 {
+			return options{}, errors.New("inspect requires exactly one job ID")
+		}
+		opts.jobIDs = ids
 	case commandRetry:
 		ids, err := parseJobIDs(flags.Args())
 		if err != nil {
@@ -724,7 +738,7 @@ func parseJobIDs(args []string) ([]domain.JobID, error) {
 
 func isCommand(value string) bool {
 	switch value {
-	case commandRun, commandCheckConfig, commandScan, commandJobs, commandRetry, commandRecover, commandCleanup, commandHelp:
+	case commandRun, commandCheckConfig, commandScan, commandJobs, commandInspect, commandRetry, commandRecover, commandCleanup, commandHelp:
 		return true
 	default:
 		return false
@@ -738,6 +752,7 @@ func printUsage() {
   anvild check-config [--config PATH]
   anvild scan [--config PATH] [--library NAME]
   anvild jobs [--config PATH] [--library NAME] [--state pending,failed] [--limit N] [--json]
+  anvild inspect [--config PATH] [--json] JOB_ID
   anvild retry [--config PATH] JOB_ID...
   anvild retry [--config PATH] --failed [--library NAME]
   anvild recover [--config PATH]

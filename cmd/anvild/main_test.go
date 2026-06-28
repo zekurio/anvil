@@ -1,7 +1,11 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/zekurio/anvil/pkg/config"
 	"github.com/zekurio/anvil/pkg/domain"
@@ -70,6 +74,34 @@ func TestParseOptionsParsesJobsCommand(t *testing.T) {
 	}
 }
 
+func TestParseOptionsParsesInspectCommand(t *testing.T) {
+	opts, err := parseOptions([]string{"inspect", "--config", "anvil.toml", "--json", "42"})
+	if err != nil {
+		t.Fatalf("parseOptions() error = %v", err)
+	}
+	if opts.command != commandInspect {
+		t.Fatalf("command = %q, want inspect", opts.command)
+	}
+	if opts.configPath != "anvil.toml" {
+		t.Fatalf("config path = %q, want anvil.toml", opts.configPath)
+	}
+	if !opts.jsonOutput {
+		t.Fatal("json output = false, want true")
+	}
+	if got, want := opts.jobIDs, []domain.JobID{42}; len(got) != len(want) || got[0] != want[0] {
+		t.Fatalf("job ids = %v, want %v", got, want)
+	}
+}
+
+func TestParseOptionsRejectsInspectWithoutSingleJob(t *testing.T) {
+	if _, err := parseOptions([]string{"inspect"}); err == nil {
+		t.Fatal("parseOptions() error = nil, want missing inspect target error")
+	}
+	if _, err := parseOptions([]string{"inspect", "1", "2"}); err == nil {
+		t.Fatal("parseOptions() error = nil, want multiple inspect target error")
+	}
+}
+
 func TestParseOptionsParsesRetryCommand(t *testing.T) {
 	opts, err := parseOptions([]string{"retry", "12", "13"})
 	if err != nil {
@@ -102,6 +134,101 @@ func TestParseOptionsParsesCleanupStagingCommand(t *testing.T) {
 	}
 	if !opts.cleanupDryRun {
 		t.Fatal("cleanup dry run = false, want true")
+	}
+}
+
+func TestWriteInspectReportShowsProcessOutputAndPayloads(t *testing.T) {
+	now := time.Date(2026, 6, 27, 12, 0, 0, 0, time.UTC)
+	finished := now.Add(2 * time.Minute)
+	report := inspectReport{
+		Job: inspectJob{
+			ID:           42,
+			State:        "failed",
+			Library:      "movies",
+			AttemptCount: 1,
+			UpdatedAt:    now,
+			SourcePath:   "Movie.mkv",
+			AssetPath:    "Movie.mkv",
+			Path:         "Movie.mkv",
+			LastError:    "encode failed",
+		},
+		Attempts: []inspectAttempt{
+			{
+				ID:         7,
+				Number:     1,
+				State:      "failed",
+				WorkerID:   "worker-1",
+				StartedAt:  now,
+				FinishedAt: &finished,
+				Error:      "exit status 1",
+				Events: []inspectEvent{
+					{
+						ID:        10,
+						AttemptID: 7,
+						CreatedAt: now,
+						Type:      "block_started",
+						Name:      "probe",
+						Message:   "",
+						Payload: &inspectPayload{
+							Kind:      "json",
+							SizeBytes: len(`{"step_index":0}`),
+							JSON:      json.RawMessage(`{"step_index":0}`),
+						},
+					},
+					{
+						ID:        11,
+						AttemptID: 7,
+						CreatedAt: now.Add(time.Second),
+						Type:      "artifact",
+						Name:      processOutputArtifactName,
+						Message:   "captured process output for ffmpeg",
+						ProcessOutput: &inspectProcessOutput{
+							Step:           "encode",
+							Command:        []string{"ffmpeg", "-i", "Movie.mkv"},
+							ExitCode:       1,
+							DurationMillis: 1534,
+							StdoutPath:     "/tmp/stdout.log",
+							StderrPath:     "/tmp/stderr.log",
+							StdoutBytes:    12,
+							StderrBytes:    34,
+							Error:          "exit status 1",
+						},
+					},
+					{
+						ID:        12,
+						AttemptID: 7,
+						CreatedAt: now.Add(2 * time.Second),
+						Type:      "artifact",
+						Name:      "raw-output",
+						Message:   "captured raw bytes",
+						Payload:   decodeInspectPayload([]byte{0xff, 0x00}),
+					},
+				},
+			},
+		},
+	}
+
+	var buf bytes.Buffer
+	if err := writeInspectReport(&buf, report); err != nil {
+		t.Fatalf("writeInspectReport() error = %v", err)
+	}
+	output := buf.String()
+	for _, want := range []string{
+		"Job 42",
+		"Last error: encode failed",
+		"[10] 2026-06-27T12:00:00Z type=block_started name=probe message=\"\"",
+		"payload: {\"step_index\":0}",
+		"process output:",
+		"command: [\"ffmpeg\",\"-i\",\"Movie.mkv\"]",
+		"exit_code: 1",
+		"duration: 1.534s (1534ms)",
+		"stdout: /tmp/stdout.log (12 bytes)",
+		"stderr: /tmp/stderr.log (34 bytes)",
+		"payload: base64:/wA=",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("inspect output missing %q:\n%s", want, output)
+		}
 	}
 }
 

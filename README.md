@@ -87,6 +87,8 @@ go run ./cmd/anvild scan --config examples/anvil.toml
 go run ./cmd/anvild scan --config examples/anvil.toml --library movies
 go run ./cmd/anvild jobs --config examples/anvil.toml --state pending,failed
 go run ./cmd/anvild jobs --config examples/anvil.toml --json
+go run ./cmd/anvild inspect --config examples/anvil.toml 42
+go run ./cmd/anvild inspect --config examples/anvil.toml --json 42
 go run ./cmd/anvild retry --config examples/anvil.toml 42
 go run ./cmd/anvild retry --config examples/anvil.toml --failed --library movies
 go run ./cmd/anvild recover --config examples/anvil.toml
