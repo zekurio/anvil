@@ -112,6 +112,7 @@ func (r Runner) Run(ctx context.Context, assignment scheduler.Assignment) error 
 		pipelineRunner.Events = r.Store
 	}
 	if err := pipelineRunner.Run(ctx, jobContext); err != nil {
+		r.cleanupFailedStaging(ctx, jobContext, cfg)
 		return r.fail(ctx, assignment.Job, attempt, cfg, err)
 	}
 	if _, err := r.Store.FinishAttempt(ctx, attempt.ID, domain.AttemptStateSucceeded, "", r.now()); err != nil {
@@ -223,6 +224,27 @@ func (r Runner) fail(ctx context.Context, job domain.Job, attempt domain.Attempt
 		return fmt.Errorf("transition job to pending: %w", err)
 	}
 	return cause
+}
+
+func (r Runner) cleanupFailedStaging(ctx context.Context, job *pipeline.JobContext, cfg config.Config) {
+	if job == nil || job.StagingDir == "" {
+		return
+	}
+	tempDir := strings.TrimSpace(r.TempDir)
+	if tempDir == "" {
+		tempDir = cfg.Daemon.TempDir
+	}
+	err := staging.Manager{Root: filepath.Join(tempDir, "staging")}.Cleanup(job)
+	if err == nil || r.Store == nil {
+		return
+	}
+	_, _ = r.Store.RecordAttemptEvent(ctx, domain.AttemptEvent{
+		AttemptID: job.Attempt.ID,
+		Type:      domain.AttemptEventArtifact,
+		Name:      "failed-staging-cleanup",
+		Message:   err.Error(),
+		CreatedAt: r.now(),
+	})
 }
 
 func (r Runner) startHeartbeat(ctx context.Context, jobID domain.JobID, workerID string, cfg config.Config) func() {
