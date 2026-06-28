@@ -57,7 +57,7 @@ Anvil writes operational markers to the output video stream, including whether t
 - Metadata, chapter, and attachment policy is only the first conservative command-shaping pass.
 - Probe parsing captures core format and stream fields, not full HDR, chapter, or attachment details.
 - Validation is intentionally modest and does not yet enforce required stream layout, savings, or post-encode VMAF.
-- Cleanup is a normal success-path block; failed attempts can leave staging artifacts for inspection until a cleanup policy is chosen.
+- Cleanup is a normal success-path block, and failed attempts also trigger immediate best-effort staging cleanup. Old staging directories are still possible after hard crashes and are handled by startup/manual stale cleanup.
 - The mock Arr server follows the response fields Anvil consumes and now covers `/api/v3/parse` fallback for completed-download paths that do not match final Sonarr/Radarr library paths.
 
 ## Next Blocks
