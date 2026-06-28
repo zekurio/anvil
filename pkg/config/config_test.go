@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -38,6 +39,9 @@ path = "/srv/media/movies"
 	if got := cfg.Daemon.StagingCleanupAge; got != DefaultStagingCleanup {
 		t.Fatalf("expected default staging cleanup age %q, got %q", DefaultStagingCleanup, got)
 	}
+	if got := cfg.Daemon.LogLevel; got != DefaultLogLevel {
+		t.Fatalf("expected default log level %q, got %q", DefaultLogLevel, got)
+	}
 	if got := cfg.Libraries["movies"].Flow; got != DefaultFlowName {
 		t.Fatalf("expected default flow %q, got %q", DefaultFlowName, got)
 	}
@@ -56,6 +60,58 @@ path = "/srv/media/movies"
 	}
 	if !containsString(flow.Steps, "audio-cleanup") {
 		t.Fatalf("default flow steps = %v, want audio cleanup before encode", flow.Steps)
+	}
+}
+
+func TestLoadAcceptsDaemonLogLevels(t *testing.T) {
+	tests := []struct {
+		name  string
+		value string
+		want  string
+	}{
+		{name: "debug", value: "debug", want: "debug"},
+		{name: "info", value: "info", want: "info"},
+		{name: "warn", value: "warn", want: "warn"},
+		{name: "error", value: "error", want: "error"},
+		{name: "trim and lower", value: " DEBUG ", want: "debug"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := writeConfig(t, `
+[daemon]
+log_level = "`+tt.value+`"
+
+[libraries.movies]
+path = "/srv/media/movies"
+`)
+
+			cfg, err := Load(path)
+			if err != nil {
+				t.Fatalf("Load() error = %v", err)
+			}
+			if cfg.Daemon.LogLevel != tt.want {
+				t.Fatalf("log level = %q, want %q", cfg.Daemon.LogLevel, tt.want)
+			}
+		})
+	}
+}
+
+func TestLoadRejectsInvalidDaemonLogLevel(t *testing.T) {
+	path := writeConfig(t, `
+[daemon]
+log_level = "verbose"
+
+[libraries.movies]
+path = "/srv/media/movies"
+`)
+
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("Load() error = nil, want invalid log level")
+	}
+	if !strings.Contains(err.Error(), "daemon.log_level") {
+		t.Fatalf("Load() error = %q, want daemon.log_level", err.Error())
 	}
 }
 

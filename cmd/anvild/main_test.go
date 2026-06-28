@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"log/slog"
 	"strings"
 	"testing"
 	"time"
@@ -253,7 +254,60 @@ func TestValidateReloadAllowsRuntimeKnobs(t *testing.T) {
 	next.Daemon.WorkerCount = current.Daemon.WorkerCount + 1
 	next.Daemon.TotalThreads = current.Daemon.TotalThreads + 2
 	next.Daemon.ScanInterval = "1m"
+	next.Daemon.LogLevel = "debug"
 	if err := validateReload(current, next); err != nil {
 		t.Fatalf("validateReload() error = %v", err)
+	}
+}
+
+func TestParseLogLevel(t *testing.T) {
+	tests := []struct {
+		name      string
+		value     string
+		wantLevel slog.Level
+		wantLabel string
+		wantErr   bool
+	}{
+		{name: "debug", value: "debug", wantLevel: slog.LevelDebug, wantLabel: "debug"},
+		{name: "info", value: "info", wantLevel: slog.LevelInfo, wantLabel: "info"},
+		{name: "warn", value: "warn", wantLevel: slog.LevelWarn, wantLabel: "warn"},
+		{name: "error", value: "error", wantLevel: slog.LevelError, wantLabel: "error"},
+		{name: "trim and lower", value: " WARN ", wantLevel: slog.LevelWarn, wantLabel: "warn"},
+		{name: "invalid", value: "trace", wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			level, label, err := parseLogLevel(tt.value)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("parseLogLevel() error = nil, want error")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("parseLogLevel() error = %v", err)
+			}
+			if level != tt.wantLevel {
+				t.Fatalf("level = %v, want %v", level, tt.wantLevel)
+			}
+			if label != tt.wantLabel {
+				t.Fatalf("label = %q, want %q", label, tt.wantLabel)
+			}
+		})
+	}
+}
+
+func TestApplyLogLevelUpdatesLevelVar(t *testing.T) {
+	var levelVar slog.LevelVar
+	label, err := applyLogLevel(&levelVar, " DEBUG ")
+	if err != nil {
+		t.Fatalf("applyLogLevel() error = %v", err)
+	}
+	if label != "debug" {
+		t.Fatalf("label = %q, want debug", label)
+	}
+	if got := levelVar.Level(); got != slog.LevelDebug {
+		t.Fatalf("level = %v, want %v", got, slog.LevelDebug)
 	}
 }

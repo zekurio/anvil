@@ -521,7 +521,7 @@ in
       logLevel = mkOption {
         type = types.str;
         default = "info";
-        description = "Log level.";
+        description = "Daemon stderr log level: debug, info, warn, or error.";
       };
     };
 
