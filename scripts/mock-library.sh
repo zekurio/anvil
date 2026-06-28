@@ -97,7 +97,7 @@ setup_library() {
     "660" "jpn" "Japanese Main" \
     "440" "eng" "English Commentary"
 
-  printf 'mock nzb sidecar\n' > "$root/downloads/complete/tv/Mock.Download.S01/release.nzb"
+  printf 'mock nzb companion\n' > "$root/downloads/complete/tv/Mock.Download.S01/release.nzb"
   write_config "$root"
 }
 
@@ -162,7 +162,7 @@ shutdown_timeout = "0s"
 staging_cleanup_age = "0s"
 log_level = "debug"
 
-[flows.mock-sidecar]
+[flows.mock-copy]
 steps = ["probe", "crop-detect", "audio-cleanup", "stage", "encode", "validate", "replace", "cleanup"]
 
 [flows.mock-handoff]
@@ -214,27 +214,27 @@ api_key_file = "$root/secrets/sonarr-api-key"
 kind = "media"
 path = "$root/media/movies"
 arr = "mock-radarr"
-flow = "mock-sidecar"
+flow = "mock-copy"
 profile = "mock-av1"
 priority = 10
 include = ["*.mkv"]
 exclude = ["**/*.anvil.*", "**/.staging/**"]
 
 [libraries.mock-movies.media]
-replacement_mode = "sidecar"
+replacement_mode = "copy"
 
 [libraries.mock-tv]
 kind = "media"
 path = "$root/media/tv"
 arr = "mock-sonarr"
-flow = "mock-sidecar"
+flow = "mock-copy"
 profile = "mock-av1"
 priority = 5
 include = ["*.mkv"]
 exclude = ["**/*.anvil.*", "**/.staging/**"]
 
 [libraries.mock-tv.media]
-replacement_mode = "sidecar"
+replacement_mode = "copy"
 
 [libraries.mock-download-tv]
 kind = "download"

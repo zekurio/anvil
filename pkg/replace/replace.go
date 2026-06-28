@@ -20,7 +20,7 @@ type Manager struct{}
 type ReplacementPlan struct {
 	Action        string
 	Mode          domain.ReplacementMode
-	SidecarPath   string
+	CopyPath      string
 	ReplaceTarget string
 	BackupPath    string
 }
@@ -41,11 +41,11 @@ func (Manager) Replace(_ context.Context, inputPath string, candidatePath string
 		return "", err
 	}
 	switch plan.Action {
-	case "sidecar":
-		if err := copyFile(candidatePath, plan.SidecarPath); err != nil {
+	case "copy":
+		if err := copyFile(candidatePath, plan.CopyPath); err != nil {
 			return "", err
 		}
-		return plan.SidecarPath, nil
+		return plan.CopyPath, nil
 	default:
 		return replaceFile(inputPath, candidatePath)
 	}
@@ -60,9 +60,9 @@ func PlanReplacement(inputPath string, candidatePath string, mode domain.Replace
 	}
 	plan := ReplacementPlan{Mode: mode}
 	switch mode {
-	case domain.ReplacementModeSidecar:
-		plan.Action = "sidecar"
-		plan.SidecarPath = sidecarPath(inputPath, filepath.Ext(candidatePath))
+	case domain.ReplacementModeCopy:
+		plan.Action = "copy"
+		plan.CopyPath = replacementCopyPath(inputPath, filepath.Ext(candidatePath))
 	default:
 		plan.Action = "replace"
 		plan.ReplaceTarget = inputPath
@@ -200,7 +200,7 @@ func handoffDestination(job *pipeline.JobContext, ext string) (string, error) {
 	return filepath.Join(job.Library.Download.HandoffPath, rel), nil
 }
 
-func sidecarPath(inputPath string, ext string) string {
+func replacementCopyPath(inputPath string, ext string) string {
 	if ext == "" {
 		ext = filepath.Ext(inputPath)
 	}
