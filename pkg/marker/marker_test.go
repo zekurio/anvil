@@ -40,12 +40,12 @@ func TestDetectRejectsDifferentProfile(t *testing.T) {
 
 func TestDetectProcessedFindsCompatibleProcessedMarker(t *testing.T) {
 	probed := domain.ProbeResult{Streams: []domain.MediaStream{
-			{Index: 0, Type: "video", Tags: map[string]string{
-				TagProcessed: "true",
-				TagProfile:   "default-av1",
-				TagVideoAction: VideoActionCopy,
-			}},
-		}}
+		{Index: 0, Type: "video", Tags: map[string]string{
+			TagProcessed:   "true",
+			TagProfile:     "default-av1",
+			TagVideoAction: VideoActionCopy,
+		}},
+	}}
 	match := DetectProcessed(probed, testProfile())
 	if !match.Compatible {
 		t.Fatalf("Compatible = false, want true")

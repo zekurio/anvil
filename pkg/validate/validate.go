@@ -181,10 +181,10 @@ func validateMarker(request Request, outputProbe domain.ProbeResult, result *dom
 			addError(result, fmt.Sprintf("output Anvil processed marker is incompatible with profile %q", request.Profile.Name))
 			return
 		}
-			if !validVideoCopyAction(processed.Tags[marker.TagVideoAction]) {
-				addError(result, fmt.Sprintf("output Anvil video action %q is incompatible with video-copy validation", processed.Tags[marker.TagVideoAction]))
-				return
-			}
+		if !validVideoCopyAction(processed.Tags[marker.TagVideoAction]) {
+			addError(result, fmt.Sprintf("output Anvil video action %q is incompatible with video-copy validation", processed.Tags[marker.TagVideoAction]))
+			return
+		}
 		result.AnvilMarkerCompatible = true
 		return
 	}
