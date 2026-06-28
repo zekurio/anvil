@@ -120,6 +120,47 @@ path = "/srv/media/movies"
 	}
 }
 
+func TestLoadLibraryScanIntervalOverride(t *testing.T) {
+	path := writeConfig(t, `
+[daemon]
+scan_interval = "30m"
+
+[libraries.movies]
+path = "/srv/media/movies"
+scan_interval = "5m"
+
+[libraries.tv]
+path = "/srv/media/tv"
+`)
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if got := cfg.ScanIntervalForLibrary("movies").String(); got != "5m0s" {
+		t.Fatalf("movies scan interval = %q, want 5m0s", got)
+	}
+	if got := cfg.ScanIntervalForLibrary("tv").String(); got != "30m0s" {
+		t.Fatalf("tv scan interval = %q, want 30m0s", got)
+	}
+}
+
+func TestLoadRejectsInvalidLibraryScanInterval(t *testing.T) {
+	path := writeConfig(t, `
+[libraries.movies]
+path = "/srv/media/movies"
+scan_interval = "0s"
+`)
+
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("Load() error = nil, want invalid library scan interval")
+	}
+	if !strings.Contains(err.Error(), `library "movies" scan_interval`) {
+		t.Fatalf("Load() error = %q, want library scan_interval", err.Error())
+	}
+}
+
 func TestLoadRejectsUnknownReferences(t *testing.T) {
 	path := writeConfig(t, `
 [libraries.movies]

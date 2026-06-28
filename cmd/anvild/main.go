@@ -495,7 +495,7 @@ func logConfiguredWork(cfg config.Config) {
 	}
 
 	for name, library := range cfg.Libraries {
-		slog.Info("library configured", "name", name, "kind", library.Kind, "path", library.Path, "flow", library.Flow, "profile", library.Profile)
+		slog.Info("library configured", "name", name, "kind", library.Kind, "path", library.Path, "flow", library.Flow, "profile", library.Profile, "scan_interval", cfg.ScanIntervalForLibrary(domain.LibraryName(name)))
 	}
 	slog.Info("scanner, scheduler, worker, and built-in media pipeline are enabled")
 }
@@ -577,24 +577,28 @@ func parseLogLevel(logLevel string) (slog.Level, string, error) {
 }
 
 func startScannerLoop(ctx context.Context, wg *sync.WaitGroup, cfgProvider func() config.Config, state *store.SQLiteStore) {
+	monitor := &scanner.Monitor{
+		Scanner:        scanner.Scanner{Store: state},
+		ConfigProvider: cfgProvider,
+		OnScan: func(library config.LibraryConfig, reason string, result scanner.ScanResult, err error) {
+			if err != nil {
+				slog.Error("scan failed", "library", library.Name, "reason", reason, "error", err)
+				return
+			}
+			slog.Info("scan complete", "library", library.Name, "reason", reason, "sources", result.Sources, "assets", result.Assets, "enqueued_jobs", result.EnqueuedJobs, "existing_jobs", result.ExistingJobs, "skipped_ignored", result.SkippedIgnored, "skipped_unstable", result.SkippedUnstable)
+		},
+		OnEventError: func(err error) {
+			if !errors.Is(err, context.Canceled) {
+				slog.Error("filesystem scanner stopped", "error", err)
+			}
+		},
+	}
+
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		for {
-			timer := time.NewTimer(cfgProvider().ScanInterval())
-			select {
-			case <-ctx.Done():
-				timer.Stop()
-				return
-			case <-timer.C:
-				cfg := cfgProvider()
-				result, err := scanner.Scanner{Store: state}.Scan(ctx, cfg)
-				if err != nil {
-					slog.Error("scan failed", "error", err)
-					continue
-				}
-				slog.Info("scan complete", "libraries", result.Libraries, "sources", result.Sources, "assets", result.Assets, "enqueued_jobs", result.EnqueuedJobs, "existing_jobs", result.ExistingJobs, "skipped_ignored", result.SkippedIgnored, "skipped_unstable", result.SkippedUnstable)
-			}
+		if err := monitor.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
+			slog.Error("scanner monitor stopped", "error", err)
 		}
 	}()
 }
