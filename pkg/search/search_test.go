@@ -86,6 +86,55 @@ func TestSearchArgsMapsMinimumSavingsToMaxEncodedPercent(t *testing.T) {
 	}
 }
 
+func TestSearchArgsIncludesCustomABAV1Args(t *testing.T) {
+	args := SearchArgs(domain.EncodePlan{
+		InputPath: "/input.mkv",
+		CRFMin:    18,
+		CRFMax:    40,
+		ABAV1Args: []string{
+			"--enc", "lookahead=120",
+		},
+	})
+	if !containsPair(args, "--enc", "lookahead=120") {
+		t.Fatalf("SearchArgs() = %v, want custom ab-av1 args", args)
+	}
+}
+
+func TestBlockSearchPlanUsesDolbyVisionOverride(t *testing.T) {
+	searcher := captureSearcher{result: domain.SearchResult{CRF: 24}}
+	job := &pipeline.JobContext{
+		InputPath: "/input.mkv",
+		Profile: domain.Profile{
+			Video: domain.VideoProfile{
+				Codec:     "libsvtav1",
+				Preset:    "6",
+				CRFMin:    18,
+				CRFMax:    40,
+				ABAV1Args: []string{"--enc", "normal=1"},
+				DolbyVision: domain.DolbyVisionProfile{
+					Mode:      domain.DolbyVisionModeAuto,
+					Codec:     "hevc_qsv",
+					Preset:    "medium",
+					ABAV1Args: []string{"--enc", "low_power=1"},
+				},
+			},
+		},
+		Metadata: domain.JobMetadata{HDR: domain.HDRMetadata{DolbyVisionEncoderSelected: true}},
+	}
+	if err := (Block{Searcher: &searcher}).Run(context.Background(), job); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if got, want := searcher.plan.VideoCodec, "hevc_qsv"; got != want {
+		t.Fatalf("search plan codec = %q, want %q", got, want)
+	}
+	if got, want := searcher.plan.Preset, "medium"; got != want {
+		t.Fatalf("search plan preset = %q, want %q", got, want)
+	}
+	if got, want := searcher.plan.ABAV1Args, []string{"--enc", "normal=1", "--enc", "low_power=1"}; !sameStrings(got, want) {
+		t.Fatalf("search plan ABAV1Args = %v, want %v", got, want)
+	}
+}
+
 func TestParseResultReturnsSkipForNoSuitableCRF(t *testing.T) {
 	result, err := ParseResult([]byte("crf 18 vmaf 94.7 (103%)\nError: Failed to find a suitable crf\n"))
 	if err != nil {
@@ -177,6 +226,16 @@ func (failingSearcher) Search(context.Context, domain.EncodePlan) (domain.Search
 	panic("searcher should not be called")
 }
 
+type captureSearcher struct {
+	plan   domain.EncodePlan
+	result domain.SearchResult
+}
+
+func (s *captureSearcher) Search(_ context.Context, plan domain.EncodePlan) (domain.SearchResult, error) {
+	s.plan = plan
+	return s.result, nil
+}
+
 func containsArg(args []string, want string) bool {
 	for _, arg := range args {
 		if arg == want {
@@ -193,4 +252,16 @@ func containsPair(args []string, key string, value string) bool {
 		}
 	}
 	return false
+}
+
+func sameStrings(got []string, want []string) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	for i := range got {
+		if got[i] != want[i] {
+			return false
+		}
+	}
+	return true
 }

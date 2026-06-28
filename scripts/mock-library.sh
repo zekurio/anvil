@@ -163,10 +163,10 @@ staging_cleanup_age = "0s"
 log_level = "debug"
 
 [flows.mock-copy]
-steps = ["probe", "crop-detect", "audio-cleanup", "stage", "encode", "validate", "replace", "cleanup"]
+steps = ["probe", "crop-detect", "audio-cleanup", "stage", "encode", "dovi-fix", "validate", "replace", "cleanup"]
 
 [flows.mock-handoff]
-steps = ["probe", "crop-detect", "audio-cleanup", "stage", "encode", "validate", "handoff", "cleanup"]
+steps = ["probe", "crop-detect", "audio-cleanup", "stage", "encode", "dovi-fix", "validate", "handoff", "cleanup"]
 
 [profiles.mock-av1]
 container = "mkv"

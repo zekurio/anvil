@@ -13,10 +13,10 @@ staging_cleanup_age = "0s"
 log_level = "info"
 
 [flows.av1-replace]
-steps = ["probe", "crop-detect", "audio-cleanup", "stage", "crf-search", "encode", "validate", "replace", "cleanup"]
+steps = ["probe", "crop-detect", "audio-cleanup", "stage", "crf-search", "encode", "dovi-fix", "validate", "replace", "cleanup"]
 
 [flows.download-av1-handoff]
-steps = ["probe", "crop-detect", "audio-cleanup", "stage", "crf-search", "encode", "validate", "handoff", "cleanup"]
+steps = ["probe", "crop-detect", "audio-cleanup", "stage", "crf-search", "encode", "dovi-fix", "validate", "handoff", "cleanup"]
 
 [profiles.default-av1]
 container = "mkv"
@@ -29,6 +29,17 @@ crf_min = 18
 crf_max = 40
 target_vmaf = 95
 min_savings_percent = 20
+ffmpeg_args = []
+ab_av1_args = []
+
+[profiles.default-av1.video.dolby_vision]
+mode = "auto"
+codec = "hevc_qsv"
+preset = "medium"
+pixel_format = "p010le"
+ffmpeg_args = ["-global_quality", "24"]
+ab_av1_args = ["--enc", "low_power=1"]
+remove_hdr10plus = false
 
 [profiles.default-av1.audio]
 languages_to_keep = ["orig", "deu"]
