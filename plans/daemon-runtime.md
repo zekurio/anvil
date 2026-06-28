@@ -87,10 +87,10 @@ Shutdown is now explicit:
 - a second shutdown signal cancels active workers even under `drain`.
 - `cleanup-staging`: removes old Anvil staging directories by age, with `--dry-run` support.
 - `daemon.staging_cleanup_age`: optional startup cleanup age; `0s` disables automatic cleanup.
+- failed attempts trigger immediate best-effort staging cleanup; stale cleanup remains the backstop for crashes and abandoned directories.
 
 Remaining cleanup work:
 
-- decide whether failed attempts retain staging directories by default or opt into immediate best-effort cleanup
 - improve process log capture around cancellation and failures
 
 ## Non-Goals For V1
