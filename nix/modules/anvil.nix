@@ -53,6 +53,7 @@ let
         keep_external = profile.subtitles.keepExternal;
         max_tracks = profile.subtitles.maxTracks;
       };
+      validation.duration_tolerance_seconds = profile.validation.durationToleranceSeconds;
       metadata.mode = profile.metadataMode;
       attachments.mode = profile.attachmentsMode;
       chapters.mode = profile.chaptersMode;
@@ -293,6 +294,14 @@ let
           ];
           default = "keep_all";
           description = "Subtitle fallback behavior.";
+        };
+      };
+
+      validation = {
+        durationToleranceSeconds = mkOption {
+          type = types.number;
+          default = 0;
+          description = "Allowed source/output duration delta in seconds before validation fails. Zero uses Anvil's default.";
         };
       };
 
