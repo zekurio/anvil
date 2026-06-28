@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -11,6 +13,7 @@ import (
 	"github.com/zekurio/anvil/pkg/domain"
 	"github.com/zekurio/anvil/pkg/pipeline"
 	"github.com/zekurio/anvil/pkg/scheduler"
+	"github.com/zekurio/anvil/pkg/staging"
 )
 
 func TestRunnerResolvesLatestConfigAndCompletesJob(t *testing.T) {
@@ -82,6 +85,53 @@ func TestRunnerRequeuesFailedAttemptBeforeMaxAttempts(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("Run() error = nil, want failure")
+	}
+	if got := store.transitions[len(store.transitions)-1]; got != domain.JobStatePending {
+		t.Fatalf("last transition = %q, want pending", got)
+	}
+}
+
+func TestRunnerCleansStagingAfterPipelineFailure(t *testing.T) {
+	ctx := context.Background()
+	tempDir := t.TempDir()
+	cfg := workerConfig()
+	cfg.Daemon.TempDir = tempDir
+	cfg.Flows["test-flow"] = config.FlowConfig{Steps: []string{"stage", "fail"}}
+
+	store := newFakeWorkerStore()
+	store.source = domain.MediaSource{ID: 1, LibraryName: "movies", Kind: domain.SourceKindFile, RelativePath: "Movie.mkv"}
+	var stagedDir string
+	runner := Runner{
+		Store:          store,
+		ConfigProvider: func() config.Config { return cfg },
+		TempDir:        tempDir,
+		MaxAttempts:    2,
+		Pipeline: pipeline.Runner{
+			Registry: pipeline.NewRegistry(
+				staging.StageBlock{Manager: staging.Manager{Root: filepath.Join(tempDir, "staging")}},
+				pipeline.BlockFunc{BlockName: "fail", Fn: func(_ context.Context, job *pipeline.JobContext) error {
+					stagedDir = job.StagingDir
+					if stagedDir == "" {
+						t.Fatal("staging dir was empty")
+					}
+					if err := os.WriteFile(filepath.Join(stagedDir, "partial.mkv"), []byte("partial"), 0o640); err != nil {
+						t.Fatalf("write partial output: %v", err)
+					}
+					return errors.New("encode failed")
+				}},
+			),
+		},
+	}
+
+	err := runner.Run(ctx, scheduler.Assignment{
+		Job:      domain.Job{ID: 99, SourceID: 1, LibraryName: "movies", State: domain.JobStateLeased},
+		WorkerID: "worker-1",
+	})
+	if err == nil {
+		t.Fatal("Run() error = nil, want failure")
+	}
+	if _, statErr := os.Stat(stagedDir); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("staging dir stat error = %v, want not exist", statErr)
 	}
 	if got := store.transitions[len(store.transitions)-1]; got != domain.JobStatePending {
 		t.Fatalf("last transition = %q, want pending", got)
