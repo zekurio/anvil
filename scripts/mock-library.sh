@@ -157,6 +157,9 @@ max_attempts = 1
 scan_interval = "1h"
 scheduler_interval = "1s"
 lease_duration = "5m"
+shutdown_policy = "drain"
+shutdown_timeout = "0s"
+staging_cleanup_age = "0s"
 log_level = "debug"
 
 [flows.mock-sidecar]

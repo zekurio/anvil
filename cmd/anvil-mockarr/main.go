@@ -85,8 +85,12 @@ func (s *server) handle(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeJSON(w, s.radarrMovies())
+	case "/radarr/api/v3/parse":
+		writeJSON(w, s.radarrParse(r.URL.Query().Get("title")))
 	case "/sonarr/api/v3/series":
 		writeJSON(w, s.sonarrSeries())
+	case "/sonarr/api/v3/parse":
+		writeJSON(w, s.sonarrParse(r.URL.Query().Get("title"), r.URL.Query().Get("path")))
 	default:
 		http.NotFound(w, r)
 	}
@@ -111,8 +115,30 @@ func (s *server) sonarrSeries() []arrItem {
 			Path:             filepath.Join(s.root, "media", "tv", "Mock Anime"),
 			OriginalLanguage: map[string]string{"name": "Japanese"},
 		},
-		{
-			Path:             filepath.Join(s.root, "downloads", "complete", "tv", "Mock.Download.S01"),
+	}
+}
+
+type parseResponse struct {
+	Title  string   `json:"title"`
+	Movie  *arrItem `json:"movie,omitempty"`
+	Series *arrItem `json:"series,omitempty"`
+}
+
+func (s *server) radarrParse(title string) parseResponse {
+	return parseResponse{
+		Title: title,
+		Movie: &arrItem{
+			Path:             filepath.Join(s.root, "media", "movies", "Mock Movie (2026)"),
+			OriginalLanguage: map[string]string{"name": "English"},
+		},
+	}
+}
+
+func (s *server) sonarrParse(title string, path string) parseResponse {
+	return parseResponse{
+		Title: title,
+		Series: &arrItem{
+			Path:             filepath.Join(s.root, "media", "tv", "Mock Anime"),
 			OriginalLanguage: map[string]string{"name": "Japanese"},
 		},
 	}

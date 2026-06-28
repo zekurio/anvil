@@ -33,6 +33,7 @@ type Scheduler struct {
 	Store          Store
 	Worker         Worker
 	ConfigProvider ConfigProvider
+	WorkerContext  context.Context
 	Allocator      resources.Allocator
 	WorkerCount    int
 	LeaseDuration  time.Duration
@@ -42,6 +43,7 @@ type Scheduler struct {
 
 	mu         sync.Mutex
 	active     map[string]domain.LibraryName
+	workerWG   sync.WaitGroup
 	nextWorker atomic.Uint64
 }
 
@@ -49,26 +51,17 @@ func (s *Scheduler) Run(ctx context.Context) error {
 	if err := s.validate(); err != nil {
 		return err
 	}
-	interval := s.Interval
-	if interval <= 0 {
-		interval = configMustDuration(config.DefaultSchedulerTick)
-	}
 
-	_, err := s.ScheduleAvailable(ctx)
-	if err != nil {
-		return err
-	}
-
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
 	for {
+		if _, err := s.ScheduleAvailable(ctx); err != nil {
+			return err
+		}
+		timer := time.NewTimer(s.interval())
 		select {
 		case <-ctx.Done():
+			timer.Stop()
 			return ctx.Err()
-		case <-ticker.C:
-			if _, err := s.ScheduleAvailable(ctx); err != nil {
-				return err
-			}
+		case <-timer.C:
 		}
 	}
 }
@@ -126,20 +119,43 @@ func (s *Scheduler) ScheduleOnce(ctx context.Context) (bool, error) {
 		return false, nil
 	}
 
-	allocation := s.Allocator.Allocate(workerID, active+1)
+	allocation := s.allocator(cfg).Allocate(workerID, active+1)
 	assignment := Assignment{
 		Job:       *job,
 		WorkerID:  workerID,
 		Resources: allocation,
 	}
 	s.register(workerID, job.LibraryName)
-	go s.runWorker(ctx, assignment)
+	workerCtx := ctx
+	if s.WorkerContext != nil {
+		workerCtx = s.WorkerContext
+	}
+	s.workerWG.Add(1)
+	go s.runWorker(workerCtx, assignment)
 
 	return true, nil
 }
 
 func (s *Scheduler) ActiveCount() int {
 	return s.activeCount()
+}
+
+func (s *Scheduler) Wait() {
+	s.workerWG.Wait()
+}
+
+func (s *Scheduler) WaitContext(ctx context.Context) error {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		s.Wait()
+	}()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-done:
+		return nil
+	}
 }
 
 func (s *Scheduler) validate() error {
@@ -152,10 +168,24 @@ func (s *Scheduler) validate() error {
 	if s.ConfigProvider == nil {
 		return errors.New("scheduler config provider is required")
 	}
-	if s.Allocator.TotalThreads == 0 {
-		s.Allocator = resources.NewAllocator(0)
-	}
 	return nil
+}
+
+func (s *Scheduler) interval() time.Duration {
+	if s.Interval > 0 {
+		return s.Interval
+	}
+	if s.ConfigProvider != nil {
+		return s.ConfigProvider().SchedulerInterval()
+	}
+	return configMustDuration(config.DefaultSchedulerTick)
+}
+
+func (s *Scheduler) allocator(cfg config.Config) resources.Allocator {
+	if s.Allocator.TotalThreads > 0 {
+		return s.Allocator
+	}
+	return resources.NewAllocator(cfg.Daemon.TotalThreads)
 }
 
 func (s *Scheduler) eligibleLibraries(cfg config.Config) []domain.LibraryName {
@@ -172,6 +202,7 @@ func (s *Scheduler) eligibleLibraries(cfg config.Config) []domain.LibraryName {
 }
 
 func (s *Scheduler) runWorker(ctx context.Context, assignment Assignment) {
+	defer s.workerWG.Done()
 	defer s.unregister(assignment.WorkerID)
 	_ = s.Worker.Run(ctx, assignment)
 }

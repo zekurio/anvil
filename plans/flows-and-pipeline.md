@@ -18,7 +18,7 @@ The worker now executes configured flow steps through a static block registry:
 
 - `probe`: ffprobe JSON wrapper
 - `crop-detect`: ffmpeg cropdetect wrapper, skipped on compatible Anvil-marked reruns
-- `audio-cleanup`: original-language-aware audio selection, with cleanup disabled when required metadata is unavailable
+- `audio-cleanup`: original-language-aware audio selection, with cleanup disabled when no language policy is configured, required metadata is unavailable, or Arr lookup does not match the source
 - `stage`: per-job temp output directory
 - `crf-search`: `ab-av1 crf-search`, skipped on compatible Anvil-marked reruns
 - `encode`: Anvil-owned final `ffmpeg` command; writes Anvil video stream markers and can copy already-marked video during reruns
@@ -52,12 +52,13 @@ Anvil writes operational markers to the output video stream, including whether t
 
 ## Current Limits
 
-- Audio cleanup currently keeps all non-commentary tracks whose language is in `languages_to_keep`, with `orig` expanded from Arr original-language metadata. If that metadata is unavailable for an `orig`-based profile, stream cleanup is disabled and streams are preserved.
+- Audio cleanup currently preserves all streams unless `languages_to_keep` expands to at least one concrete language. With an explicit policy, it keeps matching non-commentary tracks, expands `orig` from Arr original-language metadata, and disables cleanup if required metadata is unavailable or Arr lookup does not match the source.
 - Subtitle profile sections are parsed and carried, but detailed retention/cleanup is not implemented yet.
 - Metadata, chapter, and attachment policy is only the first conservative command-shaping pass.
 - Probe parsing captures core format and stream fields, not full HDR, chapter, or attachment details.
 - Validation is intentionally modest and does not yet enforce required stream layout, savings, or post-encode VMAF.
 - Cleanup is a normal success-path block; failed attempts can leave staging artifacts for inspection until a cleanup policy is chosen.
+- The mock Arr server follows the response fields Anvil consumes and now covers `/api/v3/parse` fallback for completed-download paths that do not match final Sonarr/Radarr library paths.
 
 ## Next Blocks
 
@@ -67,3 +68,4 @@ Anvil writes operational markers to the output video stream, including whether t
 - post-encode VMAF spot checks
 - notification hooks
 - richer Arr-aware track and naming decisions
+- harden download-intake metadata around ambiguous Arr parse results, no-match cases, history/queue lookups, and optional sidecar metadata

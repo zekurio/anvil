@@ -78,6 +78,14 @@ func (c Config) LeaseDuration() time.Duration {
 	return mustDuration(c.Daemon.LeaseDuration)
 }
 
+func (c Config) ShutdownTimeout() time.Duration {
+	return mustDuration(c.Daemon.ShutdownTimeout)
+}
+
+func (c Config) StagingCleanupAge() time.Duration {
+	return mustDuration(c.Daemon.StagingCleanupAge)
+}
+
 func (l LibraryConfig) ToDomain(arr ArrConfig) domain.Library {
 	stableFor, _ := time.ParseDuration(l.Download.StableFor)
 	return domain.Library{

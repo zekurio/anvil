@@ -2,7 +2,7 @@
 
 Anvil is a Linux-first Go daemon for orchestrating AV1 encodes across user-defined media libraries.
 
-The initial implementation will use `ab-av1 crf-search` for encode search, while Anvil owns the final `ffmpeg` command builder and the surrounding orchestration. The daemon is the primary v1 surface; a CLI can be added later.
+The initial implementation uses `ab-av1 crf-search` for encode search, while Anvil owns the final `ffmpeg` command builder and the surrounding orchestration. The daemon is the primary v1 surface, with a small operational CLI for scanning, inspecting jobs, retrying failed work, and recovering stale leases.
 
 ## Design Direction
 
@@ -67,6 +67,7 @@ Validate a config without starting the daemon loop:
 
 ```sh
 go run ./cmd/anvild --config examples/anvil.toml --check-config
+go run ./cmd/anvild check-config --config examples/anvil.toml
 ```
 
 Run in daemon mode:
@@ -75,7 +76,22 @@ Run in daemon mode:
 go run ./cmd/anvild --config examples/anvil.toml --daemon
 ```
 
-Daemon mode currently stays in-process and waits for `SIGINT` or `SIGTERM`. It does not fork into the background yet.
+Daemon mode currently stays in-process and waits for `SIGINT` or `SIGTERM`. It does not fork into the background yet. On shutdown, the default policy is `drain`: Anvil stops scanning/scheduling new work and waits for active workers. Use `--shutdown-policy cancel` or `daemon.shutdown_policy = "cancel"` to cancel active workers too. `shutdown_timeout = "0s"` waits indefinitely; a positive timeout cancels active workers after that wait.
+
+Useful operator commands:
+
+```sh
+go run ./cmd/anvild scan --config examples/anvil.toml
+go run ./cmd/anvild scan --config examples/anvil.toml --library movies
+go run ./cmd/anvild jobs --config examples/anvil.toml --state pending,failed
+go run ./cmd/anvild jobs --config examples/anvil.toml --json
+go run ./cmd/anvild retry --config examples/anvil.toml 42
+go run ./cmd/anvild retry --config examples/anvil.toml --failed --library movies
+go run ./cmd/anvild recover --config examples/anvil.toml
+go run ./cmd/anvild cleanup-staging --config examples/anvil.toml --older-than 24h --dry-run
+```
+
+Send `SIGHUP` to reload config without restarting. Reload can update libraries, flows, profiles, Arr settings, worker count, thread count, intervals, retry policy, and shutdown policy. Changes to `daemon.store_path` or `daemon.temp_dir` are rejected and require a restart.
 
 With Nix:
 

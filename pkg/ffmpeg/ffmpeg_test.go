@@ -43,6 +43,24 @@ func TestArgsPreserveStreamsAndStripMetadata(t *testing.T) {
 	}
 }
 
+func TestArgsMarksOnlyVideoStreamWithAnvilTags(t *testing.T) {
+	plan, err := BuildPlan(testProfile(), "/in.mkv", "/out.mkv", domain.ResourceAllocation{Threads: 2}, &domain.SearchResult{CRF: 24}, &domain.AudioSelection{StreamIndexes: []int{1, 2}}, domain.JobMetadata{
+		StreamCleanupDisabled: true,
+	})
+	if err != nil {
+		t.Fatalf("BuildPlan() error = %v", err)
+	}
+	args := Args(plan)
+	if !containsPair(args, "-metadata:s:v:0", "anvil.encoded=true") {
+		t.Fatalf("Args() = %v, missing video Anvil marker", args)
+	}
+	for _, unexpected := range []string{"-metadata", "-metadata:s:a:0", "-metadata:s:s:0", "-metadata:s:t:0"} {
+		if containsArg(args, unexpected) {
+			t.Fatalf("Args() = %v, did not expect %q", args, unexpected)
+		}
+	}
+}
+
 func TestArgsMapsSelectedAudioAndAppliesCrop(t *testing.T) {
 	audio := &domain.AudioSelection{StreamIndexes: []int{2, 4}}
 	plan, err := BuildPlan(testProfile(), "/in.mkv", "/out.mkv", domain.ResourceAllocation{Threads: 2}, &domain.SearchResult{CRF: 24}, audio, domain.JobMetadata{CropFilter: "crop=1920:800:0:140"})
