@@ -93,6 +93,7 @@ func (v Validator) Validate(ctx context.Context, request Request) (domain.Valida
 	validateMarker(request, outputProbe, &result)
 	validateAudio(request, outputProbe, &result)
 	validateSubtitles(request, outputProbe, &result)
+	validateHDR(request, outputProbe, &result)
 	computeSizeMetrics(&result)
 
 	if !result.OK {
@@ -160,7 +161,13 @@ func validateVideo(request Request, outputProbe domain.ProbeResult, result *doma
 }
 
 func validateMarker(request Request, outputProbe domain.ProbeResult, result *domain.ValidationResult) {
-	match := marker.Detect(outputProbe, request.Profile)
+	videoCodec := request.Profile.Video.Codec
+	pixelFormat := request.Profile.Video.PixelFormat
+	if request.EncodePlan != nil {
+		videoCodec = request.EncodePlan.VideoCodec
+		pixelFormat = request.EncodePlan.PixelFormat
+	}
+	match := marker.DetectVideo(outputProbe, request.Profile.Name, videoCodec, pixelFormat)
 	processed := marker.DetectProcessed(outputProbe, request.Profile)
 	result.AnvilProcessedMarkerPresent = len(processed.Tags) > 0
 
@@ -219,6 +226,47 @@ func validateSubtitles(request Request, outputProbe domain.ProbeResult, result *
 	result.ExpectedSubtitleStreamCount = result.SourceSubtitleStreamCount
 	if result.OutputSubtitleStreamCount != result.ExpectedSubtitleStreamCount {
 		addError(result, fmt.Sprintf("output subtitle stream count %d does not match expected %d", result.OutputSubtitleStreamCount, result.ExpectedSubtitleStreamCount))
+	}
+}
+
+func validateHDR(request Request, outputProbe domain.ProbeResult, result *domain.ValidationResult) {
+	if request.SourceProbe == nil {
+		return
+	}
+	sourceVideo, sourceOK := firstVideo(request.SourceProbe.Streams)
+	outputVideo, outputOK := firstVideo(outputProbe.Streams)
+	if !sourceOK || !outputOK {
+		return
+	}
+	result.SourceHDRColorTransfer = sourceVideo.ColorTransfer
+	result.OutputHDRColorTransfer = outputVideo.ColorTransfer
+	result.SourceHDRColorPrimaries = sourceVideo.ColorPrimaries
+	result.OutputHDRColorPrimaries = outputVideo.ColorPrimaries
+	result.SourceDolbyVisionPresent = sourceVideo.DolbyVision != nil
+	result.OutputDolbyVisionPresent = outputVideo.DolbyVision != nil
+
+	for _, field := range []struct {
+		name   string
+		source string
+		output string
+	}{
+		{name: "color transfer", source: sourceVideo.ColorTransfer, output: outputVideo.ColorTransfer},
+		{name: "color primaries", source: sourceVideo.ColorPrimaries, output: outputVideo.ColorPrimaries},
+		{name: "color space", source: sourceVideo.ColorSpace, output: outputVideo.ColorSpace},
+	} {
+		if strings.TrimSpace(field.source) == "" {
+			continue
+		}
+		if !strings.EqualFold(strings.TrimSpace(field.source), strings.TrimSpace(field.output)) {
+			addError(result, fmt.Sprintf("output HDR %s %q does not match source %q", field.name, field.output, field.source))
+		}
+	}
+
+	if sourceVideo.DolbyVision == nil || request.Profile.Video.DolbyVision.Mode == domain.DolbyVisionModeOff {
+		return
+	}
+	if outputVideo.DolbyVision == nil {
+		addError(result, "output Dolby Vision metadata is missing")
 	}
 }
 
@@ -340,6 +388,15 @@ func streamsByType(streams []domain.MediaStream, streamType string) []domain.Med
 		}
 	}
 	return result
+}
+
+func firstVideo(streams []domain.MediaStream) (domain.MediaStream, bool) {
+	for _, stream := range streams {
+		if stream.Type == "video" {
+			return stream, true
+		}
+	}
+	return domain.MediaStream{}, false
 }
 
 func countStreams(streams []domain.MediaStream, streamType string) int {

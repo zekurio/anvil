@@ -1,10 +1,16 @@
 package ffmpeg
 
 import (
+	"context"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/zekurio/anvil/pkg/domain"
 	"github.com/zekurio/anvil/pkg/marker"
+	"github.com/zekurio/anvil/pkg/pipeline"
+	"github.com/zekurio/anvil/pkg/process"
 )
 
 func TestBuildPlanUsesSearchCRF(t *testing.T) {
@@ -79,6 +85,126 @@ func TestArgsMapsSelectedAudioAndAppliesCrop(t *testing.T) {
 	}
 	if containsPair(args, "-map", "0:a?") {
 		t.Fatalf("Args() = %v, did not expect all-audio stream map", args)
+	}
+}
+
+func TestArgsIncludesCustomFFmpegArgs(t *testing.T) {
+	profile := testProfile()
+	profile.Video.FFmpegArgs = []string{"-svtav1-params", "film-grain=8"}
+	plan, err := BuildPlan(profile, "/in.mkv", "/out.mkv", domain.ResourceAllocation{Threads: 2}, &domain.SearchResult{CRF: 24}, nil, domain.JobMetadata{})
+	if err != nil {
+		t.Fatalf("BuildPlan() error = %v", err)
+	}
+	args := Args(plan)
+	if !containsPair(args, "-svtav1-params", "film-grain=8") {
+		t.Fatalf("Args() = %v, missing custom ffmpeg args", args)
+	}
+}
+
+func TestBuildPlanUsesDolbyVisionEncoderOverride(t *testing.T) {
+	profile := testProfile()
+	profile.Video.FFmpegArgs = []string{"-base", "1"}
+	profile.Video.DolbyVision = domain.DolbyVisionProfile{
+		Mode:        domain.DolbyVisionModeAuto,
+		Codec:       "hevc_qsv",
+		Preset:      "medium",
+		PixelFormat: "p010le",
+		FFmpegArgs:  []string{"-global_quality", "24"},
+	}
+	plan, err := BuildPlan(profile, "/in.mkv", "/out.mkv", domain.ResourceAllocation{Threads: 2}, &domain.SearchResult{CRF: 24}, nil, domain.JobMetadata{
+		HDR: domain.HDRMetadata{
+			DolbyVision:                &domain.DolbyVisionMetadata{Profile: 8},
+			DolbyVisionToolAvailable:   true,
+			DolbyVisionEncoderSelected: true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("BuildPlan() error = %v", err)
+	}
+	if got, want := plan.VideoCodec, "hevc_qsv"; got != want {
+		t.Fatalf("VideoCodec = %q, want %q", got, want)
+	}
+	if got, want := plan.VideoSource, domain.VideoSourceDolbyVision; got != want {
+		t.Fatalf("VideoSource = %q, want %q", got, want)
+	}
+	args := Args(plan)
+	for _, pair := range [][2]string{
+		{"-c:v", "hevc_qsv"},
+		{"-preset", "medium"},
+		{"-pix_fmt", "p010le"},
+		{"-base", "1"},
+		{"-global_quality", "24"},
+	} {
+		if !containsPair(args, pair[0], pair[1]) {
+			t.Fatalf("Args() = %v, missing %v", args, pair)
+		}
+	}
+}
+
+func TestDolbyVisionBlockRepairsHEVCMKVOutput(t *testing.T) {
+	dir := t.TempDir()
+	inputPath := filepath.Join(dir, "input.mkv")
+	outputPath := filepath.Join(dir, "output.mkv")
+	if err := os.WriteFile(inputPath, []byte("input"), 0o600); err != nil {
+		t.Fatalf("write input: %v", err)
+	}
+	if err := os.WriteFile(outputPath, []byte("encoded"), 0o600); err != nil {
+		t.Fatalf("write output: %v", err)
+	}
+	runner := &doviFakeRunner{}
+	job := &pipeline.JobContext{
+		InputPath:  inputPath,
+		OutputPath: outputPath,
+		StagingDir: dir,
+		Profile: domain.Profile{
+			Video: domain.VideoProfile{
+				DolbyVision: domain.DolbyVisionProfile{
+					Mode:            domain.DolbyVisionModeAuto,
+					Codec:           "hevc_qsv",
+					RemoveHDR10Plus: true,
+				},
+			},
+		},
+		Metadata: domain.JobMetadata{HDR: domain.HDRMetadata{
+			DolbyVision:                &domain.DolbyVisionMetadata{Profile: 8},
+			DolbyVisionEncoderSelected: true,
+		}},
+		EncodePlan: &domain.EncodePlan{VideoCodec: "hevc_qsv"},
+	}
+	if err := (DolbyVisionBlock{Runner: runner}).Run(context.Background(), job); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	got, err := os.ReadFile(outputPath)
+	if err != nil {
+		t.Fatalf("read fixed output: %v", err)
+	}
+	if string(got) != "fixed-mkv" {
+		t.Fatalf("output content = %q, want fixed-mkv", got)
+	}
+	if !runner.hasCommand("dovi_tool", "--drop-hdr10plus", "--crop", "--mode", "2", "extract-rpu") {
+		t.Fatalf("commands = %v, want dovi_tool extract-rpu with crop/mode/drop", runner.commands)
+	}
+	if !runner.hasCommand("mkvextract", "tracks", outputPath) {
+		t.Fatalf("commands = %v, want mkvextract tracks", runner.commands)
+	}
+	if !runner.hasCommand("dovi_tool", "--drop-hdr10plus", "--crop", "--mode", "2", "inject-rpu") {
+		t.Fatalf("commands = %v, want dovi_tool inject-rpu with crop/mode/drop", runner.commands)
+	}
+	if !runner.hasCommand("mkvmerge", "--default-duration", "0:23.976fps", "--fix-bitstream-timing-information", "0") {
+		t.Fatalf("commands = %v, want mkvmerge fps fix", runner.commands)
+	}
+}
+
+func TestDolbyVisionBlockNoopsForNonDolbyVisionJobs(t *testing.T) {
+	runner := &doviFakeRunner{}
+	err := (DolbyVisionBlock{Runner: runner}).Run(context.Background(), &pipeline.JobContext{
+		EncodePlan: &domain.EncodePlan{VideoCodec: "libsvtav1"},
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if len(runner.commands) != 0 {
+		t.Fatalf("commands = %v, want none", runner.commands)
 	}
 }
 
@@ -196,4 +322,74 @@ func containsPair(args []string, key string, value string) bool {
 		}
 	}
 	return false
+}
+
+type doviFakeRunner struct {
+	commands [][]string
+}
+
+func (r *doviFakeRunner) Run(_ context.Context, command process.Command) (process.Result, error) {
+	args := command.ArgsWithName()
+	r.commands = append(r.commands, args)
+	switch filepath.Base(command.Name) {
+	case "dovi_tool":
+		if output := argValue(command.Args, "-o"); output != "" {
+			if err := os.WriteFile(output, []byte("rpu"), 0o600); err != nil {
+				return process.Result{Command: args}, err
+			}
+		}
+		if output := argValue(command.Args, "--output"); output != "" {
+			if err := os.WriteFile(output, []byte("fixed-hevc"), 0o600); err != nil {
+				return process.Result{Command: args}, err
+			}
+		}
+	case "mkvextract":
+		for _, arg := range command.Args {
+			if _, path, ok := strings.Cut(arg, "0:"); ok {
+				if err := os.WriteFile(path, []byte("converted-hevc"), 0o600); err != nil {
+					return process.Result{Command: args}, err
+				}
+			}
+		}
+	case "mkvinfo":
+		return process.Result{Command: args, Stdout: []byte("Default duration: 23.976 frames/fields per second")}, nil
+	case "mkvmerge":
+		output := argValue(command.Args, "-o")
+		if output != "" {
+			if err := os.WriteFile(output, []byte("fixed-mkv"), 0o600); err != nil {
+				return process.Result{Command: args}, err
+			}
+		}
+	}
+	return process.Result{Command: args}, nil
+}
+
+func (r *doviFakeRunner) hasCommand(name string, tokens ...string) bool {
+	for _, command := range r.commands {
+		if len(command) == 0 || filepath.Base(command[0]) != name {
+			continue
+		}
+		if containsAll(command, tokens...) {
+			return true
+		}
+	}
+	return false
+}
+
+func containsAll(values []string, tokens ...string) bool {
+	for _, token := range tokens {
+		if !containsArg(values, token) {
+			return false
+		}
+	}
+	return true
+}
+
+func argValue(args []string, name string) string {
+	for i := 0; i < len(args)-1; i++ {
+		if args[i] == name {
+			return args[i+1]
+		}
+	}
+	return ""
 }

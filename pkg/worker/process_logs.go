@@ -124,7 +124,9 @@ func shouldCaptureProcess(command process.Command, result process.Result, runErr
 	if name == "" && len(result.Command) > 0 {
 		name = filepath.Base(result.Command[0])
 	}
-	if name != "ffmpeg" && name != "ab-av1" {
+	switch name {
+	case "ffmpeg", "ab-av1", "dovi_tool", "mkvextract", "mkvmerge", "mkvinfo":
+	default:
 		return false
 	}
 	return runErr != nil || len(result.Stdout) > 0 || len(result.Stderr) > 0

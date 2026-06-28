@@ -33,6 +33,10 @@ type Match struct {
 }
 
 func Detect(probe domain.ProbeResult, profile domain.Profile) Match {
+	return DetectVideo(probe, profile.Name, profile.Video.Codec, profile.Video.PixelFormat)
+}
+
+func DetectVideo(probe domain.ProbeResult, profileName domain.ProfileName, videoCodec string, pixelFormat string) Match {
 	for _, stream := range probe.Streams {
 		if stream.Type != "video" {
 			continue
@@ -41,7 +45,7 @@ func Detect(probe domain.ProbeResult, profile domain.Profile) Match {
 		if !truthy(tags[TagEncoded]) {
 			continue
 		}
-		if !compatibleProfile(tags, profile) {
+		if !compatibleVideo(tags, profileName, videoCodec, pixelFormat) {
 			return Match{Tags: tags, CropFilter: tags[TagCrop]}
 		}
 		return Match{Compatible: true, Tags: tags, CropFilter: tags[TagCrop]}
@@ -118,14 +122,14 @@ func OutputTags(plan domain.EncodePlan) map[string]string {
 	return tags
 }
 
-func compatibleProfile(tags map[string]string, profile domain.Profile) bool {
-	if profile.Name != "" && tags[TagProfile] != string(profile.Name) {
+func compatibleVideo(tags map[string]string, profileName domain.ProfileName, videoCodec string, pixelFormat string) bool {
+	if profileName != "" && tags[TagProfile] != string(profileName) {
 		return false
 	}
-	if !compatibleTag(tags[TagVideoCodec], profile.Video.Codec) {
+	if !compatibleTag(tags[TagVideoCodec], videoCodec) {
 		return false
 	}
-	if !compatibleTag(tags[TagVideoPixelFormat], profile.Video.PixelFormat) {
+	if !compatibleTag(tags[TagVideoPixelFormat], pixelFormat) {
 		return false
 	}
 	return true

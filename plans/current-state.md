@@ -7,7 +7,7 @@ The daemon can load TOML config, open SQLite, recover stale jobs, scan configure
 The implemented default path is:
 
 ```text
-probe -> crop-detect -> audio-cleanup -> stage -> crf-search -> encode -> validate -> replace/handoff -> cleanup
+probe -> crop-detect -> audio-cleanup -> stage -> crf-search -> encode -> dovi-fix -> validate -> replace/handoff -> cleanup
 ```
 
 The mock library smoke test exercises generated media, mock Radarr/Sonarr metadata, media copy output, download handoff, SQLite state, staging cleanup, and captured process logs.
@@ -24,14 +24,16 @@ SQLite stores sources, assets, jobs, attempts, leases, attempt events, and proce
 - Failed attempts trigger best-effort staging cleanup.
 - Stale leases can be recovered on startup or with the CLI.
 - Audio cleanup is conservative when metadata is missing or unsafe.
+- Preflight and inspect expose scan plans, resolved behavior, attempts, and captured process-output artifacts.
+- Staged and published outputs are always MKV, including non-MKV sources.
+- HDR color fields and Dolby Vision side data are probed; Dolby Vision can select a dedicated HEVC encoder when `dovi_tool` is available, then repair RPU/crop compatibility before validation.
+- The flake builds an Anvil package and the NixOS module includes baseline systemd hardening.
 
 ## Known Shallow Areas
 
-- Validation is still basic: file exists, non-empty, ffprobe-readable, and duration is close.
 - Subtitle policy is parsed but not deeply enforced.
-- Metadata, chapters, attachments, and HDR are only handled through coarse preserve/strip command shaping.
-- Probe parsing captures core stream fields, not rich HDR/chapter/attachment details.
+- Metadata, chapters, and attachments are only handled through coarse preserve/strip command shaping.
+- Dolby Vision RPU repair follows the HEVC/MKV workflow from FileFlows. AV1 Dolby Vision remains unsupported until `dovi_tool` supports it.
+- Probe parsing still does not capture rich chapter/attachment details.
 - Completed jobs do not automatically requeue when a source file changes.
-- Process logs are captured, but operator-friendly attempt/artifact inspection is not yet exposed in the CLI.
-- `daemon.log_level` is accepted by config but not currently wired into slog setup.
-- The NixOS module exists, but daemon packaging and service hardening are not complete.
+- NixOS service hardening is present, but real deployments may still need host-specific device and path allowances for hardware encoders.

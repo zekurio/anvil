@@ -107,35 +107,52 @@ type preflightFlow struct {
 }
 
 type preflightProfile struct {
-	Name       domain.ProfileName `json:"name"`
-	Container  string             `json:"container"`
-	VideoCodec string             `json:"video_codec"`
-	CRFMin     int                `json:"crf_min"`
-	CRFMax     int                `json:"crf_max"`
-	TargetVMAF float64            `json:"target_vmaf"`
+	Name        domain.ProfileName   `json:"name"`
+	Container   string               `json:"container"`
+	VideoCodec  string               `json:"video_codec"`
+	CRFMin      int                  `json:"crf_min"`
+	CRFMax      int                  `json:"crf_max"`
+	TargetVMAF  float64              `json:"target_vmaf"`
+	FFmpegArgs  []string             `json:"ffmpeg_args,omitempty"`
+	ABAV1Args   []string             `json:"ab_av1_args,omitempty"`
+	DolbyVision preflightDolbyVision `json:"dolby_vision,omitempty"`
+}
+
+type preflightDolbyVision struct {
+	Mode            domain.DolbyVisionMode `json:"mode,omitempty"`
+	Codec           string                 `json:"codec,omitempty"`
+	PixelFormat     string                 `json:"pixel_format,omitempty"`
+	FFmpegArgs      []string               `json:"ffmpeg_args,omitempty"`
+	ABAV1Args       []string               `json:"ab_av1_args,omitempty"`
+	RemoveHDR10Plus bool                   `json:"remove_hdr10plus"`
 }
 
 type preflightSearchPolicy struct {
-	Enabled                      bool   `json:"enabled"`
-	Tool                         string `json:"tool,omitempty"`
-	CRFMin                       int    `json:"crf_min,omitempty"`
-	CRFMax                       int    `json:"crf_max,omitempty"`
-	TargetVMAF                   string `json:"target_vmaf,omitempty"`
-	SavingsPolicy                string `json:"savings_policy,omitempty"`
-	MayDecideAV1FitNotWorthwhile bool   `json:"may_decide_av1_fit_not_worthwhile"`
-	NoFitBehavior                string `json:"no_fit_behavior,omitempty"`
-	FlowCanFallbackToRemux       bool   `json:"flow_can_fallback_to_remux"`
+	Enabled                      bool     `json:"enabled"`
+	Tool                         string   `json:"tool,omitempty"`
+	CRFMin                       int      `json:"crf_min,omitempty"`
+	CRFMax                       int      `json:"crf_max,omitempty"`
+	TargetVMAF                   string   `json:"target_vmaf,omitempty"`
+	SavingsPolicy                string   `json:"savings_policy,omitempty"`
+	CustomArgs                   []string `json:"custom_args,omitempty"`
+	DolbyVisionCustomArgs        []string `json:"dolby_vision_custom_args,omitempty"`
+	MayDecideAV1FitNotWorthwhile bool     `json:"may_decide_av1_fit_not_worthwhile"`
+	NoFitBehavior                string   `json:"no_fit_behavior,omitempty"`
+	FlowCanFallbackToRemux       bool     `json:"flow_can_fallback_to_remux"`
 }
 
 type preflightEncode struct {
-	Enabled        bool   `json:"enabled"`
-	VideoAction    string `json:"video_action"`
-	Codec          string `json:"codec,omitempty"`
-	CRFSource      string `json:"crf_source,omitempty"`
-	Output         string `json:"output,omitempty"`
-	NoFitAction    string `json:"no_fit_action,omitempty"`
-	AudioAction    string `json:"audio_action,omitempty"`
-	MetadataAction string `json:"metadata_action,omitempty"`
+	Enabled               bool     `json:"enabled"`
+	VideoAction           string   `json:"video_action"`
+	Codec                 string   `json:"codec,omitempty"`
+	CRFSource             string   `json:"crf_source,omitempty"`
+	Output                string   `json:"output,omitempty"`
+	NoFitAction           string   `json:"no_fit_action,omitempty"`
+	AudioAction           string   `json:"audio_action,omitempty"`
+	MetadataAction        string   `json:"metadata_action,omitempty"`
+	CustomArgs            []string `json:"custom_args,omitempty"`
+	DolbyVisionAction     string   `json:"dolby_vision_action,omitempty"`
+	DolbyVisionCustomArgs []string `json:"dolby_vision_custom_args,omitempty"`
 }
 
 type preflightPaths struct {
@@ -351,7 +368,7 @@ func buildPreflightCandidate(ctx context.Context, cfg config.Config, state prefl
 		},
 		Status:  status,
 		Flow:    preflightFlow{Name: flow.Name, Steps: flowStepNames(flow)},
-		Profile: preflightProfile{Name: profile.Name, Container: profile.Container, VideoCodec: profile.Video.Codec, CRFMin: profile.Video.CRFMin, CRFMax: profile.Video.CRFMax, TargetVMAF: profile.Video.TargetVMAF},
+		Profile: preflightProfileFromDomain(profile),
 		Search:  preflightSearch(flow, profile),
 		Encode:  preflightEncodePlan(flow, profile, stagingPlan.OutputPath),
 		Paths: preflightPaths{
@@ -427,6 +444,27 @@ func preflightCleanupPlan(flow domain.Flow, library domain.Library, job *pipelin
 	return cleanup
 }
 
+func preflightProfileFromDomain(profile domain.Profile) preflightProfile {
+	return preflightProfile{
+		Name:       profile.Name,
+		Container:  profile.Container,
+		VideoCodec: profile.Video.Codec,
+		CRFMin:     profile.Video.CRFMin,
+		CRFMax:     profile.Video.CRFMax,
+		TargetVMAF: profile.Video.TargetVMAF,
+		FFmpegArgs: append([]string(nil), profile.Video.FFmpegArgs...),
+		ABAV1Args:  append([]string(nil), profile.Video.ABAV1Args...),
+		DolbyVision: preflightDolbyVision{
+			Mode:            profile.Video.DolbyVision.Mode,
+			Codec:           profile.Video.DolbyVision.Codec,
+			PixelFormat:     profile.Video.DolbyVision.PixelFormat,
+			FFmpegArgs:      append([]string(nil), profile.Video.DolbyVision.FFmpegArgs...),
+			ABAV1Args:       append([]string(nil), profile.Video.DolbyVision.ABAV1Args...),
+			RemoveHDR10Plus: profile.Video.DolbyVision.RemoveHDR10Plus,
+		},
+	}
+}
+
 func preflightSearch(flow domain.Flow, profile domain.Profile) preflightSearchPolicy {
 	searchEnabled := flowHasStep(flow, "crf-search")
 	if !searchEnabled {
@@ -439,6 +477,8 @@ func preflightSearch(flow domain.Flow, profile domain.Profile) preflightSearchPo
 		CRFMax:                       profile.Video.CRFMax,
 		TargetVMAF:                   formatFloat(profile.Video.TargetVMAF),
 		SavingsPolicy:                "ab-av1/search policy; explicit min-savings is not configured",
+		CustomArgs:                   append([]string(nil), profile.Video.ABAV1Args...),
+		DolbyVisionCustomArgs:        append([]string(nil), profile.Video.DolbyVision.ABAV1Args...),
 		MayDecideAV1FitNotWorthwhile: true,
 		NoFitBehavior:                "if search decides AV1 fitting is not worthwhile, continue remaining configured actions as video-copy/remux/metadata processing without applying an AV1 CRF encode",
 		FlowCanFallbackToRemux:       flowHasStep(flow, "encode"),
@@ -457,6 +497,11 @@ func preflightEncodePlan(flow domain.Flow, profile domain.Profile, outputPath st
 		Output:         outputPath,
 		AudioAction:    "copy/remux after configured audio cleanup selections",
 		MetadataAction: "apply configured metadata, attachment, chapter, and Anvil marker policies",
+		CustomArgs:     append([]string(nil), profile.Video.FFmpegArgs...),
+	}
+	if profile.Video.DolbyVision.Mode != domain.DolbyVisionModeOff && profile.Video.DolbyVision.Codec != "" {
+		encode.DolbyVisionAction = fmt.Sprintf("if source has Dolby Vision and dovi_tool is available, use %s instead of %s", profile.Video.DolbyVision.Codec, profile.Video.Codec)
+		encode.DolbyVisionCustomArgs = append([]string(nil), profile.Video.DolbyVision.FFmpegArgs...)
 	}
 	if !flowHasStep(flow, "crf-search") {
 		encode.VideoAction = "encode/remux using profile defaults"
@@ -598,6 +643,9 @@ func printPreflightReport(report preflightReport) {
 		}
 		fmt.Fprintf(os.Stdout, "  flow: %s [%s]\n", item.Flow.Name, strings.Join(item.Flow.Steps, " -> "))
 		fmt.Fprintf(os.Stdout, "  profile: %s container=%s codec=%s\n", item.Profile.Name, item.Profile.Container, item.Profile.VideoCodec)
+		if item.Profile.DolbyVision.Mode != "" || item.Profile.DolbyVision.Codec != "" {
+			fmt.Fprintf(os.Stdout, "  dolby-vision: mode=%s codec=%s pixel_format=%s remove_hdr10plus=%t\n", item.Profile.DolbyVision.Mode, displayOrNone(item.Profile.DolbyVision.Codec), displayOrNone(item.Profile.DolbyVision.PixelFormat), item.Profile.DolbyVision.RemoveHDR10Plus)
+		}
 		if item.Search.Enabled {
 			fmt.Fprintf(os.Stdout, "  search: %s crf=%d..%d target_vmaf=%s savings_policy=%s\n",
 				item.Search.Tool,
@@ -606,9 +654,18 @@ func printPreflightReport(report preflightReport) {
 				item.Search.TargetVMAF,
 				item.Search.SavingsPolicy,
 			)
+			if len(item.Search.CustomArgs) > 0 || len(item.Search.DolbyVisionCustomArgs) > 0 {
+				fmt.Fprintf(os.Stdout, "  search args: custom=%v dolby_vision=%v\n", item.Search.CustomArgs, item.Search.DolbyVisionCustomArgs)
+			}
 			fmt.Fprintf(os.Stdout, "  no-fit: %s\n", item.Search.NoFitBehavior)
 		}
 		fmt.Fprintf(os.Stdout, "  encode: enabled=%t video=%s output=%s\n", item.Encode.Enabled, item.Encode.VideoAction, item.Encode.Output)
+		if len(item.Encode.CustomArgs) > 0 || len(item.Encode.DolbyVisionCustomArgs) > 0 {
+			fmt.Fprintf(os.Stdout, "  encode args: custom=%v dolby_vision=%v\n", item.Encode.CustomArgs, item.Encode.DolbyVisionCustomArgs)
+		}
+		if item.Encode.DolbyVisionAction != "" {
+			fmt.Fprintf(os.Stdout, "  encode dolby-vision: %s\n", item.Encode.DolbyVisionAction)
+		}
 		if item.Encode.NoFitAction != "" {
 			fmt.Fprintf(os.Stdout, "  encode no-fit: %s\n", item.Encode.NoFitAction)
 		}

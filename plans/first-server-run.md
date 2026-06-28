@@ -33,7 +33,7 @@ Before starting the daemon:
 - A dry-run scan shows only expected candidates.
 - Arr metadata lookup behavior is known for the selected paths.
 - The temp directory and store path are on disks with enough space.
-- `ffmpeg`, `ffprobe`, and `ab-av1` are available to the service user.
+- Jellyfin ffmpeg/ffprobe, `ab-av1`, `dovi_tool`, and MKVToolNix are available to the service user.
 - Logs and process-output artifact paths are easy to inspect.
 - Backups or snapshots exist for any path where replacement mode may be tested later.
 

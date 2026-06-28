@@ -148,13 +148,7 @@ func (b CleanupBlock) Run(_ context.Context, job *pipeline.JobContext) error {
 }
 
 func containerExt(container string, inputPath string) string {
-	container = strings.TrimPrefix(strings.TrimSpace(container), ".")
-	if container != "" {
-		return "." + container
-	}
-	if ext := filepath.Ext(inputPath); ext != "" {
-		return ext
-	}
+	_, _ = container, inputPath
 	return ".mkv"
 }
 

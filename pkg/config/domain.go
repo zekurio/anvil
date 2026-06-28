@@ -143,6 +143,17 @@ func (p ProfileConfig) ToDomain() domain.Profile {
 			CRFMax:            p.Video.CRFMax,
 			TargetVMAF:        p.Video.TargetVMAF,
 			MinSavingsPercent: p.Video.MinSavingsPercent,
+			FFmpegArgs:        append([]string(nil), p.Video.FFmpegArgs...),
+			ABAV1Args:         append([]string(nil), p.Video.ABAV1Args...),
+			DolbyVision: domain.DolbyVisionProfile{
+				Mode:            domain.DolbyVisionMode(p.Video.DolbyVision.Mode),
+				Codec:           p.Video.DolbyVision.Codec,
+				Preset:          p.Video.DolbyVision.Preset,
+				PixelFormat:     p.Video.DolbyVision.PixelFormat,
+				FFmpegArgs:      append([]string(nil), p.Video.DolbyVision.FFmpegArgs...),
+				ABAV1Args:       append([]string(nil), p.Video.DolbyVision.ABAV1Args...),
+				RemoveHDR10Plus: p.Video.DolbyVision.RemoveHDR10Plus,
+			},
 		},
 		Audio: domain.AudioProfile{
 			LanguagesToKeep:   append([]string(nil), p.Audio.LanguagesToKeep...),
