@@ -101,6 +101,7 @@ type Profile struct {
 	Video       VideoProfile
 	Audio       AudioProfile
 	Subtitles   SubtitleProfile
+	Validation  ValidationPolicy
 	Metadata    MetadataPolicy
 	Attachments AttachmentPolicy
 	Chapters    ChapterPolicy
@@ -148,6 +149,10 @@ type SubtitleProfile struct {
 	KeepExternal       bool
 	MaxTracks          int
 	Fallback           StreamFallback
+}
+
+type ValidationPolicy struct {
+	DurationToleranceSeconds float64
 }
 
 type MetadataMode string
@@ -343,6 +348,7 @@ type MediaStream struct {
 	Index       int
 	Type        string
 	Codec       string
+	PixelFormat string
 	Language    string
 	Title       string
 	Tags        map[string]string
@@ -405,11 +411,27 @@ type EncodePlan struct {
 }
 
 type ValidationResult struct {
-	OK                    bool
-	SourceDurationSeconds float64
-	OutputDurationSeconds float64
-	OutputSizeBytes       int64
-	Errors                []string
+	OK                          bool
+	SourceDurationSeconds       float64
+	SourceSizeBytes             int64
+	OutputDurationSeconds       float64
+	OutputSizeBytes             int64
+	SizeSavingsBytes            int64
+	SizeSavingsPercent          float64
+	OutputVideoStreamCount      int
+	OutputAudioStreamCount      int
+	OutputSubtitleStreamCount   int
+	ExpectedVideoCodec          string
+	OutputVideoCodec            string
+	ExpectedVideoPixelFormat    string
+	OutputVideoPixelFormat      string
+	SourceAudioStreamCount      int
+	ExpectedAudioStreamCount    int
+	SourceSubtitleStreamCount   int
+	ExpectedSubtitleStreamCount int
+	AnvilMarkerCompatible       bool
+	AnvilProcessedMarkerPresent bool
+	Errors                      []string
 }
 
 type JobMetadata struct {

@@ -38,6 +38,20 @@ func TestDetectRejectsDifferentProfile(t *testing.T) {
 	}
 }
 
+func TestDetectProcessedFindsCompatibleProcessedMarker(t *testing.T) {
+	probed := domain.ProbeResult{Streams: []domain.MediaStream{
+			{Index: 0, Type: "video", Tags: map[string]string{
+				TagProcessed: "true",
+				TagProfile:   "default-av1",
+				TagVideoAction: VideoActionCopy,
+			}},
+		}}
+	match := DetectProcessed(probed, testProfile())
+	if !match.Compatible {
+		t.Fatalf("Compatible = false, want true")
+	}
+}
+
 func TestOutputTagsAddsCurrentEncodeDetails(t *testing.T) {
 	tags := OutputTags(domain.EncodePlan{
 		ProfileName: domain.ProfileName("default-av1"),
@@ -52,7 +66,7 @@ func TestOutputTagsAddsCurrentEncodeDetails(t *testing.T) {
 	if got, want := tags[TagProcessed], "true"; got != want {
 		t.Fatalf("processed tag = %q, want %q", got, want)
 	}
-	if got, want := tags[TagVideoAction], "encode"; got != want {
+	if got, want := tags[TagVideoAction], VideoActionEncode; got != want {
 		t.Fatalf("video action = %q, want %q", got, want)
 	}
 	if got, want := tags[TagVideoCRF], "29"; got != want {
@@ -77,7 +91,7 @@ func TestOutputTagsMarksVideoCopyAsProcessedWithoutEncodedClaim(t *testing.T) {
 	if got, want := tags[TagProcessed], "true"; got != want {
 		t.Fatalf("processed tag = %q, want %q", got, want)
 	}
-	if got, want := tags[TagVideoAction], "copy"; got != want {
+	if got, want := tags[TagVideoAction], VideoActionCopy; got != want {
 		t.Fatalf("video action = %q, want %q", got, want)
 	}
 	if got, want := tags[TagProcessReason], reason; got != want {
@@ -110,6 +124,9 @@ func TestOutputTagsPreservesExistingEncodedMarkerWhenCopyingVideo(t *testing.T) 
 	}
 	if got, want := tags[TagProcessed], "true"; got != want {
 		t.Fatalf("processed tag = %q, want %q", got, want)
+	}
+	if got, want := tags[TagVideoAction], VideoActionCopy; got != want {
+		t.Fatalf("video action = %q, want %q", got, want)
 	}
 }
 

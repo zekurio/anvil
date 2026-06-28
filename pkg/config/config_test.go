@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/zekurio/anvil/pkg/domain"
 )
 
 func TestLoadAppliesDefaults(t *testing.T) {
@@ -201,6 +203,49 @@ path = "/srv/media/movies"
 	_, err := Load(path)
 	if err == nil {
 		t.Fatal("Load() error = nil, want invalid shutdown settings")
+	}
+}
+
+func TestLoadProfileValidationConfig(t *testing.T) {
+	path := writeConfig(t, `
+[profiles.remux]
+[profiles.remux.validation]
+duration_tolerance_seconds = 1.5
+
+[libraries.movies]
+path = "/srv/media/movies"
+profile = "remux"
+`)
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if got, want := cfg.Profiles["remux"].Validation.DurationToleranceSeconds, 1.5; got != want {
+		t.Fatalf("config validation duration tolerance = %f, want %f", got, want)
+	}
+	_, _, profile, err := cfg.ResolveForLibrary(domain.LibraryName("movies"))
+	if err != nil {
+		t.Fatalf("ResolveForLibrary() error = %v", err)
+	}
+	if got, want := profile.Validation.DurationToleranceSeconds, 1.5; got != want {
+		t.Fatalf("domain validation duration tolerance = %f, want %f", got, want)
+	}
+}
+
+func TestLoadRejectsInvalidValidationPolicy(t *testing.T) {
+	path := writeConfig(t, `
+[profiles.bad.validation]
+duration_tolerance_seconds = -1
+
+[libraries.movies]
+path = "/srv/media/movies"
+profile = "bad"
+`)
+
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("Load() error = nil, want invalid validation policy")
 	}
 }
 

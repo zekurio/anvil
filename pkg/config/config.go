@@ -82,14 +82,15 @@ type FlowConfig struct {
 
 // ProfileConfig groups encode settings that libraries can reference.
 type ProfileConfig struct {
-	Name        string         `toml:"-"`
-	Container   string         `toml:"container"`
-	Video       VideoConfig    `toml:"video"`
-	Audio       AudioConfig    `toml:"audio"`
-	Subtitles   SubtitleConfig `toml:"subtitles"`
-	Metadata    MetadataConfig `toml:"metadata"`
-	Attachments MetadataConfig `toml:"attachments"`
-	Chapters    MetadataConfig `toml:"chapters"`
+	Name        string           `toml:"-"`
+	Container   string           `toml:"container"`
+	Video       VideoConfig      `toml:"video"`
+	Audio       AudioConfig      `toml:"audio"`
+	Subtitles   SubtitleConfig   `toml:"subtitles"`
+	Validation  ValidationConfig `toml:"validation"`
+	Metadata    MetadataConfig   `toml:"metadata"`
+	Attachments MetadataConfig   `toml:"attachments"`
+	Chapters    MetadataConfig   `toml:"chapters"`
 }
 
 // VideoConfig contains the initial video settings shape for AV1 search work.
@@ -121,6 +122,11 @@ type SubtitleConfig struct {
 	KeepExternal       bool     `toml:"keep_external"`
 	MaxTracks          int      `toml:"max_tracks"`
 	Fallback           string   `toml:"fallback"`
+}
+
+// ValidationConfig declares post-encode safety gates.
+type ValidationConfig struct {
+	DurationToleranceSeconds float64 `toml:"duration_tolerance_seconds"`
 }
 
 // MetadataConfig is shared by metadata, attachments, and chapters.
@@ -322,6 +328,9 @@ func (c Config) Validate() error {
 		}
 		if profile.Subtitles.MaxTracks < 0 {
 			problems = append(problems, fmt.Sprintf("profile %q subtitles.max_tracks must be non-negative", name))
+		}
+		if profile.Validation.DurationToleranceSeconds < 0 {
+			problems = append(problems, fmt.Sprintf("profile %q validation.duration_tolerance_seconds must be non-negative", name))
 		}
 		if !validMetadataMode(profile.Metadata.Mode) {
 			problems = append(problems, fmt.Sprintf("profile %q metadata.mode %q is invalid", name, profile.Metadata.Mode))

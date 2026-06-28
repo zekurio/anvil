@@ -160,6 +160,9 @@ func (p ProfileConfig) ToDomain() domain.Profile {
 			MaxTracks:          p.Subtitles.MaxTracks,
 			Fallback:           domain.StreamFallback(p.Subtitles.Fallback),
 		},
+		Validation: domain.ValidationPolicy{
+			DurationToleranceSeconds: p.Validation.DurationToleranceSeconds,
+		},
 		Metadata: domain.MetadataPolicy{
 			Mode: domain.MetadataMode(p.Metadata.Mode),
 		},

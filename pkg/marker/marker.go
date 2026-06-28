@@ -10,8 +10,8 @@ import (
 const (
 	Version = "1"
 
-	TagEncoded          = "anvil.encoded"
 	TagProcessed        = "anvil.processed"
+	TagEncoded          = "anvil.encoded"
 	TagProcessReason    = "anvil.process.reason"
 	TagVersion          = "anvil.version"
 	TagProfile          = "anvil.profile"
@@ -20,6 +20,10 @@ const (
 	TagVideoPixelFormat = "anvil.video.pixel_format"
 	TagVideoCRF         = "anvil.video.crf"
 	TagCrop             = "anvil.crop"
+
+	VideoActionEncode = "encode"
+	VideoActionCopy   = "copy"
+	VideoActionRemux  = "remux"
 )
 
 type Match struct {
@@ -38,6 +42,23 @@ func Detect(probe domain.ProbeResult, profile domain.Profile) Match {
 			continue
 		}
 		if !compatibleProfile(tags, profile) {
+			return Match{Tags: tags, CropFilter: tags[TagCrop]}
+		}
+		return Match{Compatible: true, Tags: tags, CropFilter: tags[TagCrop]}
+	}
+	return Match{}
+}
+
+func DetectProcessed(probe domain.ProbeResult, profile domain.Profile) Match {
+	for _, stream := range probe.Streams {
+		if stream.Type != "video" {
+			continue
+		}
+		tags := NormalizeTags(stream.Tags)
+		if !truthy(tags[TagProcessed]) {
+			continue
+		}
+		if profile.Name != "" && tags[TagProfile] != string(profile.Name) {
 			return Match{Tags: tags, CropFilter: tags[TagCrop]}
 		}
 		return Match{Compatible: true, Tags: tags, CropFilter: tags[TagCrop]}
@@ -73,7 +94,7 @@ func OutputTags(plan domain.EncodePlan) map[string]string {
 	}
 
 	if plan.VideoCopy {
-		tags[TagVideoAction] = "copy"
+		tags[TagVideoAction] = VideoActionCopy
 		if plan.VideoCopyReason != "" {
 			tags[TagProcessReason] = plan.VideoCopyReason
 		}
@@ -81,7 +102,7 @@ func OutputTags(plan domain.EncodePlan) map[string]string {
 	}
 
 	tags[TagEncoded] = "true"
-	tags[TagVideoAction] = "encode"
+	tags[TagVideoAction] = VideoActionEncode
 	if plan.VideoCodec != "" {
 		tags[TagVideoCodec] = plan.VideoCodec
 	}
