@@ -58,12 +58,12 @@ SQLite is the source of truth for:
 
 - discovered sources and assets
 - jobs, leases, attempts, and attempt events
+- `ffmpeg` / `ab-av1` process-output artifact events with stdout/stderr log paths
 - stale lease recovery state
 
 Likely next persistence additions:
 
 - structured probe/search/encode/validation summaries
-- external process log references
 - retained staging/artifact records
 - last-seen library/profile/flow snapshots outside attempts
 
@@ -91,7 +91,7 @@ Shutdown is now explicit:
 
 Remaining cleanup work:
 
-- improve process log capture around cancellation and failures
+- surface attempt events and process-output artifact paths more directly in the CLI
 
 ## Non-Goals For V1
 

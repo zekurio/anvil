@@ -67,13 +67,18 @@ func (OSRunner) Run(ctx context.Context, command Command) (Result, error) {
 		Duration: time.Since(started),
 	}
 	if err == nil {
+		recordProcessOutput(ctx, command, result, nil)
 		return result, nil
 	}
 	if cmd.ProcessState != nil {
 		result.ExitCode = cmd.ProcessState.ExitCode()
 	}
+	var runErr error
 	if errors.Is(ctx.Err(), context.Canceled) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
-		return result, ctx.Err()
+		runErr = ctx.Err()
+	} else {
+		runErr = fmt.Errorf("run %q: %w", command.Name, err)
 	}
-	return result, fmt.Errorf("run %q: %w", command.Name, err)
+	recordProcessOutput(ctx, command, result, runErr)
+	return result, runErr
 }
