@@ -3,7 +3,10 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+
+	"github.com/zekurio/anvil/pkg/domain"
 )
 
 func TestLoadAppliesDefaults(t *testing.T) {
@@ -29,6 +32,9 @@ path = "/srv/media/movies"
 	if got := cfg.Profiles[DefaultProfileName].Audio.Fallback; got != DefaultStreamFallback {
 		t.Fatalf("expected default audio fallback %q, got %q", DefaultStreamFallback, got)
 	}
+	if got := cfg.Profiles[DefaultProfileName].Video.MinSavingsPercent; got != DefaultMinSavingsPct {
+		t.Fatalf("expected default min_savings_percent %d, got %v", DefaultMinSavingsPct, got)
+	}
 	if got := cfg.Daemon.ShutdownPolicy; got != DefaultShutdownPolicy {
 		t.Fatalf("expected default shutdown policy %q, got %q", DefaultShutdownPolicy, got)
 	}
@@ -37,6 +43,9 @@ path = "/srv/media/movies"
 	}
 	if got := cfg.Daemon.StagingCleanupAge; got != DefaultStagingCleanup {
 		t.Fatalf("expected default staging cleanup age %q, got %q", DefaultStagingCleanup, got)
+	}
+	if got := cfg.Daemon.LogLevel; got != DefaultLogLevel {
+		t.Fatalf("expected default log level %q, got %q", DefaultLogLevel, got)
 	}
 	if got := cfg.Libraries["movies"].Flow; got != DefaultFlowName {
 		t.Fatalf("expected default flow %q, got %q", DefaultFlowName, got)
@@ -59,6 +68,58 @@ path = "/srv/media/movies"
 	}
 }
 
+func TestLoadAcceptsDaemonLogLevels(t *testing.T) {
+	tests := []struct {
+		name  string
+		value string
+		want  string
+	}{
+		{name: "debug", value: "debug", want: "debug"},
+		{name: "info", value: "info", want: "info"},
+		{name: "warn", value: "warn", want: "warn"},
+		{name: "error", value: "error", want: "error"},
+		{name: "trim and lower", value: " DEBUG ", want: "debug"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := writeConfig(t, `
+[daemon]
+log_level = "`+tt.value+`"
+
+[libraries.movies]
+path = "/srv/media/movies"
+`)
+
+			cfg, err := Load(path)
+			if err != nil {
+				t.Fatalf("Load() error = %v", err)
+			}
+			if cfg.Daemon.LogLevel != tt.want {
+				t.Fatalf("log level = %q, want %q", cfg.Daemon.LogLevel, tt.want)
+			}
+		})
+	}
+}
+
+func TestLoadRejectsInvalidDaemonLogLevel(t *testing.T) {
+	path := writeConfig(t, `
+[daemon]
+log_level = "verbose"
+
+[libraries.movies]
+path = "/srv/media/movies"
+`)
+
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("Load() error = nil, want invalid log level")
+	}
+	if !strings.Contains(err.Error(), "daemon.log_level") {
+		t.Fatalf("Load() error = %q, want daemon.log_level", err.Error())
+	}
+}
+
 func TestLoadRejectsUnknownReferences(t *testing.T) {
 	path := writeConfig(t, `
 [libraries.movies]
@@ -70,6 +131,44 @@ profile = "missing-profile"
 	_, err := Load(path)
 	if err == nil {
 		t.Fatal("Load() error = nil, want invalid references")
+	}
+}
+
+func TestLoadMapsMinimumSavingsPolicyToDomainProfile(t *testing.T) {
+	path := writeConfig(t, `
+[profiles.default-av1.video]
+min_savings_percent = 25
+
+[libraries.movies]
+path = "/srv/media/movies"
+`)
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+
+	_, _, profile, err := cfg.ResolveForLibrary("movies")
+	if err != nil {
+		t.Fatalf("ResolveForLibrary() error = %v", err)
+	}
+	if got, want := profile.Video.MinSavingsPercent, 25.0; got != want {
+		t.Fatalf("MinSavingsPercent = %v, want %v", got, want)
+	}
+}
+
+func TestLoadRejectsInvalidMinimumSavingsPolicy(t *testing.T) {
+	path := writeConfig(t, `
+[profiles.default-av1.video]
+min_savings_percent = 120
+
+[libraries.movies]
+path = "/srv/media/movies"
+`)
+
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("Load() error = nil, want invalid min_savings_percent")
 	}
 }
 
@@ -104,6 +203,49 @@ path = "/srv/media/movies"
 	_, err := Load(path)
 	if err == nil {
 		t.Fatal("Load() error = nil, want invalid shutdown settings")
+	}
+}
+
+func TestLoadProfileValidationConfig(t *testing.T) {
+	path := writeConfig(t, `
+[profiles.remux]
+[profiles.remux.validation]
+duration_tolerance_seconds = 1.5
+
+[libraries.movies]
+path = "/srv/media/movies"
+profile = "remux"
+`)
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if got, want := cfg.Profiles["remux"].Validation.DurationToleranceSeconds, 1.5; got != want {
+		t.Fatalf("config validation duration tolerance = %f, want %f", got, want)
+	}
+	_, _, profile, err := cfg.ResolveForLibrary(domain.LibraryName("movies"))
+	if err != nil {
+		t.Fatalf("ResolveForLibrary() error = %v", err)
+	}
+	if got, want := profile.Validation.DurationToleranceSeconds, 1.5; got != want {
+		t.Fatalf("domain validation duration tolerance = %f, want %f", got, want)
+	}
+}
+
+func TestLoadRejectsInvalidValidationPolicy(t *testing.T) {
+	path := writeConfig(t, `
+[profiles.bad.validation]
+duration_tolerance_seconds = -1
+
+[libraries.movies]
+path = "/srv/media/movies"
+profile = "bad"
+`)
+
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("Load() error = nil, want invalid validation policy")
 	}
 }
 

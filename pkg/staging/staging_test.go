@@ -32,6 +32,23 @@ func TestManagerPrepareCreatesOutputPath(t *testing.T) {
 	}
 }
 
+func TestManagerPlanUsesPlaceholdersWithoutCreatingDirs(t *testing.T) {
+	root := t.TempDir()
+	plan, err := (Manager{Root: root}).Plan("<new>", "<new>", "mp4", "/media/movie.mkv")
+	if err != nil {
+		t.Fatalf("Plan() error = %v", err)
+	}
+	if got, want := plan.StagingDir, filepath.Join(root, "job-<new>-attempt-<new>"); got != want {
+		t.Fatalf("staging dir = %q, want %q", got, want)
+	}
+	if got, want := plan.OutputPath, filepath.Join(root, "job-<new>-attempt-<new>", "output.mp4"); got != want {
+		t.Fatalf("output path = %q, want %q", got, want)
+	}
+	if _, err := os.Stat(plan.StagingDir); !os.IsNotExist(err) {
+		t.Fatalf("staging dir stat = %v, want not exist", err)
+	}
+}
+
 func TestCleanupStaleRemovesOnlyOldAnvilStagingDirs(t *testing.T) {
 	root := t.TempDir()
 	now := time.Date(2026, 6, 28, 12, 0, 0, 0, time.UTC)

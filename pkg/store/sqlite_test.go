@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -226,6 +227,141 @@ func TestListJobsFiltersByLibraryStateAndLimit(t *testing.T) {
 	}
 	if got := jobs[0].AssetPath; got != "" {
 		t.Fatalf("asset path = %q, want empty", got)
+	}
+}
+
+func TestGetJobSummaryAndListAttemptsForJob(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	now := testNow()
+
+	source := upsertTestSource(t, ctx, store, "movies", "Movie.mkv")
+	asset := upsertTestAsset(t, ctx, store, source.ID, "Movie.mkv")
+	job, _, err := store.EnqueueJob(ctx, EnqueueJobInput{
+		SourceID:    source.ID,
+		AssetID:     asset.ID,
+		LibraryName: source.LibraryName,
+		Now:         now,
+	})
+	if err != nil {
+		t.Fatalf("EnqueueJob() error = %v", err)
+	}
+
+	_, first := leaseAndStartAttempt(t, ctx, store, now, "worker-1")
+	if _, err := store.FinishAttempt(ctx, first.ID, domain.AttemptStateFailed, "first failed", now.Add(time.Second)); err != nil {
+		t.Fatalf("FinishAttempt(first) error = %v", err)
+	}
+	if _, err := store.TransitionJob(ctx, job.ID, domain.JobStateRetrying, now.Add(2*time.Second), "retrying"); err != nil {
+		t.Fatalf("TransitionJob(retrying) error = %v", err)
+	}
+	if _, err := store.TransitionJob(ctx, job.ID, domain.JobStatePending, now.Add(3*time.Second), "pending"); err != nil {
+		t.Fatalf("TransitionJob(pending) error = %v", err)
+	}
+	_, second := leaseAndStartAttempt(t, ctx, store, now.Add(4*time.Second), "worker-2")
+
+	attempts, err := store.ListAttemptsForJob(ctx, job.ID)
+	if err != nil {
+		t.Fatalf("ListAttemptsForJob() error = %v", err)
+	}
+	if len(attempts) != 2 {
+		t.Fatalf("attempts len = %d, want 2", len(attempts))
+	}
+	if attempts[0].ID != first.ID || attempts[0].Number != 1 || attempts[0].WorkerID != "worker-1" {
+		t.Fatalf("first attempt = %+v, want id=%d number=1 worker-1", attempts[0], first.ID)
+	}
+	if attempts[1].ID != second.ID || attempts[1].Number != 2 || attempts[1].WorkerID != "worker-2" {
+		t.Fatalf("second attempt = %+v, want id=%d number=2 worker-2", attempts[1], second.ID)
+	}
+
+	summary, err := store.GetJobSummary(ctx, job.ID)
+	if err != nil {
+		t.Fatalf("GetJobSummary() error = %v", err)
+	}
+	if summary.Job.ID != job.ID {
+		t.Fatalf("summary job id = %d, want %d", summary.Job.ID, job.ID)
+	}
+	if summary.Job.AttemptCount != 2 {
+		t.Fatalf("summary attempt count = %d, want 2", summary.Job.AttemptCount)
+	}
+	if summary.SourcePath != "Movie.mkv" {
+		t.Fatalf("summary source path = %q, want Movie.mkv", summary.SourcePath)
+	}
+	if summary.AssetPath != "Movie.mkv" {
+		t.Fatalf("summary asset path = %q, want Movie.mkv", summary.AssetPath)
+	}
+	if summary.AssetRole != domain.MediaAssetRolePrimaryVideo {
+		t.Fatalf("summary asset role = %q, want %q", summary.AssetRole, domain.MediaAssetRolePrimaryVideo)
+	}
+}
+
+func TestFindHelpersReturnExistingAndMissingRows(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	now := testNow()
+
+	source := upsertTestSource(t, ctx, store, "movies", "Movie.mkv")
+	asset := upsertTestAsset(t, ctx, store, source.ID, "Movie.mkv")
+	job, _, err := store.EnqueueJob(ctx, EnqueueJobInput{
+		SourceID:    source.ID,
+		AssetID:     asset.ID,
+		LibraryName: source.LibraryName,
+		Now:         now,
+	})
+	if err != nil {
+		t.Fatalf("EnqueueJob() error = %v", err)
+	}
+
+	foundSource, ok, err := store.FindMediaSourceByPath(ctx, "movies", "Movie.mkv")
+	if err != nil || !ok || foundSource.ID != source.ID {
+		t.Fatalf("FindMediaSourceByPath() = %+v, %t, %v; want source", foundSource, ok, err)
+	}
+	foundAsset, ok, err := store.FindMediaAssetByPath(ctx, source.ID, "Movie.mkv")
+	if err != nil || !ok || foundAsset.ID != asset.ID {
+		t.Fatalf("FindMediaAssetByPath() = %+v, %t, %v; want asset", foundAsset, ok, err)
+	}
+	foundJob, ok, err := store.FindJobForTarget(ctx, source.ID, asset.ID)
+	if err != nil || !ok || foundJob.ID != job.ID {
+		t.Fatalf("FindJobForTarget() = %+v, %t, %v; want job", foundJob, ok, err)
+	}
+	if _, ok, err := store.FindMediaSourceByPath(ctx, "movies", "Missing.mkv"); err != nil || ok {
+		t.Fatalf("missing FindMediaSourceByPath() ok=%t err=%v, want false nil", ok, err)
+	}
+}
+
+func TestOpenReadOnlyDoesNotCreateMissingStore(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "missing", "anvil.db")
+	if _, err := OpenReadOnly(ctx, path); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("OpenReadOnly() error = %v, want ErrNotFound", err)
+	}
+	if _, err := os.Stat(filepath.Dir(path)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("parent dir stat err = %v, want not exist", err)
+	}
+}
+
+func TestOpenReadOnlyRejectsWrites(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "anvil.db")
+	writable, err := Open(ctx, path)
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	if err := writable.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	readonly, err := OpenReadOnly(ctx, path)
+	if err != nil {
+		t.Fatalf("OpenReadOnly() error = %v", err)
+	}
+	defer readonly.Close()
+	if _, err := readonly.UpsertMediaSource(ctx, domain.MediaSource{
+		LibraryName:  "movies",
+		Kind:         domain.SourceKindFile,
+		RelativePath: "Movie.mkv",
+		LastSeenAt:   testNow(),
+	}); err == nil {
+		t.Fatal("UpsertMediaSource() on read-only store error = nil, want write rejection")
 	}
 }
 

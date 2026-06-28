@@ -19,11 +19,11 @@ The first real run should use:
 - one library or one narrow include path
 - one worker
 - conservative thread count
-- media replacement mode `sidecar`, or download handoff mode `copy`
+- media replacement mode `copy`, or download handoff mode `copy`
 - source cleanup disabled for downloads
 - `shutdown_policy = "drain"`
 - staging cleanup age disabled or set long enough for inspection
-- explicit excludes for generated sidecars and temporary directories
+- explicit excludes for generated `.anvil` outputs and temporary directories
 
 ## Preflight Checklist
 
@@ -40,7 +40,7 @@ Before starting the daemon:
 ## Rollout Shape
 
 1. Run scan-only or preflight once and inspect candidates.
-2. Run one sidecar/copy encode.
+2. Run one copy-only encode.
 3. Inspect the output manually with `ffprobe` and playback.
 4. Inspect the job, attempt, block events, and process logs.
 5. Expand to a tiny batch only after the first output is boring.
@@ -54,5 +54,5 @@ Stop immediately if:
 - output duration differs unexpectedly
 - audio/subtitle layout is surprising
 - destination naming or handoff path is wrong
-- Anvil tries to process generated sidecars or previous outputs
+- Anvil tries to process generated `.anvil` outputs or previous outputs
 - disk usage grows unexpectedly in staging or process logs
