@@ -131,6 +131,12 @@ let
     else
       pkgs.ffmpeg;
   storeDirectory = builtins.dirOf cfg.daemon.storePath;
+  daemonDirectoryPaths = lib.unique [
+    cfg.daemon.tempDir
+    storeDirectory
+  ];
+  tmpfilesUser = if cfg.user == null then "root" else cfg.user;
+  tmpfilesGroup = if cfg.group == null then "root" else cfg.group;
   libraryWritePaths = lib.mapAttrsToList (_name: library: library.path) cfg.libraries;
   handoffWritePaths = lib.flatten (
     lib.mapAttrsToList (
@@ -772,6 +778,7 @@ in
     ] ++ arrAssertions ++ libraryAssertions;
 
     environment.etc."anvil/anvil.toml".source = cfg.configFile;
+    systemd.tmpfiles.rules = map (path: "d ${path} 0750 ${tmpfilesUser} ${tmpfilesGroup} - -") daemonDirectoryPaths;
 
     systemd.services.anvil = {
       description = "Anvil AV1 encoding daemon";
