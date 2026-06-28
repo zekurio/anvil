@@ -50,6 +50,8 @@ Anvil owns the final `ffmpeg` args so stream mapping, metadata, chapters, attach
 
 Anvil writes operational markers to the output video stream, including whether the file was encoded by Anvil, the profile name, configured video codec/pixel format, CRF when known, crop filter, and marker version. On rerun, a compatible marker lets the pipeline skip crop detection, CRF search, and video encode; the final command copies video and can still apply safe stream remux work.
 
+`ffmpeg` and `ab-av1` stdout/stderr are captured per attempt under `daemon.temp_dir/process-logs` and recorded as `process-output` artifact events. This keeps failed encode/search diagnostics available even though failed staging directories are cleaned up immediately.
+
 ## Current Limits
 
 - Audio cleanup currently preserves all streams unless `languages_to_keep` expands to at least one concrete language. With an explicit policy, it keeps matching non-commentary tracks, expands `orig` from Arr original-language metadata, and disables cleanup if required metadata is unavailable or Arr lookup does not match the source.

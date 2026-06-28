@@ -23,6 +23,7 @@
 - Static block registry executes configured flows with block start/finish/failure attempt events.
 - Built-in blocks cover probe, crop detection, audio cleanup, stage, `ab-av1 crf-search`, final `ffmpeg` encode, validation, media replacement, download handoff, and staging cleanup.
 - External process execution is cancellable and testable through a small process runner.
+- `ffmpeg` and `ab-av1` stdout/stderr are captured as per-attempt process logs and recorded as artifact events.
 - Final encodes write Anvil-owned video stream markers. Compatible reruns can skip crop detection, CRF search, and video re-encode, then remux/copy the marked video while applying safe stream cleanup.
 - Audio cleanup preserves all streams when no language cleanup policy is configured, when required metadata is unavailable, or when Arr lookup does not match the source.
 
@@ -54,7 +55,7 @@
 
 ### Runtime Operations
 
-- Add structured process logs, systemd packaging, `nice` / `ionice`, and broader operational CLI commands.
+- Add systemd packaging, `nice` / `ionice`, broader operational CLI commands, and first-class CLI views for attempt artifacts.
 - Decide which smoke tests should become CI-friendly and which should remain local/manual because they invoke ffmpeg encodes.
 
 ### Reprocessing And Integrations

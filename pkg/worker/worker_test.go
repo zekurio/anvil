@@ -12,6 +12,7 @@ import (
 	"github.com/zekurio/anvil/pkg/config"
 	"github.com/zekurio/anvil/pkg/domain"
 	"github.com/zekurio/anvil/pkg/pipeline"
+	"github.com/zekurio/anvil/pkg/process"
 	"github.com/zekurio/anvil/pkg/scheduler"
 	"github.com/zekurio/anvil/pkg/staging"
 )
@@ -138,6 +139,53 @@ func TestRunnerCleansStagingAfterPipelineFailure(t *testing.T) {
 	}
 }
 
+func TestRunnerCapturesProcessOutputLogs(t *testing.T) {
+	ctx := context.Background()
+	tempDir := t.TempDir()
+	ffmpegPath := filepath.Join(tempDir, "ffmpeg")
+	if err := os.WriteFile(ffmpegPath, []byte("#!/bin/sh\nprintf stdout\nprintf stderr >&2\n"), 0o750); err != nil {
+		t.Fatalf("write fake ffmpeg: %v", err)
+	}
+
+	cfg := workerConfig()
+	cfg.Daemon.TempDir = tempDir
+	cfg.Flows["test-flow"] = config.FlowConfig{Steps: []string{"run-ffmpeg"}}
+	store := newFakeWorkerStore()
+	store.source = domain.MediaSource{ID: 1, LibraryName: "movies", Kind: domain.SourceKindFile, RelativePath: "Movie.mkv"}
+	runner := Runner{
+		Store:          store,
+		ConfigProvider: func() config.Config { return cfg },
+		TempDir:        tempDir,
+		Pipeline: pipeline.Runner{
+			Registry: pipeline.NewRegistry(pipeline.BlockFunc{BlockName: "run-ffmpeg", Fn: func(ctx context.Context, _ *pipeline.JobContext) error {
+				_, err := process.OSRunner{}.Run(ctx, process.Command{Name: ffmpegPath})
+				return err
+			}}),
+		},
+	}
+
+	err := runner.Run(ctx, scheduler.Assignment{
+		Job:      domain.Job{ID: 99, SourceID: 1, LibraryName: "movies", State: domain.JobStateLeased},
+		WorkerID: "worker-1",
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	logDir := filepath.Join(tempDir, "process-logs", "job-99-attempt-1")
+	stdoutPath := filepath.Join(logDir, "run-ffmpeg-ffmpeg.stdout.log")
+	stderrPath := filepath.Join(logDir, "run-ffmpeg-ffmpeg.stderr.log")
+	if got, err := os.ReadFile(stdoutPath); err != nil || string(got) != "stdout" {
+		t.Fatalf("stdout log = %q, err = %v", got, err)
+	}
+	if got, err := os.ReadFile(stderrPath); err != nil || string(got) != "stderr" {
+		t.Fatalf("stderr log = %q, err = %v", got, err)
+	}
+	if !hasAttemptEvent(store.events, "process-output") {
+		t.Fatalf("recorded events = %+v, want process-output artifact", store.events)
+	}
+}
+
 func TestRunnerDoesNotFailJobWhenMetadataResolutionFails(t *testing.T) {
 	ctx := context.Background()
 	store := newFakeWorkerStore()
@@ -200,6 +248,7 @@ type fakeWorkerStore struct {
 	attempt         domain.Attempt
 	resolvedLibrary []byte
 	transitions     []domain.JobState
+	events          []domain.AttemptEvent
 }
 
 func newFakeWorkerStore() *fakeWorkerStore {
@@ -244,5 +293,16 @@ func (f *fakeWorkerStore) HeartbeatJob(_ context.Context, _ domain.JobID, _ stri
 }
 
 func (f *fakeWorkerStore) RecordAttemptEvent(_ context.Context, event domain.AttemptEvent) (domain.AttemptEvent, error) {
+	event.ID = domain.AttemptEventID(len(f.events) + 1)
+	f.events = append(f.events, event)
 	return event, nil
+}
+
+func hasAttemptEvent(events []domain.AttemptEvent, name string) bool {
+	for _, event := range events {
+		if event.Name == name {
+			return true
+		}
+	}
+	return false
 }
