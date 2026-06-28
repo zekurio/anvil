@@ -1,0 +1,488 @@
+package scanner
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"io/fs"
+	"log/slog"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/fsnotify/fsnotify"
+	"github.com/zekurio/anvil/pkg/config"
+	"github.com/zekurio/anvil/pkg/domain"
+)
+
+const (
+	DefaultFilesystemEventDebounce = 2 * time.Second
+	DefaultConfigReconcileInterval = 30 * time.Second
+)
+
+type LibraryScanner interface {
+	ScanLibrary(context.Context, config.LibraryConfig) (ScanResult, error)
+}
+
+type ConfigProvider func() config.Config
+
+type ScanTrigger struct {
+	LibraryName domain.LibraryName
+	Reason      string
+	Path        string
+}
+
+type EventSource interface {
+	Run(context.Context, ConfigProvider, chan<- ScanTrigger) error
+}
+
+type Monitor struct {
+	Scanner           LibraryScanner
+	ConfigProvider    ConfigProvider
+	EventSource       EventSource
+	Debounce          time.Duration
+	ReconcileInterval time.Duration
+	Now               func() time.Time
+	OnScan            func(config.LibraryConfig, string, ScanResult, error)
+	OnEventError      func(error)
+}
+
+func (m *Monitor) Run(ctx context.Context) error {
+	if m.Scanner == nil {
+		return errors.New("scanner monitor scanner is required")
+	}
+	if m.ConfigProvider == nil {
+		return errors.New("scanner monitor config provider is required")
+	}
+
+	triggers := make(chan ScanTrigger, 256)
+	eventSource := m.EventSource
+	if eventSource == nil {
+		eventSource = FilesystemEventSource{}
+	}
+
+	watcherCtx, stopWatcher := context.WithCancel(ctx)
+	var watcherWG sync.WaitGroup
+	watcherWG.Add(1)
+	go func() {
+		defer watcherWG.Done()
+		err := eventSource.Run(watcherCtx, m.ConfigProvider, triggers)
+		if err != nil && watcherCtx.Err() == nil {
+			m.eventError(err)
+		}
+	}()
+	defer func() {
+		stopWatcher()
+		watcherWG.Wait()
+	}()
+
+	schedules := make(map[domain.LibraryName]time.Time)
+	reasons := make(map[domain.LibraryName]string)
+	cfg := m.reconcileSchedules(schedules, reasons)
+
+	for {
+		nextDue, hasDue := nextScheduledScan(schedules)
+		var scanTimer *time.Timer
+		var scanC <-chan time.Time
+		if hasDue {
+			scanTimer = time.NewTimer(durationUntil(m.now(), nextDue))
+			scanC = scanTimer.C
+		}
+		reconcileTimer := time.NewTimer(m.reconcileInterval(cfg))
+
+		select {
+		case <-ctx.Done():
+			stopTimer(scanTimer)
+			stopTimer(reconcileTimer)
+			return ctx.Err()
+		case trigger := <-triggers:
+			stopTimer(scanTimer)
+			stopTimer(reconcileTimer)
+			cfg = m.reconcileSchedules(schedules, reasons)
+			m.scheduleTrigger(cfg, schedules, reasons, trigger)
+		case <-reconcileTimer.C:
+			stopTimer(scanTimer)
+			cfg = m.reconcileSchedules(schedules, reasons)
+		case <-scanC:
+			stopTimer(reconcileTimer)
+			cfg = m.reconcileSchedules(schedules, reasons)
+			if err := m.scanDue(ctx, cfg, schedules, reasons); err != nil {
+				return err
+			}
+		}
+	}
+}
+
+func (m *Monitor) reconcileSchedules(schedules map[domain.LibraryName]time.Time, reasons map[domain.LibraryName]string) config.Config {
+	cfg := m.ConfigProvider()
+	now := m.now()
+	seen := make(map[domain.LibraryName]struct{}, len(cfg.Libraries))
+
+	for name := range cfg.Libraries {
+		libraryName := domain.LibraryName(name)
+		seen[libraryName] = struct{}{}
+		next := now.Add(cfg.ScanIntervalForLibrary(libraryName))
+		current, exists := schedules[libraryName]
+		if !exists || current.IsZero() || current.After(next) {
+			schedules[libraryName] = next
+		}
+	}
+	for name := range schedules {
+		if _, ok := seen[name]; !ok {
+			delete(schedules, name)
+			delete(reasons, name)
+		}
+	}
+
+	return cfg
+}
+
+func (m *Monitor) scheduleTrigger(cfg config.Config, schedules map[domain.LibraryName]time.Time, reasons map[domain.LibraryName]string, trigger ScanTrigger) {
+	if trigger.LibraryName == "" {
+		return
+	}
+	if _, ok := cfg.FindLibrary(trigger.LibraryName); !ok {
+		return
+	}
+	due := m.now().Add(m.debounce())
+	current, exists := schedules[trigger.LibraryName]
+	if !exists || current.After(due) {
+		schedules[trigger.LibraryName] = due
+	}
+	reason := strings.TrimSpace(trigger.Reason)
+	if reason == "" {
+		reason = "filesystem"
+	}
+	reasons[trigger.LibraryName] = reason
+}
+
+func (m *Monitor) scanDue(ctx context.Context, cfg config.Config, schedules map[domain.LibraryName]time.Time, reasons map[domain.LibraryName]string) error {
+	now := m.now()
+	names := make([]domain.LibraryName, 0, len(schedules))
+	for name, due := range schedules {
+		if !due.After(now) {
+			names = append(names, name)
+		}
+	}
+	sort.Slice(names, func(i, j int) bool {
+		return names[i] < names[j]
+	})
+
+	for _, name := range names {
+		library, ok := cfg.FindLibrary(name)
+		if !ok {
+			delete(schedules, name)
+			delete(reasons, name)
+			continue
+		}
+		reason := reasons[name]
+		if reason == "" {
+			reason = "timer"
+		}
+		result, err := m.Scanner.ScanLibrary(ctx, library)
+		if m.OnScan != nil {
+			m.OnScan(library, reason, result, err)
+		}
+		if err != nil && ctx.Err() != nil {
+			return ctx.Err()
+		}
+		schedules[name] = m.now().Add(cfg.ScanIntervalForLibrary(name))
+		delete(reasons, name)
+	}
+
+	return nil
+}
+
+func (m *Monitor) debounce() time.Duration {
+	if m.Debounce > 0 {
+		return m.Debounce
+	}
+	return DefaultFilesystemEventDebounce
+}
+
+func (m *Monitor) reconcileInterval(cfg config.Config) time.Duration {
+	if m.ReconcileInterval > 0 {
+		return m.ReconcileInterval
+	}
+	interval := cfg.SchedulerInterval()
+	if interval <= 0 {
+		return DefaultConfigReconcileInterval
+	}
+	if interval > DefaultConfigReconcileInterval {
+		return DefaultConfigReconcileInterval
+	}
+	return interval
+}
+
+func (m *Monitor) now() time.Time {
+	if m.Now != nil {
+		return m.Now().UTC()
+	}
+	return time.Now().UTC()
+}
+
+func (m *Monitor) eventError(err error) {
+	if m.OnEventError != nil {
+		m.OnEventError(err)
+		return
+	}
+	slog.Error("filesystem event source stopped", "error", err)
+}
+
+type FilesystemEventSource struct {
+	ReconcileInterval time.Duration
+}
+
+func (s FilesystemEventSource) Run(ctx context.Context, cfgProvider ConfigProvider, triggers chan<- ScanTrigger) error {
+	watcher, err := fsnotify.NewWatcher()
+	if err != nil {
+		return fmt.Errorf("create filesystem watcher: %w", err)
+	}
+	defer watcher.Close()
+
+	roots := make(map[domain.LibraryName]string)
+	watched := make(map[string]map[domain.LibraryName]struct{})
+	cfg := cfgProvider()
+	reconcileFilesystemWatches(ctx, watcher, watched, roots, cfg)
+
+	interval := s.ReconcileInterval
+	if interval <= 0 {
+		interval = DefaultConfigReconcileInterval
+	}
+	reconcileTimer := time.NewTimer(interval)
+	defer reconcileTimer.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case event, ok := <-watcher.Events:
+			if !ok {
+				return nil
+			}
+			handleFilesystemEvent(ctx, watcher, watched, roots, event, triggers)
+		case err, ok := <-watcher.Errors:
+			if !ok {
+				return nil
+			}
+			if err != nil {
+				slog.Warn("filesystem watcher error", "error", err)
+			}
+		case <-reconcileTimer.C:
+			cfg = cfgProvider()
+			reconcileFilesystemWatches(ctx, watcher, watched, roots, cfg)
+			reconcileTimer.Reset(interval)
+		}
+	}
+}
+
+func reconcileFilesystemWatches(ctx context.Context, watcher *fsnotify.Watcher, watched map[string]map[domain.LibraryName]struct{}, roots map[domain.LibraryName]string, cfg config.Config) {
+	seen := make(map[domain.LibraryName]struct{}, len(cfg.Libraries))
+	for name, library := range cfg.Libraries {
+		libraryName := domain.LibraryName(name)
+		seen[libraryName] = struct{}{}
+		root := strings.TrimSpace(library.Path)
+		if root == "" {
+			removeLibraryWatches(watcher, watched, libraryName)
+			delete(roots, libraryName)
+			continue
+		}
+		absRoot, err := filepath.Abs(root)
+		if err != nil {
+			slog.Warn("resolve library watch path", "library", name, "path", root, "error", err)
+			continue
+		}
+		absRoot = filepath.Clean(absRoot)
+		if roots[libraryName] == absRoot && watchedBy(watched, absRoot, libraryName) {
+			continue
+		}
+
+		removeLibraryWatches(watcher, watched, libraryName)
+		added, err := addRecursiveWatches(ctx, watcher, watched, libraryName, absRoot)
+		if err != nil {
+			slog.Warn("add library filesystem watches", "library", name, "path", absRoot, "error", err)
+			continue
+		}
+		if added {
+			roots[libraryName] = absRoot
+			continue
+		}
+		delete(roots, libraryName)
+		slog.Warn("library path unavailable for filesystem watch", "library", name, "path", absRoot)
+	}
+	for name := range roots {
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		removeLibraryWatches(watcher, watched, name)
+		delete(roots, name)
+	}
+}
+
+func handleFilesystemEvent(ctx context.Context, watcher *fsnotify.Watcher, watched map[string]map[domain.LibraryName]struct{}, roots map[domain.LibraryName]string, event fsnotify.Event, triggers chan<- ScanTrigger) {
+	if event.Name == "" || !scanTriggeringOp(event.Op) {
+		return
+	}
+	names := librariesForPath(roots, event.Name)
+	if len(names) == 0 {
+		return
+	}
+
+	if info, err := os.Stat(event.Name); err == nil && info.IsDir() {
+		for _, name := range names {
+			if _, err := addRecursiveWatches(ctx, watcher, watched, name, event.Name); err != nil {
+				slog.Warn("add new directory filesystem watches", "library", name, "path", event.Name, "error", err)
+			}
+		}
+	}
+
+	for _, name := range names {
+		select {
+		case triggers <- ScanTrigger{LibraryName: name, Reason: "filesystem", Path: event.Name}:
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
+func addRecursiveWatches(ctx context.Context, watcher *fsnotify.Watcher, watched map[string]map[domain.LibraryName]struct{}, libraryName domain.LibraryName, root string) (bool, error) {
+	root = filepath.Clean(root)
+	info, err := os.Stat(root)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return false, nil
+		}
+		return false, err
+	}
+	if !info.IsDir() {
+		return false, fmt.Errorf("library path is not a directory")
+	}
+
+	addedAny := false
+	err = filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			slog.Warn("skip filesystem watch path", "library", libraryName, "path", path, "error", walkErr)
+			if entry != nil && entry.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if !entry.IsDir() {
+			return nil
+		}
+		if err := addWatch(watcher, watched, libraryName, path); err != nil {
+			slog.Warn("add filesystem watch", "library", libraryName, "path", path, "error", err)
+			return filepath.SkipDir
+		}
+		addedAny = true
+		return nil
+	})
+	if err != nil {
+		return addedAny, err
+	}
+	return addedAny, nil
+}
+
+func addWatch(watcher *fsnotify.Watcher, watched map[string]map[domain.LibraryName]struct{}, libraryName domain.LibraryName, dir string) error {
+	dir = filepath.Clean(dir)
+	if libs, ok := watched[dir]; ok {
+		libs[libraryName] = struct{}{}
+		return nil
+	}
+	if err := watcher.Add(dir); err != nil {
+		return err
+	}
+	watched[dir] = map[domain.LibraryName]struct{}{libraryName: {}}
+	return nil
+}
+
+func removeLibraryWatches(watcher *fsnotify.Watcher, watched map[string]map[domain.LibraryName]struct{}, libraryName domain.LibraryName) {
+	for dir, libraries := range watched {
+		if _, ok := libraries[libraryName]; !ok {
+			continue
+		}
+		delete(libraries, libraryName)
+		if len(libraries) > 0 {
+			continue
+		}
+		if err := watcher.Remove(dir); err != nil {
+			slog.Debug("remove filesystem watch", "path", dir, "error", err)
+		}
+		delete(watched, dir)
+	}
+}
+
+func watchedBy(watched map[string]map[domain.LibraryName]struct{}, dir string, libraryName domain.LibraryName) bool {
+	libraries, ok := watched[filepath.Clean(dir)]
+	if !ok {
+		return false
+	}
+	_, ok = libraries[libraryName]
+	return ok
+}
+
+func librariesForPath(roots map[domain.LibraryName]string, path string) []domain.LibraryName {
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return nil
+	}
+	absPath = filepath.Clean(absPath)
+	names := make([]domain.LibraryName, 0, len(roots))
+	for name, root := range roots {
+		if pathWithinRoot(absPath, root) {
+			names = append(names, name)
+		}
+	}
+	sort.Slice(names, func(i, j int) bool {
+		return names[i] < names[j]
+	})
+	return names
+}
+
+func pathWithinRoot(path string, root string) bool {
+	rel, err := filepath.Rel(filepath.Clean(root), filepath.Clean(path))
+	if err != nil {
+		return false
+	}
+	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))
+}
+
+func scanTriggeringOp(op fsnotify.Op) bool {
+	return op&(fsnotify.Create|fsnotify.Write|fsnotify.Rename) != 0
+}
+
+func nextScheduledScan(schedules map[domain.LibraryName]time.Time) (time.Time, bool) {
+	var next time.Time
+	for _, due := range schedules {
+		if next.IsZero() || due.Before(next) {
+			next = due
+		}
+	}
+	return next, !next.IsZero()
+}
+
+func durationUntil(now time.Time, due time.Time) time.Duration {
+	delay := due.Sub(now)
+	if delay < 0 {
+		return 0
+	}
+	return delay
+}
+
+func stopTimer(timer *time.Timer) {
+	if timer == nil {
+		return
+	}
+	if !timer.Stop() {
+		select {
+		case <-timer.C:
+		default:
+		}
+	}
+}
