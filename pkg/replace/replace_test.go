@@ -64,19 +64,19 @@ func TestHandoffMoveCleansOnlyProcessedEpisodeFolder(t *testing.T) {
 }
 
 func TestPlanReplacementCopyAndReplace(t *testing.T) {
-	copyPlan, err := PlanReplacement("/media/movie.mkv", "/tmp/output.mp4", domain.ReplacementModeCopy)
+	copyPlan, err := PlanReplacement("/media/movie.mp4", "/tmp/output.mkv", domain.ReplacementModeCopy)
 	if err != nil {
 		t.Fatalf("PlanReplacement(copy) error = %v", err)
 	}
-	if copyPlan.Action != "copy" || copyPlan.CopyPath != "/media/movie.anvil.mp4" {
+	if copyPlan.Action != "copy" || copyPlan.CopyPath != "/media/movie.anvil.mkv" {
 		t.Fatalf("copy plan = %+v, want copy path", copyPlan)
 	}
 
-	replace, err := PlanReplacement("/media/movie.mkv", "/tmp/output.mkv", domain.ReplacementModeReplace)
+	replace, err := PlanReplacement("/media/movie.mp4", "/tmp/output.mkv", domain.ReplacementModeReplace)
 	if err != nil {
 		t.Fatalf("PlanReplacement(replace) error = %v", err)
 	}
-	if replace.Action != "replace" || replace.ReplaceTarget != "/media/movie.mkv" || replace.BackupPath != "/media/movie.mkv.anvil.bak" {
+	if replace.Action != "replace" || replace.ReplaceTarget != "/media/movie.mkv" || replace.BackupPath != "/media/movie.mp4.anvil.bak" {
 		t.Fatalf("replace plan = %+v, want target and backup", replace)
 	}
 }
@@ -102,13 +102,13 @@ func TestPlanHandoffDestinationAndCleanup(t *testing.T) {
 			},
 		},
 		InputPath:  "/downloads/SomeShowS01/SomeShowS01E01/episode_1.mkv",
-		OutputPath: "/tmp/staging/output.mp4",
+		OutputPath: "/tmp/staging/output.mkv",
 	}
 	plan, err := PlanHandoff(job)
 	if err != nil {
 		t.Fatalf("PlanHandoff() error = %v", err)
 	}
-	wantDestination := filepath.Join("/imports/tv", "SomeShowS01", "SomeShowS01E01", "episode_1.mp4")
+	wantDestination := filepath.Join("/imports/tv", "SomeShowS01", "SomeShowS01E01", "episode_1.mkv")
 	if plan.Destination != wantDestination || plan.Action != "move" {
 		t.Fatalf("handoff plan = %+v, want move to %q", plan, wantDestination)
 	}
@@ -173,6 +173,29 @@ func TestReplaceRefusesExistingBackup(t *testing.T) {
 	}
 	if got := readFile(t, input); got != "source" {
 		t.Fatalf("input content = %q, want source", got)
+	}
+}
+
+func TestReplaceRenamesNonMKVSourceToMKVTarget(t *testing.T) {
+	dir := t.TempDir()
+	input := filepath.Join(dir, "movie.mp4")
+	candidate := filepath.Join(dir, "candidate.mkv")
+	writeFile(t, input, "source")
+	writeFile(t, candidate, "encoded")
+
+	finalPath, err := (Manager{}).Replace(context.Background(), input, candidate, domain.ReplacementModeReplace)
+	if err != nil {
+		t.Fatalf("Replace() error = %v", err)
+	}
+	wantFinal := filepath.Join(dir, "movie.mkv")
+	if finalPath != wantFinal {
+		t.Fatalf("final path = %q, want %q", finalPath, wantFinal)
+	}
+	if _, err := os.Stat(input); !os.IsNotExist(err) {
+		t.Fatalf("input stat = %v, want old non-MKV path removed", err)
+	}
+	if got := readFile(t, finalPath); got != "encoded" {
+		t.Fatalf("final content = %q, want encoded", got)
 	}
 }
 

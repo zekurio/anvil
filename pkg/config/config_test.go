@@ -157,6 +157,93 @@ path = "/srv/media/movies"
 	}
 }
 
+func TestLoadMapsCustomVideoAndDolbyVisionOptionsToDomainProfile(t *testing.T) {
+	path := writeConfig(t, `
+[profiles.default-av1.video]
+ffmpeg_args = ["-svtav1-params", "film-grain=8"]
+ab_av1_args = ["--enc", "lookahead=120"]
+
+[profiles.default-av1.video.dolby_vision]
+mode = "auto"
+codec = "hevc_qsv"
+preset = "medium"
+pixel_format = "p010le"
+ffmpeg_args = ["-global_quality", "24"]
+ab_av1_args = ["--enc", "low_power=1"]
+remove_hdr10plus = true
+
+[libraries.movies]
+path = "/srv/media/movies"
+`)
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+
+	_, _, profile, err := cfg.ResolveForLibrary("movies")
+	if err != nil {
+		t.Fatalf("ResolveForLibrary() error = %v", err)
+	}
+	if got, want := profile.Video.FFmpegArgs, []string{"-svtav1-params", "film-grain=8"}; !sameStrings(got, want) {
+		t.Fatalf("FFmpegArgs = %v, want %v", got, want)
+	}
+	if got, want := profile.Video.ABAV1Args, []string{"--enc", "lookahead=120"}; !sameStrings(got, want) {
+		t.Fatalf("ABAV1Args = %v, want %v", got, want)
+	}
+	if got, want := profile.Video.DolbyVision.Codec, "hevc_qsv"; got != want {
+		t.Fatalf("DolbyVision.Codec = %q, want %q", got, want)
+	}
+	if got, want := profile.Video.DolbyVision.PixelFormat, "p010le"; got != want {
+		t.Fatalf("DolbyVision.PixelFormat = %q, want %q", got, want)
+	}
+	if got, want := profile.Video.DolbyVision.FFmpegArgs, []string{"-global_quality", "24"}; !sameStrings(got, want) {
+		t.Fatalf("DolbyVision.FFmpegArgs = %v, want %v", got, want)
+	}
+	if got, want := profile.Video.DolbyVision.ABAV1Args, []string{"--enc", "low_power=1"}; !sameStrings(got, want) {
+		t.Fatalf("DolbyVision.ABAV1Args = %v, want %v", got, want)
+	}
+	if !profile.Video.DolbyVision.RemoveHDR10Plus {
+		t.Fatal("DolbyVision.RemoveHDR10Plus = false, want true")
+	}
+}
+
+func TestLoadRejectsInvalidDolbyVisionPolicy(t *testing.T) {
+	path := writeConfig(t, `
+[profiles.default-av1.video.dolby_vision]
+mode = "require"
+
+[libraries.movies]
+path = "/srv/media/movies"
+`)
+
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("Load() error = nil, want invalid Dolby Vision policy")
+	}
+	if !strings.Contains(err.Error(), "video.dolby_vision.codec") {
+		t.Fatalf("Load() error = %q, want Dolby Vision codec", err.Error())
+	}
+}
+
+func TestLoadRejectsNonMKVContainer(t *testing.T) {
+	path := writeConfig(t, `
+[profiles.default-av1]
+container = "mp4"
+
+[libraries.movies]
+path = "/srv/media/movies"
+`)
+
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("Load() error = nil, want invalid container")
+	}
+	if !strings.Contains(err.Error(), "outputs MKV only") {
+		t.Fatalf("Load() error = %q, want MKV-only message", err.Error())
+	}
+}
+
 func TestLoadRejectsInvalidMinimumSavingsPolicy(t *testing.T) {
 	path := writeConfig(t, `
 [profiles.default-av1.video]
@@ -372,4 +459,16 @@ func containsString(values []string, want string) bool {
 		}
 	}
 	return false
+}
+
+func sameStrings(got []string, want []string) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	for i := range got {
+		if got[i] != want[i] {
+			return false
+		}
+	}
+	return true
 }

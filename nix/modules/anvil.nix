@@ -21,6 +21,7 @@ let
     "stage"
     "crf-search"
     "encode"
+    "dovi-fix"
     "validate"
     "replace"
     "cleanup"
@@ -37,6 +38,15 @@ let
         crf_max = profile.video.crfMax;
         target_vmaf = profile.video.targetVmaf;
         min_savings_percent = profile.video.minSavingsPercent;
+        ffmpeg_args = profile.video.ffmpegArgs;
+        ab_av1_args = profile.video.abAv1Args;
+        dolby_vision = {
+          inherit (profile.video.dolbyVision) mode codec preset;
+          pixel_format = profile.video.dolbyVision.pixelFormat;
+          ffmpeg_args = profile.video.dolbyVision.ffmpegArgs;
+          ab_av1_args = profile.video.dolbyVision.abAv1Args;
+          remove_hdr10plus = profile.video.dolbyVision.removeHDR10Plus;
+        };
       };
       audio = {
         languages_to_keep = profile.audio.languagesToKeep;
@@ -102,6 +112,9 @@ let
       scan_interval = cfg.daemon.scanInterval;
       scheduler_interval = cfg.daemon.schedulerInterval;
       lease_duration = cfg.daemon.leaseDuration;
+      shutdown_policy = cfg.daemon.shutdownPolicy;
+      shutdown_timeout = cfg.daemon.shutdownTimeout;
+      staging_cleanup_age = cfg.daemon.stagingCleanupAge;
       log_level = cfg.daemon.logLevel;
     };
     arrs = lib.mapAttrs arrToToml cfg.arrs;
@@ -112,6 +125,28 @@ let
 
   configFile = format.generate "anvil.toml" generatedConfig;
   packageExe = if cfg.package == null then "${pkgs.coreutils}/bin/false" else lib.getExe cfg.package;
+  ffmpegPackage =
+    if pkgs.stdenv.isLinux then
+      (pkgs.jellyfin-ffmpeg or pkgs.ffmpeg)
+    else
+      pkgs.ffmpeg;
+  storeDirectory = builtins.dirOf cfg.daemon.storePath;
+  libraryWritePaths = lib.mapAttrsToList (_name: library: library.path) cfg.libraries;
+  handoffWritePaths = lib.flatten (
+    lib.mapAttrsToList (
+      _name: library:
+      optional (library.kind == "download" && library.download.handoffPath != "") library.download.handoffPath
+    ) cfg.libraries
+  );
+  readWritePaths = lib.unique (
+    [
+      cfg.daemon.tempDir
+      storeDirectory
+    ]
+    ++ libraryWritePaths
+    ++ handoffWritePaths
+    ++ cfg.service.extraReadWritePaths
+  );
 
   arrAssertions = lib.flatten (
     lib.mapAttrsToList (
@@ -172,9 +207,9 @@ let
   profileModule = types.submodule {
     options = {
       container = mkOption {
-        type = types.str;
+        type = types.enum [ "mkv" ];
         default = "mkv";
-        description = "Output container extension.";
+        description = "Output container extension. Anvil outputs MKV only.";
       };
 
       video = {
@@ -212,6 +247,75 @@ let
           type = types.number;
           default = 20;
           description = "Minimum input-size savings percentage required during CRF search. Written as ab-av1 --max-encoded-percent = 100 - this value.";
+        };
+        ffmpegArgs = mkOption {
+          type = types.listOf types.str;
+          default = [ ];
+          example = [
+            "-svtav1-params"
+            "film-grain=8"
+          ];
+          description = "Extra ffmpeg video encoder arguments appended to Anvil's generated ffmpeg command.";
+        };
+        abAv1Args = mkOption {
+          type = types.listOf types.str;
+          default = [ ];
+          example = [
+            "--enc"
+            "lookahead=120"
+          ];
+          description = "Extra ab-av1 crf-search arguments appended to Anvil's generated search command.";
+        };
+        dolbyVision = {
+          mode = mkOption {
+            type = types.enum [
+              "auto"
+              "off"
+              "require"
+            ];
+            default = "auto";
+            description = "How to handle Dolby Vision sources. Auto uses this override only when Dolby Vision is detected and dovi_tool is available.";
+          };
+          codec = mkOption {
+            type = types.str;
+            default = "";
+            example = "hevc_qsv";
+            description = "ffmpeg video encoder used for Dolby Vision sources. Empty disables encoder switching unless mode is require.";
+          };
+          preset = mkOption {
+            type = types.str;
+            default = "";
+            description = "Dolby Vision encoder preset. Empty keeps the normal video preset.";
+          };
+          pixelFormat = mkOption {
+            type = types.str;
+            default = "";
+            example = "p010le";
+            description = "Dolby Vision output pixel format. Empty keeps the normal video pixel format.";
+          };
+          ffmpegArgs = mkOption {
+            type = types.listOf types.str;
+            default = [ ];
+            example = [
+              "-global_quality"
+              "24"
+            ];
+            description = "Extra ffmpeg video encoder arguments appended only when the Dolby Vision override is selected.";
+          };
+          abAv1Args = mkOption {
+            type = types.listOf types.str;
+            default = [ ];
+            example = [
+              "--enc"
+              "low_power=1"
+            ];
+            description = "Extra ab-av1 crf-search arguments appended only when the Dolby Vision override is selected.";
+          };
+          removeHDR10Plus = mkOption {
+            type = types.bool;
+            default = false;
+            description = "Pass dovi_tool --drop-hdr10plus during Dolby Vision RPU extraction/injection.";
+          };
         };
       };
 
@@ -467,10 +571,12 @@ in
     runtimePackages = mkOption {
       type = types.listOf types.package;
       default = [
-        pkgs.ffmpeg
+        ffmpegPackage
         pkgs.ab-av1
+        pkgs.dovi-tool
+        pkgs.mkvtoolnix
       ];
-      description = "Packages added to the Anvil service PATH for probe, crop detection, CRF search, and encoding.";
+      description = "Packages added to the Anvil service PATH for probe, crop detection, CRF search, Dolby Vision checks/repair, MKV remuxing, and encoding.";
     };
 
     user = mkOption {
@@ -533,6 +639,24 @@ in
         default = "30m";
         description = "Worker job lease duration.";
       };
+      shutdownPolicy = mkOption {
+        type = types.enum [
+          "drain"
+          "cancel"
+        ];
+        default = "drain";
+        description = "Shutdown behavior after SIGINT or SIGTERM.";
+      };
+      shutdownTimeout = mkOption {
+        type = types.str;
+        default = "0s";
+        description = "How long drain shutdown waits before canceling active work. Zero waits indefinitely.";
+      };
+      stagingCleanupAge = mkOption {
+        type = types.str;
+        default = "0s";
+        description = "Age threshold for automatic staging cleanup. Zero disables age-based cleanup.";
+      };
       logLevel = mkOption {
         type = types.str;
         default = "info";
@@ -590,6 +714,53 @@ in
       '';
       description = "Libraries keyed by library name.";
     };
+
+    service = {
+      nice = mkOption {
+        type = types.nullOr types.int;
+        default = null;
+        example = 10;
+        description = "Optional systemd Nice value for the Anvil service.";
+      };
+      ioSchedulingClass = mkOption {
+        type = types.nullOr (types.enum [
+          "idle"
+          "best-effort"
+          "realtime"
+        ]);
+        default = null;
+        example = "best-effort";
+        description = "Optional systemd IOSchedulingClass value.";
+      };
+      ioSchedulingPriority = mkOption {
+        type = types.nullOr types.int;
+        default = null;
+        example = 7;
+        description = "Optional systemd IOSchedulingPriority value.";
+      };
+      cpuWeight = mkOption {
+        type = types.nullOr types.int;
+        default = null;
+        example = 50;
+        description = "Optional systemd CPUWeight value.";
+      };
+      ioWeight = mkOption {
+        type = types.nullOr types.int;
+        default = null;
+        example = 50;
+        description = "Optional systemd IOWeight value.";
+      };
+      extraReadWritePaths = mkOption {
+        type = types.listOf types.str;
+        default = [ ];
+        description = "Additional paths writable by the hardened service.";
+      };
+      extraServiceConfig = mkOption {
+        type = types.attrsOf types.anything;
+        default = { };
+        description = "Additional systemd serviceConfig attributes merged into the Anvil service.";
+      };
+    };
   };
 
   config = mkIf cfg.enable {
@@ -614,9 +785,29 @@ in
           Restart = "on-failure";
           StateDirectory = "anvil";
           RuntimeDirectory = "anvil";
+          UMask = "0027";
+          ReadWritePaths = readWritePaths;
+          NoNewPrivileges = true;
+          PrivateTmp = true;
+          ProtectSystem = "strict";
+          ProtectControlGroups = true;
+          ProtectKernelLogs = true;
+          ProtectKernelModules = true;
+          ProtectKernelTunables = true;
+          RestrictRealtime = true;
+          RestrictSUIDSGID = true;
+          LockPersonality = true;
+          CapabilityBoundingSet = "";
+          SystemCallArchitectures = "native";
         }
+        // optionalAttrs (cfg.service.nice != null) { Nice = cfg.service.nice; }
+        // optionalAttrs (cfg.service.ioSchedulingClass != null) { IOSchedulingClass = cfg.service.ioSchedulingClass; }
+        // optionalAttrs (cfg.service.ioSchedulingPriority != null) { IOSchedulingPriority = cfg.service.ioSchedulingPriority; }
+        // optionalAttrs (cfg.service.cpuWeight != null) { CPUWeight = cfg.service.cpuWeight; }
+        // optionalAttrs (cfg.service.ioWeight != null) { IOWeight = cfg.service.ioWeight; }
         // optionalAttrs (cfg.user != null) { User = cfg.user; }
-        // optionalAttrs (cfg.group != null) { Group = cfg.group; };
+        // optionalAttrs (cfg.group != null) { Group = cfg.group; }
+        // cfg.service.extraServiceConfig;
     };
   };
 }
