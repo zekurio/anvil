@@ -73,6 +73,7 @@ let
     _name: library:
     {
       inherit (library) kind path flow profile priority include exclude;
+      scan_interval = library.scanInterval;
       concurrency_limit = library.concurrencyLimit;
     }
     // optionalAttrs (library.arr != null) {
@@ -470,6 +471,12 @@ let
         type = types.int;
         default = 0;
         description = "Job priority for this library.";
+      };
+      scanInterval = mkOption {
+        type = types.str;
+        default = "";
+        example = "5m";
+        description = "Optional scan interval for this library. Empty falls back to services.anvil.daemon.scanInterval.";
       };
       include = mkOption {
         type = types.listOf types.str;

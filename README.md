@@ -78,6 +78,8 @@ go run ./cmd/anvild --config examples/anvil.toml --daemon
 
 Daemon mode currently stays in-process and waits for `SIGINT` or `SIGTERM`. It does not fork into the background yet. On shutdown, the default policy is `drain`: Anvil stops scanning/scheduling new work and waits for active workers. Use `--shutdown-policy cancel` or `daemon.shutdown_policy = "cancel"` to cancel active workers too. `shutdown_timeout = "0s"` waits indefinitely; a positive timeout cancels active workers after that wait. Set `daemon.log_level` to `debug`, `info`, `warn`, or `error` to control structured stderr logs. Failed attempts trigger best-effort staging cleanup immediately; `cleanup-staging` and `daemon.staging_cleanup_age` are for hard-crash leftovers and manual maintenance.
 
+The daemon runs an initial full scan, then each library gets its own repeated scan timer. Set `libraries.<name>.scan_interval` to override the global `daemon.scan_interval`; leaving it blank uses the daemon interval. Anvil also watches configured library roots with filesystem events and coalesces create/write/rename activity into a normal library scan, so newly completed files are discovered promptly while still going through the existing include/exclude and download stability checks.
+
 `ffmpeg`, `ab-av1`, `dovi_tool`, and MKVToolNix stdout/stderr are captured under `daemon.temp_dir/process-logs/job-<job_id>-attempt-<attempt_id>/` and recorded as attempt artifact events with command, exit code, duration, byte counts, and log paths.
 
 Profiles can require AV1 encodes to save space during `ab-av1 crf-search` with `profiles.<name>.video.min_savings_percent`. Anvil maps this to `ab-av1 --max-encoded-percent`, so `min_savings_percent = 20` requires the fitted encode to be no larger than 80% of the input. If ab-av1 cannot find a CRF that satisfies the configured VMAF and savings policy, Anvil treats that as a non-fatal video-copy/remux path: audio, subtitle, metadata, attachment, chapter, validation, replacement, and handoff steps still run, but no AV1 CRF encode is applied.
@@ -107,7 +109,7 @@ go run ./cmd/anvild recover --config examples/anvil.toml
 go run ./cmd/anvild cleanup-staging --config examples/anvil.toml --older-than 24h --dry-run
 ```
 
-Send `SIGHUP` to reload config without restarting. Reload can update libraries, flows, profiles, Arr settings, worker count, thread count, intervals, retry policy, shutdown policy, and log level. Changes to `daemon.store_path` or `daemon.temp_dir` are rejected and require a restart.
+Send `SIGHUP` to reload config without restarting. Reload can update libraries, flows, profiles, Arr settings, worker count, thread count, daemon and library scan intervals, retry policy, shutdown policy, and log level. Changes to `daemon.store_path` or `daemon.temp_dir` are rejected and require a restart.
 
 `preflight` is read-only: it does not migrate or mutate SQLite and does not create, copy, move, delete, or write media, staging, or log files. It reports scan candidates, existing job status, resolved flow/profile steps, staging/output paths with `job-<new>-attempt-<new>` placeholders where needed, planned publish and cleanup actions, and warnings for destructive settings. Search policy output is described as `ab-av1`/CRF-search driven; when search decides AV1 fitting is not worthwhile, the preflight plan represents the remaining configured actions as video-copy/remux/metadata processing without applying an AV1 CRF encode.
 

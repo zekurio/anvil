@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/zekurio/anvil/pkg/domain"
@@ -68,6 +69,14 @@ func (c Config) ResolveForLibrary(name domain.LibraryName) (domain.Library, doma
 
 func (c Config) ScanInterval() time.Duration {
 	return mustDuration(c.Daemon.ScanInterval)
+}
+
+func (c Config) ScanIntervalForLibrary(name domain.LibraryName) time.Duration {
+	library, ok := c.FindLibrary(name)
+	if ok && strings.TrimSpace(library.ScanInterval) != "" {
+		return mustDuration(library.ScanInterval)
+	}
+	return c.ScanInterval()
 }
 
 func (c Config) SchedulerInterval() time.Duration {

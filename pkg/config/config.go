@@ -158,6 +158,7 @@ type LibraryConfig struct {
 	Path             string                `toml:"path"`
 	Flow             string                `toml:"flow"`
 	Profile          string                `toml:"profile"`
+	ScanInterval     string                `toml:"scan_interval"`
 	Priority         int                   `toml:"priority"`
 	Include          []string              `toml:"include"`
 	Exclude          []string              `toml:"exclude"`
@@ -414,6 +415,9 @@ func (c Config) Validate() error {
 		}
 		if library.ConcurrencyLimit < 0 {
 			problems = append(problems, fmt.Sprintf("library %q concurrency_limit must be non-negative", name))
+		}
+		if strings.TrimSpace(library.ScanInterval) != "" {
+			validatePositiveDuration(&problems, fmt.Sprintf("library %q scan_interval", name), library.ScanInterval)
 		}
 		if strings.TrimSpace(library.Arr) != "" {
 			if _, exists := arrs[library.Arr]; !exists {
