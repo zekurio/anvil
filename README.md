@@ -2,7 +2,7 @@
 
 Anvil is a Linux-first Go daemon for orchestrating AV1 encodes across user-defined media libraries.
 
-The initial implementation will use `ab-av1 crf-search` for encode search, while Anvil owns the final `ffmpeg` command builder and the surrounding orchestration. The daemon is the primary v1 surface; a CLI can be added later.
+The initial implementation uses `ab-av1 crf-search` for encode search, while Anvil owns the final `ffmpeg` command builder and the surrounding orchestration. The daemon is the primary v1 surface, with a small operational CLI for scanning, inspecting jobs, retrying failed work, and recovering stale leases.
 
 ## Design Direction
 
@@ -47,6 +47,8 @@ Common commands:
 make test
 make fmt
 make build
+make mock-library
+make mock-smoke
 ```
 
 Run the daemon in the foreground with default settings:
@@ -65,6 +67,7 @@ Validate a config without starting the daemon loop:
 
 ```sh
 go run ./cmd/anvild --config examples/anvil.toml --check-config
+go run ./cmd/anvild check-config --config examples/anvil.toml
 ```
 
 Run in daemon mode:
@@ -73,12 +76,27 @@ Run in daemon mode:
 go run ./cmd/anvild --config examples/anvil.toml --daemon
 ```
 
-Daemon mode currently stays in-process and waits for `SIGINT` or `SIGTERM`. It does not fork into the background yet.
+Daemon mode currently stays in-process and waits for `SIGINT` or `SIGTERM`. It does not fork into the background yet. On shutdown, the default policy is `drain`: Anvil stops scanning/scheduling new work and waits for active workers. Use `--shutdown-policy cancel` or `daemon.shutdown_policy = "cancel"` to cancel active workers too. `shutdown_timeout = "0s"` waits indefinitely; a positive timeout cancels active workers after that wait.
+
+Useful operator commands:
+
+```sh
+go run ./cmd/anvild scan --config examples/anvil.toml
+go run ./cmd/anvild scan --config examples/anvil.toml --library movies
+go run ./cmd/anvild jobs --config examples/anvil.toml --state pending,failed
+go run ./cmd/anvild jobs --config examples/anvil.toml --json
+go run ./cmd/anvild retry --config examples/anvil.toml 42
+go run ./cmd/anvild retry --config examples/anvil.toml --failed --library movies
+go run ./cmd/anvild recover --config examples/anvil.toml
+go run ./cmd/anvild cleanup-staging --config examples/anvil.toml --older-than 24h --dry-run
+```
+
+Send `SIGHUP` to reload config without restarting. Reload can update libraries, flows, profiles, Arr settings, worker count, thread count, intervals, retry policy, and shutdown policy. Changes to `daemon.store_path` or `daemon.temp_dir` are rejected and require a restart.
 
 With Nix:
 
 ```sh
-nix develop
+nix develop --no-pure-eval
 ```
 
 With direnv:
@@ -89,4 +107,32 @@ direnv allow
 
 The Nix shell is defined by `flake.nix` and `devenv.nix`. It enables Go tooling and includes useful development/runtime tools such as `gopls`, `golangci-lint`, SQLite tooling, `ffmpeg`, and `ab-av1` when that package is available in the selected nixpkgs.
 
-The current repository is intentionally a scaffold. The daemon entrypoint can load and validate config, then wait for shutdown signals, but scanning, scheduling, `ab-av1`, `ffmpeg`, SQLite-backed jobs, and replacement behavior will be added in follow-up work.
+## Mock Library Smoke Test
+
+The mock library fixture creates a complete local playground under `tmp/mock-library`: generated movie and TV media, a completed-download package, Radarr/Sonarr API key files, an Anvil config, logs, imports, temp space, and SQLite state.
+
+Set it up:
+
+```sh
+scripts/mock-library.sh setup
+```
+
+Run the mock Arr server and Anvil until all fixture jobs complete:
+
+```sh
+scripts/mock-library.sh run
+```
+
+To inspect the mock Arr endpoints manually:
+
+```sh
+scripts/mock-library.sh serve-arrs
+```
+
+The fixture is intentionally disposable. Reset it with:
+
+```sh
+scripts/mock-library.sh reset
+```
+
+The daemon can scan configured libraries, persist jobs in SQLite, schedule workers, run media pipeline blocks, validate output, and publish replacements or handoffs. The mock fixture is the quickest way to exercise that path locally before testing against real libraries.

@@ -88,6 +88,39 @@ func TestRunnerRequeuesFailedAttemptBeforeMaxAttempts(t *testing.T) {
 	}
 }
 
+func TestRunnerDoesNotFailJobWhenMetadataResolutionFails(t *testing.T) {
+	ctx := context.Background()
+	store := newFakeWorkerStore()
+	store.source = domain.MediaSource{ID: 1, LibraryName: "movies", Kind: domain.SourceKindFile, RelativePath: "Movie.mkv"}
+	runner := Runner{
+		Store:            store,
+		ConfigProvider:   workerConfig,
+		MetadataResolver: staticMetadataResolver{err: errors.New("arr unavailable")},
+		Pipeline: pipeline.Runner{
+			Registry: pipeline.NewRegistry(pipeline.BlockFunc{BlockName: "noop", Fn: func(_ context.Context, job *pipeline.JobContext) error {
+				if !job.Metadata.StreamCleanupDisabled {
+					t.Fatal("StreamCleanupDisabled = false, want true")
+				}
+				if job.Metadata.StreamCleanupDisabledReason == "" {
+					t.Fatal("StreamCleanupDisabledReason was empty")
+				}
+				return nil
+			}}),
+		},
+	}
+
+	err := runner.Run(ctx, scheduler.Assignment{
+		Job:      domain.Job{ID: 99, SourceID: 1, LibraryName: "movies", State: domain.JobStateLeased},
+		WorkerID: "worker-1",
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if store.attempt.State != domain.AttemptStateSucceeded {
+		t.Fatalf("attempt state = %q, want succeeded", store.attempt.State)
+	}
+}
+
 func workerConfig() config.Config {
 	cfg := config.Default()
 	cfg.Daemon.LeaseDuration = "1m"
