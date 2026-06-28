@@ -32,6 +32,7 @@
 - Media replacement uses a backup workflow and refuses existing backup destinations.
 - Handoff copy/move refuses existing destinations and keeps source cleanup explicit.
 - Download cleanup removes only the processed source media, then prunes upward only while directories contain no kept files or only configured ignorable leftovers.
+- Failed attempts trigger immediate best-effort staging cleanup, with stale cleanup left for hard-crash leftovers.
 - Local mock smoke tests generate tiny media, run mock Radarr/Sonarr responses, exercise media sidecar output, Arr parse fallback for download handoff, and repeatable SQLite state cleanup.
 
 ## Remaining Tracks
@@ -53,7 +54,6 @@
 
 ### Runtime Operations
 
-- Decide whether failed attempts keep staging artifacts by default or opt into immediate best-effort cleanup.
 - Add structured process logs, systemd packaging, `nice` / `ionice`, and broader operational CLI commands.
 - Decide which smoke tests should become CI-friendly and which should remain local/manual because they invoke ffmpeg encodes.
 
@@ -65,7 +65,6 @@
 
 ## Open Questions
 
-- Should failed attempts keep staging directories by default for debugging, or should cleanup run in a best-effort defer?
 - Should profile container always decide output extension, or should media libraries preserve original extensions unless explicitly changed?
 - How aggressive should retries be per library/profile, beyond the daemon-wide max attempts?
 - What is the first useful CLI surface: inspect jobs, retry failed jobs, rescan libraries, or dry-run flows?
