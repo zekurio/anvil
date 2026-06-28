@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/zekurio/anvil/pkg/domain"
+	"github.com/zekurio/anvil/pkg/pipeline"
 	"github.com/zekurio/anvil/pkg/process"
 )
 
@@ -68,12 +69,31 @@ func TestSearchArgsIncludesCropFilter(t *testing.T) {
 	}
 }
 
+func TestBlockSkipsSearchForAnvilEncodedVideo(t *testing.T) {
+	job := &pipeline.JobContext{
+		InputPath: "/input.mkv",
+		Metadata:  domain.JobMetadata{VideoAlreadyEncoded: true},
+	}
+	if err := (Block{Searcher: failingSearcher{}}).Run(context.Background(), job); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if job.Search == nil || job.Search.RawOutput == "" {
+		t.Fatalf("job search = %#v, want skipped search result", job.Search)
+	}
+}
+
 type fakeRunner struct {
 	stdout []byte
 }
 
 func (f fakeRunner) Run(_ context.Context, command process.Command) (process.Result, error) {
 	return process.Result{Command: command.ArgsWithName(), Stdout: f.stdout}, nil
+}
+
+type failingSearcher struct{}
+
+func (failingSearcher) Search(context.Context, domain.EncodePlan) (domain.SearchResult, error) {
+	panic("searcher should not be called")
 }
 
 func containsArg(args []string, want string) bool {

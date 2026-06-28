@@ -47,6 +47,8 @@ Common commands:
 make test
 make fmt
 make build
+make mock-library
+make mock-smoke
 ```
 
 Run the daemon in the foreground with default settings:
@@ -78,7 +80,7 @@ Daemon mode currently stays in-process and waits for `SIGINT` or `SIGTERM`. It d
 With Nix:
 
 ```sh
-nix develop
+nix develop --no-pure-eval
 ```
 
 With direnv:
@@ -89,4 +91,32 @@ direnv allow
 
 The Nix shell is defined by `flake.nix` and `devenv.nix`. It enables Go tooling and includes useful development/runtime tools such as `gopls`, `golangci-lint`, SQLite tooling, `ffmpeg`, and `ab-av1` when that package is available in the selected nixpkgs.
 
-The current repository is intentionally a scaffold. The daemon entrypoint can load and validate config, then wait for shutdown signals, but scanning, scheduling, `ab-av1`, `ffmpeg`, SQLite-backed jobs, and replacement behavior will be added in follow-up work.
+## Mock Library Smoke Test
+
+The mock library fixture creates a complete local playground under `tmp/mock-library`: generated movie and TV media, a completed-download package, Radarr/Sonarr API key files, an Anvil config, logs, imports, temp space, and SQLite state.
+
+Set it up:
+
+```sh
+scripts/mock-library.sh setup
+```
+
+Run the mock Arr server and Anvil until all fixture jobs complete:
+
+```sh
+scripts/mock-library.sh run
+```
+
+To inspect the mock Arr endpoints manually:
+
+```sh
+scripts/mock-library.sh serve-arrs
+```
+
+The fixture is intentionally disposable. Reset it with:
+
+```sh
+scripts/mock-library.sh reset
+```
+
+The daemon can scan configured libraries, persist jobs in SQLite, schedule workers, run media pipeline blocks, validate output, and publish replacements or handoffs. The mock fixture is the quickest way to exercise that path locally before testing against real libraries.

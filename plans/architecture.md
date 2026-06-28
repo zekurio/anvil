@@ -60,6 +60,9 @@ pkg/staging/      temp directories and disk-friendly staging
 pkg/replace/      safe original replacement workflow
 pkg/validate/     encoded output validation
 pkg/process/      external process execution, logs, cancellation
+pkg/metadata/     Arr metadata lookup for per-job original language
+pkg/language/     language normalization shared by streams and metadata
+pkg/marker/       Anvil-owned stream metadata markers for reruns
 ```
 
 ## Core Abstractions
@@ -139,3 +142,5 @@ config + probe result
 ```
 
 This keeps search, encode, validation, and later audio/HDR work aligned.
+
+Anvil marks encoded video streams with operational metadata so reruns can detect compatible prior Anvil output. A compatible marker skips crop detection, CRF search, and video re-encode; the final command copies video and can still apply safe stream remux work.

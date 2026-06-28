@@ -58,6 +58,23 @@ func TestBlockStoresCropInJobMetadata(t *testing.T) {
 	}
 }
 
+func TestBlockSkipsDetectionForAnvilEncodedVideo(t *testing.T) {
+	block := Block{Detector: failingDetector{}}
+	job := &pipeline.JobContext{
+		InputPath: "/input.mkv",
+		Metadata: domain.JobMetadata{
+			VideoAlreadyEncoded: true,
+			CropFilter:          "crop=1920:800:0:140",
+		},
+	}
+	if err := block.Run(context.Background(), job); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if job.Crop == nil || job.Crop.Filter != "crop=1920:800:0:140" {
+		t.Fatalf("job crop = %#v, want marker crop", job.Crop)
+	}
+}
+
 type fakeRunner struct {
 	stderr []byte
 }
@@ -72,6 +89,12 @@ type staticDetector struct {
 
 func (s staticDetector) Detect(context.Context, string) (domain.CropResult, error) {
 	return s.result, nil
+}
+
+type failingDetector struct{}
+
+func (failingDetector) Detect(context.Context, string) (domain.CropResult, error) {
+	panic("detector should not be called")
 }
 
 func contains(values []string, want string) bool {
