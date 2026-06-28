@@ -119,7 +119,7 @@ func (r Runner) Run(ctx context.Context, assignment scheduler.Assignment) error 
 		}
 		return process.WithStep(ctx, step)
 	}
-	pipelineCtx := process.WithLogger(ctx, processLogRecorder{
+	pipelineCtx := process.WithLogger(ctx, &processLogRecorder{
 		root:      filepath.Join(r.tempDir(cfg), "process-logs"),
 		jobID:     assignment.Job.ID,
 		attemptID: attempt.ID,
