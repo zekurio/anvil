@@ -150,6 +150,7 @@ func DefaultPipeline(tempDir string) pipeline.Runner {
 			staging.StageBlock{Manager: stageManager},
 			search.Block{},
 			ffmpeg.Block{},
+			ffmpeg.DolbyVisionBlock{},
 			validate.Block{Validator: validate.Validator{Prober: prober}},
 			replacepkg.ReplaceBlock{},
 			replacepkg.HandoffBlock{},

@@ -4,8 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
+	"strings"
 
 	"github.com/zekurio/anvil/pkg/domain"
 	"github.com/zekurio/anvil/pkg/marker"
@@ -55,9 +59,10 @@ func BuildPlan(profile domain.Profile, inputPath string, outputPath string, allo
 			videoCopyReason = "CRF search skipped video encode"
 		}
 	}
+	video := domain.EffectiveVideoProfile(profile, metadata)
 	crf := 0
 	if !videoCopy {
-		crf = profile.Video.CRFMin
+		crf = video.CRFMin
 		if search != nil && search.CRF > 0 {
 			crf = search.CRF
 		}
@@ -66,16 +71,17 @@ func BuildPlan(profile domain.Profile, inputPath string, outputPath string, allo
 		InputPath:         inputPath,
 		OutputPath:        outputPath,
 		ProfileName:       profile.Name,
-		VideoCodec:        profile.Video.Codec,
+		VideoCodec:        video.Codec,
+		VideoSource:       domain.EffectiveVideoSource(metadata),
 		VideoCopy:         videoCopy,
 		VideoCopyReason:   videoCopyReason,
-		Preset:            profile.Video.Preset,
-		PixelFormat:       profile.Video.PixelFormat,
+		Preset:            video.Preset,
+		PixelFormat:       video.PixelFormat,
 		CRF:               crf,
-		CRFMin:            profile.Video.CRFMin,
-		CRFMax:            profile.Video.CRFMax,
-		TargetVMAF:        profile.Video.TargetVMAF,
-		MinSavingsPercent: profile.Video.MinSavingsPercent,
+		CRFMin:            video.CRFMin,
+		CRFMax:            video.CRFMax,
+		TargetVMAF:        video.TargetVMAF,
+		MinSavingsPercent: video.MinSavingsPercent,
 		Threads:           allocation.Threads,
 		Container:         profile.Container,
 		CropFilter:        metadata.CropFilter,
@@ -84,6 +90,9 @@ func BuildPlan(profile domain.Profile, inputPath string, outputPath string, allo
 		AttachmentMode:    profile.Attachments.Mode,
 		ChapterMode:       profile.Chapters.Mode,
 		AnvilTags:         copyTags(metadata.AnvilTags),
+		FFmpegArgs:        append([]string(nil), video.FFmpegArgs...),
+		ABAV1Args:         append([]string(nil), video.ABAV1Args...),
+		HDR:               metadata.HDR,
 	}
 	if audio != nil {
 		plan.AudioSelectionApplied = true
@@ -103,6 +112,9 @@ func Args(plan domain.EncodePlan) []string {
 		args = append(args, "-vf", plan.CropFilter)
 	}
 	args = append(args, videoArgs(plan)...)
+	if !plan.VideoCopy && len(plan.FFmpegArgs) > 0 {
+		args = append(args, plan.FFmpegArgs...)
+	}
 	args = append(args, audioArgs()...)
 	args = append(args, subtitleArgs(plan.SubtitleMode)...)
 	if plan.MetadataMode == domain.MetadataModeStrip {
@@ -140,6 +152,209 @@ func (b Block) Run(ctx context.Context, job *pipeline.JobContext) error {
 		return fmt.Errorf("ffmpeg encode: %w", err)
 	}
 	return nil
+}
+
+type DolbyVisionBlock struct {
+	Runner     process.Runner
+	DoviTool   string
+	MKVExtract string
+	MKVMerge   string
+	MKVInfo    string
+	FFmpeg     string
+}
+
+func (DolbyVisionBlock) Name() string {
+	return "dovi-fix"
+}
+
+func (b DolbyVisionBlock) Run(ctx context.Context, job *pipeline.JobContext) error {
+	if !needsDolbyVisionFix(job) {
+		return nil
+	}
+	if strings.TrimSpace(job.OutputPath) == "" {
+		return errors.New("Dolby Vision fix output path is required")
+	}
+	if !strings.EqualFold(filepath.Ext(job.OutputPath), ".mkv") {
+		return fmt.Errorf("Dolby Vision fix requires MKV output, got %q", filepath.Ext(job.OutputPath))
+	}
+	codec := job.EncodePlan.VideoCodec
+	if strings.TrimSpace(codec) == "" {
+		codec = job.Profile.Video.DolbyVision.Codec
+	}
+	if !hevcEncoder(codec) {
+		return fmt.Errorf("Dolby Vision fix requires HEVC output, got encoder %q", codec)
+	}
+
+	dir := strings.TrimSpace(job.StagingDir)
+	if dir == "" {
+		dir = filepath.Dir(job.OutputPath)
+	}
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		return fmt.Errorf("create Dolby Vision staging dir: %w", err)
+	}
+
+	paths := doviWorkPaths(dir)
+	defer cleanupDoviPaths(paths)
+
+	originalForRPU := job.InputPath
+	if !strings.EqualFold(filepath.Ext(job.InputPath), ".mkv") {
+		if err := b.run(ctx, b.ffmpeg(), "-v", "quiet", "-stats", "-i", job.InputPath, "-c:v", "copy", paths.originalHEVC); err != nil {
+			return err
+		}
+		originalForRPU = paths.originalHEVC
+	}
+
+	extractArgs := doviArgs(job, "--crop", "--mode", "2", "extract-rpu", "-o", paths.originalRPU, originalForRPU)
+	if err := b.run(ctx, b.doviTool(), extractArgs...); err != nil {
+		return err
+	}
+	if err := b.run(ctx, b.mkvExtract(), "tracks", job.OutputPath, "0:"+paths.convertedHEVC); err != nil {
+		return err
+	}
+	injectArgs := doviArgs(job,
+		"--crop", "--mode", "2",
+		"inject-rpu",
+		"--rpu-in", paths.originalRPU,
+		"--input", paths.convertedHEVC,
+		"--output", paths.fixedHEVC,
+	)
+	if err := b.run(ctx, b.doviTool(), injectArgs...); err != nil {
+		return err
+	}
+
+	fps, err := b.outputFPS(ctx, job.OutputPath)
+	if err != nil {
+		return err
+	}
+	muxArgs := []string{"-o", paths.fixedMKV, paths.fixedHEVC, "-D", job.OutputPath, "--track-order", "1:0"}
+	if fps != "" {
+		muxArgs = append([]string{"--default-duration", "0:" + fps + "fps", "--fix-bitstream-timing-information", "0"}, muxArgs...)
+	}
+	if err := b.run(ctx, b.mkvMerge(), muxArgs...); err != nil {
+		return err
+	}
+	if err := replaceOutput(job.OutputPath, paths.fixedMKV); err != nil {
+		return err
+	}
+	return nil
+}
+
+type doviPaths struct {
+	originalHEVC  string
+	originalRPU   string
+	convertedHEVC string
+	fixedHEVC     string
+	fixedMKV      string
+}
+
+func doviWorkPaths(dir string) doviPaths {
+	return doviPaths{
+		originalHEVC:  filepath.Join(dir, "dovi-original.hevc"),
+		originalRPU:   filepath.Join(dir, "dovi-original.rpu"),
+		convertedHEVC: filepath.Join(dir, "dovi-converted.hevc"),
+		fixedHEVC:     filepath.Join(dir, "dovi-fixed.hevc"),
+		fixedMKV:      filepath.Join(dir, "dovi-fixed.mkv"),
+	}
+}
+
+func needsDolbyVisionFix(job *pipeline.JobContext) bool {
+	return job != nil &&
+		job.EncodePlan != nil &&
+		!job.EncodePlan.VideoCopy &&
+		job.Metadata.HDR.DolbyVision != nil &&
+		job.Metadata.HDR.DolbyVisionEncoderSelected &&
+		job.Profile.Video.DolbyVision.Mode != domain.DolbyVisionModeOff
+}
+
+func doviArgs(job *pipeline.JobContext, args ...string) []string {
+	if job.Profile.Video.DolbyVision.RemoveHDR10Plus {
+		return append([]string{"--drop-hdr10plus"}, args...)
+	}
+	return append([]string(nil), args...)
+}
+
+func (b DolbyVisionBlock) outputFPS(ctx context.Context, outputPath string) (string, error) {
+	result, err := b.runner().Run(ctx, process.Command{
+		Name: b.mkvInfo(),
+		Args: []string{"--ui-language", "en_US", outputPath},
+	})
+	if err != nil {
+		return "", fmt.Errorf("mkvinfo Dolby Vision output: %w", err)
+	}
+	matches := fpsPattern.FindStringSubmatch(string(result.Stdout))
+	if len(matches) < 2 {
+		return "", nil
+	}
+	return matches[1], nil
+}
+
+var fpsPattern = regexp.MustCompile(`(?i)([.0-9]+)\s+frames/fields`)
+
+func (b DolbyVisionBlock) run(ctx context.Context, name string, args ...string) error {
+	if _, err := b.runner().Run(ctx, process.Command{Name: name, Args: args}); err != nil {
+		return fmt.Errorf("%s Dolby Vision fix: %w", filepath.Base(name), err)
+	}
+	return nil
+}
+
+func (b DolbyVisionBlock) runner() process.Runner {
+	if b.Runner != nil {
+		return b.Runner
+	}
+	return process.OSRunner{}
+}
+
+func (b DolbyVisionBlock) doviTool() string {
+	return valueOr(b.DoviTool, "dovi_tool")
+}
+
+func (b DolbyVisionBlock) mkvExtract() string {
+	return valueOr(b.MKVExtract, "mkvextract")
+}
+
+func (b DolbyVisionBlock) mkvMerge() string {
+	return valueOr(b.MKVMerge, "mkvmerge")
+}
+
+func (b DolbyVisionBlock) mkvInfo() string {
+	return valueOr(b.MKVInfo, "mkvinfo")
+}
+
+func (b DolbyVisionBlock) ffmpeg() string {
+	return valueOr(b.FFmpeg, "ffmpeg")
+}
+
+func hevcEncoder(codec string) bool {
+	codec = strings.ToLower(strings.TrimSpace(codec))
+	codec = strings.ReplaceAll(codec, "_", "-")
+	switch codec {
+	case "hevc", "h265", "h.265", "libx265", "x265", "hevc-qsv", "hevc-nvenc", "hevc-amf", "hevc-videotoolbox":
+		return true
+	default:
+		return false
+	}
+}
+
+func replaceOutput(outputPath string, fixedPath string) error {
+	backupPath := outputPath + ".pre-dovi"
+	_ = os.Remove(backupPath)
+	if err := os.Rename(outputPath, backupPath); err != nil {
+		return fmt.Errorf("backup pre-Dolby Vision output: %w", err)
+	}
+	if err := os.Rename(fixedPath, outputPath); err != nil {
+		_ = os.Rename(backupPath, outputPath)
+		return fmt.Errorf("install Dolby Vision fixed output: %w", err)
+	}
+	if err := os.Remove(backupPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("remove pre-Dolby Vision output backup: %w", err)
+	}
+	return nil
+}
+
+func cleanupDoviPaths(paths doviPaths) {
+	for _, path := range []string{paths.originalHEVC, paths.originalRPU, paths.convertedHEVC, paths.fixedHEVC, paths.fixedMKV} {
+		_ = os.Remove(path)
+	}
 }
 
 func mapArgs(plan domain.EncodePlan) []string {

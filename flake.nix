@@ -7,7 +7,7 @@
   };
 
   outputs =
-    inputs@{ nixpkgs, devenv, ... }:
+    inputs@{ self, nixpkgs, devenv, ... }:
     let
       systems = [
         "x86_64-linux"
@@ -29,6 +29,69 @@
     {
       nixosModules.default = import ./nix/modules/anvil.nix;
       nixosModules.anvil = import ./nix/modules/anvil.nix;
+
+      packages = forEachSystem (
+        { pkgs, ... }:
+        let
+          ffmpegPackage =
+            if pkgs.stdenv.isLinux then
+              (pkgs.jellyfin-ffmpeg or pkgs.ffmpeg)
+            else
+              pkgs.ffmpeg;
+          runtimePackages = [
+            ffmpegPackage
+            pkgs.ab-av1
+            pkgs.dovi-tool
+            pkgs.mkvtoolnix
+          ];
+        in
+        {
+          default = pkgs.buildGoModule {
+            pname = "anvil";
+            version = "0.1.0";
+            src = ./.;
+            vendorHash = "sha256-MQjXQsq+k6OmLMZLNwGGC8K5pu1tNxo7uIXjIPGLPIo=";
+            nativeBuildInputs = [
+              pkgs.makeWrapper
+            ];
+
+            subPackages = [
+              "cmd/anvild"
+              "cmd/anvil-mockarr"
+            ];
+
+            ldflags = [
+              "-s"
+              "-w"
+            ];
+
+            postInstall = ''
+              wrapProgram "$out/bin/anvild" \
+                --prefix PATH : "${pkgs.lib.makeBinPath runtimePackages}"
+            '';
+
+            meta = {
+              description = "Media-library AV1 encoding daemon";
+              mainProgram = "anvild";
+              platforms = pkgs.lib.platforms.unix;
+            };
+          };
+        }
+      );
+
+      apps = forEachSystem (
+        { system, ... }:
+        {
+          default = {
+            type = "app";
+            program = "${self.packages.${system}.default}/bin/anvild";
+          };
+          anvild = {
+            type = "app";
+            program = "${self.packages.${system}.default}/bin/anvild";
+          };
+        }
+      );
 
       devShells = forEachSystem (
         { pkgs, ... }:

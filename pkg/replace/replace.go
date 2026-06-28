@@ -47,7 +47,7 @@ func (Manager) Replace(_ context.Context, inputPath string, candidatePath string
 		}
 		return plan.CopyPath, nil
 	default:
-		return replaceFile(inputPath, candidatePath)
+		return replaceFile(inputPath, candidatePath, plan.ReplaceTarget)
 	}
 }
 
@@ -65,7 +65,7 @@ func PlanReplacement(inputPath string, candidatePath string, mode domain.Replace
 		plan.CopyPath = replacementCopyPath(inputPath, filepath.Ext(candidatePath))
 	default:
 		plan.Action = "replace"
-		plan.ReplaceTarget = inputPath
+		plan.ReplaceTarget = replaceExtension(inputPath, filepath.Ext(candidatePath))
 		plan.BackupPath = inputPath + ".anvil.bak"
 	}
 	return plan, nil
@@ -163,12 +163,15 @@ func (b HandoffBlock) Run(ctx context.Context, job *pipeline.JobContext) error {
 	return nil
 }
 
-func replaceFile(inputPath string, candidatePath string) (string, error) {
+func replaceFile(inputPath string, candidatePath string, targetPath string) (string, error) {
+	if targetPath == "" {
+		targetPath = inputPath
+	}
 	backupPath := inputPath + ".anvil.bak"
 	if err := moveFile(inputPath, backupPath); err != nil {
 		return "", fmt.Errorf("backup original before replace: %w", err)
 	}
-	if err := moveFile(candidatePath, inputPath); err != nil {
+	if err := moveFile(candidatePath, targetPath); err != nil {
 		if restoreErr := moveFile(backupPath, inputPath); restoreErr != nil {
 			return "", fmt.Errorf("install replacement: %w; restore backup: %v", err, restoreErr)
 		}
@@ -177,7 +180,7 @@ func replaceFile(inputPath string, candidatePath string) (string, error) {
 	if err := os.Remove(backupPath); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return "", fmt.Errorf("remove replacement backup: %w", err)
 	}
-	return inputPath, nil
+	return targetPath, nil
 }
 
 func handoffDestination(job *pipeline.JobContext, ext string) (string, error) {
@@ -209,6 +212,9 @@ func replacementCopyPath(inputPath string, ext string) string {
 }
 
 func replaceExtension(path string, ext string) string {
+	if ext == "" {
+		ext = filepath.Ext(path)
+	}
 	return strings.TrimSuffix(path, filepath.Ext(path)) + ext
 }
 
