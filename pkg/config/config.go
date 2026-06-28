@@ -24,6 +24,7 @@ const (
 	DefaultShutdownPolicy  = "drain"
 	DefaultShutdownTimeout = "0s"
 	DefaultStagingCleanup  = "0s"
+	DefaultLogLevel        = "info"
 	DefaultMaxAttempts     = 3
 	DefaultStableFor       = "5m"
 	DefaultPackageMode     = "auto"
@@ -201,7 +202,7 @@ func Default() Config {
 			ShutdownPolicy:    DefaultShutdownPolicy,
 			ShutdownTimeout:   DefaultShutdownTimeout,
 			StagingCleanupAge: DefaultStagingCleanup,
-			LogLevel:          "info",
+			LogLevel:          DefaultLogLevel,
 		},
 		Flows: map[string]FlowConfig{
 			DefaultFlowName: {
@@ -266,6 +267,9 @@ func (c Config) Validate() error {
 	validateNonNegativeDuration(&problems, "daemon.staging_cleanup_age", c.Daemon.StagingCleanupAge)
 	if !validShutdownPolicy(c.Daemon.ShutdownPolicy) {
 		problems = append(problems, fmt.Sprintf("daemon.shutdown_policy %q is invalid", c.Daemon.ShutdownPolicy))
+	}
+	if _, ok := NormalizeLogLevel(c.Daemon.LogLevel); !ok {
+		problems = append(problems, fmt.Sprintf("daemon.log_level %q is invalid (must be debug, info, warn, or error)", c.Daemon.LogLevel))
 	}
 
 	flows := make(map[string]struct{}, len(c.Flows))
@@ -439,6 +443,9 @@ func applyDefaults(c *Config) {
 	if strings.TrimSpace(c.Daemon.LogLevel) == "" {
 		c.Daemon.LogLevel = defaults.Daemon.LogLevel
 	}
+	if logLevel, ok := NormalizeLogLevel(c.Daemon.LogLevel); ok {
+		c.Daemon.LogLevel = logLevel
+	}
 	if len(c.Flows) == 0 {
 		c.Flows = defaults.Flows
 	}
@@ -554,6 +561,17 @@ func validateNonNegativeDuration(problems *[]string, name string, value string) 
 
 func validShutdownPolicy(policy string) bool {
 	return policy == "drain" || policy == "cancel"
+}
+
+// NormalizeLogLevel trims and canonicalizes a configured daemon log level.
+func NormalizeLogLevel(level string) (string, bool) {
+	normalized := strings.ToLower(strings.TrimSpace(level))
+	switch normalized {
+	case "debug", "info", "warn", "error":
+		return normalized, true
+	default:
+		return "", false
+	}
 }
 
 func validReplacementMode(mode string) bool {
