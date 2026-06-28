@@ -123,6 +123,47 @@ func TestScheduleAvailableFillsOpenSlots(t *testing.T) {
 	}
 }
 
+func TestWorkerContextCanOutliveSchedulerContext(t *testing.T) {
+	schedulerCtx, stopScheduling := context.WithCancel(context.Background())
+	workerCtx, stopWorker := context.WithCancel(context.Background())
+	defer stopWorker()
+
+	store := &fakeScheduleStore{
+		jobs: []domain.Job{{ID: 1, LibraryName: "movies", State: domain.JobStatePending}},
+	}
+	worker := newBlockingWorker()
+	defer worker.releaseAll()
+
+	s := &Scheduler{
+		Store:          store,
+		Worker:         worker,
+		ConfigProvider: scheduleConfig,
+		WorkerContext:  workerCtx,
+		Allocator:      resources.NewAllocator(4),
+		WorkerCount:    1,
+		LeaseDuration:  time.Minute,
+	}
+
+	if started, err := s.ScheduleOnce(schedulerCtx); err != nil || !started {
+		t.Fatalf("ScheduleOnce() = %v, %v, want true, nil", started, err)
+	}
+	worker.waitStarted(t)
+	stopScheduling()
+
+	timeoutCtx, cancelTimeout := context.WithTimeout(context.Background(), 25*time.Millisecond)
+	defer cancelTimeout()
+	if err := s.WaitContext(timeoutCtx); err == nil {
+		t.Fatal("WaitContext() error = nil, want timeout while worker context is still active")
+	}
+
+	stopWorker()
+	waitCtx, cancelWait := context.WithTimeout(context.Background(), time.Second)
+	defer cancelWait()
+	if err := s.WaitContext(waitCtx); err != nil {
+		t.Fatalf("WaitContext() error = %v", err)
+	}
+}
+
 func scheduleConfig() config.Config {
 	cfg := config.Default()
 	cfg.Daemon.WorkerCount = 2

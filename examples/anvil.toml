@@ -7,6 +7,9 @@ max_attempts = 3
 scan_interval = "30m"
 scheduler_interval = "5s"
 lease_duration = "30m"
+shutdown_policy = "drain"
+shutdown_timeout = "0s"
+staging_cleanup_age = "0s"
 log_level = "info"
 
 [flows.av1-replace]
