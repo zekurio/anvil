@@ -17,6 +17,7 @@ import (
 	"github.com/zekurio/anvil/pkg/ffmpeg"
 	"github.com/zekurio/anvil/pkg/pipeline"
 	"github.com/zekurio/anvil/pkg/probe"
+	"github.com/zekurio/anvil/pkg/process"
 	replacepkg "github.com/zekurio/anvil/pkg/replace"
 	"github.com/zekurio/anvil/pkg/scheduler"
 	"github.com/zekurio/anvil/pkg/search"
@@ -111,7 +112,21 @@ func (r Runner) Run(ctx context.Context, assignment scheduler.Assignment) error 
 	if pipelineRunner.Events == nil {
 		pipelineRunner.Events = r.Store
 	}
-	if err := pipelineRunner.Run(ctx, jobContext); err != nil {
+	stepContext := pipelineRunner.StepContext
+	pipelineRunner.StepContext = func(ctx context.Context, step string) context.Context {
+		if stepContext != nil {
+			ctx = stepContext(ctx, step)
+		}
+		return process.WithStep(ctx, step)
+	}
+	pipelineCtx := process.WithLogger(ctx, processLogRecorder{
+		root:      filepath.Join(r.tempDir(cfg), "process-logs"),
+		jobID:     assignment.Job.ID,
+		attemptID: attempt.ID,
+		events:    r.Store,
+		now:       r.now,
+	})
+	if err := pipelineRunner.Run(pipelineCtx, jobContext); err != nil {
 		r.cleanupFailedStaging(ctx, jobContext, cfg)
 		return r.fail(ctx, assignment.Job, attempt, cfg, err)
 	}
@@ -230,11 +245,7 @@ func (r Runner) cleanupFailedStaging(ctx context.Context, job *pipeline.JobConte
 	if job == nil || job.StagingDir == "" {
 		return
 	}
-	tempDir := strings.TrimSpace(r.TempDir)
-	if tempDir == "" {
-		tempDir = cfg.Daemon.TempDir
-	}
-	err := staging.Manager{Root: filepath.Join(tempDir, "staging")}.Cleanup(job)
+	err := staging.Manager{Root: filepath.Join(r.tempDir(cfg), "staging")}.Cleanup(job)
 	if err == nil || r.Store == nil {
 		return
 	}
@@ -245,6 +256,14 @@ func (r Runner) cleanupFailedStaging(ctx context.Context, job *pipeline.JobConte
 		Message:   err.Error(),
 		CreatedAt: r.now(),
 	})
+}
+
+func (r Runner) tempDir(cfg config.Config) string {
+	tempDir := strings.TrimSpace(r.TempDir)
+	if tempDir == "" {
+		tempDir = cfg.Daemon.TempDir
+	}
+	return tempDir
 }
 
 func (r Runner) startHeartbeat(ctx context.Context, jobID domain.JobID, workerID string, cfg config.Config) func() {

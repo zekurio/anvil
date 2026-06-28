@@ -80,9 +80,10 @@ type EventRecorder interface {
 }
 
 type Runner struct {
-	Registry Registry
-	Events   EventRecorder
-	Now      func() time.Time
+	Registry    Registry
+	Events      EventRecorder
+	StepContext func(context.Context, string) context.Context
+	Now         func() time.Time
 }
 
 func (r Runner) Run(ctx context.Context, job *JobContext) error {
@@ -97,7 +98,11 @@ func (r Runner) Run(ctx context.Context, job *JobContext) error {
 		if err := r.record(ctx, job.Attempt.ID, domain.AttemptEventBlockStarted, step.Name, "", map[string]any{"step_index": index}); err != nil {
 			return err
 		}
-		if err := block.Run(ctx, job); err != nil {
+		stepCtx := ctx
+		if r.StepContext != nil {
+			stepCtx = r.StepContext(ctx, step.Name)
+		}
+		if err := block.Run(stepCtx, job); err != nil {
 			_ = r.record(ctx, job.Attempt.ID, domain.AttemptEventBlockFailed, step.Name, err.Error(), map[string]any{"step_index": index})
 			return fmt.Errorf("run block %q: %w", step.Name, err)
 		}
