@@ -197,6 +197,93 @@ func TestValidatorRejectsSubtitleCountMismatch(t *testing.T) {
 	assertErrorContains(t, result, "subtitle stream count")
 }
 
+func TestValidatorAcceptsPreservedHDRAndDolbyVisionMetadata(t *testing.T) {
+	outputPath := writeSizedFile(t, "out.mkv", 800)
+	plan := encodePlan(false)
+	plan.VideoCodec = "hevc_qsv"
+	plan.PixelFormat = "p010le"
+	source := sourceProbe()
+	source.Streams[0].ColorTransfer = "smpte2084"
+	source.Streams[0].ColorPrimaries = "bt2020"
+	source.Streams[0].ColorSpace = "bt2020nc"
+	source.Streams[0].DolbyVision = &domain.DolbyVisionMetadata{Profile: 8, ConfigurationRecordFound: true}
+	output := domain.ProbeResult{
+		DurationSeconds: 100,
+		Streams: []domain.MediaStream{
+			{
+				Index:          0,
+				Type:           "video",
+				Codec:          "hevc",
+				PixelFormat:    "p010le",
+				ColorTransfer:  "smpte2084",
+				ColorPrimaries: "bt2020",
+				ColorSpace:     "bt2020nc",
+				DolbyVision:    &domain.DolbyVisionMetadata{Profile: 8, ConfigurationRecordFound: true},
+				Tags:           marker.OutputTags(plan),
+			},
+			{Index: 1, Type: "audio", Codec: "aac"},
+			{Index: 2, Type: "audio", Codec: "aac"},
+			{Index: 3, Type: "subtitle", Codec: "subrip"},
+		},
+	}
+	profile := testProfile()
+	profile.Video.DolbyVision = domain.DolbyVisionProfile{Mode: domain.DolbyVisionModeAuto, Codec: "hevc_qsv"}
+
+	result, err := Validator{Prober: fakeProber{result: output}}.Validate(context.Background(), Request{
+		SourceProbe: source,
+		OutputPath:  outputPath,
+		Profile:     profile,
+		EncodePlan:  &plan,
+	})
+	if err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+	if !result.SourceDolbyVisionPresent || !result.OutputDolbyVisionPresent {
+		t.Fatalf("Dolby Vision result flags = %t/%t, want true/true", result.SourceDolbyVisionPresent, result.OutputDolbyVisionPresent)
+	}
+}
+
+func TestValidatorRejectsLostHDRMetadata(t *testing.T) {
+	outputPath := writeSizedFile(t, "out.mkv", 800)
+	plan := encodePlan(false)
+	source := sourceProbe()
+	source.Streams[0].ColorTransfer = "smpte2084"
+	source.Streams[0].ColorPrimaries = "bt2020"
+	output := outputProbe(plan)
+
+	result, err := Validator{Prober: fakeProber{result: output}}.Validate(context.Background(), Request{
+		SourceProbe: source,
+		OutputPath:  outputPath,
+		Profile:     testProfile(),
+		EncodePlan:  &plan,
+	})
+	if err == nil {
+		t.Fatal("Validate() error = nil, want HDR metadata mismatch")
+	}
+	assertErrorContains(t, result, "HDR color transfer")
+}
+
+func TestValidatorRejectsLostDolbyVisionMetadata(t *testing.T) {
+	outputPath := writeSizedFile(t, "out.mkv", 800)
+	plan := encodePlan(false)
+	source := sourceProbe()
+	source.Streams[0].DolbyVision = &domain.DolbyVisionMetadata{Profile: 8, ConfigurationRecordFound: true}
+	output := outputProbe(plan)
+	profile := testProfile()
+	profile.Video.DolbyVision = domain.DolbyVisionProfile{Mode: domain.DolbyVisionModeAuto, Codec: "hevc_qsv"}
+
+	result, err := Validator{Prober: fakeProber{result: output}}.Validate(context.Background(), Request{
+		SourceProbe: source,
+		OutputPath:  outputPath,
+		Profile:     profile,
+		EncodePlan:  &plan,
+	})
+	if err == nil {
+		t.Fatal("Validate() error = nil, want missing Dolby Vision metadata")
+	}
+	assertErrorContains(t, result, "Dolby Vision")
+}
+
 func sourceProbe() *domain.ProbeResult {
 	return &domain.ProbeResult{
 		DurationSeconds: 100,

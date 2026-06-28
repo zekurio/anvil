@@ -32,6 +32,9 @@ const (
 	DefaultStreamMode      = "preserve"
 	DefaultStreamFallback  = "keep_all"
 	DefaultMetadataMode    = "preserve"
+	DefaultDolbyVisionMode = "auto"
+	DolbyVisionModeOff     = "off"
+	DolbyVisionModeRequire = "require"
 	DefaultMinSavingsPct   = 20
 )
 
@@ -95,13 +98,27 @@ type ProfileConfig struct {
 
 // VideoConfig contains the initial video settings shape for AV1 search work.
 type VideoConfig struct {
-	Codec             string  `toml:"codec"`
-	Preset            string  `toml:"preset"`
-	PixelFormat       string  `toml:"pixel_format"`
-	CRFMin            int     `toml:"crf_min"`
-	CRFMax            int     `toml:"crf_max"`
-	TargetVMAF        float64 `toml:"target_vmaf"`
-	MinSavingsPercent float64 `toml:"min_savings_percent"`
+	Codec             string            `toml:"codec"`
+	Preset            string            `toml:"preset"`
+	PixelFormat       string            `toml:"pixel_format"`
+	CRFMin            int               `toml:"crf_min"`
+	CRFMax            int               `toml:"crf_max"`
+	TargetVMAF        float64           `toml:"target_vmaf"`
+	MinSavingsPercent float64           `toml:"min_savings_percent"`
+	FFmpegArgs        []string          `toml:"ffmpeg_args"`
+	ABAV1Args         []string          `toml:"ab_av1_args"`
+	DolbyVision       DolbyVisionConfig `toml:"dolby_vision"`
+}
+
+// DolbyVisionConfig overrides normal video settings for Dolby Vision sources.
+type DolbyVisionConfig struct {
+	Mode            string   `toml:"mode"`
+	Codec           string   `toml:"codec"`
+	Preset          string   `toml:"preset"`
+	PixelFormat     string   `toml:"pixel_format"`
+	FFmpegArgs      []string `toml:"ffmpeg_args"`
+	ABAV1Args       []string `toml:"ab_av1_args"`
+	RemoveHDR10Plus bool     `toml:"remove_hdr10plus"`
 }
 
 // AudioConfig declares track retention intent. It is conservative by default.
@@ -214,7 +231,7 @@ func Default() Config {
 		},
 		Flows: map[string]FlowConfig{
 			DefaultFlowName: {
-				Steps: []string{"probe", "crop-detect", "audio-cleanup", "stage", "crf-search", "encode", "validate", "replace", "cleanup"},
+				Steps: []string{"probe", "crop-detect", "audio-cleanup", "stage", "crf-search", "encode", "dovi-fix", "validate", "replace", "cleanup"},
 			},
 		},
 		Profiles: map[string]ProfileConfig{
@@ -228,6 +245,9 @@ func Default() Config {
 					CRFMax:            40,
 					TargetVMAF:        95,
 					MinSavingsPercent: DefaultMinSavingsPct,
+					DolbyVision: DolbyVisionConfig{
+						Mode: DefaultDolbyVisionMode,
+					},
 				},
 				Audio: AudioConfig{
 					Fallback: DefaultStreamFallback,
@@ -305,6 +325,9 @@ func (c Config) Validate() error {
 		}
 		profiles[name] = struct{}{}
 
+		if !validContainer(profile.Container) {
+			problems = append(problems, fmt.Sprintf("profile %q container %q is invalid; Anvil outputs MKV only", name, profile.Container))
+		}
 		if profile.Video.CRFMin < 0 || profile.Video.CRFMax < 0 {
 			problems = append(problems, fmt.Sprintf("profile %q CRF values must be non-negative", name))
 		}
@@ -316,6 +339,12 @@ func (c Config) Validate() error {
 		}
 		if profile.Video.MinSavingsPercent < 0 || profile.Video.MinSavingsPercent > 100 {
 			problems = append(problems, fmt.Sprintf("profile %q min_savings_percent must be between 0 and 100", name))
+		}
+		if !validDolbyVisionMode(profile.Video.DolbyVision.Mode) {
+			problems = append(problems, fmt.Sprintf("profile %q video.dolby_vision.mode %q is invalid", name, profile.Video.DolbyVision.Mode))
+		}
+		if profile.Video.DolbyVision.Mode == DolbyVisionModeRequire && strings.TrimSpace(profile.Video.DolbyVision.Codec) == "" {
+			problems = append(problems, fmt.Sprintf("profile %q video.dolby_vision.codec is required when mode is require", name))
 		}
 		if !validStreamFallback(profile.Audio.Fallback) {
 			problems = append(problems, fmt.Sprintf("profile %q audio.fallback %q is invalid", name, profile.Audio.Fallback))
@@ -509,7 +538,13 @@ func applyDefaults(c *Config) {
 func applyProfileDefaults(profile *ProfileConfig) {
 	if strings.TrimSpace(profile.Container) == "" {
 		profile.Container = "mkv"
+	} else {
+		profile.Container = normalizeContainer(profile.Container)
 	}
+	if strings.TrimSpace(profile.Video.DolbyVision.Mode) == "" {
+		profile.Video.DolbyVision.Mode = DefaultDolbyVisionMode
+	}
+	profile.Video.DolbyVision.Mode = strings.ToLower(strings.TrimSpace(profile.Video.DolbyVision.Mode))
 	if strings.TrimSpace(profile.Audio.Fallback) == "" {
 		profile.Audio.Fallback = DefaultStreamFallback
 	}
@@ -620,6 +655,18 @@ func sortedKeys[V any](values map[string]V) []string {
 
 func validStreamMode(mode string) bool {
 	return mode == "preserve" || mode == "prefer" || mode == "cleanup"
+}
+
+func validDolbyVisionMode(mode string) bool {
+	return mode == DefaultDolbyVisionMode || mode == DolbyVisionModeOff || mode == DolbyVisionModeRequire
+}
+
+func normalizeContainer(container string) string {
+	return strings.ToLower(strings.TrimPrefix(strings.TrimSpace(container), "."))
+}
+
+func validContainer(container string) bool {
+	return normalizeContainer(container) == "mkv"
 }
 
 func validStreamFallback(fallback string) bool {

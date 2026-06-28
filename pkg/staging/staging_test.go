@@ -32,7 +32,7 @@ func TestManagerPrepareCreatesOutputPath(t *testing.T) {
 	}
 }
 
-func TestManagerPlanUsesPlaceholdersWithoutCreatingDirs(t *testing.T) {
+func TestManagerPlanAlwaysUsesMKVWithoutCreatingDirs(t *testing.T) {
 	root := t.TempDir()
 	plan, err := (Manager{Root: root}).Plan("<new>", "<new>", "mp4", "/media/movie.mkv")
 	if err != nil {
@@ -41,7 +41,7 @@ func TestManagerPlanUsesPlaceholdersWithoutCreatingDirs(t *testing.T) {
 	if got, want := plan.StagingDir, filepath.Join(root, "job-<new>-attempt-<new>"); got != want {
 		t.Fatalf("staging dir = %q, want %q", got, want)
 	}
-	if got, want := plan.OutputPath, filepath.Join(root, "job-<new>-attempt-<new>", "output.mp4"); got != want {
+	if got, want := plan.OutputPath, filepath.Join(root, "job-<new>-attempt-<new>", "output.mkv"); got != want {
 		t.Fatalf("output path = %q, want %q", got, want)
 	}
 	if _, err := os.Stat(plan.StagingDir); !os.IsNotExist(err) {
