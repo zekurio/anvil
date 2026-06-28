@@ -39,6 +39,8 @@ const (
 	commandHelp        = "help"
 )
 
+var activeLogLevel slog.LevelVar
+
 type options struct {
 	command         string
 	configPath      string
@@ -97,6 +99,9 @@ func run(args []string) error {
 
 	cfg, err := loadRuntimeConfig(opts.configPath, opts)
 	if err != nil {
+		return err
+	}
+	if err := configureLogging(cfg.Daemon.LogLevel); err != nil {
 		return err
 	}
 
@@ -279,7 +284,7 @@ func runDaemon(cfg config.Config, opts options) error {
 
 	runConfiguredStagingCleanup(cfg)
 
-	slog.Info("starting anvild", "mode", mode, "config", configPathLabel(opts.configPath), "temp_dir", cfg.Daemon.TempDir, "store", cfg.Daemon.StorePath, "workers", cfg.Daemon.WorkerCount, "threads", cfg.Daemon.TotalThreads, "shutdown_policy", cfg.Daemon.ShutdownPolicy, "shutdown_timeout", cfg.Daemon.ShutdownTimeout, "recovered_jobs", recovered)
+	slog.Info("starting anvild", "mode", mode, "config", configPathLabel(opts.configPath), "temp_dir", cfg.Daemon.TempDir, "store", cfg.Daemon.StorePath, "workers", cfg.Daemon.WorkerCount, "threads", cfg.Daemon.TotalThreads, "shutdown_policy", cfg.Daemon.ShutdownPolicy, "shutdown_timeout", cfg.Daemon.ShutdownTimeout, "log_level", cfg.Daemon.LogLevel, "recovered_jobs", recovered)
 	logConfiguredWork(cfg)
 
 	var wg sync.WaitGroup
@@ -339,7 +344,7 @@ func waitForShutdown(done <-chan struct{}, signals <-chan os.Signal, timeout tim
 }
 
 func runCheckConfig(cfg config.Config, opts options) error {
-	slog.Info("config ok", "config", configPathLabel(opts.configPath), "libraries", len(cfg.Libraries), "flows", len(cfg.Flows), "profiles", len(cfg.Profiles))
+	slog.Info("config ok", "config", configPathLabel(opts.configPath), "libraries", len(cfg.Libraries), "flows", len(cfg.Flows), "profiles", len(cfg.Profiles), "log_level", cfg.Daemon.LogLevel)
 	return nil
 }
 
@@ -508,11 +513,52 @@ func startReloadLoop(ctx context.Context, wg *sync.WaitGroup, opts options, runt
 					slog.Error("config reload rejected", "error", err)
 					continue
 				}
+				if _, err := applyLogLevel(&activeLogLevel, next.Daemon.LogLevel); err != nil {
+					slog.Error("config reload rejected", "error", err)
+					continue
+				}
 				runtimeCfg.Set(next)
-				slog.Info("config reloaded", "config", configPathLabel(opts.configPath), "libraries", len(next.Libraries), "flows", len(next.Flows), "profiles", len(next.Profiles), "workers", next.Daemon.WorkerCount, "threads", next.Daemon.TotalThreads)
+				slog.Info("config reloaded", "config", configPathLabel(opts.configPath), "libraries", len(next.Libraries), "flows", len(next.Flows), "profiles", len(next.Profiles), "workers", next.Daemon.WorkerCount, "threads", next.Daemon.TotalThreads, "log_level", next.Daemon.LogLevel)
 			}
 		}
 	}()
+}
+
+func configureLogging(logLevel string) error {
+	if _, err := applyLogLevel(&activeLogLevel, logLevel); err != nil {
+		return err
+	}
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: &activeLogLevel})))
+	return nil
+}
+
+func applyLogLevel(levelVar *slog.LevelVar, logLevel string) (string, error) {
+	level, normalized, err := parseLogLevel(logLevel)
+	if err != nil {
+		return "", err
+	}
+	levelVar.Set(level)
+	return normalized, nil
+}
+
+func parseLogLevel(logLevel string) (slog.Level, string, error) {
+	normalized, ok := config.NormalizeLogLevel(logLevel)
+	if !ok {
+		return 0, "", fmt.Errorf("daemon.log_level %q is invalid (must be debug, info, warn, or error)", logLevel)
+	}
+
+	switch normalized {
+	case "debug":
+		return slog.LevelDebug, normalized, nil
+	case "info":
+		return slog.LevelInfo, normalized, nil
+	case "warn":
+		return slog.LevelWarn, normalized, nil
+	case "error":
+		return slog.LevelError, normalized, nil
+	default:
+		return 0, "", fmt.Errorf("daemon.log_level %q is invalid (must be debug, info, warn, or error)", logLevel)
+	}
 }
 
 func startScannerLoop(ctx context.Context, wg *sync.WaitGroup, cfgProvider func() config.Config, state *store.SQLiteStore) {
