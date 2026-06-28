@@ -86,6 +86,9 @@ func SearchArgs(plan domain.EncodePlan) []string {
 		threads := strconv.Itoa(plan.Threads)
 		args = append(args, "--enc", "threads="+threads, "--vmaf", "n_threads="+threads)
 	}
+	if len(plan.ABAV1Args) > 0 {
+		args = append(args, plan.ABAV1Args...)
+	}
 	return args
 }
 
@@ -121,20 +124,24 @@ func (b Block) Run(ctx context.Context, job *pipeline.JobContext) error {
 }
 
 func searchPlan(job *pipeline.JobContext) domain.EncodePlan {
+	video := domain.EffectiveVideoProfile(job.Profile, job.Metadata)
 	return domain.EncodePlan{
 		InputPath:         job.InputPath,
 		OutputPath:        job.OutputPath,
-		VideoCodec:        job.Profile.Video.Codec,
-		Preset:            job.Profile.Video.Preset,
-		PixelFormat:       job.Profile.Video.PixelFormat,
-		CRFMin:            job.Profile.Video.CRFMin,
-		CRFMax:            job.Profile.Video.CRFMax,
-		TargetVMAF:        job.Profile.Video.TargetVMAF,
-		MinSavingsPercent: job.Profile.Video.MinSavingsPercent,
+		VideoCodec:        video.Codec,
+		VideoSource:       domain.EffectiveVideoSource(job.Metadata),
+		Preset:            video.Preset,
+		PixelFormat:       video.PixelFormat,
+		CRFMin:            video.CRFMin,
+		CRFMax:            video.CRFMax,
+		TargetVMAF:        video.TargetVMAF,
+		MinSavingsPercent: video.MinSavingsPercent,
 		Threads:           job.Resources.Threads,
 		Container:         job.Profile.Container,
 		CropFilter:        job.Metadata.CropFilter,
 		SubtitleMode:      job.Profile.Subtitles.Mode,
+		ABAV1Args:         append([]string(nil), video.ABAV1Args...),
+		HDR:               job.Metadata.HDR,
 	}
 }
 

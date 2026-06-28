@@ -2,6 +2,9 @@ package domain
 
 import "time"
 
+const VideoSourceProfile = "profile"
+const VideoSourceDolbyVision = "dolby_vision"
+
 type LibraryName string
 type FlowName string
 type ProfileName string
@@ -115,6 +118,27 @@ type VideoProfile struct {
 	CRFMax            int
 	TargetVMAF        float64
 	MinSavingsPercent float64
+	FFmpegArgs        []string
+	ABAV1Args         []string
+	DolbyVision       DolbyVisionProfile
+}
+
+type DolbyVisionMode string
+
+const (
+	DolbyVisionModeAuto    DolbyVisionMode = "auto"
+	DolbyVisionModeOff     DolbyVisionMode = "off"
+	DolbyVisionModeRequire DolbyVisionMode = "require"
+)
+
+type DolbyVisionProfile struct {
+	Mode            DolbyVisionMode
+	Codec           string
+	Preset          string
+	PixelFormat     string
+	FFmpegArgs      []string
+	ABAV1Args       []string
+	RemoveHDR10Plus bool
 }
 
 type StreamPolicyMode string
@@ -345,14 +369,29 @@ type ResourceAllocation struct {
 }
 
 type MediaStream struct {
-	Index       int
-	Type        string
-	Codec       string
-	PixelFormat string
-	Language    string
-	Title       string
-	Tags        map[string]string
-	Disposition map[string]bool
+	Index          int
+	Type           string
+	Codec          string
+	PixelFormat    string
+	ColorRange     string
+	ColorSpace     string
+	ColorTransfer  string
+	ColorPrimaries string
+	DolbyVision    *DolbyVisionMetadata
+	Language       string
+	Title          string
+	Tags           map[string]string
+	Disposition    map[string]bool
+}
+
+type DolbyVisionMetadata struct {
+	Profile                  int
+	Level                    int
+	RPUPresent               bool
+	ELPresent                bool
+	BLPresent                bool
+	BLSignalCompatibilityID  int
+	ConfigurationRecordFound bool
 }
 
 type ProbeResult struct {
@@ -389,6 +428,7 @@ type EncodePlan struct {
 	OutputPath            string
 	ProfileName           ProfileName
 	VideoCodec            string
+	VideoSource           string
 	VideoCopy             bool
 	VideoCopyReason       string
 	Preset                string
@@ -408,6 +448,9 @@ type EncodePlan struct {
 	AttachmentMode        MetadataMode
 	ChapterMode           MetadataMode
 	AnvilTags             map[string]string
+	FFmpegArgs            []string
+	ABAV1Args             []string
+	HDR                   HDRMetadata
 }
 
 type ValidationResult struct {
@@ -431,6 +474,12 @@ type ValidationResult struct {
 	ExpectedSubtitleStreamCount int
 	AnvilMarkerCompatible       bool
 	AnvilProcessedMarkerPresent bool
+	SourceHDRColorTransfer      string
+	OutputHDRColorTransfer      string
+	SourceHDRColorPrimaries     string
+	OutputHDRColorPrimaries     string
+	SourceDolbyVisionPresent    bool
+	OutputDolbyVisionPresent    bool
 	Errors                      []string
 }
 
@@ -441,6 +490,48 @@ type JobMetadata struct {
 	StreamCleanupDisabledReason string
 	VideoAlreadyEncoded         bool
 	AnvilTags                   map[string]string
+	HDR                         HDRMetadata
+}
+
+type HDRMetadata struct {
+	ColorRange                 string
+	ColorSpace                 string
+	ColorTransfer              string
+	ColorPrimaries             string
+	DolbyVision                *DolbyVisionMetadata
+	DolbyVisionToolAvailable   bool
+	DolbyVisionEncoderSelected bool
+	DolbyVisionReason          string
+}
+
+// EffectiveVideoProfile returns the video settings for this job after
+// source-dependent overrides, such as Dolby Vision handling, are applied.
+func EffectiveVideoProfile(profile Profile, metadata JobMetadata) VideoProfile {
+	video := profile.Video
+	if !metadata.HDR.DolbyVisionEncoderSelected {
+		return video
+	}
+
+	override := profile.Video.DolbyVision
+	if override.Codec != "" {
+		video.Codec = override.Codec
+	}
+	if override.Preset != "" {
+		video.Preset = override.Preset
+	}
+	if override.PixelFormat != "" {
+		video.PixelFormat = override.PixelFormat
+	}
+	video.FFmpegArgs = append(append([]string(nil), video.FFmpegArgs...), override.FFmpegArgs...)
+	video.ABAV1Args = append(append([]string(nil), video.ABAV1Args...), override.ABAV1Args...)
+	return video
+}
+
+func EffectiveVideoSource(metadata JobMetadata) string {
+	if metadata.HDR.DolbyVisionEncoderSelected {
+		return VideoSourceDolbyVision
+	}
+	return VideoSourceProfile
 }
 
 type AttemptEventType string

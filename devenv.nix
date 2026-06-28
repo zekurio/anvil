@@ -2,6 +2,11 @@
 
 let
   goPackage = pkgs.go;
+  ffmpegPackage =
+    if pkgs.stdenv.isLinux then
+      (pkgs.jellyfin-ffmpeg or pkgs.ffmpeg)
+    else
+      pkgs.ffmpeg;
   devPackages =
     with pkgs;
     [
@@ -9,13 +14,15 @@ let
       ab-av1
       coreutils
       curl
-      ffmpeg
+      dovi-tool
+      ffmpegPackage
       git
       gnumake
       golangci-lint
       gopls
       gotools
       jq
+      mkvtoolnix
       sqlite-interactive
     ];
 in

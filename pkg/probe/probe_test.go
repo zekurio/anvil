@@ -38,6 +38,50 @@ func TestFFProbeParsesJSON(t *testing.T) {
 	}
 }
 
+func TestFFProbeParsesHDRAndDolbyVisionMetadata(t *testing.T) {
+	runner := fakeRunner{stdout: []byte(`{
+		"streams": [
+			{
+				"index":0,
+				"codec_type":"video",
+				"codec_name":"hevc",
+				"pix_fmt":"yuv420p10le",
+				"color_range":"tv",
+				"color_space":"bt2020nc",
+				"color_transfer":"smpte2084",
+				"color_primaries":"bt2020",
+				"side_data_list":[{
+					"side_data_type":"DOVI configuration record",
+					"dv_profile":8,
+					"dv_level":6,
+					"rpu_present_flag":1,
+					"el_present_flag":0,
+					"bl_present_flag":1,
+					"dv_bl_signal_compatibility_id":1
+				}]
+			}
+		],
+		"format": {"format_name":"matroska,webm","duration":"123.456","size":"98765"}
+	}`)}
+	result, err := FFProbe{Runner: runner}.Probe(context.Background(), "/media/input.mkv")
+	if err != nil {
+		t.Fatalf("Probe() error = %v", err)
+	}
+	video := result.Streams[0]
+	if got, want := video.ColorTransfer, "smpte2084"; got != want {
+		t.Fatalf("ColorTransfer = %q, want %q", got, want)
+	}
+	if video.DolbyVision == nil {
+		t.Fatal("DolbyVision = nil, want metadata")
+	}
+	if got, want := video.DolbyVision.Profile, 8; got != want {
+		t.Fatalf("DolbyVision.Profile = %d, want %d", got, want)
+	}
+	if !video.DolbyVision.RPUPresent || !video.DolbyVision.BLPresent {
+		t.Fatalf("DolbyVision flags = %+v, want RPU and BL present", video.DolbyVision)
+	}
+}
+
 func TestBlockMarksCompatibleAnvilEncodedVideo(t *testing.T) {
 	runner := fakeRunner{stdout: []byte(`{
 		"streams": [
@@ -72,10 +116,91 @@ func TestBlockMarksCompatibleAnvilEncodedVideo(t *testing.T) {
 	}
 }
 
+func TestBlockSelectsDolbyVisionEncoderWhenDoviToolAvailable(t *testing.T) {
+	runner := fakeRunner{stdout: []byte(`{
+		"streams": [
+			{
+				"index":0,
+				"codec_type":"video",
+				"codec_name":"hevc",
+				"pix_fmt":"yuv420p10le",
+				"color_transfer":"smpte2084",
+				"side_data_list":[{
+					"side_data_type":"DOVI configuration record",
+					"dv_profile":8,
+					"rpu_present_flag":1,
+					"bl_present_flag":1
+				}]
+			}
+		],
+		"format": {"format_name":"matroska,webm","duration":"123.456","size":"98765"}
+	}`)}
+	job := &pipeline.JobContext{
+		InputPath: "/media/input.mkv",
+		Profile: domain.Profile{
+			Name: domain.ProfileName("default-av1"),
+			Video: domain.VideoProfile{
+				Codec:       "libsvtav1",
+				PixelFormat: "yuv420p10le",
+				DolbyVision: domain.DolbyVisionProfile{
+					Mode:        domain.DolbyVisionModeAuto,
+					Codec:       "hevc_qsv",
+					PixelFormat: "p010le",
+				},
+			},
+		},
+	}
+	if err := (Block{Prober: FFProbe{Runner: runner}, DolbyVisionTool: fakeDolbyVisionTool{available: true}}).Run(context.Background(), job); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if !job.Metadata.HDR.DolbyVisionEncoderSelected {
+		t.Fatal("DolbyVisionEncoderSelected = false, want true")
+	}
+	video := domain.EffectiveVideoProfile(job.Profile, job.Metadata)
+	if got, want := video.Codec, "hevc_qsv"; got != want {
+		t.Fatalf("effective codec = %q, want %q", got, want)
+	}
+}
+
+func TestBlockRequireDolbyVisionFailsWhenDoviToolUnavailable(t *testing.T) {
+	runner := fakeRunner{stdout: []byte(`{
+		"streams": [
+			{"index":0,"codec_type":"video","codec_name":"hevc","side_data_list":[{"side_data_type":"DOVI configuration record","dv_profile":8}]}
+		],
+		"format": {"format_name":"matroska,webm","duration":"123.456","size":"98765"}
+	}`)}
+	job := &pipeline.JobContext{
+		InputPath: "/media/input.mkv",
+		Profile: domain.Profile{
+			Video: domain.VideoProfile{
+				Codec: "libsvtav1",
+				DolbyVision: domain.DolbyVisionProfile{
+					Mode:  domain.DolbyVisionModeRequire,
+					Codec: "hevc_qsv",
+				},
+			},
+		},
+	}
+	err := (Block{Prober: FFProbe{Runner: runner}, DolbyVisionTool: fakeDolbyVisionTool{available: false}}).Run(context.Background(), job)
+	if err == nil {
+		t.Fatal("Run() error = nil, want dovi_tool availability failure")
+	}
+}
+
 type fakeRunner struct {
 	stdout []byte
 }
 
 func (f fakeRunner) Run(_ context.Context, command process.Command) (process.Result, error) {
 	return process.Result{Command: command.ArgsWithName(), Stdout: f.stdout}, nil
+}
+
+type fakeDolbyVisionTool struct {
+	available bool
+	details   string
+	err       error
+}
+
+func (f fakeDolbyVisionTool) Available(context.Context) (bool, string, error) {
+	return f.available, f.details, f.err
 }
