@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -35,9 +37,28 @@ func (s ABAV1) Search(ctx context.Context, plan domain.EncodePlan) (domain.Searc
 		binary = "ab-av1"
 	}
 	args := SearchArgs(plan)
-	result, err := runner.Run(ctx, process.Command{Name: binary, Args: args})
+	scratchDir := searchScratchDir(plan)
+	if scratchDir != "" {
+		if err := os.MkdirAll(scratchDir, 0o750); err != nil {
+			return domain.SearchResult{}, fmt.Errorf("prepare ab-av1 scratch dir: %w", err)
+		}
+	}
+	command := process.Command{Name: binary, Args: args}
+	if scratchDir != "" {
+		command.Dir = scratchDir
+		command.Env = []string{
+			"TMPDIR=" + scratchDir,
+			"TEMP=" + scratchDir,
+			"TMP=" + scratchDir,
+		}
+	}
+	result, err := runner.Run(ctx, command)
 	if err != nil {
-		if search, ok := ParseSkipResult(combinedOutput(result)); ok {
+		output := combinedOutput(result)
+		if fatalSearchFailure(output) {
+			return domain.SearchResult{}, fmt.Errorf("ab-av1 crf-search failed: %w%s", err, outputHint(result))
+		}
+		if search, ok := ParseSkipResult(output); ok {
 			search.RawOutput = combinedOutput(result)
 			search.RawCommand = result.Command
 			return search, nil
@@ -51,6 +72,17 @@ func (s ABAV1) Search(ctx context.Context, plan domain.EncodePlan) (domain.Searc
 	search.RawOutput = string(result.Stdout)
 	search.RawCommand = result.Command
 	return search, nil
+}
+
+func searchScratchDir(plan domain.EncodePlan) string {
+	if strings.TrimSpace(plan.OutputPath) == "" {
+		return ""
+	}
+	dir := filepath.Dir(plan.OutputPath)
+	if dir == "." || dir == string(filepath.Separator) {
+		return ""
+	}
+	return dir
 }
 
 func SearchArgs(plan domain.EncodePlan) []string {
@@ -160,9 +192,10 @@ func crfMax(plan domain.EncodePlan) int {
 }
 
 var (
-	crfPattern       = regexp.MustCompile(`(?i)\bcrf\b[^0-9]*(\d{1,3})`)
-	vmafPattern      = regexp.MustCompile(`(?i)\bvmaf\b[^0-9]*(\d+(?:\.\d+)?)`)
-	noGoodCRFPattern = regexp.MustCompile(`(?i)(failed to find a suitable crf|no suitable crf|no good crf|not worth (?:av1 )?encoding)`)
+	crfPattern         = regexp.MustCompile(`(?i)\bcrf\b[^0-9]*(\d{1,3})`)
+	vmafPattern        = regexp.MustCompile(`(?i)\bvmaf\b[^0-9]*(\d+(?:\.\d+)?)`)
+	noGoodCRFPattern   = regexp.MustCompile(`(?i)(failed to find a suitable crf|no suitable crf|no good crf|not worth (?:av1 )?encoding)`)
+	fatalSearchPattern = regexp.MustCompile(`(?i)(panicked at|failed to create temp-dir|read-only file system|permission denied|invalid value|unknown option|unrecognized option)`)
 )
 
 func ParseResult(output []byte) (domain.SearchResult, error) {
@@ -189,6 +222,10 @@ func ParseSkipResult(text string) (domain.SearchResult, bool) {
 		SkipVideoEncode:       true,
 		VideoEncodeSkipReason: noGoodCRFReason(text),
 	}, true
+}
+
+func fatalSearchFailure(text string) bool {
+	return fatalSearchPattern.MatchString(text)
 }
 
 func lastIntMatch(pattern *regexp.Regexp, text string) (int, bool) {

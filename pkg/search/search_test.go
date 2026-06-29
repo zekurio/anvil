@@ -3,6 +3,7 @@ package search
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"testing"
 
 	"github.com/zekurio/anvil/pkg/domain"
@@ -100,6 +101,29 @@ func TestSearchArgsIncludesCustomABAV1Args(t *testing.T) {
 	}
 }
 
+func TestABAV1RunsWithWritableScratchDir(t *testing.T) {
+	runner := &captureCommandRunner{stdout: []byte("crf 30 vmaf 96.2")}
+	outputPath := t.TempDir() + "/staging/output.mkv"
+	_, err := ABAV1{Runner: runner}.Search(context.Background(), domain.EncodePlan{
+		InputPath:   "/input.mkv",
+		OutputPath:  outputPath,
+		CRFMin:      18,
+		CRFMax:      40,
+		TargetVMAF:  95,
+		VideoCodec:  "libsvtav1",
+		PixelFormat: "yuv420p10le",
+	})
+	if err != nil {
+		t.Fatalf("Search() error = %v", err)
+	}
+	if got, want := runner.command.Dir, filepath.Dir(outputPath); got != want {
+		t.Fatalf("command dir = %q, want %q", got, want)
+	}
+	if !containsArg(runner.command.Env, "TMPDIR="+runner.command.Dir) {
+		t.Fatalf("command env = %v, want TMPDIR for scratch dir", runner.command.Env)
+	}
+}
+
 func TestBlockSearchPlanUsesDolbyVisionOverride(t *testing.T) {
 	searcher := captureSearcher{result: domain.SearchResult{CRF: 24}}
 	job := &pipeline.JobContext{
@@ -173,6 +197,21 @@ func TestABAV1ConvertsExpectedNoSuitableCRFErrorToSkip(t *testing.T) {
 	}
 }
 
+func TestABAV1KeepsTempDirFailureFatal(t *testing.T) {
+	runner := fakeRunner{
+		stderr: []byte("failed to create temp-dir: Read-only file system\nError: Failed to find a suitable crf\n"),
+		err:    errors.New("exit status 1"),
+	}
+	_, err := ABAV1{Runner: runner}.Search(context.Background(), domain.EncodePlan{
+		InputPath: "/input.mkv",
+		CRFMin:    18,
+		CRFMax:    40,
+	})
+	if err == nil {
+		t.Fatal("Search() error = nil, want fatal temp-dir error")
+	}
+}
+
 func TestABAV1KeepsUnrelatedFailuresFatal(t *testing.T) {
 	runner := fakeRunner{
 		stderr: []byte("Error: Invalid --min-crf & --max-crf\n"),
@@ -218,6 +257,27 @@ func (f fakeRunner) Run(_ context.Context, command process.Command) (process.Res
 		Stderr:   f.stderr,
 		ExitCode: exitCode,
 	}, f.err
+}
+
+type captureCommandRunner struct {
+	command process.Command
+	stdout  []byte
+	stderr  []byte
+	err     error
+}
+
+func (r *captureCommandRunner) Run(_ context.Context, command process.Command) (process.Result, error) {
+	r.command = command
+	exitCode := 0
+	if r.err != nil {
+		exitCode = 1
+	}
+	return process.Result{
+		Command:  command.ArgsWithName(),
+		Stdout:   r.stdout,
+		Stderr:   r.stderr,
+		ExitCode: exitCode,
+	}, r.err
 }
 
 type failingSearcher struct{}
