@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/zekurio/anvil/pkg/domain"
+	videocodec "github.com/zekurio/anvil/pkg/video"
 )
 
 const (
@@ -138,6 +139,9 @@ func compatibleVideo(tags map[string]string, profileName domain.ProfileName, vid
 func compatibleTag(actual string, expected string) bool {
 	expected = strings.TrimSpace(expected)
 	if expected == "" {
+		return true
+	}
+	if videocodec.CanonicalCodec(actual) == videocodec.CanonicalCodec(expected) {
 		return true
 	}
 	return actual == expected

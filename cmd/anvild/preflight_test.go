@@ -134,7 +134,7 @@ func TestPrintPreflightReportHumanBasics(t *testing.T) {
 			Asset:       preflightAsset{LibraryRelativePath: "Movie.mkv", RelativePath: "Movie.mkv", Role: domain.MediaAssetRolePrimaryVideo, ModTime: time.Date(2026, 6, 27, 12, 0, 0, 0, time.UTC)},
 			Status:      preflightStatus{Enqueueable: true, WouldEnqueueNewJob: true},
 			Flow:        preflightFlow{Name: "flow", Steps: []string{"probe", "crf-search", "encode", "replace"}},
-			Profile:     preflightProfile{Name: "profile", Container: "mkv", VideoCodec: "libsvtav1"},
+			Profile:     preflightProfile{Name: "profile", Container: "mkv", VideoCodec: "av1", VideoAccelerator: "software"},
 			Search:      preflightSearchPolicy{Enabled: true, Tool: "ab-av1 crf-search", CRFMin: 18, CRFMax: 40, TargetVMAF: "95", SavingsPolicy: "ab-av1/search policy; explicit min-savings is not configured", NoFitBehavior: "if search decides AV1 fitting is not worthwhile, continue remaining configured actions as video-copy/remux/metadata processing without applying an AV1 CRF encode"},
 			Encode:      preflightEncode{Enabled: true, VideoAction: "AV1 encode using CRF selected by search", Output: "/tmp/staging/job-<new>-attempt-<new>/output.mkv", NoFitAction: "if search policy decides AV1 fitting is not worthwhile, skip AV1 CRF encode and continue remaining configured actions as video-copy/remux/metadata processing"},
 			Paths:       preflightPaths{Input: "/media/Movie.mkv", StagingDir: "/tmp/staging/job-<new>-attempt-<new>", Output: "/tmp/staging/job-<new>-attempt-<new>/output.mkv"},

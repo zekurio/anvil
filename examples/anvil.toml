@@ -23,7 +23,8 @@ steps = ["probe", "crop-detect", "audio-cleanup", "stage", "crf-search", "encode
 container = "mkv"
 
 [profiles.default-av1.video]
-codec = "libsvtav1"
+codec = "av1"
+accelerator = "software"
 preset = "6"
 pixel_format = "yuv420p10le"
 crf_min = 18
@@ -36,7 +37,8 @@ ab_av1_args = []
 
 [profiles.default-av1.video.dolby_vision]
 mode = "auto"
-codec = "hevc_qsv"
+codec = "hevc"
+accelerator = "qsv"
 preset = "medium"
 pixel_format = "p010le"
 ffmpeg_args = ["-global_quality", "24"]
