@@ -73,32 +73,33 @@ func BuildPlanWithProbe(profile domain.Profile, inputPath string, outputPath str
 		}
 	}
 	plan := domain.EncodePlan{
-		InputPath:         inputPath,
-		OutputPath:        outputPath,
-		ProfileName:       profile.Name,
-		VideoCodec:        video.Codec,
-		VideoSource:       domain.EffectiveVideoSource(metadata),
-		VideoCopy:         videoCopy,
-		VideoCopyReason:   videoCopyReason,
-		Preset:            video.Preset,
-		PixelFormat:       video.PixelFormat,
-		CRF:               crf,
-		CRFMin:            video.CRFMin,
-		CRFMax:            video.CRFMax,
-		TargetVMAF:        video.TargetVMAF,
-		MinSavingsPercent: video.MinSavingsPercent,
-		Threads:           allocation.Threads,
-		Container:         profile.Container,
-		CropFilter:        metadata.CropFilter,
-		SubtitleMode:      profile.Subtitles.Mode,
-		MetadataMode:      profile.Metadata.Mode,
-		TrackTitleMode:    trackTitleModeOrDefault(profile.Metadata.TrackTitles),
-		AttachmentMode:    profile.Attachments.Mode,
-		ChapterMode:       profile.Chapters.Mode,
-		AnvilTags:         copyTags(metadata.AnvilTags),
-		FFmpegArgs:        append([]string(nil), video.FFmpegArgs...),
-		ABAV1Args:         append([]string(nil), video.ABAV1Args...),
-		HDR:               metadata.HDR,
+		InputPath:          inputPath,
+		OutputPath:         outputPath,
+		ProfileName:        profile.Name,
+		VideoCodec:         video.Codec,
+		VideoSource:        domain.EffectiveVideoSource(metadata),
+		VideoCopy:          videoCopy,
+		VideoCopyReason:    videoCopyReason,
+		Preset:             video.Preset,
+		PixelFormat:        video.PixelFormat,
+		CRF:                crf,
+		CRFMin:             video.CRFMin,
+		CRFMax:             video.CRFMax,
+		TargetVMAF:         video.TargetVMAF,
+		MinSavingsPercent:  video.MinSavingsPercent,
+		ForceEncodeOnNoFit: video.ForceEncodeOnNoFit,
+		Threads:            allocation.Threads,
+		Container:          profile.Container,
+		CropFilter:         metadata.CropFilter,
+		SubtitleMode:       profile.Subtitles.Mode,
+		MetadataMode:       profile.Metadata.Mode,
+		TrackTitleMode:     trackTitleModeOrDefault(profile.Metadata.TrackTitles),
+		AttachmentMode:     profile.Attachments.Mode,
+		ChapterMode:        profile.Chapters.Mode,
+		AnvilTags:          copyTags(metadata.AnvilTags),
+		FFmpegArgs:         append([]string(nil), video.FFmpegArgs...),
+		ABAV1Args:          append([]string(nil), video.ABAV1Args...),
+		HDR:                metadata.HDR,
 	}
 	if audio != nil {
 		plan.AudioSelectionApplied = true
@@ -540,14 +541,38 @@ func subtitleTrackTitle(stream domain.MediaStream) string {
 }
 
 func resolutionLabel(stream domain.MediaStream) string {
+	height := stream.Height
 	if stream.Width > 0 {
-		height := (stream.Width*9 + 8) / 16
-		return strconv.Itoa(height) + "p"
+		inferredHeight := (stream.Width*9 + 8) / 16
+		if inferredHeight > height {
+			height = inferredHeight
+		}
 	}
-	if stream.Height > 0 {
-		return strconv.Itoa(stream.Height) + "p"
+	return standardResolutionLabel(height)
+}
+
+func standardResolutionLabel(height int) string {
+	if height <= 0 {
+		return ""
 	}
-	return ""
+	standards := []int{4320, 2160, 1080, 720, 576, 480, 360}
+	best := standards[0]
+	bestDelta := absInt(height - best)
+	for _, standard := range standards[1:] {
+		delta := absInt(height - standard)
+		if delta < bestDelta {
+			best = standard
+			bestDelta = delta
+		}
+	}
+	return strconv.Itoa(best) + "p"
+}
+
+func absInt(value int) int {
+	if value < 0 {
+		return -value
+	}
+	return value
 }
 
 func dynamicRangeLabel(stream domain.MediaStream) string {

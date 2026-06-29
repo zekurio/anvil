@@ -102,16 +102,17 @@ type ProfileConfig struct {
 
 // VideoConfig contains the initial video settings shape for AV1 search work.
 type VideoConfig struct {
-	Codec             string            `toml:"codec"`
-	Preset            string            `toml:"preset"`
-	PixelFormat       string            `toml:"pixel_format"`
-	CRFMin            int               `toml:"crf_min"`
-	CRFMax            int               `toml:"crf_max"`
-	TargetVMAF        float64           `toml:"target_vmaf"`
-	MinSavingsPercent float64           `toml:"min_savings_percent"`
-	FFmpegArgs        []string          `toml:"ffmpeg_args"`
-	ABAV1Args         []string          `toml:"ab_av1_args"`
-	DolbyVision       DolbyVisionConfig `toml:"dolby_vision"`
+	Codec              string            `toml:"codec"`
+	Preset             string            `toml:"preset"`
+	PixelFormat        string            `toml:"pixel_format"`
+	CRFMin             int               `toml:"crf_min"`
+	CRFMax             int               `toml:"crf_max"`
+	TargetVMAF         float64           `toml:"target_vmaf"`
+	MinSavingsPercent  float64           `toml:"min_savings_percent"`
+	ForceEncodeOnNoFit bool              `toml:"force_encode_on_no_fit"`
+	FFmpegArgs         []string          `toml:"ffmpeg_args"`
+	ABAV1Args          []string          `toml:"ab_av1_args"`
+	DolbyVision        DolbyVisionConfig `toml:"dolby_vision"`
 }
 
 // DolbyVisionConfig overrides normal video settings for Dolby Vision sources.

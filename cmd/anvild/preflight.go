@@ -107,15 +107,16 @@ type preflightFlow struct {
 }
 
 type preflightProfile struct {
-	Name        domain.ProfileName   `json:"name"`
-	Container   string               `json:"container"`
-	VideoCodec  string               `json:"video_codec"`
-	CRFMin      int                  `json:"crf_min"`
-	CRFMax      int                  `json:"crf_max"`
-	TargetVMAF  float64              `json:"target_vmaf"`
-	FFmpegArgs  []string             `json:"ffmpeg_args,omitempty"`
-	ABAV1Args   []string             `json:"ab_av1_args,omitempty"`
-	DolbyVision preflightDolbyVision `json:"dolby_vision,omitempty"`
+	Name               domain.ProfileName   `json:"name"`
+	Container          string               `json:"container"`
+	VideoCodec         string               `json:"video_codec"`
+	CRFMin             int                  `json:"crf_min"`
+	CRFMax             int                  `json:"crf_max"`
+	TargetVMAF         float64              `json:"target_vmaf"`
+	ForceEncodeOnNoFit bool                 `json:"force_encode_on_no_fit"`
+	FFmpegArgs         []string             `json:"ffmpeg_args,omitempty"`
+	ABAV1Args          []string             `json:"ab_av1_args,omitempty"`
+	DolbyVision        preflightDolbyVision `json:"dolby_vision,omitempty"`
 }
 
 type preflightDolbyVision struct {
@@ -134,6 +135,7 @@ type preflightSearchPolicy struct {
 	CRFMax                       int      `json:"crf_max,omitempty"`
 	TargetVMAF                   string   `json:"target_vmaf,omitempty"`
 	SavingsPolicy                string   `json:"savings_policy,omitempty"`
+	ForceEncodeOnNoFit           bool     `json:"force_encode_on_no_fit"`
 	CustomArgs                   []string `json:"custom_args,omitempty"`
 	DolbyVisionCustomArgs        []string `json:"dolby_vision_custom_args,omitempty"`
 	MayDecideAV1FitNotWorthwhile bool     `json:"may_decide_av1_fit_not_worthwhile"`
@@ -446,14 +448,15 @@ func preflightCleanupPlan(flow domain.Flow, library domain.Library, job *pipelin
 
 func preflightProfileFromDomain(profile domain.Profile) preflightProfile {
 	return preflightProfile{
-		Name:       profile.Name,
-		Container:  profile.Container,
-		VideoCodec: profile.Video.Codec,
-		CRFMin:     profile.Video.CRFMin,
-		CRFMax:     profile.Video.CRFMax,
-		TargetVMAF: profile.Video.TargetVMAF,
-		FFmpegArgs: append([]string(nil), profile.Video.FFmpegArgs...),
-		ABAV1Args:  append([]string(nil), profile.Video.ABAV1Args...),
+		Name:               profile.Name,
+		Container:          profile.Container,
+		VideoCodec:         profile.Video.Codec,
+		CRFMin:             profile.Video.CRFMin,
+		CRFMax:             profile.Video.CRFMax,
+		TargetVMAF:         profile.Video.TargetVMAF,
+		ForceEncodeOnNoFit: profile.Video.ForceEncodeOnNoFit,
+		FFmpegArgs:         append([]string(nil), profile.Video.FFmpegArgs...),
+		ABAV1Args:          append([]string(nil), profile.Video.ABAV1Args...),
 		DolbyVision: preflightDolbyVision{
 			Mode:            profile.Video.DolbyVision.Mode,
 			Codec:           profile.Video.DolbyVision.Codec,
@@ -477,11 +480,12 @@ func preflightSearch(flow domain.Flow, profile domain.Profile) preflightSearchPo
 		CRFMax:                       profile.Video.CRFMax,
 		TargetVMAF:                   formatFloat(profile.Video.TargetVMAF),
 		SavingsPolicy:                "ab-av1/search policy; explicit min-savings is not configured",
+		ForceEncodeOnNoFit:           profile.Video.ForceEncodeOnNoFit,
 		CustomArgs:                   append([]string(nil), profile.Video.ABAV1Args...),
 		DolbyVisionCustomArgs:        append([]string(nil), profile.Video.DolbyVision.ABAV1Args...),
 		MayDecideAV1FitNotWorthwhile: true,
-		NoFitBehavior:                "if search decides AV1 fitting is not worthwhile, continue remaining configured actions as video-copy/remux/metadata processing without applying an AV1 CRF encode",
-		FlowCanFallbackToRemux:       flowHasStep(flow, "encode"),
+		NoFitBehavior:                noFitBehavior(profile.Video.ForceEncodeOnNoFit),
+		FlowCanFallbackToRemux:       !profile.Video.ForceEncodeOnNoFit && flowHasStep(flow, "encode"),
 	}
 }
 
@@ -508,8 +512,22 @@ func preflightEncodePlan(flow domain.Flow, profile domain.Profile, outputPath st
 		encode.CRFSource = "profile default"
 		return encode
 	}
-	encode.NoFitAction = "if search policy decides AV1 fitting is not worthwhile, skip AV1 CRF encode and continue remaining configured actions as video-copy/remux/metadata processing"
+	encode.NoFitAction = noFitEncodeAction(profile.Video.ForceEncodeOnNoFit)
 	return encode
+}
+
+func noFitBehavior(forceEncode bool) string {
+	if forceEncode {
+		return "if search cannot find a fitting CRF, force an encode with the lowest tested CRF instead of falling back to video-copy/remux"
+	}
+	return "if search decides AV1 fitting is not worthwhile, continue remaining configured actions as video-copy/remux/metadata processing without applying an AV1 CRF encode"
+}
+
+func noFitEncodeAction(forceEncode bool) string {
+	if forceEncode {
+		return "if search policy cannot find a fitting CRF, encode with the lowest tested CRF reported by ab-av1"
+	}
+	return "if search policy decides AV1 fitting is not worthwhile, skip AV1 CRF encode and continue remaining configured actions as video-copy/remux/metadata processing"
 }
 
 func preflightExcludeWarnings(candidate scanner.CandidatePlan) []string {
