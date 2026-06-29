@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -32,6 +33,7 @@ type Store interface {
 	StartAttempt(ctx context.Context, jobID domain.JobID, workerID string, resolvedLibrary []byte, resolvedFlow []byte, resolvedProfile []byte, now time.Time) (domain.Attempt, error)
 	FinishAttempt(ctx context.Context, attemptID domain.AttemptID, state domain.AttemptState, message string, finishedAt time.Time) (domain.Attempt, error)
 	TransitionJob(ctx context.Context, jobID domain.JobID, to domain.JobState, now time.Time, lastError string) (domain.Job, error)
+	RecordJobFileSizes(ctx context.Context, jobID domain.JobID, inputSizeBytes int64, outputSizeBytes int64, now time.Time) (domain.Job, error)
 	HeartbeatJob(ctx context.Context, jobID domain.JobID, workerID string, leaseDeadline time.Time, now time.Time) (domain.Job, error)
 	RecordAttemptEvent(ctx context.Context, event domain.AttemptEvent) (domain.AttemptEvent, error)
 }
@@ -133,6 +135,9 @@ func (r Runner) Run(ctx context.Context, assignment scheduler.Assignment) error 
 		r.cleanupFailedStaging(ctx, jobContext, cfg)
 		return r.fail(ctx, assignment.Job, attempt, cfg, err)
 	}
+	if err := r.recordJobFileSizes(ctx, jobContext); err != nil {
+		return err
+	}
 	if _, err := r.Store.FinishAttempt(ctx, attempt.ID, domain.AttemptStateSucceeded, "", r.now()); err != nil {
 		return fmt.Errorf("finish successful attempt: %w", err)
 	}
@@ -201,6 +206,50 @@ func usesOriginalLanguage(profile domain.Profile) bool {
 		}
 	}
 	return false
+}
+
+func (r Runner) recordJobFileSizes(ctx context.Context, job *pipeline.JobContext) error {
+	if r.Store == nil || job == nil {
+		return nil
+	}
+	inputSize := jobInputSize(job)
+	outputSize := jobOutputSize(job)
+	if inputSize == 0 && outputSize == 0 {
+		return nil
+	}
+	if _, err := r.Store.RecordJobFileSizes(ctx, job.Job.ID, inputSize, outputSize, r.now()); err != nil {
+		return fmt.Errorf("record job file sizes: %w", err)
+	}
+	return nil
+}
+
+func jobInputSize(job *pipeline.JobContext) int64 {
+	if job.Asset.Fingerprint.SizeBytes > 0 {
+		return job.Asset.Fingerprint.SizeBytes
+	}
+	if job.Source.Fingerprint.SizeBytes > 0 {
+		return job.Source.Fingerprint.SizeBytes
+	}
+	return statFileSize(job.InputPath)
+}
+
+func jobOutputSize(job *pipeline.JobContext) int64 {
+	path := strings.TrimSpace(job.FinalPath)
+	if path == "" {
+		path = strings.TrimSpace(job.OutputPath)
+	}
+	return statFileSize(path)
+}
+
+func statFileSize(path string) int64 {
+	if strings.TrimSpace(path) == "" {
+		return 0
+	}
+	info, err := os.Stat(path)
+	if err != nil || info.Size() <= 0 {
+		return 0
+	}
+	return info.Size()
 }
 
 func (r Runner) complete(ctx context.Context, jobID domain.JobID, flow domain.Flow) error {

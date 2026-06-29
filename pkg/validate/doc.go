@@ -1,2 +1,2 @@
-// Package validate checks encoded outputs before they are accepted.
+// Package validate probes encoded outputs and records diagnostic observations.
 package validate

@@ -75,6 +75,25 @@ func TestParseOptionsParsesJobsCommand(t *testing.T) {
 	}
 }
 
+func TestParseOptionsParsesStatsCommand(t *testing.T) {
+	opts, err := parseOptions([]string{"stats", "--config", "anvil.toml", "--library", "movies", "--json"})
+	if err != nil {
+		t.Fatalf("parseOptions() error = %v", err)
+	}
+	if opts.command != commandStats {
+		t.Fatalf("command = %q, want stats", opts.command)
+	}
+	if opts.configPath != "anvil.toml" {
+		t.Fatalf("config path = %q, want anvil.toml", opts.configPath)
+	}
+	if opts.libraryName != "movies" {
+		t.Fatalf("library = %q, want movies", opts.libraryName)
+	}
+	if !opts.jsonOutput {
+		t.Fatal("json output = false, want true")
+	}
+}
+
 func TestParseOptionsParsesInspectCommand(t *testing.T) {
 	opts, err := parseOptions([]string{"inspect", "--config", "anvil.toml", "--json", "42"})
 	if err != nil {
