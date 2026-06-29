@@ -272,7 +272,7 @@ func TestValidatorAcceptsPreservedHDRAndDolbyVisionMetadata(t *testing.T) {
 		},
 	}
 	profile := testProfile()
-	profile.Video.DolbyVision = domain.DolbyVisionProfile{Mode: domain.DolbyVisionModeAuto, Codec: "hevc_qsv"}
+	profile.Video.DolbyVision = domain.DolbyVisionProfile{Mode: domain.DolbyVisionModeAuto, Codec: "hevc", Accelerator: "qsv"}
 
 	result, err := Validator{Prober: fakeProber{result: output}}.Validate(context.Background(), Request{
 		SourceProbe: source,
@@ -315,7 +315,7 @@ func TestValidatorRejectsLostDolbyVisionMetadata(t *testing.T) {
 	source.Streams[0].DolbyVision = &domain.DolbyVisionMetadata{Profile: 8, ConfigurationRecordFound: true}
 	output := outputProbe(plan)
 	profile := testProfile()
-	profile.Video.DolbyVision = domain.DolbyVisionProfile{Mode: domain.DolbyVisionModeAuto, Codec: "hevc_qsv"}
+	profile.Video.DolbyVision = domain.DolbyVisionProfile{Mode: domain.DolbyVisionModeAuto, Codec: "hevc", Accelerator: "qsv"}
 
 	result, err := Validator{Prober: fakeProber{result: output}}.Validate(context.Background(), Request{
 		SourceProbe: source,
@@ -368,7 +368,8 @@ func testProfile() domain.Profile {
 	return domain.Profile{
 		Name: domain.ProfileName("default-av1"),
 		Video: domain.VideoProfile{
-			Codec:       "libsvtav1",
+			Codec:       "av1",
+			Accelerator: "software",
 			PixelFormat: "yuv420p10le",
 		},
 		Subtitles: domain.SubtitleProfile{Mode: domain.StreamPolicyPreserve},

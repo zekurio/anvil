@@ -112,6 +112,7 @@ type Profile struct {
 
 type VideoProfile struct {
 	Codec              string
+	Accelerator        string
 	Preset             string
 	PixelFormat        string
 	CRFMin             int
@@ -135,6 +136,7 @@ const (
 type DolbyVisionProfile struct {
 	Mode            DolbyVisionMode
 	Codec           string
+	Accelerator     string
 	Preset          string
 	PixelFormat     string
 	FFmpegArgs      []string
@@ -446,6 +448,10 @@ type EncodePlan struct {
 	OutputPath            string
 	ProfileName           ProfileName
 	VideoCodec            string
+	InputVideoCodec       string
+	InputWidth            int
+	InputHeight           int
+	Accelerator           string
 	VideoSource           string
 	VideoCopy             bool
 	VideoCopyReason       string
@@ -542,6 +548,9 @@ func EffectiveVideoProfile(profile Profile, metadata JobMetadata) VideoProfile {
 	override := profile.Video.DolbyVision
 	if override.Codec != "" {
 		video.Codec = override.Codec
+	}
+	if override.Accelerator != "" {
+		video.Accelerator = override.Accelerator
 	}
 	if override.Preset != "" {
 		video.Preset = override.Preset

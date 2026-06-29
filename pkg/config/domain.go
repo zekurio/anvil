@@ -153,6 +153,7 @@ func (p ProfileConfig) ToDomain() domain.Profile {
 		Container: p.Container,
 		Video: domain.VideoProfile{
 			Codec:              p.Video.Codec,
+			Accelerator:        strings.ToLower(strings.TrimSpace(p.Video.Accelerator)),
 			Preset:             p.Video.Preset,
 			PixelFormat:        p.Video.PixelFormat,
 			CRFMin:             p.Video.CRFMin,
@@ -165,6 +166,7 @@ func (p ProfileConfig) ToDomain() domain.Profile {
 			DolbyVision: domain.DolbyVisionProfile{
 				Mode:            domain.DolbyVisionMode(p.Video.DolbyVision.Mode),
 				Codec:           p.Video.DolbyVision.Codec,
+				Accelerator:     strings.ToLower(strings.TrimSpace(p.Video.DolbyVision.Accelerator)),
 				Preset:          p.Video.DolbyVision.Preset,
 				PixelFormat:     p.Video.DolbyVision.PixelFormat,
 				FFmpegArgs:      append([]string(nil), p.Video.DolbyVision.FFmpegArgs...),

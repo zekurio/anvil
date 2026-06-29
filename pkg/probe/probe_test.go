@@ -115,7 +115,8 @@ func TestBlockMarksCompatibleAnvilEncodedVideo(t *testing.T) {
 		Profile: domain.Profile{
 			Name: domain.ProfileName("default-av1"),
 			Video: domain.VideoProfile{
-				Codec:       "libsvtav1",
+				Codec:       "av1",
+				Accelerator: "software",
 				PixelFormat: "yuv420p10le",
 			},
 		},
@@ -155,11 +156,13 @@ func TestBlockSelectsDolbyVisionEncoderWhenDoviToolAvailable(t *testing.T) {
 		Profile: domain.Profile{
 			Name: domain.ProfileName("default-av1"),
 			Video: domain.VideoProfile{
-				Codec:       "libsvtav1",
+				Codec:       "av1",
+				Accelerator: "software",
 				PixelFormat: "yuv420p10le",
 				DolbyVision: domain.DolbyVisionProfile{
 					Mode:        domain.DolbyVisionModeAuto,
-					Codec:       "hevc_qsv",
+					Codec:       "hevc",
+					Accelerator: "qsv",
 					PixelFormat: "p010le",
 				},
 			},
@@ -172,8 +175,11 @@ func TestBlockSelectsDolbyVisionEncoderWhenDoviToolAvailable(t *testing.T) {
 		t.Fatal("DolbyVisionEncoderSelected = false, want true")
 	}
 	video := domain.EffectiveVideoProfile(job.Profile, job.Metadata)
-	if got, want := video.Codec, "hevc_qsv"; got != want {
+	if got, want := video.Codec, "hevc"; got != want {
 		t.Fatalf("effective codec = %q, want %q", got, want)
+	}
+	if got, want := video.Accelerator, "qsv"; got != want {
+		t.Fatalf("effective accelerator = %q, want %q", got, want)
 	}
 }
 
@@ -188,10 +194,11 @@ func TestBlockRequireDolbyVisionFailsWhenDoviToolUnavailable(t *testing.T) {
 		InputPath: "/media/input.mkv",
 		Profile: domain.Profile{
 			Video: domain.VideoProfile{
-				Codec: "libsvtav1",
+				Codec:       "av1",
+				Accelerator: "software",
 				DolbyVision: domain.DolbyVisionProfile{
 					Mode:  domain.DolbyVisionModeRequire,
-					Codec: "hevc_qsv",
+					Codec: "hevc",
 				},
 			},
 		},

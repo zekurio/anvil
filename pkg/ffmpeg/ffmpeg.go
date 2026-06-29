@@ -16,6 +16,7 @@ import (
 	"github.com/zekurio/anvil/pkg/marker"
 	"github.com/zekurio/anvil/pkg/pipeline"
 	"github.com/zekurio/anvil/pkg/process"
+	videocodec "github.com/zekurio/anvil/pkg/video"
 )
 
 type Encoder struct {
@@ -65,6 +66,7 @@ func BuildPlanWithProbe(profile domain.Profile, inputPath string, outputPath str
 		}
 	}
 	video := domain.EffectiveVideoProfile(profile, metadata)
+	inputVideoCodec, inputWidth, inputHeight := inputVideo(probe)
 	crf := 0
 	if !videoCopy {
 		crf = video.CRFMin
@@ -76,7 +78,11 @@ func BuildPlanWithProbe(profile domain.Profile, inputPath string, outputPath str
 		InputPath:          inputPath,
 		OutputPath:         outputPath,
 		ProfileName:        profile.Name,
-		VideoCodec:         video.Codec,
+		VideoCodec:         videocodec.ResolveEncoder(video.Codec, video.Accelerator),
+		InputVideoCodec:    inputVideoCodec,
+		InputWidth:         inputWidth,
+		InputHeight:        inputHeight,
+		Accelerator:        videocodec.ResolveAccelerator(video.Accelerator),
 		VideoSource:        domain.EffectiveVideoSource(metadata),
 		VideoCopy:          videoCopy,
 		VideoCopyReason:    videoCopyReason,
@@ -113,11 +119,12 @@ func Args(plan domain.EncodePlan) []string {
 	args := []string{
 		"-hide_banner",
 		"-y",
-		"-i", plan.InputPath,
 	}
+	args = append(args, inputArgs(plan)...)
+	args = append(args, "-i", plan.InputPath)
 	args = append(args, mapArgs(plan)...)
-	if plan.CropFilter != "" && !plan.VideoCopy {
-		args = append(args, "-vf", plan.CropFilter)
+	if filter := videoFilter(plan); filter != "" && !plan.VideoCopy {
+		args = append(args, "-vf", filter)
 	}
 	args = append(args, videoArgs(plan)...)
 	if !plan.VideoCopy && len(plan.FFmpegArgs) > 0 {
@@ -366,6 +373,59 @@ func cleanupDoviPaths(paths doviPaths) {
 	}
 }
 
+func inputArgs(plan domain.EncodePlan) []string {
+	if !qsvInputPipeline(plan) {
+		return nil
+	}
+	decoder, ok := videocodec.QSVDecoder(plan.InputVideoCodec)
+	if !ok {
+		return nil
+	}
+	return []string{
+		"-hwaccel", "qsv",
+		"-hwaccel_output_format", "qsv",
+		"-c:v", decoder,
+	}
+}
+
+func videoFilter(plan domain.EncodePlan) string {
+	if strings.TrimSpace(plan.CropFilter) == "" || videocodec.NoOpCrop(plan.CropFilter, plan.InputWidth, plan.InputHeight) {
+		return ""
+	}
+	if qsvInputPipeline(plan) {
+		if filter, ok := videocodec.QSVCropFilter(plan.CropFilter); ok {
+			return filter
+		}
+	}
+	return plan.CropFilter
+}
+
+func qsvInputPipeline(plan domain.EncodePlan) bool {
+	if plan.VideoCopy {
+		return false
+	}
+	if plan.Accelerator != videocodec.AcceleratorQSV {
+		return false
+	}
+	if videocodec.EncoderAccelerator(plan.VideoCodec) != videocodec.AcceleratorQSV {
+		return false
+	}
+	_, ok := videocodec.QSVDecoder(plan.InputVideoCodec)
+	return ok
+}
+
+func inputVideo(probe *domain.ProbeResult) (string, int, int) {
+	if probe == nil {
+		return "", 0, 0
+	}
+	for _, stream := range probe.Streams {
+		if stream.Type == "video" {
+			return stream.Codec, stream.Width, stream.Height
+		}
+	}
+	return "", 0, 0
+}
+
 func mapArgs(plan domain.EncodePlan) []string {
 	args := []string{"-map", "0:v?"}
 	if plan.AudioSelectionApplied {
@@ -388,8 +448,8 @@ func videoArgs(plan domain.EncodePlan) []string {
 	}
 	args := []string{
 		"-c:v", valueOr(plan.VideoCodec, "libsvtav1"),
-		"-crf", strconv.Itoa(plan.CRF),
 	}
+	args = append(args, qualityArgs(plan)...)
 	if plan.Preset != "" {
 		args = append(args, "-preset", plan.Preset)
 	}
@@ -400,6 +460,21 @@ func videoArgs(plan domain.EncodePlan) []string {
 		args = append(args, "-threads", strconv.Itoa(plan.Threads))
 	}
 	return args
+}
+
+func qualityArgs(plan domain.EncodePlan) []string {
+	if plan.CRF <= 0 {
+		return nil
+	}
+	value := strconv.Itoa(plan.CRF)
+	switch videocodec.EncoderAccelerator(plan.VideoCodec) {
+	case videocodec.AcceleratorQSV, videocodec.AcceleratorVAAPI:
+		return []string{"-global_quality", value}
+	case videocodec.AcceleratorAMF:
+		return []string{"-rc", "cqp", "-qp_i", value, "-qp_p", value, "-qp_b", value}
+	default:
+		return []string{"-crf", value}
+	}
 }
 
 func audioArgs() []string {

@@ -13,6 +13,7 @@ import (
 	"github.com/zekurio/anvil/pkg/domain"
 	"github.com/zekurio/anvil/pkg/pipeline"
 	"github.com/zekurio/anvil/pkg/process"
+	videocodec "github.com/zekurio/anvil/pkg/video"
 )
 
 type Searcher interface {
@@ -112,8 +113,9 @@ func SearchArgs(plan domain.EncodePlan) []string {
 	if plan.PixelFormat != "" {
 		args = append(args, "--pix-format", plan.PixelFormat)
 	}
-	if plan.CropFilter != "" {
-		args = append(args, "--vfilter", plan.CropFilter)
+	args = append(args, searchInputArgs(plan)...)
+	if filter := searchVideoFilter(plan); filter != "" {
+		args = append(args, "--vfilter", filter)
 	}
 	if plan.Threads > 0 {
 		threads := strconv.Itoa(plan.Threads)
@@ -158,10 +160,15 @@ func (b Block) Run(ctx context.Context, job *pipeline.JobContext) error {
 
 func searchPlan(job *pipeline.JobContext) domain.EncodePlan {
 	video := domain.EffectiveVideoProfile(job.Profile, job.Metadata)
+	inputVideoCodec, inputWidth, inputHeight := inputVideo(job.Probe)
 	return domain.EncodePlan{
 		InputPath:          job.InputPath,
 		OutputPath:         job.OutputPath,
-		VideoCodec:         video.Codec,
+		VideoCodec:         videocodec.ResolveEncoder(video.Codec, video.Accelerator),
+		InputVideoCodec:    inputVideoCodec,
+		InputWidth:         inputWidth,
+		InputHeight:        inputHeight,
+		Accelerator:        videocodec.ResolveAccelerator(video.Accelerator),
 		VideoSource:        domain.EffectiveVideoSource(job.Metadata),
 		Preset:             video.Preset,
 		PixelFormat:        video.PixelFormat,
@@ -177,6 +184,57 @@ func searchPlan(job *pipeline.JobContext) domain.EncodePlan {
 		ABAV1Args:          append([]string(nil), video.ABAV1Args...),
 		HDR:                job.Metadata.HDR,
 	}
+}
+
+func searchInputArgs(plan domain.EncodePlan) []string {
+	if !qsvSearchInputPipeline(plan) {
+		return nil
+	}
+	decoder, ok := videocodec.QSVDecoder(plan.InputVideoCodec)
+	if !ok {
+		return nil
+	}
+	return []string{
+		"--enc-input", "hwaccel=qsv",
+		"--enc-input", "hwaccel_output_format=qsv",
+		"--enc-input", "c:v=" + decoder,
+	}
+}
+
+func searchVideoFilter(plan domain.EncodePlan) string {
+	if strings.TrimSpace(plan.CropFilter) == "" || videocodec.NoOpCrop(plan.CropFilter, plan.InputWidth, plan.InputHeight) {
+		return ""
+	}
+	return plan.CropFilter
+}
+
+func qsvSearchInputPipeline(plan domain.EncodePlan) bool {
+	if plan.VideoCopy {
+		return false
+	}
+	if plan.Accelerator != videocodec.AcceleratorQSV {
+		return false
+	}
+	if videocodec.EncoderAccelerator(plan.VideoCodec) != videocodec.AcceleratorQSV {
+		return false
+	}
+	if strings.TrimSpace(searchVideoFilter(plan)) != "" {
+		return false
+	}
+	_, ok := videocodec.QSVDecoder(plan.InputVideoCodec)
+	return ok
+}
+
+func inputVideo(probe *domain.ProbeResult) (string, int, int) {
+	if probe == nil {
+		return "", 0, 0
+	}
+	for _, stream := range probe.Streams {
+		if stream.Type == "video" {
+			return stream.Codec, stream.Width, stream.Height
+		}
+	}
+	return "", 0, 0
 }
 
 func crfMin(plan domain.EncodePlan) int {

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/BurntSushi/toml"
+	"github.com/zekurio/anvil/pkg/video"
 )
 
 const (
@@ -103,6 +104,7 @@ type ProfileConfig struct {
 // VideoConfig contains the initial video settings shape for AV1 search work.
 type VideoConfig struct {
 	Codec              string            `toml:"codec"`
+	Accelerator        string            `toml:"accelerator"`
 	Preset             string            `toml:"preset"`
 	PixelFormat        string            `toml:"pixel_format"`
 	CRFMin             int               `toml:"crf_min"`
@@ -119,6 +121,7 @@ type VideoConfig struct {
 type DolbyVisionConfig struct {
 	Mode            string   `toml:"mode"`
 	Codec           string   `toml:"codec"`
+	Accelerator     string   `toml:"accelerator"`
 	Preset          string   `toml:"preset"`
 	PixelFormat     string   `toml:"pixel_format"`
 	FFmpegArgs      []string `toml:"ffmpeg_args"`
@@ -247,7 +250,8 @@ func Default() Config {
 			DefaultProfileName: {
 				Container: "mkv",
 				Video: VideoConfig{
-					Codec:             "libsvtav1",
+					Codec:             "av1",
+					Accelerator:       "software",
 					Preset:            "6",
 					PixelFormat:       "yuv420p10le",
 					CRFMin:            18,
@@ -339,6 +343,12 @@ func (c Config) Validate() error {
 		if !validContainer(profile.Container) {
 			problems = append(problems, fmt.Sprintf("profile %q container %q is invalid; Anvil outputs MKV only", name, profile.Container))
 		}
+		if !validVideoCodec(profile.Video.Codec) {
+			problems = append(problems, fmt.Sprintf("profile %q video.codec %q is invalid (must be av1, hevc, h265, h264, or avc)", name, profile.Video.Codec))
+		}
+		if !validAccelerator(profile.Video.Accelerator) {
+			problems = append(problems, fmt.Sprintf("profile %q video.accelerator %q is invalid (must be software, qsv, vaapi, or amf)", name, profile.Video.Accelerator))
+		}
 		if profile.Video.CRFMin < 0 || profile.Video.CRFMax < 0 {
 			problems = append(problems, fmt.Sprintf("profile %q CRF values must be non-negative", name))
 		}
@@ -353,6 +363,12 @@ func (c Config) Validate() error {
 		}
 		if !validDolbyVisionMode(profile.Video.DolbyVision.Mode) {
 			problems = append(problems, fmt.Sprintf("profile %q video.dolby_vision.mode %q is invalid", name, profile.Video.DolbyVision.Mode))
+		}
+		if strings.TrimSpace(profile.Video.DolbyVision.Codec) != "" && !validVideoCodec(profile.Video.DolbyVision.Codec) {
+			problems = append(problems, fmt.Sprintf("profile %q video.dolby_vision.codec %q is invalid (must be av1, hevc, h265, h264, or avc)", name, profile.Video.DolbyVision.Codec))
+		}
+		if strings.TrimSpace(profile.Video.DolbyVision.Accelerator) != "" && !validAccelerator(profile.Video.DolbyVision.Accelerator) {
+			problems = append(problems, fmt.Sprintf("profile %q video.dolby_vision.accelerator %q is invalid (must be software, qsv, vaapi, or amf)", name, profile.Video.DolbyVision.Accelerator))
 		}
 		if profile.Video.DolbyVision.Mode == DolbyVisionModeRequire && strings.TrimSpace(profile.Video.DolbyVision.Codec) == "" {
 			problems = append(problems, fmt.Sprintf("profile %q video.dolby_vision.codec is required when mode is require", name))
@@ -562,10 +578,24 @@ func applyProfileDefaults(profile *ProfileConfig) {
 	} else {
 		profile.Container = normalizeContainer(profile.Container)
 	}
+	if strings.TrimSpace(profile.Video.Codec) == "" {
+		profile.Video.Codec = "av1"
+	}
+	profile.Video.Codec = normalizeConfigVideoCodec(profile.Video.Codec)
+	if strings.TrimSpace(profile.Video.Accelerator) == "" {
+		profile.Video.Accelerator = "software"
+	}
+	profile.Video.Accelerator = video.NormalizeAccelerator(profile.Video.Accelerator)
 	if strings.TrimSpace(profile.Video.DolbyVision.Mode) == "" {
 		profile.Video.DolbyVision.Mode = DefaultDolbyVisionMode
 	}
 	profile.Video.DolbyVision.Mode = strings.ToLower(strings.TrimSpace(profile.Video.DolbyVision.Mode))
+	if strings.TrimSpace(profile.Video.DolbyVision.Codec) != "" {
+		profile.Video.DolbyVision.Codec = normalizeConfigVideoCodec(profile.Video.DolbyVision.Codec)
+	}
+	if strings.TrimSpace(profile.Video.DolbyVision.Accelerator) != "" {
+		profile.Video.DolbyVision.Accelerator = video.NormalizeAccelerator(profile.Video.DolbyVision.Accelerator)
+	}
 	if strings.TrimSpace(profile.Audio.Fallback) == "" {
 		profile.Audio.Fallback = DefaultStreamFallback
 	}
@@ -706,6 +736,35 @@ func normalizeContainer(container string) string {
 
 func validContainer(container string) bool {
 	return normalizeContainer(container) == "mkv"
+}
+
+func validVideoCodec(codec string) bool {
+	switch video.NormalizeCodec(codec) {
+	case "av1", "hevc", "h265", "h264", "avc":
+		return true
+	default:
+		return false
+	}
+}
+
+func normalizeConfigVideoCodec(codec string) string {
+	switch video.NormalizeCodec(codec) {
+	case "h265":
+		return "hevc"
+	case "avc":
+		return "h264"
+	default:
+		return video.NormalizeCodec(codec)
+	}
+}
+
+func validAccelerator(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "software", "qsv", "vaapi", "amf":
+		return true
+	default:
+		return false
+	}
 }
 
 func validStreamFallback(fallback string) bool {

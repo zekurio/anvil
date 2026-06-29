@@ -110,6 +110,7 @@ type preflightProfile struct {
 	Name               domain.ProfileName   `json:"name"`
 	Container          string               `json:"container"`
 	VideoCodec         string               `json:"video_codec"`
+	VideoAccelerator   string               `json:"video_accelerator"`
 	CRFMin             int                  `json:"crf_min"`
 	CRFMax             int                  `json:"crf_max"`
 	TargetVMAF         float64              `json:"target_vmaf"`
@@ -122,6 +123,7 @@ type preflightProfile struct {
 type preflightDolbyVision struct {
 	Mode            domain.DolbyVisionMode `json:"mode,omitempty"`
 	Codec           string                 `json:"codec,omitempty"`
+	Accelerator     string                 `json:"accelerator,omitempty"`
 	PixelFormat     string                 `json:"pixel_format,omitempty"`
 	FFmpegArgs      []string               `json:"ffmpeg_args,omitempty"`
 	ABAV1Args       []string               `json:"ab_av1_args,omitempty"`
@@ -451,6 +453,7 @@ func preflightProfileFromDomain(profile domain.Profile) preflightProfile {
 		Name:               profile.Name,
 		Container:          profile.Container,
 		VideoCodec:         profile.Video.Codec,
+		VideoAccelerator:   profile.Video.Accelerator,
 		CRFMin:             profile.Video.CRFMin,
 		CRFMax:             profile.Video.CRFMax,
 		TargetVMAF:         profile.Video.TargetVMAF,
@@ -460,6 +463,7 @@ func preflightProfileFromDomain(profile domain.Profile) preflightProfile {
 		DolbyVision: preflightDolbyVision{
 			Mode:            profile.Video.DolbyVision.Mode,
 			Codec:           profile.Video.DolbyVision.Codec,
+			Accelerator:     profile.Video.DolbyVision.Accelerator,
 			PixelFormat:     profile.Video.DolbyVision.PixelFormat,
 			FFmpegArgs:      append([]string(nil), profile.Video.DolbyVision.FFmpegArgs...),
 			ABAV1Args:       append([]string(nil), profile.Video.DolbyVision.ABAV1Args...),
@@ -495,7 +499,7 @@ func preflightEncodePlan(flow domain.Flow, profile domain.Profile, outputPath st
 	}
 	encode := preflightEncode{
 		Enabled:        true,
-		VideoAction:    "AV1 encode using CRF selected by search",
+		VideoAction:    strings.ToUpper(profile.Video.Codec) + " encode using CRF selected by search",
 		Codec:          profile.Video.Codec,
 		CRFSource:      "ab-av1 crf-search result",
 		Output:         outputPath,
@@ -504,7 +508,7 @@ func preflightEncodePlan(flow domain.Flow, profile domain.Profile, outputPath st
 		CustomArgs:     append([]string(nil), profile.Video.FFmpegArgs...),
 	}
 	if profile.Video.DolbyVision.Mode != domain.DolbyVisionModeOff && profile.Video.DolbyVision.Codec != "" {
-		encode.DolbyVisionAction = fmt.Sprintf("if source has Dolby Vision and dovi_tool is available, use %s instead of %s", profile.Video.DolbyVision.Codec, profile.Video.Codec)
+		encode.DolbyVisionAction = fmt.Sprintf("if source has Dolby Vision and dovi_tool is available, use %s/%s instead of %s/%s", profile.Video.DolbyVision.Codec, displayOrNone(profile.Video.DolbyVision.Accelerator), profile.Video.Codec, profile.Video.Accelerator)
 		encode.DolbyVisionCustomArgs = append([]string(nil), profile.Video.DolbyVision.FFmpegArgs...)
 	}
 	if !flowHasStep(flow, "crf-search") {
@@ -660,9 +664,9 @@ func printPreflightReport(report preflightReport) {
 			fmt.Fprintf(os.Stdout, "  job: id=%d state=%s attempt=%s\n", item.Status.ExistingJobID, item.Status.ExistingJobState, item.Status.ExistingAttemptHint)
 		}
 		fmt.Fprintf(os.Stdout, "  flow: %s [%s]\n", item.Flow.Name, strings.Join(item.Flow.Steps, " -> "))
-		fmt.Fprintf(os.Stdout, "  profile: %s container=%s codec=%s\n", item.Profile.Name, item.Profile.Container, item.Profile.VideoCodec)
+		fmt.Fprintf(os.Stdout, "  profile: %s container=%s codec=%s accelerator=%s\n", item.Profile.Name, item.Profile.Container, item.Profile.VideoCodec, item.Profile.VideoAccelerator)
 		if item.Profile.DolbyVision.Mode != "" || item.Profile.DolbyVision.Codec != "" {
-			fmt.Fprintf(os.Stdout, "  dolby-vision: mode=%s codec=%s pixel_format=%s remove_hdr10plus=%t\n", item.Profile.DolbyVision.Mode, displayOrNone(item.Profile.DolbyVision.Codec), displayOrNone(item.Profile.DolbyVision.PixelFormat), item.Profile.DolbyVision.RemoveHDR10Plus)
+			fmt.Fprintf(os.Stdout, "  dolby-vision: mode=%s codec=%s accelerator=%s pixel_format=%s remove_hdr10plus=%t\n", item.Profile.DolbyVision.Mode, displayOrNone(item.Profile.DolbyVision.Codec), displayOrNone(item.Profile.DolbyVision.Accelerator), displayOrNone(item.Profile.DolbyVision.PixelFormat), item.Profile.DolbyVision.RemoveHDR10Plus)
 		}
 		if item.Search.Enabled {
 			fmt.Fprintf(os.Stdout, "  search: %s crf=%d..%d target_vmaf=%s savings_policy=%s\n",
