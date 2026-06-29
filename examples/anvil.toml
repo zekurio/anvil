@@ -30,6 +30,7 @@ crf_min = 18
 crf_max = 40
 target_vmaf = 95
 min_savings_percent = 20
+force_encode_on_no_fit = false
 ffmpeg_args = []
 ab_av1_args = []
 

@@ -144,6 +144,28 @@ func TestCodecLabelUsesBitstreamNameForEncoderNames(t *testing.T) {
 	}
 }
 
+func TestResolutionLabelUsesStandardBuckets(t *testing.T) {
+	tests := map[string]struct {
+		stream domain.MediaStream
+		want   string
+	}{
+		"cropped_1080p_widescreen": {stream: domain.MediaStream{Width: 1920, Height: 800}, want: "1080p"},
+		"tall_1440_width_1080p":    {stream: domain.MediaStream{Width: 1440, Height: 1072}, want: "1080p"},
+		"720p":                     {stream: domain.MediaStream{Width: 1280, Height: 720}, want: "720p"},
+		"cropped_2160p_widescreen": {stream: domain.MediaStream{Width: 3840, Height: 1600}, want: "2160p"},
+		"height_only":              {stream: domain.MediaStream{Height: 1072}, want: "1080p"},
+		"missing_dimensions":       {stream: domain.MediaStream{}, want: ""},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			if got := resolutionLabel(tt.stream); got != tt.want {
+				t.Fatalf("resolutionLabel(%+v) = %q, want %q", tt.stream, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestArgsMarksOnlyVideoStreamWithAnvilTags(t *testing.T) {
 	plan, err := BuildPlan(testProfile(), "/in.mkv", "/out.mkv", domain.ResourceAllocation{Threads: 2}, &domain.SearchResult{CRF: 24}, &domain.AudioSelection{StreamIndexes: []int{1, 2}}, domain.JobMetadata{
 		StreamCleanupDisabled: true,

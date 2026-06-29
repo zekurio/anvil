@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/zekurio/anvil/pkg/domain"
@@ -133,11 +134,12 @@ func TestBlockSearchPlanUsesDolbyVisionOverride(t *testing.T) {
 		InputPath: "/input.mkv",
 		Profile: domain.Profile{
 			Video: domain.VideoProfile{
-				Codec:     "libsvtav1",
-				Preset:    "6",
-				CRFMin:    18,
-				CRFMax:    40,
-				ABAV1Args: []string{"--enc", "normal=1"},
+				Codec:              "libsvtav1",
+				Preset:             "6",
+				CRFMin:             18,
+				CRFMax:             40,
+				ABAV1Args:          []string{"--enc", "normal=1"},
+				ForceEncodeOnNoFit: true,
 				DolbyVision: domain.DolbyVisionProfile{
 					Mode:      domain.DolbyVisionModeAuto,
 					Codec:     "hevc_qsv",
@@ -160,6 +162,9 @@ func TestBlockSearchPlanUsesDolbyVisionOverride(t *testing.T) {
 	if got, want := searcher.plan.ABAV1Args, []string{"--enc", "normal=1", "--enc", "low_power=1"}; !sameStrings(got, want) {
 		t.Fatalf("search plan ABAV1Args = %v, want %v", got, want)
 	}
+	if !searcher.plan.ForceEncodeOnNoFit {
+		t.Fatal("search plan ForceEncodeOnNoFit = false, want true")
+	}
 }
 
 func TestParseResultReturnsSkipForNoSuitableCRF(t *testing.T) {
@@ -175,6 +180,46 @@ func TestParseResultReturnsSkipForNoSuitableCRF(t *testing.T) {
 	}
 	if result.VideoEncodeSkipReason == "" {
 		t.Fatal("VideoEncodeSkipReason is empty")
+	}
+}
+
+func TestParseResultForPlanForcesLowestCRFForNoSuitableCRF(t *testing.T) {
+	result, err := ParseResultForPlan([]byte("crf 24 vmaf 96.2 (72%)\ncrf 18 vmaf 94.7 (103%)\nError: Failed to find a suitable crf\n"), domain.EncodePlan{
+		CRFMin:             18,
+		CRFMax:             40,
+		ForceEncodeOnNoFit: true,
+	})
+	if err != nil {
+		t.Fatalf("ParseResultForPlan() error = %v", err)
+	}
+	if result.SkipVideoEncode {
+		t.Fatal("SkipVideoEncode = true, want forced encode")
+	}
+	if result.CRF != 18 {
+		t.Fatalf("CRF = %d, want lowest tested CRF 18", result.CRF)
+	}
+	if result.VMAF != 94.7 {
+		t.Fatalf("VMAF = %f, want VMAF from lowest CRF line", result.VMAF)
+	}
+	if !strings.Contains(result.ForcedVideoEncodeReason, "lowest tested CRF 18") {
+		t.Fatalf("ForcedVideoEncodeReason = %q, want lowest tested CRF", result.ForcedVideoEncodeReason)
+	}
+}
+
+func TestParseResultForPlanForcesConfiguredMinWhenNoFitOutputHasNoCRF(t *testing.T) {
+	result, err := ParseResultForPlan([]byte("Error: no suitable crf\n"), domain.EncodePlan{
+		CRFMin:             20,
+		CRFMax:             40,
+		ForceEncodeOnNoFit: true,
+	})
+	if err != nil {
+		t.Fatalf("ParseResultForPlan() error = %v", err)
+	}
+	if result.SkipVideoEncode {
+		t.Fatal("SkipVideoEncode = true, want forced encode")
+	}
+	if result.CRF != 20 {
+		t.Fatalf("CRF = %d, want configured minimum CRF 20", result.CRF)
 	}
 }
 
@@ -194,6 +239,32 @@ func TestABAV1ConvertsExpectedNoSuitableCRFErrorToSkip(t *testing.T) {
 	}
 	if !result.SkipVideoEncode {
 		t.Fatal("SkipVideoEncode = false, want true")
+	}
+	if result.RawOutput == "" || len(result.RawCommand) == 0 {
+		t.Fatalf("result = %#v, want captured output and command", result)
+	}
+}
+
+func TestABAV1ForcesExpectedNoSuitableCRFErrorToLowestCRF(t *testing.T) {
+	runner := fakeRunner{
+		stdout: []byte("crf 24 vmaf 96.2 (72%)\ncrf 18 vmaf 94.7 (103%)\n"),
+		stderr: []byte("Error: Failed to find a suitable crf\n"),
+		err:    errors.New("exit status 1"),
+	}
+	result, err := ABAV1{Runner: runner}.Search(context.Background(), domain.EncodePlan{
+		InputPath:          "/input.mkv",
+		CRFMin:             18,
+		CRFMax:             40,
+		ForceEncodeOnNoFit: true,
+	})
+	if err != nil {
+		t.Fatalf("Search() error = %v", err)
+	}
+	if result.SkipVideoEncode {
+		t.Fatal("SkipVideoEncode = true, want forced encode")
+	}
+	if result.CRF != 18 {
+		t.Fatalf("CRF = %d, want lowest tested CRF 18", result.CRF)
 	}
 	if result.RawOutput == "" || len(result.RawCommand) == 0 {
 		t.Fatalf("result = %#v, want captured output and command", result)

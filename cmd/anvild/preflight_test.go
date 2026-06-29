@@ -63,6 +63,40 @@ func TestBuildPreflightReportShowsPlansWithoutExistingStore(t *testing.T) {
 	}
 }
 
+func TestBuildPreflightReportShowsForcedNoFitEncodePolicy(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	now := time.Date(2026, 6, 27, 12, 0, 0, 0, time.UTC)
+	writePreflightFile(t, root, "Movie.mkv", now)
+
+	cfg := testPreflightConfig(t, root)
+	profile := cfg.Profiles[config.DefaultProfileName]
+	profile.Video.ForceEncodeOnNoFit = true
+	cfg.Profiles[config.DefaultProfileName] = profile
+
+	report, err := buildPreflightReport(ctx, cfg, options{
+		command:        commandPreflight,
+		libraryName:    "movies",
+		preflightLimit: 1,
+	}, nil, false)
+	if err != nil {
+		t.Fatalf("buildPreflightReport() error = %v", err)
+	}
+	item := report.Candidates[0]
+	if !item.Search.ForceEncodeOnNoFit || item.Search.FlowCanFallbackToRemux {
+		t.Fatalf("search policy = %+v, want forced no-fit encode without remux fallback", item.Search)
+	}
+	if !strings.Contains(item.Search.NoFitBehavior, "force an encode") {
+		t.Fatalf("no-fit behavior = %q, want forced encode language", item.Search.NoFitBehavior)
+	}
+	if !strings.Contains(item.Encode.NoFitAction, "lowest tested CRF") {
+		t.Fatalf("encode no-fit action = %q, want lowest tested CRF language", item.Encode.NoFitAction)
+	}
+	if !item.Profile.ForceEncodeOnNoFit {
+		t.Fatalf("profile = %+v, want force_encode_on_no_fit", item.Profile)
+	}
+}
+
 func TestBuildPreflightReportFindsExistingJobReadOnly(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
