@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -69,6 +70,7 @@ func (r Runner) Run(ctx context.Context, assignment scheduler.Assignment) error 
 	if err != nil {
 		return fmt.Errorf("start attempt: %w", err)
 	}
+	slog.Info("worker attempt started", "worker", assignment.WorkerID, "job_id", int64(assignment.Job.ID), "attempt_id", int64(attempt.ID), "attempt", attempt.Number, "library", string(assignment.Job.LibraryName), "source_id", int64(assignment.Job.SourceID), "asset_id", int64(assignment.Job.AssetID), "threads", assignment.Resources.Threads)
 	stopHeartbeat := r.startHeartbeat(ctx, assignment.Job.ID, assignment.WorkerID, cfg)
 	defer stopHeartbeat()
 
@@ -107,6 +109,7 @@ func (r Runner) Run(ctx context.Context, assignment scheduler.Assignment) error 
 		Metadata:  metadata,
 		InputPath: inputPath,
 	}
+	slog.Info("worker pipeline started", "worker", assignment.WorkerID, "job_id", int64(assignment.Job.ID), "attempt_id", int64(attempt.ID), "library", string(library.Name), "flow", string(flow.Name), "profile", string(profile.Name), "input", inputPath)
 
 	pipelineRunner := r.Pipeline
 	if pipelineRunner.Events == nil {
@@ -136,6 +139,7 @@ func (r Runner) Run(ctx context.Context, assignment scheduler.Assignment) error 
 	if err := r.complete(ctx, assignment.Job.ID, flow); err != nil {
 		return err
 	}
+	slog.Info("worker job completed", "worker", assignment.WorkerID, "job_id", int64(assignment.Job.ID), "attempt_id", int64(attempt.ID), "library", string(library.Name), "final_path", jobContext.FinalPath)
 	return nil
 }
 
@@ -228,11 +232,13 @@ func (r Runner) fail(ctx context.Context, job domain.Job, attempt domain.Attempt
 		maxAttempts = config.DefaultMaxAttempts
 	}
 	if attempt.Number >= maxAttempts {
+		slog.Error("worker attempt failed; job failed", "worker", attempt.WorkerID, "job_id", int64(job.ID), "attempt_id", int64(attempt.ID), "attempt", attempt.Number, "library", string(job.LibraryName), "max_attempts", maxAttempts, "error", cause)
 		if _, err := r.Store.TransitionJob(ctx, job.ID, domain.JobStateFailed, r.now(), message); err != nil {
 			return fmt.Errorf("transition job to failed: %w", err)
 		}
 		return cause
 	}
+	slog.Warn("worker attempt failed; job will retry", "worker", attempt.WorkerID, "job_id", int64(job.ID), "attempt_id", int64(attempt.ID), "attempt", attempt.Number, "library", string(job.LibraryName), "max_attempts", maxAttempts, "error", cause)
 	if _, err := r.Store.TransitionJob(ctx, job.ID, domain.JobStateRetrying, r.now(), message); err != nil {
 		return fmt.Errorf("transition job to retrying: %w", err)
 	}
