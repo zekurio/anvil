@@ -203,6 +203,38 @@ scan_interval = "0s"
 	}
 }
 
+func TestLoadLibraryIgnoreRegex(t *testing.T) {
+	path := writeConfig(t, `
+[libraries.movies]
+path = "/srv/media/movies"
+ignore_regex = ['(^|/)_UNPACK[^/]*(/|$)', '.*\.partial$']
+`)
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if got := cfg.Libraries["movies"].IgnoreRegex; !sameStrings(got, []string{`(^|/)_UNPACK[^/]*(/|$)`, `.*\.partial$`}) {
+		t.Fatalf("ignore_regex = %v, want configured regexes", got)
+	}
+}
+
+func TestLoadRejectsInvalidLibraryIgnoreRegex(t *testing.T) {
+	path := writeConfig(t, `
+[libraries.movies]
+path = "/srv/media/movies"
+ignore_regex = ["["]
+`)
+
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("Load() error = nil, want invalid ignore_regex")
+	}
+	if !strings.Contains(err.Error(), `library "movies" ignore_regex[0]`) {
+		t.Fatalf("Load() error = %q, want library ignore_regex", err.Error())
+	}
+}
+
 func TestLoadRejectsUnknownReferences(t *testing.T) {
 	path := writeConfig(t, `
 [libraries.movies]

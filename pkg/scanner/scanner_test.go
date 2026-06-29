@@ -230,6 +230,52 @@ func TestScanDownloadLibraryIgnoresConfiguredIgnorableFiles(t *testing.T) {
 	}
 }
 
+func TestScanDownloadLibraryIgnoresRegexMatchedPackageDirs(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	now := testNow()
+
+	writeTestFile(t, root, "_UNPACK_SomeShowS01/episode_1.mkv", now.Add(-time.Minute))
+	writeTestFile(t, root, "SomeShowS01/episode_1.mkv", now.Add(-time.Hour))
+
+	fake := newFakeStore()
+	result, err := Scanner{
+		Store: fake,
+		Now: func() time.Time {
+			return now
+		},
+	}.ScanLibrary(ctx, config.LibraryConfig{
+		Name:        "usenet-tv",
+		Kind:        "download",
+		Path:        root,
+		IgnoreRegex: []string{`(^|/)_UNPACK[^/]*(/|$)`},
+		Download: config.DownloadLibraryConfig{
+			HandoffPath: "/imports/tv",
+			StableFor:   "5m",
+			PackageMode: "auto",
+		},
+	})
+	if err != nil {
+		t.Fatalf("ScanLibrary() error = %v", err)
+	}
+
+	if result.EnqueuedJobs != 1 {
+		t.Fatalf("enqueued jobs = %d, want 1", result.EnqueuedJobs)
+	}
+	if result.SkippedIgnored != 1 {
+		t.Fatalf("skipped ignored = %d, want 1", result.SkippedIgnored)
+	}
+	if result.SkippedUnstable != 0 {
+		t.Fatalf("skipped unstable = %d, want 0", result.SkippedUnstable)
+	}
+	if _, exists := fake.sourceByPath["usenet-tv\x00_UNPACK_SomeShowS01"]; exists {
+		t.Fatal("_UNPACK package source was discovered")
+	}
+	if _, exists := fake.sourceByPath["usenet-tv\x00SomeShowS01"]; !exists {
+		t.Fatal("stable package source was not discovered")
+	}
+}
+
 func TestPlanLibraryReportsIgnoredAndEnqueueableCandidates(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
@@ -239,6 +285,7 @@ func TestPlanLibraryReportsIgnoredAndEnqueueableCandidates(t *testing.T) {
 	writeTestFile(t, root, "sample.mkv", now.Add(-time.Hour))
 	writeTestFile(t, root, "Trailer.avi", now.Add(-time.Hour))
 	writeTestFile(t, root, "Ignored.mkv", now.Add(-time.Hour))
+	writeTestFile(t, root, "RegexIgnored.mkv", now.Add(-time.Hour))
 
 	plan, err := (Scanner{
 		Now: func() time.Time {
@@ -250,12 +297,15 @@ func TestPlanLibraryReportsIgnoredAndEnqueueableCandidates(t *testing.T) {
 		Path:    root,
 		Include: []string{"*.mkv"},
 		Exclude: []string{"Ignored.mkv"},
+		IgnoreRegex: []string{
+			`^RegexIgnored\.mkv$`,
+		},
 	})
 	if err != nil {
 		t.Fatalf("PlanLibrary() error = %v", err)
 	}
-	if len(plan.Candidates) != 4 {
-		t.Fatalf("candidates len = %d, want 4", len(plan.Candidates))
+	if len(plan.Candidates) != 5 {
+		t.Fatalf("candidates len = %d, want 5", len(plan.Candidates))
 	}
 
 	byPath := make(map[string]CandidatePlan)
@@ -266,17 +316,18 @@ func TestPlanLibraryReportsIgnoredAndEnqueueableCandidates(t *testing.T) {
 		t.Fatalf("Movie.mkv plan = %+v, want enqueueable", byPath["Movie.mkv"])
 	}
 	for path, reason := range map[string]string{
-		"sample.mkv":  "sample",
-		"Trailer.avi": "not_included",
-		"Ignored.mkv": "excluded",
+		"sample.mkv":       "sample",
+		"Trailer.avi":      "not_included",
+		"Ignored.mkv":      "excluded",
+		"RegexIgnored.mkv": "ignore_regex",
 	} {
 		candidate := byPath[path]
 		if !candidate.Ignored || candidate.IgnoreReason != reason || candidate.Enqueueable {
 			t.Fatalf("%s plan = %+v, want ignored reason %q", path, candidate, reason)
 		}
 	}
-	if plan.SkippedIgnored != 3 {
-		t.Fatalf("skipped ignored = %d, want 3", plan.SkippedIgnored)
+	if plan.SkippedIgnored != 4 {
+		t.Fatalf("skipped ignored = %d, want 4", plan.SkippedIgnored)
 	}
 }
 
