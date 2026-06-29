@@ -642,7 +642,7 @@ func codecLabel(codec string) string {
 	normalized := strings.ToLower(original)
 	normalized = strings.ReplaceAll(normalized, "_", "-")
 	switch normalized {
-	case "av1", "libsvtav1", "svt-av1", "libaom-av1":
+	case "av1", "libsvtav1", "svt-av1", "svtav1", "libaom-av1", "librav1e", "rav1e", "av1-qsv", "av1-nvenc", "av1-amf", "av1-vaapi", "av1-videotoolbox":
 		return "AV1"
 	case "aac":
 		return "AAC"
@@ -656,9 +656,9 @@ func codecLabel(codec string) string {
 		return "DTS"
 	case "flac":
 		return "FLAC"
-	case "h264", "h-264", "avc", "libx264":
+	case "h264", "h-264", "avc", "libx264", "x264", "h264-qsv", "h264-nvenc", "h264-amf", "h264-vaapi", "h264-videotoolbox":
 		return "H.264"
-	case "h265", "h-265", "hevc", "libx265", "x265", "hevc-qsv", "hevc-nvenc", "hevc-amf", "hevc-videotoolbox":
+	case "h265", "h-265", "hevc", "libx265", "x265", "hevc-qsv", "hevc-nvenc", "hevc-amf", "hevc-vaapi", "hevc-videotoolbox":
 		return "HEVC"
 	case "hdmv-pgs-subtitle", "pgs":
 		return "PGS"
