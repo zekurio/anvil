@@ -19,6 +19,7 @@ const (
 	DefaultLibraryKind     = "media"
 	DefaultReplacementMode = "replace"
 	DefaultScanInterval    = "30m"
+	DefaultFSDebounce      = "2s"
 	DefaultSchedulerTick   = "5s"
 	DefaultLeaseDuration   = "30m"
 	DefaultShutdownPolicy  = "drain"
@@ -70,6 +71,7 @@ type DaemonConfig struct {
 	TotalThreads      int    `toml:"total_threads"`
 	MaxAttempts       int    `toml:"max_attempts"`
 	ScanInterval      string `toml:"scan_interval"`
+	FSDebounce        string `toml:"filesystem_event_debounce"`
 	SchedulerInterval string `toml:"scheduler_interval"`
 	LeaseDuration     string `toml:"lease_duration"`
 	ShutdownPolicy    string `toml:"shutdown_policy"`
@@ -225,6 +227,7 @@ func Default() Config {
 			TotalThreads:      max(runtime.NumCPU(), 1),
 			MaxAttempts:       DefaultMaxAttempts,
 			ScanInterval:      DefaultScanInterval,
+			FSDebounce:        DefaultFSDebounce,
 			SchedulerInterval: DefaultSchedulerTick,
 			LeaseDuration:     DefaultLeaseDuration,
 			ShutdownPolicy:    DefaultShutdownPolicy,
@@ -294,6 +297,7 @@ func (c Config) Validate() error {
 		problems = append(problems, "daemon.max_attempts must be at least 1")
 	}
 	validatePositiveDuration(&problems, "daemon.scan_interval", c.Daemon.ScanInterval)
+	validateNonNegativeDuration(&problems, "daemon.filesystem_event_debounce", c.Daemon.FSDebounce)
 	validatePositiveDuration(&problems, "daemon.scheduler_interval", c.Daemon.SchedulerInterval)
 	validatePositiveDuration(&problems, "daemon.lease_duration", c.Daemon.LeaseDuration)
 	validateNonNegativeDuration(&problems, "daemon.shutdown_timeout", c.Daemon.ShutdownTimeout)
@@ -478,6 +482,9 @@ func applyDefaults(c *Config) {
 	}
 	if strings.TrimSpace(c.Daemon.ScanInterval) == "" {
 		c.Daemon.ScanInterval = defaults.Daemon.ScanInterval
+	}
+	if strings.TrimSpace(c.Daemon.FSDebounce) == "" {
+		c.Daemon.FSDebounce = defaults.Daemon.FSDebounce
 	}
 	if strings.TrimSpace(c.Daemon.SchedulerInterval) == "" {
 		c.Daemon.SchedulerInterval = defaults.Daemon.SchedulerInterval
