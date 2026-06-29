@@ -7,6 +7,8 @@ const (
 	AcceleratorQSV      = "qsv"
 	AcceleratorVAAPI    = "vaapi"
 	AcceleratorAMF      = "amf"
+
+	DefaultBitDepth = 10
 )
 
 func NormalizeCodec(codec string) string {
@@ -57,6 +59,40 @@ func ResolveAccelerator(accelerator string) string {
 		return AcceleratorSoftware
 	default:
 		return accelerator
+	}
+}
+
+func NormalizeBitDepth(bitDepth int) int {
+	if bitDepth == 0 {
+		return DefaultBitDepth
+	}
+	return bitDepth
+}
+
+func ValidBitDepth(bitDepth int) bool {
+	switch bitDepth {
+	case 8, 10:
+		return true
+	default:
+		return false
+	}
+}
+
+func SoftwarePixelFormat(bitDepth int) string {
+	switch NormalizeBitDepth(bitDepth) {
+	case 8:
+		return "yuv420p"
+	default:
+		return "yuv420p10le"
+	}
+}
+
+func QSVVPPFormat(bitDepth int) string {
+	switch NormalizeBitDepth(bitDepth) {
+	case 8:
+		return "nv12"
+	default:
+		return "p010le"
 	}
 }
 

@@ -35,7 +35,7 @@ func TestABAV1BuildsCommandAndParsesOutput(t *testing.T) {
 		CRFMax:            40,
 		TargetVMAF:        95,
 		Threads:           4,
-		PixelFormat:       "yuv420p10le",
+		BitDepth:          10,
 		MinSavingsPercent: 20,
 	})
 	if err != nil {
@@ -53,6 +53,9 @@ func TestABAV1BuildsCommandAndParsesOutput(t *testing.T) {
 	if !containsPair(result.RawCommand, "--max-encoded-percent", "80") {
 		t.Fatalf("raw command = %v, want --max-encoded-percent 80", result.RawCommand)
 	}
+	if !containsPair(result.RawCommand, "--pix-format", "yuv420p10le") {
+		t.Fatalf("raw command = %v, want bit-depth mapped pix format", result.RawCommand)
+	}
 	if containsArg(result.RawCommand, "--threads") {
 		t.Fatalf("raw command = %v, did not expect unsupported --threads", result.RawCommand)
 	}
@@ -63,13 +66,13 @@ func TestABAV1BuildsCommandAndParsesOutput(t *testing.T) {
 
 func TestSearchArgsIncludesCropFilter(t *testing.T) {
 	args := SearchArgs(domain.EncodePlan{
-		InputPath:   "/input.mkv",
-		CRFMin:      18,
-		CRFMax:      40,
-		CropFilter:  "crop=1920:800:0:140",
-		TargetVMAF:  95,
-		VideoCodec:  "libsvtav1",
-		PixelFormat: "yuv420p10le",
+		InputPath:  "/input.mkv",
+		CRFMin:     18,
+		CRFMax:     40,
+		CropFilter: "crop=1920:800:0:140",
+		TargetVMAF: 95,
+		VideoCodec: "libsvtav1",
+		BitDepth:   10,
 	})
 	if !containsPair(args, "--vfilter", "crop=1920:800:0:140") {
 		t.Fatalf("SearchArgs() = %v, want crop vfilter", args)
@@ -159,13 +162,13 @@ func TestABAV1RunsWithWritableScratchDir(t *testing.T) {
 	runner := &captureCommandRunner{stdout: []byte("crf 30 vmaf 96.2")}
 	outputPath := t.TempDir() + "/staging/output.mkv"
 	_, err := ABAV1{Runner: runner}.Search(context.Background(), domain.EncodePlan{
-		InputPath:   "/input.mkv",
-		OutputPath:  outputPath,
-		CRFMin:      18,
-		CRFMax:      40,
-		TargetVMAF:  95,
-		VideoCodec:  "libsvtav1",
-		PixelFormat: "yuv420p10le",
+		InputPath:  "/input.mkv",
+		OutputPath: outputPath,
+		CRFMin:     18,
+		CRFMax:     40,
+		TargetVMAF: 95,
+		VideoCodec: "libsvtav1",
+		BitDepth:   10,
 	})
 	if err != nil {
 		t.Fatalf("Search() error = %v", err)

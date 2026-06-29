@@ -117,7 +117,7 @@ func TestBlockMarksCompatibleAnvilEncodedVideo(t *testing.T) {
 			Video: domain.VideoProfile{
 				Codec:       "av1",
 				Accelerator: "software",
-				PixelFormat: "yuv420p10le",
+				BitDepth:    10,
 			},
 		},
 	}
@@ -158,12 +158,12 @@ func TestBlockSelectsDolbyVisionEncoderWhenDoviToolAvailable(t *testing.T) {
 			Video: domain.VideoProfile{
 				Codec:       "av1",
 				Accelerator: "software",
-				PixelFormat: "yuv420p10le",
+				BitDepth:    10,
 				DolbyVision: domain.DolbyVisionProfile{
 					Mode:        domain.DolbyVisionModeAuto,
 					Codec:       "hevc",
 					Accelerator: "qsv",
-					PixelFormat: "p010le",
+					BitDepth:    10,
 				},
 			},
 		},

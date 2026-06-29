@@ -26,7 +26,7 @@ container = "mkv"
 codec = "av1"
 accelerator = "software"
 preset = "6"
-pixel_format = "yuv420p10le"
+bit_depth = 10
 crf_min = 18
 crf_max = 40
 target_vmaf = 95
@@ -40,7 +40,7 @@ mode = "auto"
 codec = "hevc"
 accelerator = "qsv"
 preset = "medium"
-pixel_format = "p010le"
+bit_depth = 10
 ffmpeg_args = ["-global_quality", "24"]
 ab_av1_args = ["--enc", "low_power=1"]
 remove_hdr10plus = false

@@ -56,6 +56,7 @@ func TestOutputTagsAddsCurrentEncodeDetails(t *testing.T) {
 	tags := OutputTags(domain.EncodePlan{
 		ProfileName: domain.ProfileName("default-av1"),
 		VideoCodec:  "libsvtav1",
+		BitDepth:    10,
 		PixelFormat: "yuv420p10le",
 		CRF:         29,
 		CropFilter:  "crop=1920:800:0:140",
@@ -82,6 +83,7 @@ func TestOutputTagsMarksVideoCopyAsProcessedWithoutEncodedClaim(t *testing.T) {
 	tags := OutputTags(domain.EncodePlan{
 		ProfileName:     domain.ProfileName("default-av1"),
 		VideoCodec:      "libsvtav1",
+		BitDepth:        10,
 		PixelFormat:     "yuv420p10le",
 		VideoCopy:       true,
 		VideoCopyReason: reason,
@@ -136,7 +138,7 @@ func testProfile() domain.Profile {
 		Video: domain.VideoProfile{
 			Codec:       "av1",
 			Accelerator: "software",
-			PixelFormat: "yuv420p10le",
+			BitDepth:    10,
 		},
 	}
 }

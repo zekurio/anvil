@@ -12,6 +12,7 @@ import (
 	"github.com/zekurio/anvil/pkg/marker"
 	"github.com/zekurio/anvil/pkg/pipeline"
 	"github.com/zekurio/anvil/pkg/process"
+	videocodec "github.com/zekurio/anvil/pkg/video"
 )
 
 type Prober interface {
@@ -73,7 +74,7 @@ func (b Block) Run(ctx context.Context, job *pipeline.JobContext) error {
 		return err
 	}
 	video := domain.EffectiveVideoProfile(job.Profile, job.Metadata)
-	match := marker.DetectVideo(result, job.Profile.Name, video.Codec, video.PixelFormat)
+	match := marker.DetectVideo(result, job.Profile.Name, video.Codec, videocodec.SoftwarePixelFormat(video.BitDepth))
 	if match.Compatible {
 		job.Metadata.VideoAlreadyEncoded = true
 		job.Metadata.AnvilTags = match.Tags

@@ -34,7 +34,7 @@ type Match struct {
 }
 
 func Detect(probe domain.ProbeResult, profile domain.Profile) Match {
-	return DetectVideo(probe, profile.Name, profile.Video.Codec, profile.Video.PixelFormat)
+	return DetectVideo(probe, profile.Name, profile.Video.Codec, videocodec.SoftwarePixelFormat(profile.Video.BitDepth))
 }
 
 func DetectVideo(probe domain.ProbeResult, profileName domain.ProfileName, videoCodec string, pixelFormat string) Match {
@@ -111,8 +111,8 @@ func OutputTags(plan domain.EncodePlan) map[string]string {
 	if plan.VideoCodec != "" {
 		tags[TagVideoCodec] = plan.VideoCodec
 	}
-	if plan.PixelFormat != "" {
-		tags[TagVideoPixelFormat] = plan.PixelFormat
+	if pixelFormat := outputPixelFormat(plan); pixelFormat != "" {
+		tags[TagVideoPixelFormat] = pixelFormat
 	}
 	if plan.CRF > 0 {
 		tags[TagVideoCRF] = strconv.Itoa(plan.CRF)
@@ -121,6 +121,16 @@ func OutputTags(plan domain.EncodePlan) map[string]string {
 		tags[TagCrop] = plan.CropFilter
 	}
 	return tags
+}
+
+func outputPixelFormat(plan domain.EncodePlan) string {
+	if strings.TrimSpace(plan.PixelFormat) != "" {
+		return plan.PixelFormat
+	}
+	if plan.BitDepth != 0 {
+		return videocodec.SoftwarePixelFormat(plan.BitDepth)
+	}
+	return ""
 }
 
 func compatibleVideo(tags map[string]string, profileName domain.ProfileName, videoCodec string, pixelFormat string) bool {

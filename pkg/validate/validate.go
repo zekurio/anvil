@@ -166,7 +166,7 @@ func validateVideo(request Request, outputProbe domain.ProbeResult, result *doma
 
 func validateMarker(request Request, outputProbe domain.ProbeResult, result *domain.ValidationResult) {
 	videoCodec := request.Profile.Video.Codec
-	pixelFormat := request.Profile.Video.PixelFormat
+	pixelFormat := videocodec.SoftwarePixelFormat(request.Profile.Video.BitDepth)
 	if request.EncodePlan != nil {
 		videoCodec = request.EncodePlan.VideoCodec
 		pixelFormat = request.EncodePlan.PixelFormat
@@ -330,7 +330,7 @@ func expectedVideoPixelFormat(request Request) string {
 		pixelFormat = request.EncodePlan.PixelFormat
 	}
 	if strings.TrimSpace(pixelFormat) == "" {
-		pixelFormat = request.Profile.Video.PixelFormat
+		pixelFormat = videocodec.SoftwarePixelFormat(request.Profile.Video.BitDepth)
 	}
 	return strings.TrimSpace(pixelFormat)
 }
