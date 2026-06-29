@@ -186,8 +186,17 @@ const (
 	MetadataModeStrip    MetadataMode = "strip"
 )
 
+type TrackTitleMode string
+
+const (
+	TrackTitleModePreserve    TrackTitleMode = "preserve"
+	TrackTitleModeStrip       TrackTitleMode = "strip"
+	TrackTitleModeStandardize TrackTitleMode = "standardize"
+)
+
 type MetadataPolicy struct {
-	Mode MetadataMode
+	Mode        MetadataMode
+	TrackTitles TrackTitleMode
 }
 
 type AttachmentPolicy struct {
@@ -372,7 +381,12 @@ type MediaStream struct {
 	Index          int
 	Type           string
 	Codec          string
+	Width          int
+	Height         int
 	PixelFormat    string
+	BitRate        int64
+	Channels       int
+	ChannelLayout  string
 	ColorRange     string
 	ColorSpace     string
 	ColorTransfer  string
@@ -445,12 +459,20 @@ type EncodePlan struct {
 	AudioStreamIndexes    []int
 	SubtitleMode          StreamPolicyMode
 	MetadataMode          MetadataMode
+	TrackTitleMode        TrackTitleMode
+	TrackTitles           []TrackTitle
 	AttachmentMode        MetadataMode
 	ChapterMode           MetadataMode
 	AnvilTags             map[string]string
 	FFmpegArgs            []string
 	ABAV1Args             []string
 	HDR                   HDRMetadata
+}
+
+type TrackTitle struct {
+	Type  string
+	Index int
+	Title string
 }
 
 type ValidationResult struct {

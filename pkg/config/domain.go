@@ -184,7 +184,8 @@ func (p ProfileConfig) ToDomain() domain.Profile {
 			DurationToleranceSeconds: p.Validation.DurationToleranceSeconds,
 		},
 		Metadata: domain.MetadataPolicy{
-			Mode: domain.MetadataMode(p.Metadata.Mode),
+			Mode:        domain.MetadataMode(p.Metadata.Mode),
+			TrackTitles: domain.TrackTitleMode(p.Metadata.TrackTitles),
 		},
 		Attachments: domain.AttachmentPolicy{
 			Mode: domain.MetadataMode(p.Attachments.Mode),
