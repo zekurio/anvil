@@ -287,20 +287,22 @@ const (
 )
 
 type Job struct {
-	ID            JobID
-	SourceID      MediaSourceID
-	AssetID       MediaAssetID
-	LibraryName   LibraryName
-	Priority      int
-	State         JobState
-	LeaseOwner    string
-	LeaseDeadline *time.Time
-	HeartbeatAt   *time.Time
-	AttemptCount  int
-	LastError     string
-	CreatedAt     time.Time
-	UpdatedAt     time.Time
-	CompletedAt   *time.Time
+	ID              JobID
+	SourceID        MediaSourceID
+	AssetID         MediaAssetID
+	LibraryName     LibraryName
+	Priority        int
+	State           JobState
+	LeaseOwner      string
+	LeaseDeadline   *time.Time
+	HeartbeatAt     *time.Time
+	AttemptCount    int
+	LastError       string
+	InputSizeBytes  int64
+	OutputSizeBytes int64
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
+	CompletedAt     *time.Time
 }
 
 func (s JobState) Terminal() bool {

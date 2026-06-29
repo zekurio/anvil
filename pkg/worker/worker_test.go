@@ -65,6 +65,47 @@ func TestRunnerResolvesLatestConfigAndCompletesJob(t *testing.T) {
 	}
 }
 
+func TestRunnerRecordsJobFileSizes(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 6, 27, 12, 0, 0, 0, time.UTC)
+	tempDir := t.TempDir()
+	outputPath := filepath.Join(tempDir, "output.mkv")
+
+	store := newFakeWorkerStore()
+	store.source = domain.MediaSource{
+		ID:           1,
+		LibraryName:  "movies",
+		Kind:         domain.SourceKindFile,
+		RelativePath: "Movie.mkv",
+		Fingerprint:  domain.FileFingerprint{SizeBytes: 1000},
+	}
+	runner := Runner{
+		Store:          store,
+		ConfigProvider: workerConfig,
+		Pipeline: pipeline.Runner{
+			Registry: pipeline.NewRegistry(pipeline.BlockFunc{BlockName: "noop", Fn: func(_ context.Context, job *pipeline.JobContext) error {
+				if err := os.WriteFile(outputPath, make([]byte, 650), 0o600); err != nil {
+					t.Fatalf("write output: %v", err)
+				}
+				job.FinalPath = outputPath
+				return nil
+			}}),
+		},
+		Now: func() time.Time { return now },
+	}
+
+	err := runner.Run(ctx, scheduler.Assignment{
+		Job:      domain.Job{ID: 99, SourceID: 1, LibraryName: "movies", State: domain.JobStateLeased},
+		WorkerID: "worker-1",
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if store.recordedInputSize != 1000 || store.recordedOutputSize != 650 {
+		t.Fatalf("recorded sizes = %d/%d, want 1000/650", store.recordedInputSize, store.recordedOutputSize)
+	}
+}
+
 func TestRunnerRequeuesFailedAttemptBeforeMaxAttempts(t *testing.T) {
 	ctx := context.Background()
 	store := newFakeWorkerStore()
@@ -243,12 +284,14 @@ func (s staticMetadataResolver) ResolveJobMetadata(context.Context, domain.Libra
 }
 
 type fakeWorkerStore struct {
-	source          domain.MediaSource
-	asset           domain.MediaAsset
-	attempt         domain.Attempt
-	resolvedLibrary []byte
-	transitions     []domain.JobState
-	events          []domain.AttemptEvent
+	source             domain.MediaSource
+	asset              domain.MediaAsset
+	attempt            domain.Attempt
+	resolvedLibrary    []byte
+	recordedInputSize  int64
+	recordedOutputSize int64
+	transitions        []domain.JobState
+	events             []domain.AttemptEvent
 }
 
 func newFakeWorkerStore() *fakeWorkerStore {
@@ -286,6 +329,12 @@ func (f *fakeWorkerStore) FinishAttempt(_ context.Context, _ domain.AttemptID, s
 func (f *fakeWorkerStore) TransitionJob(_ context.Context, _ domain.JobID, to domain.JobState, _ time.Time, _ string) (domain.Job, error) {
 	f.transitions = append(f.transitions, to)
 	return domain.Job{State: to}, nil
+}
+
+func (f *fakeWorkerStore) RecordJobFileSizes(_ context.Context, _ domain.JobID, inputSizeBytes int64, outputSizeBytes int64, _ time.Time) (domain.Job, error) {
+	f.recordedInputSize = inputSizeBytes
+	f.recordedOutputSize = outputSizeBytes
+	return domain.Job{InputSizeBytes: inputSizeBytes, OutputSizeBytes: outputSizeBytes}, nil
 }
 
 func (f *fakeWorkerStore) HeartbeatJob(_ context.Context, _ domain.JobID, _ string, _ time.Time, _ time.Time) (domain.Job, error) {

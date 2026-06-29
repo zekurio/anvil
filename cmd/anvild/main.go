@@ -33,6 +33,7 @@ const (
 	commandScan        = "scan"
 	commandPreflight   = "preflight"
 	commandJobs        = "jobs"
+	commandStats       = "stats"
 	commandInspect     = "inspect"
 	commandRetry       = "retry"
 	commandRecover     = "recover"
@@ -118,6 +119,8 @@ func run(args []string) error {
 		return runPreflightCommand(context.Background(), cfg, opts)
 	case commandJobs:
 		return runJobsCommand(context.Background(), cfg, opts)
+	case commandStats:
+		return runStatsCommand(context.Background(), cfg, opts)
 	case commandInspect:
 		return runInspectCommand(context.Background(), cfg, opts)
 	case commandRetry:
@@ -183,6 +186,9 @@ func parseCommandOptions(opts options, args []string) (options, error) {
 		flags.StringVar(&opts.jobStateFilter, "state", "", "comma-separated job states to show")
 		flags.IntVar(&opts.jobLimit, "limit", opts.jobLimit, "maximum jobs to show; 0 means no limit")
 		flags.BoolVar(&opts.jsonOutput, "json", false, "write JSON output")
+	case commandStats:
+		flags.StringVar(&opts.libraryName, "library", "", "filter by library name")
+		flags.BoolVar(&opts.jsonOutput, "json", false, "write JSON output")
 	case commandInspect:
 		flags.BoolVar(&opts.jsonOutput, "json", false, "write JSON output")
 	case commandRetry:
@@ -216,6 +222,10 @@ func parseCommandOptions(opts options, args []string) (options, error) {
 		opts.jobStates = states
 		if flags.NArg() > 0 {
 			return options{}, fmt.Errorf("jobs does not accept arguments: %v", flags.Args())
+		}
+	case commandStats:
+		if flags.NArg() > 0 {
+			return options{}, fmt.Errorf("stats does not accept arguments: %v", flags.Args())
 		}
 	case commandInspect:
 		ids, err := parseJobIDs(flags.Args())
@@ -409,6 +419,28 @@ func runJobsCommand(ctx context.Context, cfg config.Config, opts options) error 
 		return encoder.Encode(jobs)
 	}
 	printJobs(jobs)
+	return nil
+}
+
+func runStatsCommand(ctx context.Context, cfg config.Config, opts options) error {
+	state, err := openStore(ctx, cfg)
+	if err != nil {
+		return err
+	}
+	defer closeStore(state)
+
+	stats, err := state.ListLibraryStats(ctx, store.LibraryStatsFilter{
+		LibraryName: domain.LibraryName(opts.libraryName),
+	})
+	if err != nil {
+		return err
+	}
+	if opts.jsonOutput {
+		encoder := json.NewEncoder(os.Stdout)
+		encoder.SetIndent("", "  ")
+		return encoder.Encode(stats)
+	}
+	printLibraryStats(stats)
 	return nil
 }
 
@@ -743,6 +775,22 @@ func printJobs(jobs []store.JobSummary) {
 	_ = table.Flush()
 }
 
+func printLibraryStats(stats []store.LibraryStats) {
+	table := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(table, "LIBRARY\tJOBS\tBEFORE\tAFTER\tSAVED\tSAVED%")
+	for _, stat := range stats {
+		fmt.Fprintf(table, "%s\t%d\t%s\t%s\t%s\t%s\n",
+			stat.LibraryName,
+			stat.Jobs,
+			formatBytes(stat.InputSizeBytes),
+			formatBytes(stat.OutputSizeBytes),
+			formatBytes(stat.SavedBytes),
+			formatPercent(stat.SavedPercent),
+		)
+	}
+	_ = table.Flush()
+}
+
 func jobPath(summary store.JobSummary) string {
 	if summary.AssetPath == "" || summary.AssetPath == summary.SourcePath {
 		return summary.SourcePath
@@ -756,6 +804,29 @@ func jobPath(summary store.JobSummary) string {
 		return source
 	}
 	return source + "/" + asset
+}
+
+func formatBytes(value int64) string {
+	sign := ""
+	size := float64(value)
+	if value < 0 {
+		sign = "-"
+		size = -size
+	}
+	units := []string{"B", "KiB", "MiB", "GiB", "TiB", "PiB"}
+	unit := 0
+	for size >= 1024 && unit < len(units)-1 {
+		size /= 1024
+		unit++
+	}
+	if unit == 0 {
+		return fmt.Sprintf("%s%d %s", sign, int64(size), units[unit])
+	}
+	return fmt.Sprintf("%s%.1f %s", sign, size, units[unit])
+}
+
+func formatPercent(value float64) string {
+	return fmt.Sprintf("%.1f%%", value)
 }
 
 func parseJobStates(value string) ([]domain.JobState, error) {
@@ -803,7 +874,7 @@ func parseJobIDs(args []string) ([]domain.JobID, error) {
 
 func isCommand(value string) bool {
 	switch value {
-	case commandRun, commandCheckConfig, commandScan, commandPreflight, commandJobs, commandInspect, commandRetry, commandRecover, commandCleanup, commandHelp:
+	case commandRun, commandCheckConfig, commandScan, commandPreflight, commandJobs, commandStats, commandInspect, commandRetry, commandRecover, commandCleanup, commandHelp:
 		return true
 	default:
 		return false
@@ -818,6 +889,7 @@ func printUsage() {
   anvild scan [--config PATH] [--library NAME]
   anvild preflight [--config PATH] [--library NAME] [--limit N] [--json]
   anvild jobs [--config PATH] [--library NAME] [--state pending,failed] [--limit N] [--json]
+  anvild stats [--config PATH] [--library NAME] [--json]
   anvild inspect [--config PATH] [--json] JOB_ID
   anvild retry [--config PATH] JOB_ID...
   anvild retry [--config PATH] --failed [--library NAME]
