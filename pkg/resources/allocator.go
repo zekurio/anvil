@@ -21,15 +21,30 @@ func NewAllocator(totalThreads int) Allocator {
 }
 
 func (a Allocator) Allocate(workerID string, activeWorkers int) domain.ResourceAllocation {
-	if activeWorkers < 1 {
-		activeWorkers = 1
+	return a.AllocateFrom(workerID, a.TotalThreads, activeWorkers)
+}
+
+func (a Allocator) AllocateFrom(workerID string, threads int, workers int) domain.ResourceAllocation {
+	if workers < 1 {
+		workers = 1
 	}
-	threads := a.TotalThreads / activeWorkers
-	if threads < 1 {
-		threads = 1
+	allocated := threads / workers
+	if allocated < 1 {
+		allocated = 1
 	}
 	return domain.ResourceAllocation{
 		WorkerID: workerID,
-		Threads:  threads,
+		Threads:  allocated,
 	}
+}
+
+func (a Allocator) AvailableThreads(allocatedThreads int) int {
+	if allocatedThreads < 0 {
+		allocatedThreads = 0
+	}
+	available := a.TotalThreads - allocatedThreads
+	if available < 0 {
+		return 0
+	}
+	return available
 }

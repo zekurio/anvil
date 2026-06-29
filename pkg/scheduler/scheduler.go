@@ -43,9 +43,26 @@ type Scheduler struct {
 	Now            func() time.Time
 
 	mu         sync.Mutex
-	active     map[string]domain.LibraryName
+	active     map[string]activeAssignment
 	workerWG   sync.WaitGroup
 	nextWorker atomic.Uint64
+}
+
+type activeAssignment struct {
+	library domain.LibraryName
+	threads int
+}
+
+type activeSnapshot struct {
+	count     int
+	threads   int
+	byLibrary map[domain.LibraryName]int
+}
+
+type leasedAssignment struct {
+	job           domain.Job
+	workerID      string
+	leaseDeadline time.Time
 }
 
 func (s *Scheduler) Run(ctx context.Context) error {
@@ -68,78 +85,54 @@ func (s *Scheduler) Run(ctx context.Context) error {
 }
 
 func (s *Scheduler) ScheduleAvailable(ctx context.Context) (int, error) {
+	return s.scheduleAvailable(ctx, 0)
+}
+
+func (s *Scheduler) scheduleAvailable(ctx context.Context, limit int) (int, error) {
 	if err := s.validate(); err != nil {
 		return 0, err
 	}
-	slots := s.workerCount() - s.activeCount()
+
+	cfg := s.ConfigProvider()
+	active := s.activeSnapshot()
+	workerCount := s.workerCountForConfig(cfg)
+	slots := workerCount - active.count
 	if slots <= 0 {
+		slog.Debug("scheduler has no available worker slots", "active_workers", active.count, "worker_count", workerCount)
 		return 0, nil
 	}
-	started := 0
-	for range slots {
-		ok, err := s.ScheduleOnce(ctx)
-		if err != nil {
-			return started, err
-		}
-		if !ok {
-			return started, nil
-		}
-		started++
+	allocator := s.allocator(cfg)
+	availableThreads := allocator.AvailableThreads(active.threads)
+	if availableThreads <= 0 {
+		slog.Debug("scheduler has no available worker threads", "active_workers", active.count, "allocated_threads", active.threads, "total_threads", allocator.TotalThreads)
+		return 0, nil
+	}
+
+	maxJobs := slots
+	if availableThreads < maxJobs {
+		maxJobs = availableThreads
+	}
+	if limit > 0 && limit < maxJobs {
+		maxJobs = limit
+	}
+	if maxJobs <= 0 {
+		return 0, nil
+	}
+
+	leased, err := s.leaseAvailable(ctx, cfg, active.byLibrary, maxJobs)
+	started := s.dispatchLeased(ctx, leased, allocator, availableThreads, active.count)
+	if err != nil {
+		return started, err
 	}
 	return started, nil
 }
 
 func (s *Scheduler) ScheduleOnce(ctx context.Context) (bool, error) {
-	if err := s.validate(); err != nil {
+	started, err := s.scheduleAvailable(ctx, 1)
+	if err != nil {
 		return false, err
 	}
-
-	cfg := s.ConfigProvider()
-	allowed := s.eligibleLibraries(cfg)
-	if len(allowed) == 0 {
-		slog.Debug("scheduler has no eligible libraries")
-		return false, nil
-	}
-
-	active := s.activeCount()
-	if active >= s.workerCount() {
-		slog.Debug("scheduler has no available worker slots", "active_workers", active, "worker_count", s.workerCount())
-		return false, nil
-	}
-
-	workerID := s.newWorkerID()
-	now := s.now()
-	leaseDuration := s.LeaseDuration
-	if leaseDuration <= 0 {
-		leaseDuration = cfg.LeaseDuration()
-	}
-	leaseDeadline := now.Add(leaseDuration)
-
-	job, err := s.Store.LeaseNextJobForLibraries(ctx, workerID, leaseDeadline, now, allowed)
-	if err != nil {
-		return false, fmt.Errorf("lease next job: %w", err)
-	}
-	if job == nil {
-		slog.Debug("scheduler found no pending jobs", "allowed_libraries", allowed)
-		return false, nil
-	}
-
-	allocation := s.allocator(cfg).Allocate(workerID, active+1)
-	assignment := Assignment{
-		Job:       *job,
-		WorkerID:  workerID,
-		Resources: allocation,
-	}
-	slog.Info("worker scheduled", "worker", workerID, "job_id", int64(job.ID), "library", string(job.LibraryName), "source_id", int64(job.SourceID), "asset_id", int64(job.AssetID), "threads", allocation.Threads, "active_workers", active+1, "lease_deadline", leaseDeadline)
-	s.register(workerID, job.LibraryName)
-	workerCtx := ctx
-	if s.WorkerContext != nil {
-		workerCtx = s.WorkerContext
-	}
-	s.workerWG.Add(1)
-	go s.runWorker(workerCtx, assignment)
-
-	return true, nil
+	return started > 0, nil
 }
 
 func (s *Scheduler) ActiveCount() int {
@@ -195,7 +188,10 @@ func (s *Scheduler) allocator(cfg config.Config) resources.Allocator {
 }
 
 func (s *Scheduler) eligibleLibraries(cfg config.Config) []domain.LibraryName {
-	activeByLibrary := s.activeByLibrary()
+	return eligibleLibrariesForCounts(cfg, s.activeSnapshot().byLibrary)
+}
+
+func eligibleLibrariesForCounts(cfg config.Config, activeByLibrary map[domain.LibraryName]int) []domain.LibraryName {
 	allowed := make([]domain.LibraryName, 0, len(cfg.Libraries))
 	for libraryName, library := range cfg.Libraries {
 		name := domain.LibraryName(libraryName)
@@ -205,6 +201,71 @@ func (s *Scheduler) eligibleLibraries(cfg config.Config) []domain.LibraryName {
 		allowed = append(allowed, name)
 	}
 	return allowed
+}
+
+func (s *Scheduler) leaseAvailable(ctx context.Context, cfg config.Config, activeByLibrary map[domain.LibraryName]int, maxJobs int) ([]leasedAssignment, error) {
+	counts := make(map[domain.LibraryName]int, len(activeByLibrary))
+	for library, count := range activeByLibrary {
+		counts[library] = count
+	}
+	leaseDuration := s.LeaseDuration
+	if leaseDuration <= 0 {
+		leaseDuration = cfg.LeaseDuration()
+	}
+
+	leased := make([]leasedAssignment, 0, maxJobs)
+	for len(leased) < maxJobs {
+		allowed := eligibleLibrariesForCounts(cfg, counts)
+		if len(allowed) == 0 {
+			if len(leased) == 0 {
+				slog.Debug("scheduler has no eligible libraries")
+			}
+			return leased, nil
+		}
+
+		workerID := s.newWorkerID()
+		now := s.now()
+		leaseDeadline := now.Add(leaseDuration)
+		job, err := s.Store.LeaseNextJobForLibraries(ctx, workerID, leaseDeadline, now, allowed)
+		if err != nil {
+			return leased, fmt.Errorf("lease next job: %w", err)
+		}
+		if job == nil {
+			slog.Debug("scheduler found no pending jobs", "allowed_libraries", allowed)
+			return leased, nil
+		}
+
+		leased = append(leased, leasedAssignment{
+			job:           *job,
+			workerID:      workerID,
+			leaseDeadline: leaseDeadline,
+		})
+		counts[job.LibraryName]++
+	}
+	return leased, nil
+}
+
+func (s *Scheduler) dispatchLeased(ctx context.Context, leased []leasedAssignment, allocator resources.Allocator, availableThreads int, activeBefore int) int {
+	if len(leased) == 0 {
+		return 0
+	}
+	workerCtx := ctx
+	if s.WorkerContext != nil {
+		workerCtx = s.WorkerContext
+	}
+	for i, leasedAssignment := range leased {
+		allocation := allocator.AllocateFrom(leasedAssignment.workerID, availableThreads, len(leased))
+		assignment := Assignment{
+			Job:       leasedAssignment.job,
+			WorkerID:  leasedAssignment.workerID,
+			Resources: allocation,
+		}
+		slog.Info("worker scheduled", "worker", assignment.WorkerID, "job_id", int64(assignment.Job.ID), "library", string(assignment.Job.LibraryName), "source_id", int64(assignment.Job.SourceID), "asset_id", int64(assignment.Job.AssetID), "threads", allocation.Threads, "active_workers", activeBefore+i+1, "lease_deadline", leasedAssignment.leaseDeadline)
+		s.register(assignment)
+		s.workerWG.Add(1)
+		go s.runWorker(workerCtx, assignment)
+	}
+	return len(leased)
 }
 
 func (s *Scheduler) runWorker(ctx context.Context, assignment Assignment) {
@@ -219,13 +280,16 @@ func (s *Scheduler) runWorker(ctx context.Context, assignment Assignment) {
 	slog.Info("worker finished", "worker", assignment.WorkerID, "job_id", int64(assignment.Job.ID), "library", string(assignment.Job.LibraryName), "duration", time.Since(started))
 }
 
-func (s *Scheduler) register(workerID string, library domain.LibraryName) {
+func (s *Scheduler) register(assignment Assignment) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.active == nil {
-		s.active = make(map[string]domain.LibraryName)
+		s.active = make(map[string]activeAssignment)
 	}
-	s.active[workerID] = library
+	s.active[assignment.WorkerID] = activeAssignment{
+		library: assignment.Job.LibraryName,
+		threads: assignment.Resources.Threads,
+	}
 }
 
 func (s *Scheduler) unregister(workerID string) {
@@ -235,19 +299,21 @@ func (s *Scheduler) unregister(workerID string) {
 }
 
 func (s *Scheduler) activeCount() int {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return len(s.active)
+	return s.activeSnapshot().count
 }
 
-func (s *Scheduler) activeByLibrary() map[domain.LibraryName]int {
+func (s *Scheduler) activeSnapshot() activeSnapshot {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	counts := make(map[domain.LibraryName]int, len(s.active))
-	for _, library := range s.active {
-		counts[library]++
+	snapshot := activeSnapshot{
+		count:     len(s.active),
+		byLibrary: make(map[domain.LibraryName]int, len(s.active)),
 	}
-	return counts
+	for _, assignment := range s.active {
+		snapshot.byLibrary[assignment.library]++
+		snapshot.threads += assignment.threads
+	}
+	return snapshot
 }
 
 func (s *Scheduler) newWorkerID() string {
@@ -259,10 +325,13 @@ func (s *Scheduler) newWorkerID() string {
 }
 
 func (s *Scheduler) workerCount() int {
+	return s.workerCountForConfig(s.ConfigProvider())
+}
+
+func (s *Scheduler) workerCountForConfig(cfg config.Config) int {
 	if s.WorkerCount > 0 {
 		return s.WorkerCount
 	}
-	cfg := s.ConfigProvider()
 	if cfg.Daemon.WorkerCount > 0 {
 		return cfg.Daemon.WorkerCount
 	}
