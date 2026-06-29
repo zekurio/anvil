@@ -89,7 +89,12 @@ type ffprobeJSON struct {
 		Index          int               `json:"index"`
 		CodecType      string            `json:"codec_type"`
 		CodecName      string            `json:"codec_name"`
+		Width          int               `json:"width"`
+		Height         int               `json:"height"`
 		PixelFormat    string            `json:"pix_fmt"`
+		BitRate        string            `json:"bit_rate"`
+		Channels       int               `json:"channels"`
+		ChannelLayout  string            `json:"channel_layout"`
 		ColorRange     string            `json:"color_range"`
 		ColorSpace     string            `json:"color_space"`
 		ColorTransfer  string            `json:"color_transfer"`
@@ -132,11 +137,17 @@ func parseFFProbe(path string, data []byte) (domain.ProbeResult, error) {
 		for key, value := range stream.Disposition {
 			disposition[key] = value != 0
 		}
+		bitRate, _ := strconv.ParseInt(stream.BitRate, 10, 64)
 		probed.Streams = append(probed.Streams, domain.MediaStream{
 			Index:          stream.Index,
 			Type:           stream.CodecType,
 			Codec:          stream.CodecName,
+			Width:          stream.Width,
+			Height:         stream.Height,
 			PixelFormat:    stream.PixelFormat,
+			BitRate:        bitRate,
+			Channels:       stream.Channels,
+			ChannelLayout:  stream.ChannelLayout,
 			ColorRange:     stream.ColorRange,
 			ColorSpace:     stream.ColorSpace,
 			ColorTransfer:  stream.ColorTransfer,

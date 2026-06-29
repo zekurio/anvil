@@ -12,8 +12,8 @@ import (
 func TestFFProbeParsesJSON(t *testing.T) {
 	runner := fakeRunner{stdout: []byte(`{
 		"streams": [
-			{"index":0,"codec_type":"video","codec_name":"hevc","pix_fmt":"yuv420p10le","tags":{"language":"eng","title":"Main"},"disposition":{"default":1}},
-			{"index":1,"codec_type":"audio","codec_name":"aac","tags":{"language":"jpn"},"disposition":{"default":0}}
+				{"index":0,"codec_type":"video","codec_name":"hevc","width":1920,"height":800,"pix_fmt":"yuv420p10le","bit_rate":"4200000","tags":{"language":"eng","title":"Main"},"disposition":{"default":1}},
+				{"index":1,"codec_type":"audio","codec_name":"aac","bit_rate":"128000","channels":2,"channel_layout":"stereo","tags":{"language":"jpn"},"disposition":{"default":0}}
 		],
 		"format": {"format_name":"matroska,webm","duration":"123.456","size":"98765"}
 	}`)}
@@ -32,6 +32,21 @@ func TestFFProbeParsesJSON(t *testing.T) {
 	}
 	if got, want := result.Streams[0].PixelFormat, "yuv420p10le"; got != want {
 		t.Fatalf("first stream pixel format = %q, want %q", got, want)
+	}
+	if got, want := result.Streams[0].Width, 1920; got != want {
+		t.Fatalf("first stream width = %d, want %d", got, want)
+	}
+	if got, want := result.Streams[0].Height, 800; got != want {
+		t.Fatalf("first stream height = %d, want %d", got, want)
+	}
+	if got, want := result.Streams[0].BitRate, int64(4200000); got != want {
+		t.Fatalf("first stream bit rate = %d, want %d", got, want)
+	}
+	if got, want := result.Streams[1].Channels, 2; got != want {
+		t.Fatalf("second stream channels = %d, want %d", got, want)
+	}
+	if got, want := result.Streams[1].ChannelLayout, "stereo"; got != want {
+		t.Fatalf("second stream channel layout = %q, want %q", got, want)
 	}
 	if got, want := result.Streams[0].Tags["title"], "Main"; got != want {
 		t.Fatalf("first stream title tag = %q, want %q", got, want)

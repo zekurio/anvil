@@ -35,6 +35,9 @@ path = "/srv/media/movies"
 	if got := cfg.Profiles[DefaultProfileName].Video.MinSavingsPercent; got != DefaultMinSavingsPct {
 		t.Fatalf("expected default min_savings_percent %d, got %v", DefaultMinSavingsPct, got)
 	}
+	if got := cfg.Profiles[DefaultProfileName].Metadata.TrackTitles; got != DefaultTrackTitleMode {
+		t.Fatalf("expected default metadata track_titles %q, got %q", DefaultTrackTitleMode, got)
+	}
 	if got := cfg.Daemon.ShutdownPolicy; got != DefaultShutdownPolicy {
 		t.Fatalf("expected default shutdown policy %q, got %q", DefaultShutdownPolicy, got)
 	}
@@ -246,6 +249,47 @@ path = "/srv/media/movies"
 	}
 	if !profile.Video.DolbyVision.RemoveHDR10Plus {
 		t.Fatal("DolbyVision.RemoveHDR10Plus = false, want true")
+	}
+}
+
+func TestLoadMapsMetadataTrackTitlePolicyToDomainProfile(t *testing.T) {
+	path := writeConfig(t, `
+	[profiles.default-av1.metadata]
+	track_titles = "standardize"
+
+	[libraries.movies]
+	path = "/srv/media/movies"
+	`)
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+
+	_, _, profile, err := cfg.ResolveForLibrary("movies")
+	if err != nil {
+		t.Fatalf("ResolveForLibrary() error = %v", err)
+	}
+	if got, want := profile.Metadata.TrackTitles, domain.TrackTitleModeStandardize; got != want {
+		t.Fatalf("Metadata.TrackTitles = %q, want %q", got, want)
+	}
+}
+
+func TestLoadRejectsInvalidMetadataTrackTitlePolicy(t *testing.T) {
+	path := writeConfig(t, `
+	[profiles.default-av1.metadata]
+	track_titles = "advertise"
+
+	[libraries.movies]
+	path = "/srv/media/movies"
+	`)
+
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("Load() error = nil, want invalid metadata track_titles")
+	}
+	if !strings.Contains(err.Error(), "metadata.track_titles") {
+		t.Fatalf("Load() error = %q, want metadata.track_titles", err.Error())
 	}
 }
 

@@ -496,7 +496,7 @@ func preflightEncodePlan(flow domain.Flow, profile domain.Profile, outputPath st
 		CRFSource:      "ab-av1 crf-search result",
 		Output:         outputPath,
 		AudioAction:    "copy/remux after configured audio cleanup selections",
-		MetadataAction: "apply configured metadata, attachment, chapter, and Anvil marker policies",
+		MetadataAction: fmt.Sprintf("apply metadata=%s, track_titles=%s, attachments=%s, chapters=%s, and Anvil marker policies", profile.Metadata.Mode, profile.Metadata.TrackTitles, profile.Attachments.Mode, profile.Chapters.Mode),
 		CustomArgs:     append([]string(nil), profile.Video.FFmpegArgs...),
 	}
 	if profile.Video.DolbyVision.Mode != domain.DolbyVisionModeOff && profile.Video.DolbyVision.Codec != "" {

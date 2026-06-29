@@ -58,6 +58,7 @@ duration_tolerance_seconds = 2
 
 [profiles.default-av1.metadata]
 mode = "preserve"
+track_titles = "strip"
 
 [profiles.default-av1.attachments]
 mode = "preserve"

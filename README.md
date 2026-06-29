@@ -90,6 +90,8 @@ Profiles can pass extra video encoder/search options with `profiles.<name>.video
 
 Anvil writes `anvil.processed=true` to outputs it processes. Outputs with a newly encoded video also keep the compatibility marker `anvil.encoded=true`; remux-only outputs use `anvil.video.action=copy` and `anvil.process.reason` instead of claiming a new AV1 encode.
 
+Profiles strip per-stream `title` tags by default with `profiles.<name>.metadata.track_titles = "strip"` so release-group or tool branding is not carried into output tracks. Set it to `"preserve"` to keep source titles, or `"standardize"` to replace them with feature-based titles such as `1080p HDR10 AV1`, `English E-AC-3 5.1 640 kb/s`, or `English Forced PGS Subtitle`. This is separate from `profiles.<name>.metadata.mode`, so useful language and disposition metadata can still be preserved.
+
 Before replace or handoff, Anvil validates the staged output against the resolved job context: probe success, duration tolerance, video codec/pixel-format intent, Anvil encoded or processed markers, audio/subtitle stream counts, HDR color metadata preservation, Dolby Vision preservation when enabled, and observed size savings. `profiles.<name>.validation.duration_tolerance_seconds` can override the default two-second duration tolerance. Validation records larger outputs in its size metrics but does not reject them solely for being larger than the source.
 
 Useful operator commands:

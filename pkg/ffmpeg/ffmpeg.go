@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/zekurio/anvil/pkg/domain"
+	"github.com/zekurio/anvil/pkg/language"
 	"github.com/zekurio/anvil/pkg/marker"
 	"github.com/zekurio/anvil/pkg/pipeline"
 	"github.com/zekurio/anvil/pkg/process"
@@ -41,6 +42,10 @@ func (e Encoder) Encode(ctx context.Context, plan domain.EncodePlan) (process.Re
 }
 
 func BuildPlan(profile domain.Profile, inputPath string, outputPath string, allocation domain.ResourceAllocation, search *domain.SearchResult, audio *domain.AudioSelection, metadata domain.JobMetadata) (domain.EncodePlan, error) {
+	return BuildPlanWithProbe(profile, inputPath, outputPath, allocation, search, audio, metadata, nil)
+}
+
+func BuildPlanWithProbe(profile domain.Profile, inputPath string, outputPath string, allocation domain.ResourceAllocation, search *domain.SearchResult, audio *domain.AudioSelection, metadata domain.JobMetadata, probe *domain.ProbeResult) (domain.EncodePlan, error) {
 	if inputPath == "" {
 		return domain.EncodePlan{}, errors.New("input path is required")
 	}
@@ -87,6 +92,7 @@ func BuildPlan(profile domain.Profile, inputPath string, outputPath string, allo
 		CropFilter:        metadata.CropFilter,
 		SubtitleMode:      profile.Subtitles.Mode,
 		MetadataMode:      profile.Metadata.Mode,
+		TrackTitleMode:    trackTitleModeOrDefault(profile.Metadata.TrackTitles),
 		AttachmentMode:    profile.Attachments.Mode,
 		ChapterMode:       profile.Chapters.Mode,
 		AnvilTags:         copyTags(metadata.AnvilTags),
@@ -98,6 +104,7 @@ func BuildPlan(profile domain.Profile, inputPath string, outputPath string, allo
 		plan.AudioSelectionApplied = true
 		plan.AudioStreamIndexes = append([]int(nil), audio.StreamIndexes...)
 	}
+	plan.TrackTitles = standardizedTrackTitles(plan, probe)
 	return plan, nil
 }
 
@@ -120,6 +127,7 @@ func Args(plan domain.EncodePlan) []string {
 	if plan.MetadataMode == domain.MetadataModeStrip {
 		args = append(args, "-map_metadata", "-1")
 	}
+	args = append(args, trackTitleArgs(plan)...)
 	args = append(args, anvilMetadataArgs(plan)...)
 	if plan.AttachmentMode == domain.MetadataModeStrip {
 		args = append(args, "-dn")
@@ -142,7 +150,7 @@ func (Block) Name() string {
 }
 
 func (b Block) Run(ctx context.Context, job *pipeline.JobContext) error {
-	plan, err := BuildPlan(job.Profile, job.InputPath, job.OutputPath, job.Resources, job.Search, job.Audio, job.Metadata)
+	plan, err := BuildPlanWithProbe(job.Profile, job.InputPath, job.OutputPath, job.Resources, job.Search, job.Audio, job.Metadata, job.Probe)
 	if err != nil {
 		return err
 	}
@@ -404,6 +412,278 @@ func subtitleArgs(mode domain.StreamPolicyMode) []string {
 	default:
 		return []string{"-c:s", "copy"}
 	}
+}
+
+func trackTitleArgs(plan domain.EncodePlan) []string {
+	switch trackTitleModeOrDefault(plan.TrackTitleMode) {
+	case domain.TrackTitleModeStrip:
+		return []string{"-metadata:s", "title="}
+	case domain.TrackTitleModeStandardize:
+		if len(plan.TrackTitles) > 0 {
+			args := []string{"-metadata:s", "title="}
+			for _, title := range plan.TrackTitles {
+				if title.Type == "" || title.Title == "" {
+					continue
+				}
+				args = append(args, "-metadata:s:"+title.Type+":"+strconv.Itoa(title.Index), "title="+title.Title)
+			}
+			if len(args) > 0 {
+				return args
+			}
+		}
+		return []string{
+			"-metadata:s", "title=",
+			"-metadata:s:v", "title=Video",
+			"-metadata:s:a", "title=Audio",
+			"-metadata:s:s", "title=Subtitle",
+		}
+	default:
+		return nil
+	}
+}
+
+func trackTitleModeOrDefault(mode domain.TrackTitleMode) domain.TrackTitleMode {
+	if mode == "" {
+		return domain.TrackTitleModeStrip
+	}
+	return mode
+}
+
+func standardizedTrackTitles(plan domain.EncodePlan, probe *domain.ProbeResult) []domain.TrackTitle {
+	if trackTitleModeOrDefault(plan.TrackTitleMode) != domain.TrackTitleModeStandardize || probe == nil {
+		return nil
+	}
+	var titles []domain.TrackTitle
+	for outputIndex, stream := range streamsOfType(probe.Streams, "video") {
+		titles = appendTrackTitle(titles, "v", outputIndex, videoTrackTitle(plan, stream))
+	}
+	for outputIndex, stream := range selectedAudioStreams(plan, probe.Streams) {
+		titles = appendTrackTitle(titles, "a", outputIndex, audioTrackTitle(stream))
+	}
+	for outputIndex, stream := range streamsOfType(probe.Streams, "subtitle") {
+		titles = appendTrackTitle(titles, "s", outputIndex, subtitleTrackTitle(stream))
+	}
+	return titles
+}
+
+func appendTrackTitle(titles []domain.TrackTitle, typ string, index int, title string) []domain.TrackTitle {
+	title = strings.TrimSpace(title)
+	if title == "" {
+		return titles
+	}
+	return append(titles, domain.TrackTitle{Type: typ, Index: index, Title: title})
+}
+
+func streamsOfType(streams []domain.MediaStream, typ string) []domain.MediaStream {
+	var selected []domain.MediaStream
+	for _, stream := range streams {
+		if stream.Type == typ {
+			selected = append(selected, stream)
+		}
+	}
+	return selected
+}
+
+func selectedAudioStreams(plan domain.EncodePlan, streams []domain.MediaStream) []domain.MediaStream {
+	if !plan.AudioSelectionApplied {
+		return streamsOfType(streams, "audio")
+	}
+	byIndex := make(map[int]domain.MediaStream)
+	for _, stream := range streams {
+		if stream.Type == "audio" {
+			byIndex[stream.Index] = stream
+		}
+	}
+	selected := make([]domain.MediaStream, 0, len(plan.AudioStreamIndexes))
+	for _, index := range plan.AudioStreamIndexes {
+		if stream, ok := byIndex[index]; ok {
+			selected = append(selected, stream)
+		}
+	}
+	return selected
+}
+
+func videoTrackTitle(plan domain.EncodePlan, stream domain.MediaStream) string {
+	codec := plan.VideoCodec
+	if plan.VideoCopy || strings.TrimSpace(codec) == "" {
+		codec = stream.Codec
+	}
+	return joinTitleParts(
+		resolutionLabel(stream),
+		dynamicRangeLabel(stream),
+		codecLabel(codec),
+	)
+}
+
+func audioTrackTitle(stream domain.MediaStream) string {
+	return joinTitleParts(
+		languageLabel(stream.Language),
+		codecLabel(stream.Codec),
+		channelLabel(stream),
+		bitRateLabel(stream.BitRate),
+	)
+}
+
+func subtitleTrackTitle(stream domain.MediaStream) string {
+	parts := []string{
+		languageLabel(stream.Language),
+		subtitleScopeLabel(stream),
+	}
+	if stream.Disposition["hearing_impaired"] || stream.Disposition["captions"] || stream.Disposition["descriptions"] {
+		parts = append(parts, "SDH")
+	}
+	if stream.Disposition["comment"] || stream.Disposition["commentary"] {
+		parts = append(parts, "Commentary")
+	}
+	parts = append(parts, codecLabel(stream.Codec), "Subtitle")
+	return joinTitleParts(parts...)
+}
+
+func resolutionLabel(stream domain.MediaStream) string {
+	if stream.Width > 0 {
+		height := (stream.Width*9 + 8) / 16
+		return strconv.Itoa(height) + "p"
+	}
+	if stream.Height > 0 {
+		return strconv.Itoa(stream.Height) + "p"
+	}
+	return ""
+}
+
+func dynamicRangeLabel(stream domain.MediaStream) string {
+	if stream.DolbyVision != nil {
+		return "Dolby Vision"
+	}
+	transfer := strings.ToLower(strings.TrimSpace(stream.ColorTransfer))
+	switch transfer {
+	case "":
+		return ""
+	case "arib-std-b67":
+		return "HLG"
+	case "smpte2084", "smpte2084-10":
+		return "HDR10"
+	default:
+		return "SDR"
+	}
+}
+
+func channelLabel(stream domain.MediaStream) string {
+	switch stream.Channels {
+	case 1:
+		return "Mono"
+	case 2:
+		return "Stereo"
+	case 6:
+		return "5.1"
+	case 8:
+		return "7.1"
+	default:
+		if stream.Channels > 0 {
+			return strconv.Itoa(stream.Channels) + "ch"
+		}
+	}
+	layout := strings.TrimSpace(stream.ChannelLayout)
+	if layout == "" {
+		return ""
+	}
+	return strings.ReplaceAll(layout, "(side)", "")
+}
+
+func bitRateLabel(bitRate int64) string {
+	if bitRate <= 0 {
+		return ""
+	}
+	if bitRate >= 1_000_000 {
+		value := float64(bitRate) / 1_000_000
+		if bitRate%1_000_000 == 0 {
+			return strconv.FormatInt(bitRate/1_000_000, 10) + " Mb/s"
+		}
+		return strconv.FormatFloat(value, 'f', 1, 64) + " Mb/s"
+	}
+	return strconv.FormatInt((bitRate+500)/1000, 10) + " kb/s"
+}
+
+func subtitleScopeLabel(stream domain.MediaStream) string {
+	if stream.Disposition["forced"] {
+		return "Forced"
+	}
+	return "Full"
+}
+
+func languageLabel(value string) string {
+	normalized := language.Normalize(value)
+	if normalized == "" {
+		return ""
+	}
+	switch normalized {
+	case "deu":
+		return "German"
+	case "eng":
+		return "English"
+	case "fra":
+		return "French"
+	case "ita":
+		return "Italian"
+	case "jpn":
+		return "Japanese"
+	case "kor":
+		return "Korean"
+	case "spa":
+		return "Spanish"
+	case "zho":
+		return "Chinese"
+	default:
+		return normalized
+	}
+}
+
+func codecLabel(codec string) string {
+	original := strings.TrimSpace(codec)
+	normalized := strings.ToLower(original)
+	normalized = strings.ReplaceAll(normalized, "_", "-")
+	switch normalized {
+	case "av1", "libsvtav1", "svt-av1", "libaom-av1":
+		return "AV1"
+	case "aac":
+		return "AAC"
+	case "ac3", "ac-3":
+		return "AC-3"
+	case "eac3", "e-ac3", "e-ac-3":
+		return "E-AC-3"
+	case "ass", "ssa":
+		return "ASS"
+	case "dts":
+		return "DTS"
+	case "flac":
+		return "FLAC"
+	case "h264", "h-264", "avc", "libx264":
+		return "H.264"
+	case "h265", "h-265", "hevc", "libx265", "x265", "hevc-qsv", "hevc-nvenc", "hevc-amf", "hevc-videotoolbox":
+		return "HEVC"
+	case "hdmv-pgs-subtitle", "pgs":
+		return "PGS"
+	case "opus", "libopus":
+		return "Opus"
+	case "subrip", "srt":
+		return "SRT"
+	case "truehd":
+		return "TrueHD"
+	case "webvtt":
+		return "VTT"
+	default:
+		return original
+	}
+}
+
+func joinTitleParts(parts ...string) string {
+	joined := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			joined = append(joined, part)
+		}
+	}
+	return strings.Join(joined, " ")
 }
 
 func valueOr(value string, fallback string) string {

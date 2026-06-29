@@ -32,6 +32,7 @@ const (
 	DefaultStreamMode      = "preserve"
 	DefaultStreamFallback  = "keep_all"
 	DefaultMetadataMode    = "preserve"
+	DefaultTrackTitleMode  = "strip"
 	DefaultDolbyVisionMode = "auto"
 	DolbyVisionModeOff     = "off"
 	DolbyVisionModeRequire = "require"
@@ -146,9 +147,10 @@ type ValidationConfig struct {
 	DurationToleranceSeconds float64 `toml:"duration_tolerance_seconds"`
 }
 
-// MetadataConfig is shared by metadata, attachments, and chapters.
+// MetadataConfig declares output metadata policy.
 type MetadataConfig struct {
-	Mode string `toml:"mode"`
+	Mode        string `toml:"mode"`
+	TrackTitles string `toml:"track_titles"`
 }
 
 // LibraryConfig describes a user-defined media library.
@@ -258,7 +260,8 @@ func Default() Config {
 					Fallback: DefaultStreamFallback,
 				},
 				Metadata: MetadataConfig{
-					Mode: DefaultMetadataMode,
+					Mode:        DefaultMetadataMode,
+					TrackTitles: DefaultTrackTitleMode,
 				},
 				Attachments: MetadataConfig{
 					Mode: DefaultMetadataMode,
@@ -364,6 +367,9 @@ func (c Config) Validate() error {
 		}
 		if !validMetadataMode(profile.Metadata.Mode) {
 			problems = append(problems, fmt.Sprintf("profile %q metadata.mode %q is invalid", name, profile.Metadata.Mode))
+		}
+		if !validTrackTitleMode(profile.Metadata.TrackTitles) {
+			problems = append(problems, fmt.Sprintf("profile %q metadata.track_titles %q is invalid", name, profile.Metadata.TrackTitles))
 		}
 		if !validMetadataMode(profile.Attachments.Mode) {
 			problems = append(problems, fmt.Sprintf("profile %q attachments.mode %q is invalid", name, profile.Attachments.Mode))
@@ -561,6 +567,11 @@ func applyProfileDefaults(profile *ProfileConfig) {
 	if strings.TrimSpace(profile.Metadata.Mode) == "" {
 		profile.Metadata.Mode = DefaultMetadataMode
 	}
+	if strings.TrimSpace(profile.Metadata.TrackTitles) == "" {
+		profile.Metadata.TrackTitles = DefaultTrackTitleMode
+	} else {
+		profile.Metadata.TrackTitles = strings.ToLower(strings.TrimSpace(profile.Metadata.TrackTitles))
+	}
 	if strings.TrimSpace(profile.Attachments.Mode) == "" {
 		profile.Attachments.Mode = DefaultMetadataMode
 	}
@@ -679,4 +690,8 @@ func validStreamFallback(fallback string) bool {
 
 func validMetadataMode(mode string) bool {
 	return mode == "preserve" || mode == "strip"
+}
+
+func validTrackTitleMode(mode string) bool {
+	return mode == "preserve" || mode == "strip" || mode == "standardize"
 }

@@ -64,7 +64,10 @@ let
         max_tracks = profile.subtitles.maxTracks;
       };
       validation.duration_tolerance_seconds = profile.validation.durationToleranceSeconds;
-      metadata.mode = profile.metadataMode;
+      metadata = {
+        mode = profile.metadataMode;
+        track_titles = profile.trackTitleMode;
+      };
       attachments.mode = profile.attachmentsMode;
       chapters.mode = profile.chaptersMode;
     };
@@ -423,6 +426,15 @@ let
         ];
         default = "preserve";
         description = "Metadata retention policy.";
+      };
+      trackTitleMode = mkOption {
+        type = types.enum [
+          "preserve"
+          "strip"
+          "standardize"
+        ];
+        default = "strip";
+        description = "Stream title metadata policy.";
       };
       attachmentsMode = mkOption {
         type = types.enum [
