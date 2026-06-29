@@ -814,6 +814,12 @@ in
       serviceConfig =
         {
           ExecStart = "${packageExe} --config /etc/anvil/anvil.toml";
+          Environment = [
+            "TEMP=${cfg.daemon.tempDir}"
+            "TMP=${cfg.daemon.tempDir}"
+            "TMPDIR=${cfg.daemon.tempDir}"
+            "XDG_CACHE_HOME=${cfg.daemon.tempDir}/cache"
+          ];
           Restart = "on-failure";
           StateDirectory = [ "anvil" "anvil/tmp" ];
           RuntimeDirectory = "anvil";

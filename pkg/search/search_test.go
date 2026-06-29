@@ -122,6 +122,9 @@ func TestABAV1RunsWithWritableScratchDir(t *testing.T) {
 	if !containsArg(runner.command.Env, "TMPDIR="+runner.command.Dir) {
 		t.Fatalf("command env = %v, want TMPDIR for scratch dir", runner.command.Env)
 	}
+	if !containsArg(runner.command.Env, "XDG_CACHE_HOME="+filepath.Join(runner.command.Dir, ".cache")) {
+		t.Fatalf("command env = %v, want writable XDG cache dir", runner.command.Env)
+	}
 }
 
 func TestBlockSearchPlanUsesDolbyVisionOverride(t *testing.T) {
@@ -194,6 +197,24 @@ func TestABAV1ConvertsExpectedNoSuitableCRFErrorToSkip(t *testing.T) {
 	}
 	if result.RawOutput == "" || len(result.RawCommand) == 0 {
 		t.Fatalf("result = %#v, want captured output and command", result)
+	}
+}
+
+func TestABAV1ConvertsNoSuitableCRFWithCacheWarningToSkip(t *testing.T) {
+	runner := fakeRunner{
+		stderr: []byte("cache error: IO error: Read-only file system (os error 30)\nError: Failed to find a suitable crf\n"),
+		err:    errors.New("exit status 1"),
+	}
+	result, err := ABAV1{Runner: runner}.Search(context.Background(), domain.EncodePlan{
+		InputPath: "/input.mkv",
+		CRFMin:    18,
+		CRFMax:    40,
+	})
+	if err != nil {
+		t.Fatalf("Search() error = %v", err)
+	}
+	if !result.SkipVideoEncode {
+		t.Fatal("SkipVideoEncode = false, want true")
 	}
 }
 
