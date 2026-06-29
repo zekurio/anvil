@@ -13,6 +13,7 @@ import (
 	"github.com/zekurio/anvil/pkg/marker"
 	"github.com/zekurio/anvil/pkg/pipeline"
 	"github.com/zekurio/anvil/pkg/probe"
+	videocodec "github.com/zekurio/anvil/pkg/video"
 )
 
 const defaultDurationToleranceSeconds = 2
@@ -318,7 +319,7 @@ func expectedVideoCodec(request Request) (string, bool) {
 		codec = request.Profile.Video.Codec
 	}
 	if strings.TrimSpace(codec) == "" {
-		codec = "libsvtav1"
+		codec = "av1"
 	}
 	return encodeIntentCodec(codec), true
 }
@@ -364,17 +365,7 @@ func validVideoCopyAction(action string) bool {
 }
 
 func encodeIntentCodec(codec string) string {
-	normalized := normalizeCodec(codec)
-	switch normalized {
-	case "libsvtav1", "svt-av1", "svtav1", "libaom-av1", "librav1e", "rav1e", "av1-nvenc", "av1-qsv", "av1-amf", "av1":
-		return "av1"
-	case "libx265", "x265", "h265", "hevc-nvenc", "hevc-qsv", "hevc-amf", "hevc":
-		return "hevc"
-	case "libx264", "x264", "h.264", "h264-nvenc", "h264-qsv", "h264-amf", "h264":
-		return "h264"
-	default:
-		return normalized
-	}
+	return videocodec.CanonicalCodec(codec)
 }
 
 func normalizeCodec(codec string) string {

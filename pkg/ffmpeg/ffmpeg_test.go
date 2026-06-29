@@ -204,6 +204,46 @@ func TestArgsMapsSelectedAudioAndAppliesCrop(t *testing.T) {
 	}
 }
 
+func TestArgsUsesQSVInputAndVPPForQSVProfile(t *testing.T) {
+	profile := testProfile()
+	profile.Video.Accelerator = "qsv"
+	plan, err := BuildPlanWithProbe(profile, "/in.mkv", "/out.mkv", domain.ResourceAllocation{Threads: 2}, &domain.SearchResult{CRF: 24}, nil, domain.JobMetadata{CropFilter: "crop=1920:800:0:140"}, &domain.ProbeResult{
+		Streams: []domain.MediaStream{{Type: "video", Codec: "hevc", Width: 3840, Height: 2160}},
+	})
+	if err != nil {
+		t.Fatalf("BuildPlanWithProbe() error = %v", err)
+	}
+	args := Args(plan)
+	for _, pair := range [][2]string{
+		{"-hwaccel", "qsv"},
+		{"-hwaccel_output_format", "qsv"},
+		{"-c:v", "hevc_qsv"},
+		{"-vf", "vpp_qsv=cw=1920:ch=800:cx=0:cy=140"},
+		{"-c:v", "av1_qsv"},
+		{"-global_quality", "24"},
+	} {
+		if !containsPair(args, pair[0], pair[1]) {
+			t.Fatalf("Args() = %v, missing %v", args, pair)
+		}
+	}
+	if containsPair(args, "-crf", "24") {
+		t.Fatalf("Args() = %v, did not expect -crf for QSV encoder", args)
+	}
+}
+
+func TestArgsOmitsNoOpCrop(t *testing.T) {
+	plan, err := BuildPlanWithProbe(testProfile(), "/in.mkv", "/out.mkv", domain.ResourceAllocation{Threads: 2}, &domain.SearchResult{CRF: 24}, nil, domain.JobMetadata{CropFilter: "crop=3840:2160:0:0"}, &domain.ProbeResult{
+		Streams: []domain.MediaStream{{Type: "video", Codec: "hevc", Width: 3840, Height: 2160}},
+	})
+	if err != nil {
+		t.Fatalf("BuildPlanWithProbe() error = %v", err)
+	}
+	args := Args(plan)
+	if containsArg(args, "-vf") {
+		t.Fatalf("Args() = %v, did not expect no-op crop filter", args)
+	}
+}
+
 func TestArgsIncludesCustomFFmpegArgs(t *testing.T) {
 	profile := testProfile()
 	profile.Video.FFmpegArgs = []string{"-svtav1-params", "film-grain=8"}
@@ -222,7 +262,8 @@ func TestBuildPlanUsesDolbyVisionEncoderOverride(t *testing.T) {
 	profile.Video.FFmpegArgs = []string{"-base", "1"}
 	profile.Video.DolbyVision = domain.DolbyVisionProfile{
 		Mode:        domain.DolbyVisionModeAuto,
-		Codec:       "hevc_qsv",
+		Codec:       "hevc",
+		Accelerator: "qsv",
 		Preset:      "medium",
 		PixelFormat: "p010le",
 		FFmpegArgs:  []string{"-global_quality", "24"},
@@ -276,7 +317,8 @@ func TestDolbyVisionBlockRepairsHEVCMKVOutput(t *testing.T) {
 			Video: domain.VideoProfile{
 				DolbyVision: domain.DolbyVisionProfile{
 					Mode:            domain.DolbyVisionModeAuto,
-					Codec:           "hevc_qsv",
+					Codec:           "hevc",
+					Accelerator:     "qsv",
 					RemoveHDR10Plus: true,
 				},
 			},
@@ -409,7 +451,8 @@ func testProfile() domain.Profile {
 	return domain.Profile{
 		Name: domain.ProfileName("default-av1"),
 		Video: domain.VideoProfile{
-			Codec:       "libsvtav1",
+			Codec:       "av1",
+			Accelerator: "software",
 			Preset:      "6",
 			PixelFormat: "yuv420p10le",
 			CRFMin:      18,

@@ -76,6 +76,48 @@ func TestSearchArgsIncludesCropFilter(t *testing.T) {
 	}
 }
 
+func TestSearchArgsUsesQSVInputWhenNoFilterIsNeeded(t *testing.T) {
+	args := SearchArgs(domain.EncodePlan{
+		InputPath:       "/input.mkv",
+		CRFMin:          18,
+		CRFMax:          40,
+		TargetVMAF:      95,
+		VideoCodec:      "av1_qsv",
+		InputVideoCodec: "hevc",
+		Accelerator:     "qsv",
+	})
+	for _, pair := range [][2]string{
+		{"--enc-input", "hwaccel=qsv"},
+		{"--enc-input", "hwaccel_output_format=qsv"},
+		{"--enc-input", "c:v=hevc_qsv"},
+	} {
+		if !containsPair(args, pair[0], pair[1]) {
+			t.Fatalf("SearchArgs() = %v, missing %v", args, pair)
+		}
+	}
+}
+
+func TestSearchArgsAvoidsQSVInputWhenSoftwareCropIsNeeded(t *testing.T) {
+	args := SearchArgs(domain.EncodePlan{
+		InputPath:       "/input.mkv",
+		CRFMin:          18,
+		CRFMax:          40,
+		TargetVMAF:      95,
+		VideoCodec:      "av1_qsv",
+		InputVideoCodec: "hevc",
+		InputWidth:      3840,
+		InputHeight:     2160,
+		Accelerator:     "qsv",
+		CropFilter:      "crop=1920:800:0:140",
+	})
+	if containsArg(args, "hwaccel=qsv") {
+		t.Fatalf("SearchArgs() = %v, did not expect QSV input args with software crop", args)
+	}
+	if !containsPair(args, "--vfilter", "crop=1920:800:0:140") {
+		t.Fatalf("SearchArgs() = %v, want software crop vfilter", args)
+	}
+}
+
 func TestSearchArgsMapsMinimumSavingsToMaxEncodedPercent(t *testing.T) {
 	args := SearchArgs(domain.EncodePlan{
 		InputPath:         "/input.mkv",
@@ -134,17 +176,19 @@ func TestBlockSearchPlanUsesDolbyVisionOverride(t *testing.T) {
 		InputPath: "/input.mkv",
 		Profile: domain.Profile{
 			Video: domain.VideoProfile{
-				Codec:              "libsvtav1",
+				Codec:              "av1",
+				Accelerator:        "software",
 				Preset:             "6",
 				CRFMin:             18,
 				CRFMax:             40,
 				ABAV1Args:          []string{"--enc", "normal=1"},
 				ForceEncodeOnNoFit: true,
 				DolbyVision: domain.DolbyVisionProfile{
-					Mode:      domain.DolbyVisionModeAuto,
-					Codec:     "hevc_qsv",
-					Preset:    "medium",
-					ABAV1Args: []string{"--enc", "low_power=1"},
+					Mode:        domain.DolbyVisionModeAuto,
+					Codec:       "hevc",
+					Accelerator: "qsv",
+					Preset:      "medium",
+					ABAV1Args:   []string{"--enc", "low_power=1"},
 				},
 			},
 		},

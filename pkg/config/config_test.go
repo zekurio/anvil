@@ -35,6 +35,12 @@ path = "/srv/media/movies"
 	if got := cfg.Profiles[DefaultProfileName].Video.MinSavingsPercent; got != DefaultMinSavingsPct {
 		t.Fatalf("expected default min_savings_percent %d, got %v", DefaultMinSavingsPct, got)
 	}
+	if got := cfg.Profiles[DefaultProfileName].Video.Codec; got != "av1" {
+		t.Fatalf("expected default video codec av1, got %q", got)
+	}
+	if got := cfg.Profiles[DefaultProfileName].Video.Accelerator; got != "software" {
+		t.Fatalf("expected default video accelerator software, got %q", got)
+	}
 	if got := cfg.Profiles[DefaultProfileName].Metadata.TrackTitles; got != DefaultTrackTitleMode {
 		t.Fatalf("expected default metadata track_titles %q, got %q", DefaultTrackTitleMode, got)
 	}
@@ -123,6 +129,24 @@ path = "/srv/media/movies"
 	}
 	if !strings.Contains(err.Error(), "daemon.log_level") {
 		t.Fatalf("Load() error = %q, want daemon.log_level", err.Error())
+	}
+}
+
+func TestLoadRejectsConcreteFFmpegEncoderAsVideoCodec(t *testing.T) {
+	path := writeConfig(t, `
+[profiles.default-av1.video]
+codec = "av1_qsv"
+
+[libraries.movies]
+path = "/srv/media/movies"
+`)
+
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("Load() error = nil, want invalid semantic video codec")
+	}
+	if !strings.Contains(err.Error(), "video.codec") {
+		t.Fatalf("Load() error = %q, want video.codec", err.Error())
 	}
 }
 
@@ -279,12 +303,15 @@ path = "/srv/media/movies"
 func TestLoadMapsCustomVideoAndDolbyVisionOptionsToDomainProfile(t *testing.T) {
 	path := writeConfig(t, `
 [profiles.default-av1.video]
+codec = "av1"
+accelerator = "qsv"
 ffmpeg_args = ["-svtav1-params", "film-grain=8"]
 ab_av1_args = ["--enc", "lookahead=120"]
 
 [profiles.default-av1.video.dolby_vision]
 mode = "auto"
-codec = "hevc_qsv"
+codec = "hevc"
+accelerator = "qsv"
 preset = "medium"
 pixel_format = "p010le"
 ffmpeg_args = ["-global_quality", "24"]
@@ -310,8 +337,17 @@ path = "/srv/media/movies"
 	if got, want := profile.Video.ABAV1Args, []string{"--enc", "lookahead=120"}; !sameStrings(got, want) {
 		t.Fatalf("ABAV1Args = %v, want %v", got, want)
 	}
-	if got, want := profile.Video.DolbyVision.Codec, "hevc_qsv"; got != want {
+	if got, want := profile.Video.Codec, "av1"; got != want {
+		t.Fatalf("Video.Codec = %q, want %q", got, want)
+	}
+	if got, want := profile.Video.Accelerator, "qsv"; got != want {
+		t.Fatalf("Video.Accelerator = %q, want %q", got, want)
+	}
+	if got, want := profile.Video.DolbyVision.Codec, "hevc"; got != want {
 		t.Fatalf("DolbyVision.Codec = %q, want %q", got, want)
+	}
+	if got, want := profile.Video.DolbyVision.Accelerator, "qsv"; got != want {
+		t.Fatalf("DolbyVision.Accelerator = %q, want %q", got, want)
 	}
 	if got, want := profile.Video.DolbyVision.PixelFormat, "p010le"; got != want {
 		t.Fatalf("DolbyVision.PixelFormat = %q, want %q", got, want)

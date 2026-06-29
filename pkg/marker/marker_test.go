@@ -134,7 +134,8 @@ func testProfile() domain.Profile {
 	return domain.Profile{
 		Name: domain.ProfileName("default-av1"),
 		Video: domain.VideoProfile{
-			Codec:       "libsvtav1",
+			Codec:       "av1",
+			Accelerator: "software",
 			PixelFormat: "yuv420p10le",
 		},
 	}

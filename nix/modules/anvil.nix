@@ -32,7 +32,7 @@ let
     {
       inherit (profile) container;
       video = {
-        inherit (profile.video) codec preset;
+        inherit (profile.video) codec accelerator preset;
         pixel_format = profile.video.pixelFormat;
         crf_min = profile.video.crfMin;
         crf_max = profile.video.crfMax;
@@ -42,7 +42,7 @@ let
         ffmpeg_args = profile.video.ffmpegArgs;
         ab_av1_args = profile.video.abAv1Args;
         dolby_vision = {
-          inherit (profile.video.dolbyVision) mode codec preset;
+          inherit (profile.video.dolbyVision) mode codec accelerator preset;
           pixel_format = profile.video.dolbyVision.pixelFormat;
           ffmpeg_args = profile.video.dolbyVision.ffmpegArgs;
           ab_av1_args = profile.video.dolbyVision.abAv1Args;
@@ -227,9 +227,25 @@ let
 
       video = {
         codec = mkOption {
-          type = types.str;
-          default = "libsvtav1";
-          description = "ffmpeg video encoder.";
+          type = types.enum [
+            "av1"
+            "hevc"
+            "h265"
+            "h264"
+            "avc"
+          ];
+          default = "av1";
+          description = "Target video bitstream codec. Anvil maps this with accelerator to a concrete ffmpeg encoder.";
+        };
+        accelerator = mkOption {
+          type = types.enum [
+            "software"
+            "qsv"
+            "vaapi"
+            "amf"
+          ];
+          default = "software";
+          description = "Hardware encoder/acceleration backend. Codec selects the target bitstream; this selects the implementation family.";
         };
         preset = mkOption {
           type = types.str;
@@ -295,10 +311,29 @@ let
             description = "How to handle Dolby Vision sources. Auto uses this override only when Dolby Vision is detected and dovi_tool is available.";
           };
           codec = mkOption {
-            type = types.str;
+            type = types.enum [
+              ""
+              "av1"
+              "hevc"
+              "h265"
+              "h264"
+              "avc"
+            ];
             default = "";
-            example = "hevc_qsv";
-            description = "ffmpeg video encoder used for Dolby Vision sources. Empty disables encoder switching unless mode is require.";
+            example = "hevc";
+            description = "Target video bitstream codec for Dolby Vision sources. Empty keeps the normal video codec unless mode is require.";
+          };
+          accelerator = mkOption {
+            type = types.enum [
+              ""
+              "software"
+              "qsv"
+              "vaapi"
+              "amf"
+            ];
+            default = "";
+            example = "qsv";
+            description = "Hardware encoder/acceleration backend for Dolby Vision sources. Empty keeps the normal video accelerator.";
           };
           preset = mkOption {
             type = types.str;
