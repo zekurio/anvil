@@ -253,6 +253,7 @@ func TestLoadMapsMinimumSavingsPolicyToDomainProfile(t *testing.T) {
 	path := writeConfig(t, `
 [profiles.default-av1.video]
 min_savings_percent = 25
+force_encode_on_no_fit = true
 
 [libraries.movies]
 path = "/srv/media/movies"
@@ -269,6 +270,9 @@ path = "/srv/media/movies"
 	}
 	if got, want := profile.Video.MinSavingsPercent, 25.0; got != want {
 		t.Fatalf("MinSavingsPercent = %v, want %v", got, want)
+	}
+	if !profile.Video.ForceEncodeOnNoFit {
+		t.Fatal("ForceEncodeOnNoFit = false, want true")
 	}
 }
 

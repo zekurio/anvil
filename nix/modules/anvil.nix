@@ -38,6 +38,7 @@ let
         crf_max = profile.video.crfMax;
         target_vmaf = profile.video.targetVmaf;
         min_savings_percent = profile.video.minSavingsPercent;
+        force_encode_on_no_fit = profile.video.forceEncodeOnNoFit;
         ffmpeg_args = profile.video.ffmpegArgs;
         ab_av1_args = profile.video.abAv1Args;
         dolby_vision = {
@@ -259,6 +260,11 @@ let
           type = types.number;
           default = 20;
           description = "Minimum input-size savings percentage required during CRF search. Written as ab-av1 --max-encoded-percent = 100 - this value.";
+        };
+        forceEncodeOnNoFit = mkOption {
+          type = types.bool;
+          default = false;
+          description = "When ab-av1 cannot find a CRF satisfying search constraints, force an encode with the lowest tested CRF instead of falling back to video-copy/remux.";
         };
         ffmpegArgs = mkOption {
           type = types.listOf types.str;

@@ -111,16 +111,17 @@ type Profile struct {
 }
 
 type VideoProfile struct {
-	Codec             string
-	Preset            string
-	PixelFormat       string
-	CRFMin            int
-	CRFMax            int
-	TargetVMAF        float64
-	MinSavingsPercent float64
-	FFmpegArgs        []string
-	ABAV1Args         []string
-	DolbyVision       DolbyVisionProfile
+	Codec              string
+	Preset             string
+	PixelFormat        string
+	CRFMin             int
+	CRFMax             int
+	TargetVMAF         float64
+	MinSavingsPercent  float64
+	ForceEncodeOnNoFit bool
+	FFmpegArgs         []string
+	ABAV1Args          []string
+	DolbyVision        DolbyVisionProfile
 }
 
 type DolbyVisionMode string
@@ -419,12 +420,13 @@ type ProbeResult struct {
 }
 
 type SearchResult struct {
-	CRF                   int
-	VMAF                  float64
-	SkipVideoEncode       bool
-	VideoEncodeSkipReason string
-	RawOutput             string
-	RawCommand            []string
+	CRF                     int
+	VMAF                    float64
+	SkipVideoEncode         bool
+	VideoEncodeSkipReason   string
+	ForcedVideoEncodeReason string
+	RawOutput               string
+	RawCommand              []string
 }
 
 type AudioSelection struct {
@@ -454,6 +456,7 @@ type EncodePlan struct {
 	CRFMax                int
 	TargetVMAF            float64
 	MinSavingsPercent     float64
+	ForceEncodeOnNoFit    bool
 	Threads               int
 	Container             string
 	CropFilter            string

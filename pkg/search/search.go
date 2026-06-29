@@ -59,14 +59,14 @@ func (s ABAV1) Search(ctx context.Context, plan domain.EncodePlan) (domain.Searc
 		if fatalSearchFailure(output) {
 			return domain.SearchResult{}, fmt.Errorf("ab-av1 crf-search failed: %w%s", err, outputHint(result))
 		}
-		if search, ok := ParseSkipResult(output); ok {
+		if search, ok := ParseNoFitResult(output, plan); ok {
 			search.RawOutput = combinedOutput(result)
 			search.RawCommand = result.Command
 			return search, nil
 		}
 		return domain.SearchResult{}, fmt.Errorf("ab-av1 crf-search failed: %w%s", err, outputHint(result))
 	}
-	search, err := ParseResult(result.Stdout)
+	search, err := ParseResultForPlan(result.Stdout, plan)
 	if err != nil {
 		return domain.SearchResult{}, fmt.Errorf("%w%s", err, outputHint(result))
 	}
@@ -159,22 +159,23 @@ func (b Block) Run(ctx context.Context, job *pipeline.JobContext) error {
 func searchPlan(job *pipeline.JobContext) domain.EncodePlan {
 	video := domain.EffectiveVideoProfile(job.Profile, job.Metadata)
 	return domain.EncodePlan{
-		InputPath:         job.InputPath,
-		OutputPath:        job.OutputPath,
-		VideoCodec:        video.Codec,
-		VideoSource:       domain.EffectiveVideoSource(job.Metadata),
-		Preset:            video.Preset,
-		PixelFormat:       video.PixelFormat,
-		CRFMin:            video.CRFMin,
-		CRFMax:            video.CRFMax,
-		TargetVMAF:        video.TargetVMAF,
-		MinSavingsPercent: video.MinSavingsPercent,
-		Threads:           job.Resources.Threads,
-		Container:         job.Profile.Container,
-		CropFilter:        job.Metadata.CropFilter,
-		SubtitleMode:      job.Profile.Subtitles.Mode,
-		ABAV1Args:         append([]string(nil), video.ABAV1Args...),
-		HDR:               job.Metadata.HDR,
+		InputPath:          job.InputPath,
+		OutputPath:         job.OutputPath,
+		VideoCodec:         video.Codec,
+		VideoSource:        domain.EffectiveVideoSource(job.Metadata),
+		Preset:             video.Preset,
+		PixelFormat:        video.PixelFormat,
+		CRFMin:             video.CRFMin,
+		CRFMax:             video.CRFMax,
+		TargetVMAF:         video.TargetVMAF,
+		MinSavingsPercent:  video.MinSavingsPercent,
+		ForceEncodeOnNoFit: video.ForceEncodeOnNoFit,
+		Threads:            job.Resources.Threads,
+		Container:          job.Profile.Container,
+		CropFilter:         job.Metadata.CropFilter,
+		SubtitleMode:       job.Profile.Subtitles.Mode,
+		ABAV1Args:          append([]string(nil), video.ABAV1Args...),
+		HDR:                job.Metadata.HDR,
 	}
 }
 
@@ -200,8 +201,12 @@ var (
 )
 
 func ParseResult(output []byte) (domain.SearchResult, error) {
+	return ParseResultForPlan(output, domain.EncodePlan{})
+}
+
+func ParseResultForPlan(output []byte, plan domain.EncodePlan) (domain.SearchResult, error) {
 	text := string(output)
-	if search, ok := ParseSkipResult(text); ok {
+	if search, ok := ParseNoFitResult(text, plan); ok {
 		return search, nil
 	}
 	crf, ok := lastIntMatch(crfPattern, text)
@@ -216,8 +221,25 @@ func ParseResult(output []byte) (domain.SearchResult, error) {
 }
 
 func ParseSkipResult(text string) (domain.SearchResult, bool) {
+	return ParseNoFitResult(text, domain.EncodePlan{})
+}
+
+func ParseNoFitResult(text string, plan domain.EncodePlan) (domain.SearchResult, bool) {
 	if !noGoodCRFPattern.MatchString(text) {
 		return domain.SearchResult{}, false
+	}
+	if plan.ForceEncodeOnNoFit {
+		crf, vmaf, ok := lowestCRFObservation(text)
+		if !ok {
+			crf = crfMin(plan)
+		}
+		if crf > 0 {
+			return domain.SearchResult{
+				CRF:                     crf,
+				VMAF:                    vmaf,
+				ForcedVideoEncodeReason: forceNoGoodCRFReason(text, crf),
+			}, true
+		}
 	}
 	return domain.SearchResult{
 		SkipVideoEncode:       true,
@@ -247,6 +269,31 @@ func lastFloatMatch(pattern *regexp.Regexp, text string) (float64, bool) {
 	return value, err == nil
 }
 
+func lowestCRFObservation(text string) (int, float64, bool) {
+	bestCRF := 0
+	bestVMAF := 0.0
+	found := false
+	for _, line := range strings.Split(text, "\n") {
+		matches := crfPattern.FindAllStringSubmatch(line, -1)
+		if len(matches) == 0 {
+			continue
+		}
+		lineVMAF, _ := lastFloatMatch(vmafPattern, line)
+		for _, match := range matches {
+			value, err := strconv.Atoi(match[1])
+			if err != nil {
+				continue
+			}
+			if !found || value < bestCRF {
+				bestCRF = value
+				bestVMAF = lineVMAF
+				found = true
+			}
+		}
+	}
+	return bestCRF, bestVMAF, found
+}
+
 func noGoodCRFReason(text string) string {
 	for _, line := range strings.Split(text, "\n") {
 		line = strings.TrimSpace(line)
@@ -255,6 +302,10 @@ func noGoodCRFReason(text string) string {
 		}
 	}
 	return "ab-av1 did not find a CRF satisfying VMAF/size constraints"
+}
+
+func forceNoGoodCRFReason(text string, crf int) string {
+	return fmt.Sprintf("%s; forcing encode with lowest tested CRF %d", noGoodCRFReason(text), crf)
 }
 
 func combinedOutput(result process.Result) string {
