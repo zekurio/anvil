@@ -50,7 +50,7 @@
             pname = "anvil";
             version = "0.1.0";
             src = ./.;
-            vendorHash = "sha256-MQjXQsq+k6OmLMZLNwGGC8K5pu1tNxo7uIXjIPGLPIo=";
+            vendorHash = "sha256-r6oqHofzOpERTGwc63voFSzYKu746OMW3iRQtL7k3kQ=";
             nativeBuildInputs = [
               pkgs.makeWrapper
             ];
