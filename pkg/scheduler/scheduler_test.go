@@ -10,7 +10,7 @@ import (
 	"github.com/zekurio/anvil/pkg/resources"
 )
 
-func TestScheduleOnceHonorsLibraryConcurrency(t *testing.T) {
+func TestScheduleAvailableHonorsLibraryConcurrency(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, 6, 27, 12, 0, 0, 0, time.UTC)
 	store := &fakeScheduleStore{
@@ -32,22 +32,15 @@ func TestScheduleOnceHonorsLibraryConcurrency(t *testing.T) {
 		Now:            func() time.Time { return now },
 	}
 
-	started, err := s.ScheduleOnce(ctx)
+	started, err := s.ScheduleAvailable(ctx)
 	if err != nil {
-		t.Fatalf("first ScheduleOnce() error = %v", err)
+		t.Fatalf("ScheduleAvailable() error = %v", err)
 	}
-	if !started {
-		t.Fatal("first ScheduleOnce() started = false, want true")
+	if started != 2 {
+		t.Fatalf("started = %d, want 2", started)
 	}
 	worker.waitStarted(t)
-
-	started, err = s.ScheduleOnce(ctx)
-	if err != nil {
-		t.Fatalf("second ScheduleOnce() error = %v", err)
-	}
-	if !started {
-		t.Fatal("second ScheduleOnce() started = false, want true")
-	}
+	worker.waitStarted(t)
 
 	if len(store.allowed) != 2 {
 		t.Fatalf("lease calls = %d, want 2", len(store.allowed))
@@ -57,6 +50,53 @@ func TestScheduleOnceHonorsLibraryConcurrency(t *testing.T) {
 	}
 	if !containsLibrary(store.allowed[1], "tv") {
 		t.Fatalf("second allowed libraries = %v, want tv included", store.allowed[1])
+	}
+}
+
+func TestScheduleAvailableSplitsAvailableThreadsAndStallsWhenBudgetFull(t *testing.T) {
+	ctx := context.Background()
+	store := &fakeScheduleStore{
+		jobs: []domain.Job{
+			{ID: 1, LibraryName: "movies", State: domain.JobStatePending},
+			{ID: 2, LibraryName: "movies", State: domain.JobStatePending},
+		},
+	}
+	worker := newBlockingWorker()
+	defer worker.releaseAll()
+
+	s := &Scheduler{
+		Store:          store,
+		Worker:         worker,
+		ConfigProvider: resourceScheduleConfig,
+		Allocator:      resources.NewAllocator(8),
+		WorkerCount:    4,
+		LeaseDuration:  time.Minute,
+	}
+
+	started, err := s.ScheduleAvailable(ctx)
+	if err != nil {
+		t.Fatalf("ScheduleAvailable() error = %v", err)
+	}
+	if started != 2 {
+		t.Fatalf("started = %d, want 2", started)
+	}
+	first := worker.waitAssignment(t)
+	second := worker.waitAssignment(t)
+	if first.Resources.Threads != 4 || second.Resources.Threads != 4 {
+		t.Fatalf("threads = %d and %d, want 4 and 4", first.Resources.Threads, second.Resources.Threads)
+	}
+
+	store.jobs = append(store.jobs, domain.Job{ID: 3, LibraryName: "movies", State: domain.JobStatePending})
+	leaseCalls := len(store.allowed)
+	started, err = s.ScheduleAvailable(ctx)
+	if err != nil {
+		t.Fatalf("second ScheduleAvailable() error = %v", err)
+	}
+	if started != 0 {
+		t.Fatalf("started = %d, want 0 while all threads are allocated", started)
+	}
+	if len(store.allowed) != leaseCalls {
+		t.Fatalf("lease calls = %d, want %d while thread budget is full", len(store.allowed), leaseCalls)
 	}
 }
 
@@ -175,6 +215,17 @@ func scheduleConfig() config.Config {
 	return cfg
 }
 
+func resourceScheduleConfig() config.Config {
+	cfg := config.Default()
+	cfg.Daemon.WorkerCount = 4
+	cfg.Daemon.TotalThreads = 8
+	cfg.Daemon.LeaseDuration = "1m"
+	cfg.Libraries = map[string]config.LibraryConfig{
+		"movies": {Kind: "media", Path: "/media/movies", Flow: config.DefaultFlowName, Profile: config.DefaultProfileName},
+	}
+	return cfg
+}
+
 type fakeScheduleStore struct {
 	jobs    []domain.Job
 	allowed [][]domain.LibraryName
@@ -197,19 +248,19 @@ func (f *fakeScheduleStore) LeaseNextJobForLibraries(_ context.Context, workerID
 }
 
 type blockingWorker struct {
-	started chan struct{}
+	started chan Assignment
 	release chan struct{}
 }
 
 func newBlockingWorker() *blockingWorker {
 	return &blockingWorker{
-		started: make(chan struct{}, 8),
+		started: make(chan Assignment, 8),
 		release: make(chan struct{}),
 	}
 }
 
-func (w *blockingWorker) Run(ctx context.Context, _ Assignment) error {
-	w.started <- struct{}{}
+func (w *blockingWorker) Run(ctx context.Context, assignment Assignment) error {
+	w.started <- assignment
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
@@ -220,11 +271,18 @@ func (w *blockingWorker) Run(ctx context.Context, _ Assignment) error {
 
 func (w *blockingWorker) waitStarted(t *testing.T) {
 	t.Helper()
+	_ = w.waitAssignment(t)
+}
+
+func (w *blockingWorker) waitAssignment(t *testing.T) Assignment {
+	t.Helper()
 	select {
-	case <-w.started:
+	case assignment := <-w.started:
+		return assignment
 	case <-time.After(time.Second):
 		t.Fatal("worker did not start")
 	}
+	return Assignment{}
 }
 
 func (w *blockingWorker) releaseAll() {
