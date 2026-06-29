@@ -87,7 +87,8 @@ func BuildPlanWithProbe(profile domain.Profile, inputPath string, outputPath str
 		VideoCopy:          videoCopy,
 		VideoCopyReason:    videoCopyReason,
 		Preset:             video.Preset,
-		PixelFormat:        video.PixelFormat,
+		BitDepth:           videocodec.NormalizeBitDepth(video.BitDepth),
+		PixelFormat:        videocodec.SoftwarePixelFormat(video.BitDepth),
 		CRF:                crf,
 		CRFMin:             video.CRFMin,
 		CRFMax:             video.CRFMax,
@@ -389,13 +390,17 @@ func inputArgs(plan domain.EncodePlan) []string {
 }
 
 func videoFilter(plan domain.EncodePlan) string {
-	if strings.TrimSpace(plan.CropFilter) == "" || videocodec.NoOpCrop(plan.CropFilter, plan.InputWidth, plan.InputHeight) {
-		return ""
-	}
 	if qsvInputPipeline(plan) {
-		if filter, ok := videocodec.QSVCropFilter(plan.CropFilter); ok {
+		format := videocodec.QSVVPPFormat(plan.BitDepth)
+		if strings.TrimSpace(plan.CropFilter) == "" || videocodec.NoOpCrop(plan.CropFilter, plan.InputWidth, plan.InputHeight) {
+			return videocodec.QSVFormatFilter(format)
+		}
+		if filter, ok := videocodec.QSVCropFilter(plan.CropFilter, format); ok {
 			return filter
 		}
+	}
+	if strings.TrimSpace(plan.CropFilter) == "" || videocodec.NoOpCrop(plan.CropFilter, plan.InputWidth, plan.InputHeight) {
+		return ""
 	}
 	return plan.CropFilter
 }
@@ -453,13 +458,23 @@ func videoArgs(plan domain.EncodePlan) []string {
 	if plan.Preset != "" {
 		args = append(args, "-preset", plan.Preset)
 	}
-	if plan.PixelFormat != "" {
-		args = append(args, "-pix_fmt", plan.PixelFormat)
+	if pixelFormat := finalPixelFormat(plan); pixelFormat != "" {
+		args = append(args, "-pix_fmt", pixelFormat)
 	}
 	if plan.Threads > 0 {
 		args = append(args, "-threads", strconv.Itoa(plan.Threads))
 	}
 	return args
+}
+
+func finalPixelFormat(plan domain.EncodePlan) string {
+	if videocodec.EncoderAccelerator(plan.VideoCodec) == videocodec.AcceleratorQSV {
+		return ""
+	}
+	if plan.PixelFormat != "" {
+		return plan.PixelFormat
+	}
+	return videocodec.SoftwarePixelFormat(plan.BitDepth)
 }
 
 func qualityArgs(plan domain.EncodePlan) []string {

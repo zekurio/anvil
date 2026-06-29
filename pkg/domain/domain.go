@@ -114,7 +114,7 @@ type VideoProfile struct {
 	Codec              string
 	Accelerator        string
 	Preset             string
-	PixelFormat        string
+	BitDepth           int
 	CRFMin             int
 	CRFMax             int
 	TargetVMAF         float64
@@ -138,7 +138,7 @@ type DolbyVisionProfile struct {
 	Codec           string
 	Accelerator     string
 	Preset          string
-	PixelFormat     string
+	BitDepth        int
 	FFmpegArgs      []string
 	ABAV1Args       []string
 	RemoveHDR10Plus bool
@@ -456,6 +456,7 @@ type EncodePlan struct {
 	VideoCopy             bool
 	VideoCopyReason       string
 	Preset                string
+	BitDepth              int
 	PixelFormat           string
 	CRF                   int
 	CRFMin                int
@@ -555,8 +556,8 @@ func EffectiveVideoProfile(profile Profile, metadata JobMetadata) VideoProfile {
 	if override.Preset != "" {
 		video.Preset = override.Preset
 	}
-	if override.PixelFormat != "" {
-		video.PixelFormat = override.PixelFormat
+	if override.BitDepth != 0 {
+		video.BitDepth = override.BitDepth
 	}
 	video.FFmpegArgs = append(append([]string(nil), video.FFmpegArgs...), override.FFmpegArgs...)
 	video.ABAV1Args = append(append([]string(nil), video.ABAV1Args...), override.ABAV1Args...)

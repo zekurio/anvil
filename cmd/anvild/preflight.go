@@ -111,6 +111,7 @@ type preflightProfile struct {
 	Container          string               `json:"container"`
 	VideoCodec         string               `json:"video_codec"`
 	VideoAccelerator   string               `json:"video_accelerator"`
+	VideoBitDepth      int                  `json:"video_bit_depth"`
 	CRFMin             int                  `json:"crf_min"`
 	CRFMax             int                  `json:"crf_max"`
 	TargetVMAF         float64              `json:"target_vmaf"`
@@ -124,7 +125,7 @@ type preflightDolbyVision struct {
 	Mode            domain.DolbyVisionMode `json:"mode,omitempty"`
 	Codec           string                 `json:"codec,omitempty"`
 	Accelerator     string                 `json:"accelerator,omitempty"`
-	PixelFormat     string                 `json:"pixel_format,omitempty"`
+	BitDepth        int                    `json:"bit_depth,omitempty"`
 	FFmpegArgs      []string               `json:"ffmpeg_args,omitempty"`
 	ABAV1Args       []string               `json:"ab_av1_args,omitempty"`
 	RemoveHDR10Plus bool                   `json:"remove_hdr10plus"`
@@ -454,6 +455,7 @@ func preflightProfileFromDomain(profile domain.Profile) preflightProfile {
 		Container:          profile.Container,
 		VideoCodec:         profile.Video.Codec,
 		VideoAccelerator:   profile.Video.Accelerator,
+		VideoBitDepth:      profile.Video.BitDepth,
 		CRFMin:             profile.Video.CRFMin,
 		CRFMax:             profile.Video.CRFMax,
 		TargetVMAF:         profile.Video.TargetVMAF,
@@ -464,7 +466,7 @@ func preflightProfileFromDomain(profile domain.Profile) preflightProfile {
 			Mode:            profile.Video.DolbyVision.Mode,
 			Codec:           profile.Video.DolbyVision.Codec,
 			Accelerator:     profile.Video.DolbyVision.Accelerator,
-			PixelFormat:     profile.Video.DolbyVision.PixelFormat,
+			BitDepth:        profile.Video.DolbyVision.BitDepth,
 			FFmpegArgs:      append([]string(nil), profile.Video.DolbyVision.FFmpegArgs...),
 			ABAV1Args:       append([]string(nil), profile.Video.DolbyVision.ABAV1Args...),
 			RemoveHDR10Plus: profile.Video.DolbyVision.RemoveHDR10Plus,
@@ -532,6 +534,13 @@ func noFitEncodeAction(forceEncode bool) string {
 		return "if search policy cannot find a fitting CRF, encode with the lowest tested CRF reported by ab-av1"
 	}
 	return "if search policy decides AV1 fitting is not worthwhile, skip AV1 CRF encode and continue remaining configured actions as video-copy/remux/metadata processing"
+}
+
+func displayIntOrNone(value int) string {
+	if value == 0 {
+		return "<none>"
+	}
+	return strconv.Itoa(value)
 }
 
 func preflightExcludeWarnings(candidate scanner.CandidatePlan) []string {
@@ -664,9 +673,9 @@ func printPreflightReport(report preflightReport) {
 			fmt.Fprintf(os.Stdout, "  job: id=%d state=%s attempt=%s\n", item.Status.ExistingJobID, item.Status.ExistingJobState, item.Status.ExistingAttemptHint)
 		}
 		fmt.Fprintf(os.Stdout, "  flow: %s [%s]\n", item.Flow.Name, strings.Join(item.Flow.Steps, " -> "))
-		fmt.Fprintf(os.Stdout, "  profile: %s container=%s codec=%s accelerator=%s\n", item.Profile.Name, item.Profile.Container, item.Profile.VideoCodec, item.Profile.VideoAccelerator)
+		fmt.Fprintf(os.Stdout, "  profile: %s container=%s codec=%s accelerator=%s bit_depth=%d\n", item.Profile.Name, item.Profile.Container, item.Profile.VideoCodec, item.Profile.VideoAccelerator, item.Profile.VideoBitDepth)
 		if item.Profile.DolbyVision.Mode != "" || item.Profile.DolbyVision.Codec != "" {
-			fmt.Fprintf(os.Stdout, "  dolby-vision: mode=%s codec=%s accelerator=%s pixel_format=%s remove_hdr10plus=%t\n", item.Profile.DolbyVision.Mode, displayOrNone(item.Profile.DolbyVision.Codec), displayOrNone(item.Profile.DolbyVision.Accelerator), displayOrNone(item.Profile.DolbyVision.PixelFormat), item.Profile.DolbyVision.RemoveHDR10Plus)
+			fmt.Fprintf(os.Stdout, "  dolby-vision: mode=%s codec=%s accelerator=%s bit_depth=%s remove_hdr10plus=%t\n", item.Profile.DolbyVision.Mode, displayOrNone(item.Profile.DolbyVision.Codec), displayOrNone(item.Profile.DolbyVision.Accelerator), displayIntOrNone(item.Profile.DolbyVision.BitDepth), item.Profile.DolbyVision.RemoveHDR10Plus)
 		}
 		if item.Search.Enabled {
 			fmt.Fprintf(os.Stdout, "  search: %s crf=%d..%d target_vmaf=%s savings_policy=%s\n",
