@@ -24,6 +24,9 @@ func TestBuildPlanUsesSearchCRF(t *testing.T) {
 	if plan.Threads != 6 {
 		t.Fatalf("threads = %d, want 6", plan.Threads)
 	}
+	if got, want := plan.TrackTitleMode, domain.TrackTitleModeStrip; got != want {
+		t.Fatalf("TrackTitleMode = %q, want %q", got, want)
+	}
 }
 
 func TestArgsPreserveStreamsAndStripMetadata(t *testing.T) {
@@ -40,6 +43,9 @@ func TestArgsPreserveStreamsAndStripMetadata(t *testing.T) {
 			t.Fatalf("Args() = %v, missing %v", args, pair)
 		}
 	}
+	if !containsPair(args, "-metadata:s", "title=") {
+		t.Fatalf("Args() = %v, missing stream title strip", args)
+	}
 	if containsPair(args, "-map", "0") {
 		t.Fatalf("Args() = %v, did not expect global stream map", args)
 	}
@@ -47,6 +53,74 @@ func TestArgsPreserveStreamsAndStripMetadata(t *testing.T) {
 		if !containsPair(args, pair[0], pair[1]) {
 			t.Fatalf("Args() = %v, missing Anvil marker %v", args, pair)
 		}
+	}
+}
+
+func TestArgsCanPreserveTrackTitles(t *testing.T) {
+	profile := testProfile()
+	profile.Metadata.TrackTitles = domain.TrackTitleModePreserve
+	plan, err := BuildPlan(profile, "/in.mkv", "/out.mkv", domain.ResourceAllocation{Threads: 2}, &domain.SearchResult{CRF: 24}, nil, domain.JobMetadata{})
+	if err != nil {
+		t.Fatalf("BuildPlan() error = %v", err)
+	}
+	args := Args(plan)
+	if containsPair(args, "-metadata:s", "title=") {
+		t.Fatalf("Args() = %v, did not expect stream title strip", args)
+	}
+	if containsPair(args, "-metadata:s:a", "title=Audio") {
+		t.Fatalf("Args() = %v, did not expect standardized audio title", args)
+	}
+}
+
+func TestArgsCanStandardizeTrackTitles(t *testing.T) {
+	profile := testProfile()
+	profile.Metadata.TrackTitles = domain.TrackTitleModeStandardize
+	plan, err := BuildPlan(profile, "/in.mkv", "/out.mkv", domain.ResourceAllocation{Threads: 2}, &domain.SearchResult{CRF: 24}, nil, domain.JobMetadata{})
+	if err != nil {
+		t.Fatalf("BuildPlan() error = %v", err)
+	}
+	args := Args(plan)
+	for _, pair := range [][2]string{
+		{"-metadata:s:v", "title=Video"},
+		{"-metadata:s:a", "title=Audio"},
+		{"-metadata:s:s", "title=Subtitle"},
+	} {
+		if !containsPair(args, pair[0], pair[1]) {
+			t.Fatalf("Args() = %v, missing %v", args, pair)
+		}
+	}
+}
+
+func TestArgsStandardizesTrackTitlesFromProbeStreams(t *testing.T) {
+	profile := testProfile()
+	profile.Metadata.TrackTitles = domain.TrackTitleModeStandardize
+	audio := &domain.AudioSelection{StreamIndexes: []int{2, 1}}
+	probe := &domain.ProbeResult{Streams: []domain.MediaStream{
+		{Index: 0, Type: "video", Codec: "hevc", Width: 1920, Height: 800, ColorTransfer: "smpte2084"},
+		{Index: 1, Type: "audio", Codec: "eac3", Language: "eng", Channels: 6, BitRate: 640000},
+		{Index: 2, Type: "audio", Codec: "aac", Language: "jpn", Channels: 2, BitRate: 128000},
+		{Index: 3, Type: "subtitle", Codec: "hdmv_pgs_subtitle", Language: "eng", Disposition: map[string]bool{"forced": true}},
+		{Index: 4, Type: "subtitle", Codec: "subrip", Language: "deu", Disposition: map[string]bool{"hearing_impaired": true}},
+	}}
+	plan, err := BuildPlanWithProbe(profile, "/in.mkv", "/out.mkv", domain.ResourceAllocation{Threads: 2}, &domain.SearchResult{CRF: 24}, audio, domain.JobMetadata{}, probe)
+	if err != nil {
+		t.Fatalf("BuildPlanWithProbe() error = %v", err)
+	}
+	args := Args(plan)
+	for _, pair := range [][2]string{
+		{"-metadata:s", "title="},
+		{"-metadata:s:v:0", "title=1080p HDR10 AV1"},
+		{"-metadata:s:a:0", "title=Japanese AAC Stereo 128 kb/s"},
+		{"-metadata:s:a:1", "title=English E-AC-3 5.1 640 kb/s"},
+		{"-metadata:s:s:0", "title=English Forced PGS Subtitle"},
+		{"-metadata:s:s:1", "title=German Full SDH SRT Subtitle"},
+	} {
+		if !containsPair(args, pair[0], pair[1]) {
+			t.Fatalf("Args() = %v, missing %v", args, pair)
+		}
+	}
+	if containsPair(args, "-metadata:s:a", "title=Audio") {
+		t.Fatalf("Args() = %v, did not expect type-wide generic audio title", args)
 	}
 }
 
