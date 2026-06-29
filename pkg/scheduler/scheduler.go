@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -96,11 +97,13 @@ func (s *Scheduler) ScheduleOnce(ctx context.Context) (bool, error) {
 	cfg := s.ConfigProvider()
 	allowed := s.eligibleLibraries(cfg)
 	if len(allowed) == 0 {
+		slog.Debug("scheduler has no eligible libraries")
 		return false, nil
 	}
 
 	active := s.activeCount()
 	if active >= s.workerCount() {
+		slog.Debug("scheduler has no available worker slots", "active_workers", active, "worker_count", s.workerCount())
 		return false, nil
 	}
 
@@ -110,12 +113,14 @@ func (s *Scheduler) ScheduleOnce(ctx context.Context) (bool, error) {
 	if leaseDuration <= 0 {
 		leaseDuration = cfg.LeaseDuration()
 	}
+	leaseDeadline := now.Add(leaseDuration)
 
-	job, err := s.Store.LeaseNextJobForLibraries(ctx, workerID, now.Add(leaseDuration), now, allowed)
+	job, err := s.Store.LeaseNextJobForLibraries(ctx, workerID, leaseDeadline, now, allowed)
 	if err != nil {
 		return false, fmt.Errorf("lease next job: %w", err)
 	}
 	if job == nil {
+		slog.Debug("scheduler found no pending jobs", "allowed_libraries", allowed)
 		return false, nil
 	}
 
@@ -125,6 +130,7 @@ func (s *Scheduler) ScheduleOnce(ctx context.Context) (bool, error) {
 		WorkerID:  workerID,
 		Resources: allocation,
 	}
+	slog.Info("worker scheduled", "worker", workerID, "job_id", int64(job.ID), "library", string(job.LibraryName), "source_id", int64(job.SourceID), "asset_id", int64(job.AssetID), "threads", allocation.Threads, "active_workers", active+1, "lease_deadline", leaseDeadline)
 	s.register(workerID, job.LibraryName)
 	workerCtx := ctx
 	if s.WorkerContext != nil {
@@ -202,9 +208,15 @@ func (s *Scheduler) eligibleLibraries(cfg config.Config) []domain.LibraryName {
 }
 
 func (s *Scheduler) runWorker(ctx context.Context, assignment Assignment) {
+	started := time.Now()
 	defer s.workerWG.Done()
 	defer s.unregister(assignment.WorkerID)
-	_ = s.Worker.Run(ctx, assignment)
+	slog.Info("worker started", "worker", assignment.WorkerID, "job_id", int64(assignment.Job.ID), "library", string(assignment.Job.LibraryName), "threads", assignment.Resources.Threads)
+	if err := s.Worker.Run(ctx, assignment); err != nil {
+		slog.Warn("worker exited with error", "worker", assignment.WorkerID, "job_id", int64(assignment.Job.ID), "library", string(assignment.Job.LibraryName), "duration", time.Since(started), "error", err)
+		return
+	}
+	slog.Info("worker finished", "worker", assignment.WorkerID, "job_id", int64(assignment.Job.ID), "library", string(assignment.Job.LibraryName), "duration", time.Since(started))
 }
 
 func (s *Scheduler) register(workerID string, library domain.LibraryName) {

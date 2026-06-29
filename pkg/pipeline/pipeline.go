@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/zekurio/anvil/pkg/domain"
@@ -98,14 +99,18 @@ func (r Runner) Run(ctx context.Context, job *JobContext) error {
 		if err := r.record(ctx, job.Attempt.ID, domain.AttemptEventBlockStarted, step.Name, "", map[string]any{"step_index": index}); err != nil {
 			return err
 		}
+		started := time.Now()
+		slog.Info("pipeline step started", "job_id", int64(job.Job.ID), "attempt_id", int64(job.Attempt.ID), "step", step.Name, "step_index", index)
 		stepCtx := ctx
 		if r.StepContext != nil {
 			stepCtx = r.StepContext(ctx, step.Name)
 		}
 		if err := block.Run(stepCtx, job); err != nil {
+			slog.Error("pipeline step failed", "job_id", int64(job.Job.ID), "attempt_id", int64(job.Attempt.ID), "step", step.Name, "step_index", index, "duration", time.Since(started), "error", err)
 			_ = r.record(ctx, job.Attempt.ID, domain.AttemptEventBlockFailed, step.Name, err.Error(), map[string]any{"step_index": index})
 			return fmt.Errorf("run block %q: %w", step.Name, err)
 		}
+		slog.Info("pipeline step finished", "job_id", int64(job.Job.ID), "attempt_id", int64(job.Attempt.ID), "step", step.Name, "step_index", index, "duration", time.Since(started))
 		if err := r.record(ctx, job.Attempt.ID, domain.AttemptEventBlockFinished, step.Name, "", map[string]any{"step_index": index}); err != nil {
 			return err
 		}
