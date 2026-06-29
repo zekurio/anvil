@@ -50,6 +50,7 @@ func (s ABAV1) Search(ctx context.Context, plan domain.EncodePlan) (domain.Searc
 			"TMPDIR=" + scratchDir,
 			"TEMP=" + scratchDir,
 			"TMP=" + scratchDir,
+			"XDG_CACHE_HOME=" + filepath.Join(scratchDir, ".cache"),
 		}
 	}
 	result, err := runner.Run(ctx, command)
@@ -195,7 +196,7 @@ var (
 	crfPattern         = regexp.MustCompile(`(?i)\bcrf\b[^0-9]*(\d{1,3})`)
 	vmafPattern        = regexp.MustCompile(`(?i)\bvmaf\b[^0-9]*(\d+(?:\.\d+)?)`)
 	noGoodCRFPattern   = regexp.MustCompile(`(?i)(failed to find a suitable crf|no suitable crf|no good crf|not worth (?:av1 )?encoding)`)
-	fatalSearchPattern = regexp.MustCompile(`(?i)(panicked at|failed to create temp-dir|read-only file system|permission denied|invalid value|unknown option|unrecognized option)`)
+	fatalSearchPattern = regexp.MustCompile(`(?i)(panicked at|failed to create temp-dir|permission denied|invalid value|unknown option|unrecognized option)`)
 )
 
 func ParseResult(output []byte) (domain.SearchResult, error) {
