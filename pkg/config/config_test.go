@@ -41,6 +41,9 @@ path = "/srv/media/movies"
 	if got := cfg.Profiles[DefaultProfileName].Video.Accelerator; got != "software" {
 		t.Fatalf("expected default video accelerator software, got %q", got)
 	}
+	if got := cfg.Profiles[DefaultProfileName].Video.BitDepth; got != 10 {
+		t.Fatalf("expected default video bit_depth 10, got %d", got)
+	}
 	if got := cfg.Profiles[DefaultProfileName].Metadata.TrackTitles; got != DefaultTrackTitleMode {
 		t.Fatalf("expected default metadata track_titles %q, got %q", DefaultTrackTitleMode, got)
 	}
@@ -147,6 +150,42 @@ path = "/srv/media/movies"
 	}
 	if !strings.Contains(err.Error(), "video.codec") {
 		t.Fatalf("Load() error = %q, want video.codec", err.Error())
+	}
+}
+
+func TestLoadRejectsInvalidVideoBitDepth(t *testing.T) {
+	path := writeConfig(t, `
+[profiles.default-av1.video]
+bit_depth = 12
+
+[libraries.movies]
+path = "/srv/media/movies"
+`)
+
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("Load() error = nil, want invalid bit depth")
+	}
+	if !strings.Contains(err.Error(), "video.bit_depth") {
+		t.Fatalf("Load() error = %q, want video.bit_depth", err.Error())
+	}
+}
+
+func TestLoadRejectsLegacyPixelFormatConfig(t *testing.T) {
+	path := writeConfig(t, `
+[profiles.default-av1.video]
+pixel_format = "yuv420p10le"
+
+[libraries.movies]
+path = "/srv/media/movies"
+`)
+
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("Load() error = nil, want legacy pixel_format rejection")
+	}
+	if !strings.Contains(err.Error(), "unknown config keys") || !strings.Contains(err.Error(), "pixel_format") {
+		t.Fatalf("Load() error = %q, want unknown pixel_format key", err.Error())
 	}
 }
 
@@ -305,6 +344,7 @@ func TestLoadMapsCustomVideoAndDolbyVisionOptionsToDomainProfile(t *testing.T) {
 [profiles.default-av1.video]
 codec = "av1"
 accelerator = "qsv"
+bit_depth = 10
 ffmpeg_args = ["-svtav1-params", "film-grain=8"]
 ab_av1_args = ["--enc", "lookahead=120"]
 
@@ -313,7 +353,7 @@ mode = "auto"
 codec = "hevc"
 accelerator = "qsv"
 preset = "medium"
-pixel_format = "p010le"
+bit_depth = 10
 ffmpeg_args = ["-global_quality", "24"]
 ab_av1_args = ["--enc", "low_power=1"]
 remove_hdr10plus = true
@@ -343,14 +383,17 @@ path = "/srv/media/movies"
 	if got, want := profile.Video.Accelerator, "qsv"; got != want {
 		t.Fatalf("Video.Accelerator = %q, want %q", got, want)
 	}
+	if got, want := profile.Video.BitDepth, 10; got != want {
+		t.Fatalf("Video.BitDepth = %d, want %d", got, want)
+	}
 	if got, want := profile.Video.DolbyVision.Codec, "hevc"; got != want {
 		t.Fatalf("DolbyVision.Codec = %q, want %q", got, want)
 	}
 	if got, want := profile.Video.DolbyVision.Accelerator, "qsv"; got != want {
 		t.Fatalf("DolbyVision.Accelerator = %q, want %q", got, want)
 	}
-	if got, want := profile.Video.DolbyVision.PixelFormat, "p010le"; got != want {
-		t.Fatalf("DolbyVision.PixelFormat = %q, want %q", got, want)
+	if got, want := profile.Video.DolbyVision.BitDepth, 10; got != want {
+		t.Fatalf("DolbyVision.BitDepth = %d, want %d", got, want)
 	}
 	if got, want := profile.Video.DolbyVision.FFmpegArgs, []string{"-global_quality", "24"}; !sameStrings(got, want) {
 		t.Fatalf("DolbyVision.FFmpegArgs = %v, want %v", got, want)

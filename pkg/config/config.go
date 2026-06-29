@@ -106,7 +106,7 @@ type VideoConfig struct {
 	Codec              string            `toml:"codec"`
 	Accelerator        string            `toml:"accelerator"`
 	Preset             string            `toml:"preset"`
-	PixelFormat        string            `toml:"pixel_format"`
+	BitDepth           int               `toml:"bit_depth"`
 	CRFMin             int               `toml:"crf_min"`
 	CRFMax             int               `toml:"crf_max"`
 	TargetVMAF         float64           `toml:"target_vmaf"`
@@ -123,7 +123,7 @@ type DolbyVisionConfig struct {
 	Codec           string   `toml:"codec"`
 	Accelerator     string   `toml:"accelerator"`
 	Preset          string   `toml:"preset"`
-	PixelFormat     string   `toml:"pixel_format"`
+	BitDepth        int      `toml:"bit_depth"`
 	FFmpegArgs      []string `toml:"ffmpeg_args"`
 	ABAV1Args       []string `toml:"ab_av1_args"`
 	RemoveHDR10Plus bool     `toml:"remove_hdr10plus"`
@@ -208,8 +208,12 @@ type DownloadLibraryConfig struct {
 func Load(path string) (Config, error) {
 	cfg := Default()
 	if path != "" {
-		if _, err := toml.DecodeFile(path, &cfg); err != nil {
+		meta, err := toml.DecodeFile(path, &cfg)
+		if err != nil {
 			return Config{}, fmt.Errorf("load config %q: %w", path, err)
+		}
+		if undecoded := meta.Undecoded(); len(undecoded) > 0 {
+			return Config{}, fmt.Errorf("load config %q: unknown config keys: %s", path, formatUndecodedKeys(undecoded))
 		}
 	}
 
@@ -219,6 +223,15 @@ func Load(path string) (Config, error) {
 	}
 
 	return cfg, nil
+}
+
+func formatUndecodedKeys(keys []toml.Key) string {
+	values := make([]string, 0, len(keys))
+	for _, key := range keys {
+		values = append(values, key.String())
+	}
+	sort.Strings(values)
+	return strings.Join(values, ", ")
 }
 
 // Default returns a valid minimal configuration.
@@ -253,7 +266,7 @@ func Default() Config {
 					Codec:             "av1",
 					Accelerator:       "software",
 					Preset:            "6",
-					PixelFormat:       "yuv420p10le",
+					BitDepth:          video.DefaultBitDepth,
 					CRFMin:            18,
 					CRFMax:            40,
 					TargetVMAF:        95,
@@ -349,6 +362,9 @@ func (c Config) Validate() error {
 		if !validAccelerator(profile.Video.Accelerator) {
 			problems = append(problems, fmt.Sprintf("profile %q video.accelerator %q is invalid (must be software, qsv, vaapi, or amf)", name, profile.Video.Accelerator))
 		}
+		if !video.ValidBitDepth(profile.Video.BitDepth) {
+			problems = append(problems, fmt.Sprintf("profile %q video.bit_depth %d is invalid (must be 8 or 10)", name, profile.Video.BitDepth))
+		}
 		if profile.Video.CRFMin < 0 || profile.Video.CRFMax < 0 {
 			problems = append(problems, fmt.Sprintf("profile %q CRF values must be non-negative", name))
 		}
@@ -369,6 +385,9 @@ func (c Config) Validate() error {
 		}
 		if strings.TrimSpace(profile.Video.DolbyVision.Accelerator) != "" && !validAccelerator(profile.Video.DolbyVision.Accelerator) {
 			problems = append(problems, fmt.Sprintf("profile %q video.dolby_vision.accelerator %q is invalid (must be software, qsv, vaapi, or amf)", name, profile.Video.DolbyVision.Accelerator))
+		}
+		if profile.Video.DolbyVision.BitDepth != 0 && !video.ValidBitDepth(profile.Video.DolbyVision.BitDepth) {
+			problems = append(problems, fmt.Sprintf("profile %q video.dolby_vision.bit_depth %d is invalid (must be 8 or 10)", name, profile.Video.DolbyVision.BitDepth))
 		}
 		if profile.Video.DolbyVision.Mode == DolbyVisionModeRequire && strings.TrimSpace(profile.Video.DolbyVision.Codec) == "" {
 			problems = append(problems, fmt.Sprintf("profile %q video.dolby_vision.codec is required when mode is require", name))
@@ -586,6 +605,9 @@ func applyProfileDefaults(profile *ProfileConfig) {
 		profile.Video.Accelerator = "software"
 	}
 	profile.Video.Accelerator = video.NormalizeAccelerator(profile.Video.Accelerator)
+	if profile.Video.BitDepth == 0 {
+		profile.Video.BitDepth = video.DefaultBitDepth
+	}
 	if strings.TrimSpace(profile.Video.DolbyVision.Mode) == "" {
 		profile.Video.DolbyVision.Mode = DefaultDolbyVisionMode
 	}

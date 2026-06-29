@@ -246,7 +246,8 @@ func TestValidatorAcceptsPreservedHDRAndDolbyVisionMetadata(t *testing.T) {
 	outputPath := writeSizedFile(t, "out.mkv", 800)
 	plan := encodePlan(false)
 	plan.VideoCodec = "hevc_qsv"
-	plan.PixelFormat = "p010le"
+	plan.BitDepth = 10
+	plan.PixelFormat = "yuv420p10le"
 	source := sourceProbe()
 	source.Streams[0].ColorTransfer = "smpte2084"
 	source.Streams[0].ColorPrimaries = "bt2020"
@@ -259,7 +260,7 @@ func TestValidatorAcceptsPreservedHDRAndDolbyVisionMetadata(t *testing.T) {
 				Index:          0,
 				Type:           "video",
 				Codec:          "hevc",
-				PixelFormat:    "p010le",
+				PixelFormat:    "yuv420p10le",
 				ColorTransfer:  "smpte2084",
 				ColorPrimaries: "bt2020",
 				ColorSpace:     "bt2020nc",
@@ -359,6 +360,7 @@ func encodePlan(videoCopy bool) domain.EncodePlan {
 		ProfileName: domain.ProfileName("default-av1"),
 		VideoCodec:  "libsvtav1",
 		VideoCopy:   videoCopy,
+		BitDepth:    10,
 		PixelFormat: "yuv420p10le",
 		CRF:         29,
 	}
@@ -370,7 +372,7 @@ func testProfile() domain.Profile {
 		Video: domain.VideoProfile{
 			Codec:       "av1",
 			Accelerator: "software",
-			PixelFormat: "yuv420p10le",
+			BitDepth:    10,
 		},
 		Subtitles: domain.SubtitleProfile{Mode: domain.StreamPolicyPreserve},
 	}

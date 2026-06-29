@@ -218,7 +218,7 @@ func TestArgsUsesQSVInputAndVPPForQSVProfile(t *testing.T) {
 		{"-hwaccel", "qsv"},
 		{"-hwaccel_output_format", "qsv"},
 		{"-c:v", "hevc_qsv"},
-		{"-vf", "vpp_qsv=cw=1920:ch=800:cx=0:cy=140"},
+		{"-vf", "vpp_qsv=cw=1920:ch=800:cx=0:cy=140:format=p010le"},
 		{"-c:v", "av1_qsv"},
 		{"-global_quality", "24"},
 	} {
@@ -228,6 +228,9 @@ func TestArgsUsesQSVInputAndVPPForQSVProfile(t *testing.T) {
 	}
 	if containsPair(args, "-crf", "24") {
 		t.Fatalf("Args() = %v, did not expect -crf for QSV encoder", args)
+	}
+	if containsArg(args, "-pix_fmt") {
+		t.Fatalf("Args() = %v, did not expect software pix_fmt for QSV encoder", args)
 	}
 }
 
@@ -241,6 +244,24 @@ func TestArgsOmitsNoOpCrop(t *testing.T) {
 	args := Args(plan)
 	if containsArg(args, "-vf") {
 		t.Fatalf("Args() = %v, did not expect no-op crop filter", args)
+	}
+}
+
+func TestArgsUsesQSVVPPFormatForNoOpCrop(t *testing.T) {
+	profile := testProfile()
+	profile.Video.Accelerator = "qsv"
+	plan, err := BuildPlanWithProbe(profile, "/in.mkv", "/out.mkv", domain.ResourceAllocation{Threads: 2}, &domain.SearchResult{CRF: 24}, nil, domain.JobMetadata{CropFilter: "crop=3840:2160:0:0"}, &domain.ProbeResult{
+		Streams: []domain.MediaStream{{Type: "video", Codec: "hevc", Width: 3840, Height: 2160}},
+	})
+	if err != nil {
+		t.Fatalf("BuildPlanWithProbe() error = %v", err)
+	}
+	args := Args(plan)
+	if !containsPair(args, "-vf", "vpp_qsv=format=p010le") {
+		t.Fatalf("Args() = %v, want QSV format filter for no-op crop", args)
+	}
+	if containsArg(args, "-pix_fmt") {
+		t.Fatalf("Args() = %v, did not expect software pix_fmt for QSV encoder", args)
 	}
 }
 
@@ -265,7 +286,7 @@ func TestBuildPlanUsesDolbyVisionEncoderOverride(t *testing.T) {
 		Codec:       "hevc",
 		Accelerator: "qsv",
 		Preset:      "medium",
-		PixelFormat: "p010le",
+		BitDepth:    10,
 		FFmpegArgs:  []string{"-global_quality", "24"},
 	}
 	plan, err := BuildPlan(profile, "/in.mkv", "/out.mkv", domain.ResourceAllocation{Threads: 2}, &domain.SearchResult{CRF: 24}, nil, domain.JobMetadata{
@@ -284,17 +305,22 @@ func TestBuildPlanUsesDolbyVisionEncoderOverride(t *testing.T) {
 	if got, want := plan.VideoSource, domain.VideoSourceDolbyVision; got != want {
 		t.Fatalf("VideoSource = %q, want %q", got, want)
 	}
+	if got, want := plan.BitDepth, 10; got != want {
+		t.Fatalf("BitDepth = %d, want %d", got, want)
+	}
 	args := Args(plan)
 	for _, pair := range [][2]string{
 		{"-c:v", "hevc_qsv"},
 		{"-preset", "medium"},
-		{"-pix_fmt", "p010le"},
 		{"-base", "1"},
 		{"-global_quality", "24"},
 	} {
 		if !containsPair(args, pair[0], pair[1]) {
 			t.Fatalf("Args() = %v, missing %v", args, pair)
 		}
+	}
+	if containsArg(args, "-pix_fmt") {
+		t.Fatalf("Args() = %v, did not expect software pix_fmt for QSV encoder", args)
 	}
 }
 
@@ -454,7 +480,7 @@ func testProfile() domain.Profile {
 			Codec:       "av1",
 			Accelerator: "software",
 			Preset:      "6",
-			PixelFormat: "yuv420p10le",
+			BitDepth:    10,
 			CRFMin:      18,
 			CRFMax:      40,
 			TargetVMAF:  95,

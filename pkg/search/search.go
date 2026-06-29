@@ -110,8 +110,8 @@ func SearchArgs(plan domain.EncodePlan) []string {
 	if plan.Preset != "" {
 		args = append(args, "--preset", plan.Preset)
 	}
-	if plan.PixelFormat != "" {
-		args = append(args, "--pix-format", plan.PixelFormat)
+	if pixelFormat := searchPixelFormat(plan); pixelFormat != "" {
+		args = append(args, "--pix-format", pixelFormat)
 	}
 	if filter := searchVideoFilter(plan); filter != "" {
 		args = append(args, "--vfilter", filter)
@@ -170,7 +170,8 @@ func searchPlan(job *pipeline.JobContext) domain.EncodePlan {
 		Accelerator:        videocodec.ResolveAccelerator(video.Accelerator),
 		VideoSource:        domain.EffectiveVideoSource(job.Metadata),
 		Preset:             video.Preset,
-		PixelFormat:        video.PixelFormat,
+		BitDepth:           videocodec.NormalizeBitDepth(video.BitDepth),
+		PixelFormat:        videocodec.SoftwarePixelFormat(video.BitDepth),
 		CRFMin:             video.CRFMin,
 		CRFMax:             video.CRFMax,
 		TargetVMAF:         video.TargetVMAF,
@@ -190,6 +191,13 @@ func searchVideoFilter(plan domain.EncodePlan) string {
 		return ""
 	}
 	return plan.CropFilter
+}
+
+func searchPixelFormat(plan domain.EncodePlan) string {
+	if plan.BitDepth != 0 {
+		return videocodec.SoftwarePixelFormat(plan.BitDepth)
+	}
+	return strings.TrimSpace(plan.PixelFormat)
 }
 
 func inputVideo(probe *domain.ProbeResult) (string, int, int) {

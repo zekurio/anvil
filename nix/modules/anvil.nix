@@ -33,7 +33,7 @@ let
       inherit (profile) container;
       video = {
         inherit (profile.video) codec accelerator preset;
-        pixel_format = profile.video.pixelFormat;
+        bit_depth = profile.video.bitDepth;
         crf_min = profile.video.crfMin;
         crf_max = profile.video.crfMax;
         target_vmaf = profile.video.targetVmaf;
@@ -41,13 +41,16 @@ let
         force_encode_on_no_fit = profile.video.forceEncodeOnNoFit;
         ffmpeg_args = profile.video.ffmpegArgs;
         ab_av1_args = profile.video.abAv1Args;
-        dolby_vision = {
-          inherit (profile.video.dolbyVision) mode codec accelerator preset;
-          pixel_format = profile.video.dolbyVision.pixelFormat;
-          ffmpeg_args = profile.video.dolbyVision.ffmpegArgs;
-          ab_av1_args = profile.video.dolbyVision.abAv1Args;
-          remove_hdr10plus = profile.video.dolbyVision.removeHDR10Plus;
-        };
+        dolby_vision =
+          {
+            inherit (profile.video.dolbyVision) mode codec accelerator preset;
+            ffmpeg_args = profile.video.dolbyVision.ffmpegArgs;
+            ab_av1_args = profile.video.dolbyVision.abAv1Args;
+            remove_hdr10plus = profile.video.dolbyVision.removeHDR10Plus;
+          }
+          // optionalAttrs (profile.video.dolbyVision.bitDepth != null) {
+            bit_depth = profile.video.dolbyVision.bitDepth;
+          };
       };
       audio = {
         languages_to_keep = profile.audio.languagesToKeep;
@@ -252,10 +255,13 @@ let
           default = "6";
           description = "Encoder preset.";
         };
-        pixelFormat = mkOption {
-          type = types.str;
-          default = "yuv420p10le";
-          description = "Output pixel format.";
+        bitDepth = mkOption {
+          type = types.enum [
+            8
+            10
+          ];
+          default = 10;
+          description = "Output video bit depth. Anvil maps this to backend-specific pixel formats.";
         };
         crfMin = mkOption {
           type = types.int;
@@ -340,11 +346,14 @@ let
             default = "";
             description = "Dolby Vision encoder preset. Empty keeps the normal video preset.";
           };
-          pixelFormat = mkOption {
-            type = types.str;
-            default = "";
-            example = "p010le";
-            description = "Dolby Vision output pixel format. Empty keeps the normal video pixel format.";
+          bitDepth = mkOption {
+            type = types.nullOr (types.enum [
+              8
+              10
+            ]);
+            default = null;
+            example = 10;
+            description = "Dolby Vision output bit depth. Null keeps the normal video bit depth.";
           };
           ffmpegArgs = mkOption {
             type = types.listOf types.str;
