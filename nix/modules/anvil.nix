@@ -77,6 +77,7 @@ let
     {
       inherit (library) kind path flow profile priority include exclude;
       scan_interval = library.scanInterval;
+      ignore_regex = library.ignoreRegex;
       concurrency_limit = library.concurrencyLimit;
     }
     // optionalAttrs (library.arr != null) {
@@ -500,6 +501,12 @@ let
         type = types.listOf types.str;
         default = [ ];
         description = "Exclude glob patterns.";
+      };
+      ignoreRegex = mkOption {
+        type = types.listOf types.str;
+        default = [ ];
+        example = [ "(^|/)_UNPACK[^/]*(/|$)" ];
+        description = "Regular expressions matched against slash-normalized library-relative paths. Matching directories are skipped recursively before stability checks.";
       };
       concurrencyLimit = mkOption {
         type = types.int;
