@@ -124,6 +124,26 @@ func TestArgsStandardizesTrackTitlesFromProbeStreams(t *testing.T) {
 	}
 }
 
+func TestCodecLabelUsesBitstreamNameForEncoderNames(t *testing.T) {
+	tests := map[string]string{
+		"av1_qsv":     "AV1",
+		"av1_nvenc":   "AV1",
+		"libsvtav1":   "AV1",
+		"h264_qsv":    "H.264",
+		"hevc_vaapi":  "HEVC",
+		"libx265":     "HEVC",
+		"mystery_enc": "mystery_enc",
+	}
+
+	for input, want := range tests {
+		t.Run(input, func(t *testing.T) {
+			if got := codecLabel(input); got != want {
+				t.Fatalf("codecLabel(%q) = %q, want %q", input, got, want)
+			}
+		})
+	}
+}
+
 func TestArgsMarksOnlyVideoStreamWithAnvilTags(t *testing.T) {
 	plan, err := BuildPlan(testProfile(), "/in.mkv", "/out.mkv", domain.ResourceAllocation{Threads: 2}, &domain.SearchResult{CRF: 24}, &domain.AudioSelection{StreamIndexes: []int{1, 2}}, domain.JobMetadata{
 		StreamCleanupDisabled: true,
