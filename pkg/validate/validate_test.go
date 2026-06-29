@@ -9,6 +9,7 @@ import (
 
 	"github.com/zekurio/anvil/pkg/domain"
 	"github.com/zekurio/anvil/pkg/marker"
+	"github.com/zekurio/anvil/pkg/pipeline"
 )
 
 func TestValidatorAcceptsEncodedOutput(t *testing.T) {
@@ -75,6 +76,50 @@ func TestValidatorRejectsWrongVideoCodec(t *testing.T) {
 		t.Fatal("Validate() error = nil, want codec mismatch")
 	}
 	assertErrorContains(t, result, "video codec")
+}
+
+func TestBlockRecordsValidationMismatchWithoutRejectingEncode(t *testing.T) {
+	outputPath := writeSizedFile(t, "out.mkv", 800)
+	plan := encodePlan(false)
+	probed := outputProbe(plan)
+	probed.Streams[0].Codec = "hevc"
+	job := &pipeline.JobContext{
+		Probe:      sourceProbe(),
+		OutputPath: outputPath,
+		Profile:    testProfile(),
+		EncodePlan: &plan,
+	}
+
+	err := Block{Validator: Validator{Prober: fakeProber{result: probed}}}.Run(context.Background(), job)
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if job.Validation == nil {
+		t.Fatal("job.Validation = nil, want recorded result")
+	}
+	if job.Validation.OK {
+		t.Fatal("job.Validation.OK = true, want observed mismatch")
+	}
+	assertErrorContains(t, *job.Validation, "video codec")
+}
+
+func TestBlockRecordsOutputReadFailureWithoutRejectingEncode(t *testing.T) {
+	plan := encodePlan(false)
+	job := &pipeline.JobContext{
+		Probe:      sourceProbe(),
+		OutputPath: filepath.Join(t.TempDir(), "missing.mkv"),
+		Profile:    testProfile(),
+		EncodePlan: &plan,
+	}
+
+	err := Block{Validator: Validator{Prober: fakeProber{result: outputProbe(plan)}}}.Run(context.Background(), job)
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if job.Validation == nil {
+		t.Fatal("job.Validation = nil, want recorded result")
+	}
+	assertErrorContains(t, *job.Validation, "output stat failed")
 }
 
 func TestValidatorRejectsMissingEncodedMarker(t *testing.T) {

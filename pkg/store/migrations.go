@@ -53,6 +53,8 @@ CREATE TABLE jobs (
 	heartbeat_at TEXT,
 	attempt_count INTEGER NOT NULL DEFAULT 0,
 	last_error TEXT NOT NULL DEFAULT '',
+	input_size_bytes INTEGER NOT NULL DEFAULT 0,
+	output_size_bytes INTEGER NOT NULL DEFAULT 0,
 	created_at TEXT NOT NULL,
 	updated_at TEXT NOT NULL,
 	completed_at TEXT

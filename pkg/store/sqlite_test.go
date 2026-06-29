@@ -230,6 +230,52 @@ func TestListJobsFiltersByLibraryStateAndLimit(t *testing.T) {
 	}
 }
 
+func TestRecordJobFileSizesAndListLibraryStats(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	now := testNow()
+
+	movieJob := completeMeasuredJob(t, ctx, store, "movies", "Movie.mkv", 1000, 650, now)
+	completeMeasuredJob(t, ctx, store, "tv", "Show.mkv", 2000, 2200, now.Add(time.Minute))
+	completeUnmeasuredJob(t, ctx, store, "movies", "MissingStats.mkv", now.Add(2*time.Minute))
+
+	updated, err := store.GetJob(ctx, movieJob.ID)
+	if err != nil {
+		t.Fatalf("GetJob() error = %v", err)
+	}
+	if updated.InputSizeBytes != 1000 || updated.OutputSizeBytes != 650 {
+		t.Fatalf("job sizes = %d/%d, want 1000/650", updated.InputSizeBytes, updated.OutputSizeBytes)
+	}
+
+	stats, err := store.ListLibraryStats(ctx, LibraryStatsFilter{})
+	if err != nil {
+		t.Fatalf("ListLibraryStats() error = %v", err)
+	}
+	if len(stats) != 2 {
+		t.Fatalf("stats len = %d, want 2", len(stats))
+	}
+	if got, want := stats[0].LibraryName, domain.LibraryName("movies"); got != want {
+		t.Fatalf("first library = %q, want %q", got, want)
+	}
+	if stats[0].Jobs != 1 || stats[0].InputSizeBytes != 1000 || stats[0].OutputSizeBytes != 650 || stats[0].SavedBytes != 350 {
+		t.Fatalf("movies stats = %+v, want one 1000 -> 650 job", stats[0])
+	}
+	if got, want := stats[0].SavedPercent, 35.0; got != want {
+		t.Fatalf("movies saved percent = %f, want %f", got, want)
+	}
+	if stats[1].SavedBytes != -200 {
+		t.Fatalf("tv saved bytes = %d, want -200", stats[1].SavedBytes)
+	}
+
+	filtered, err := store.ListLibraryStats(ctx, LibraryStatsFilter{LibraryName: "movies"})
+	if err != nil {
+		t.Fatalf("filtered ListLibraryStats() error = %v", err)
+	}
+	if len(filtered) != 1 || filtered[0].LibraryName != "movies" {
+		t.Fatalf("filtered stats = %+v, want movies only", filtered)
+	}
+}
+
 func TestGetJobSummaryAndListAttemptsForJob(t *testing.T) {
 	ctx := context.Background()
 	store := openTestStore(t)
@@ -698,6 +744,45 @@ func enqueueFailedJob(t *testing.T, ctx context.Context, store *SQLiteStore, lib
 		t.Fatalf("failed transition: %v", err)
 	}
 	return failed
+}
+
+func completeMeasuredJob(t *testing.T, ctx context.Context, store *SQLiteStore, libraryName, relativePath string, inputSize int64, outputSize int64, now time.Time) domain.Job {
+	t.Helper()
+
+	job := completeUnmeasuredJob(t, ctx, store, libraryName, relativePath, now)
+	recorded, err := store.RecordJobFileSizes(ctx, job.ID, inputSize, outputSize, now.Add(3*time.Second))
+	if err != nil {
+		t.Fatalf("RecordJobFileSizes() error = %v", err)
+	}
+	return recorded
+}
+
+func completeUnmeasuredJob(t *testing.T, ctx context.Context, store *SQLiteStore, libraryName, relativePath string, now time.Time) domain.Job {
+	t.Helper()
+
+	source := upsertTestSource(t, ctx, store, libraryName, relativePath)
+	if _, _, err := store.EnqueueJob(ctx, EnqueueJobInput{
+		SourceID:    source.ID,
+		LibraryName: source.LibraryName,
+		Now:         now,
+	}); err != nil {
+		t.Fatalf("enqueue job: %v", err)
+	}
+	job, err := store.LeaseNextJob(ctx, "worker-"+libraryName, now.Add(time.Minute), now)
+	if err != nil {
+		t.Fatalf("LeaseNextJob() error = %v", err)
+	}
+	if _, err := store.TransitionJob(ctx, job.ID, domain.JobStateRunning, now, ""); err != nil {
+		t.Fatalf("running transition: %v", err)
+	}
+	if _, err := store.TransitionJob(ctx, job.ID, domain.JobStateValidating, now.Add(time.Second), ""); err != nil {
+		t.Fatalf("validating transition: %v", err)
+	}
+	completed, err := store.TransitionJob(ctx, job.ID, domain.JobStateComplete, now.Add(2*time.Second), "")
+	if err != nil {
+		t.Fatalf("complete transition: %v", err)
+	}
+	return completed
 }
 
 func leaseAndStartAttempt(t *testing.T, ctx context.Context, store *SQLiteStore, now time.Time, workerID string) (domain.Job, domain.Attempt) {

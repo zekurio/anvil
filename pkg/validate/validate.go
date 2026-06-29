@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math"
 	"os"
 	"strings"
@@ -15,6 +16,8 @@ import (
 )
 
 const defaultDurationToleranceSeconds = 2
+
+var ErrValidationFailed = errors.New("validation failed")
 
 type Prober interface {
 	Probe(ctx context.Context, path string) (domain.ProbeResult, error)
@@ -64,7 +67,7 @@ func (v Validator) Validate(ctx context.Context, request Request) (domain.Valida
 	outputPath := strings.TrimSpace(request.OutputPath)
 	if outputPath == "" {
 		addError(&result, "output path is required")
-		return result, errors.New("validation failed")
+		return result, ErrValidationFailed
 	}
 	info, err := os.Stat(outputPath)
 	if err != nil {
@@ -97,7 +100,7 @@ func (v Validator) Validate(ctx context.Context, request Request) (domain.Valida
 	computeSizeMetrics(&result)
 
 	if !result.OK {
-		return result, errors.New("validation failed")
+		return result, ErrValidationFailed
 	}
 	return result, nil
 }
@@ -425,5 +428,8 @@ func (Block) Name() string {
 func (b Block) Run(ctx context.Context, job *pipeline.JobContext) error {
 	result, err := b.Validator.Validate(ctx, RequestFromJob(job))
 	job.Validation = &result
-	return err
+	if err != nil {
+		slog.Warn("validation observations recorded; accepting encode authority", "error", err, "errors", result.Errors)
+	}
+	return nil
 }

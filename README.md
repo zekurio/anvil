@@ -2,7 +2,7 @@
 
 Anvil is a Linux-first Go daemon for orchestrating AV1 encodes across user-defined media libraries.
 
-The initial implementation uses `ab-av1 crf-search` for encode search, while Anvil owns the final `ffmpeg` command builder and the surrounding orchestration. The daemon is the primary v1 surface, with a small operational CLI for scanning, inspecting jobs, retrying failed work, and recovering stale leases.
+The initial implementation uses `ab-av1 crf-search` for encode search, while Anvil owns the final `ffmpeg` command builder and the surrounding orchestration. The daemon is the primary v1 surface, with a small operational CLI for scanning, inspecting jobs and stats, retrying failed work, and recovering stale leases.
 
 ## Design Direction
 
@@ -28,7 +28,7 @@ pkg/search/       AV1 search integration
 pkg/ffmpeg/       final ffmpeg command construction
 pkg/staging/      temporary output staging
 pkg/replace/      safe replacement workflow
-pkg/validate/     output validation
+pkg/validate/     output diagnostics
 pkg/process/      external process execution helpers
 ```
 
@@ -92,7 +92,7 @@ Anvil writes `anvil.processed=true` to outputs it processes. Outputs with a newl
 
 Profiles strip per-stream `title` tags by default with `profiles.<name>.metadata.track_titles = "strip"` so release-group or tool branding is not carried into output tracks. Set it to `"preserve"` to keep source titles, or `"standardize"` to replace them with feature-based titles such as `1080p HDR10 AV1`, `English E-AC-3 5.1 640 kb/s`, or `English Forced PGS Subtitle`. This is separate from `profiles.<name>.metadata.mode`, so useful language and disposition metadata can still be preserved.
 
-Before replace or handoff, Anvil validates the staged output against the resolved job context: probe success, duration tolerance, video codec/pixel-format intent, Anvil encoded or processed markers, audio/subtitle stream counts, HDR color metadata preservation, Dolby Vision preservation when enabled, and observed size savings. `profiles.<name>.validation.duration_tolerance_seconds` can override the default two-second duration tolerance. Validation records larger outputs in its size metrics but does not reject them solely for being larger than the source.
+Before replace or handoff, Anvil probes the staged output and records diagnostics against the resolved job context: probe success, duration tolerance, video codec/pixel-format intent, Anvil encoded or processed markers, audio/subtitle stream counts, HDR color metadata preservation, Dolby Vision preservation when enabled, and observed size savings. These observations are useful for inspection, but ab-av1 search is the video-encode acceptance authority; Anvil does not reject an encode because its own diagnostic checks disagree. `profiles.<name>.validation.duration_tolerance_seconds` can override the default two-second duration tolerance.
 
 Useful operator commands:
 
@@ -103,6 +103,8 @@ go run ./cmd/anvild preflight --config examples/anvil.toml --library movies --li
 go run ./cmd/anvild preflight --config examples/anvil.toml --json
 go run ./cmd/anvild jobs --config examples/anvil.toml --state pending,failed
 go run ./cmd/anvild jobs --config examples/anvil.toml --json
+go run ./cmd/anvild stats --config examples/anvil.toml
+go run ./cmd/anvild stats --config examples/anvil.toml --json
 go run ./cmd/anvild inspect --config examples/anvil.toml 42
 go run ./cmd/anvild inspect --config examples/anvil.toml --json 42
 go run ./cmd/anvild retry --config examples/anvil.toml 42
@@ -161,4 +163,4 @@ The fixture is intentionally disposable. Reset it with:
 scripts/mock-library.sh reset
 ```
 
-The daemon can scan configured libraries, persist jobs in SQLite, schedule workers, run media pipeline blocks, validate output, and publish replacements or handoffs. The mock fixture is the quickest way to exercise that path locally before testing against real libraries.
+The daemon can scan configured libraries, persist jobs in SQLite, schedule workers, run media pipeline blocks, record output diagnostics, and publish replacements or handoffs. The mock fixture is the quickest way to exercise that path locally before testing against real libraries.

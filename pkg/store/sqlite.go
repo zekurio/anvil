@@ -35,6 +35,19 @@ type JobListFilter struct {
 	Limit       int
 }
 
+type LibraryStatsFilter struct {
+	LibraryName domain.LibraryName
+}
+
+type LibraryStats struct {
+	LibraryName     domain.LibraryName `json:"library_name"`
+	Jobs            int64              `json:"jobs"`
+	InputSizeBytes  int64              `json:"input_size_bytes"`
+	OutputSizeBytes int64              `json:"output_size_bytes"`
+	SavedBytes      int64              `json:"saved_bytes"`
+	SavedPercent    float64            `json:"saved_percent"`
+}
+
 type JobSummary struct {
 	Job        domain.Job
 	SourceKind domain.SourceKind
@@ -271,8 +284,8 @@ INSERT OR IGNORE INTO jobs (
 func (s *SQLiteStore) GetJobForTarget(ctx context.Context, sourceID domain.MediaSourceID, assetID domain.MediaAssetID) (domain.Job, error) {
 	row := s.db.QueryRowContext(ctx, `
 SELECT id, source_id, asset_id, library_name, priority, state, lease_owner,
-	lease_deadline, heartbeat_at, attempt_count, last_error, created_at,
-	updated_at, completed_at
+	lease_deadline, heartbeat_at, attempt_count, last_error, input_size_bytes,
+	output_size_bytes, created_at, updated_at, completed_at
 FROM jobs
 WHERE source_id = ?
 	AND ifnull(asset_id, 0) = ?
@@ -297,7 +310,8 @@ func (s *SQLiteStore) ListJobs(ctx context.Context, filter JobListFilter) ([]Job
 	query := `
 SELECT j.id, j.source_id, j.asset_id, j.library_name, j.priority, j.state,
 	j.lease_owner, j.lease_deadline, j.heartbeat_at, j.attempt_count,
-	j.last_error, j.created_at, j.updated_at, j.completed_at,
+	j.last_error, j.input_size_bytes, j.output_size_bytes, j.created_at,
+	j.updated_at, j.completed_at,
 	s.kind, s.relative_path, a.relative_path, a.role
 FROM jobs j
 JOIN media_sources s ON s.id = j.source_id
@@ -345,7 +359,8 @@ func (s *SQLiteStore) GetJobSummary(ctx context.Context, id domain.JobID) (JobSu
 	row := s.db.QueryRowContext(ctx, `
 SELECT j.id, j.source_id, j.asset_id, j.library_name, j.priority, j.state,
 	j.lease_owner, j.lease_deadline, j.heartbeat_at, j.attempt_count,
-	j.last_error, j.created_at, j.updated_at, j.completed_at,
+	j.last_error, j.input_size_bytes, j.output_size_bytes, j.created_at,
+	j.updated_at, j.completed_at,
 	s.kind, s.relative_path, a.relative_path, a.role
 FROM jobs j
 JOIN media_sources s ON s.id = j.source_id
@@ -353,6 +368,45 @@ LEFT JOIN media_assets a ON a.id = j.asset_id
 WHERE j.id = ?
 `, int64(id))
 	return scanJobSummary(row)
+}
+
+func (s *SQLiteStore) ListLibraryStats(ctx context.Context, filter LibraryStatsFilter) ([]LibraryStats, error) {
+	query := `
+SELECT library_name, COUNT(*), COALESCE(SUM(input_size_bytes), 0), COALESCE(SUM(output_size_bytes), 0)
+FROM jobs
+WHERE state = ?
+	AND input_size_bytes > 0
+	AND output_size_bytes > 0
+`
+	args := []any{string(domain.JobStateComplete)}
+	if filter.LibraryName != "" {
+		query += " AND library_name = ?\n"
+		args = append(args, string(filter.LibraryName))
+	}
+	query += "GROUP BY library_name\nORDER BY library_name ASC\n"
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list library stats: %w", err)
+	}
+	defer rows.Close()
+
+	var stats []LibraryStats
+	for rows.Next() {
+		var stat LibraryStats
+		if err := rows.Scan(&stat.LibraryName, &stat.Jobs, &stat.InputSizeBytes, &stat.OutputSizeBytes); err != nil {
+			return nil, fmt.Errorf("scan library stats: %w", err)
+		}
+		stat.SavedBytes = stat.InputSizeBytes - stat.OutputSizeBytes
+		if stat.InputSizeBytes > 0 {
+			stat.SavedPercent = float64(stat.SavedBytes) / float64(stat.InputSizeBytes) * 100
+		}
+		stats = append(stats, stat)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate library stats: %w", err)
+	}
+	return stats, nil
 }
 
 func (s *SQLiteStore) RetryJob(ctx context.Context, id domain.JobID, now time.Time) (domain.Job, error) {
@@ -394,6 +448,32 @@ WHERE id = ?
 	return job, nil
 }
 
+func (s *SQLiteStore) RecordJobFileSizes(ctx context.Context, jobID domain.JobID, inputSizeBytes int64, outputSizeBytes int64, now time.Time) (domain.Job, error) {
+	now = defaultNow(now)
+	if inputSizeBytes < 0 {
+		inputSizeBytes = 0
+	}
+	if outputSizeBytes < 0 {
+		outputSizeBytes = 0
+	}
+	result, err := s.db.ExecContext(ctx, `
+UPDATE jobs
+SET input_size_bytes = ?, output_size_bytes = ?, updated_at = ?
+WHERE id = ?
+`, inputSizeBytes, outputSizeBytes, encodeTime(now), int64(jobID))
+	if err != nil {
+		return domain.Job{}, fmt.Errorf("record job file sizes: %w", err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return domain.Job{}, fmt.Errorf("record job file sizes rows affected: %w", err)
+	}
+	if rows == 0 {
+		return domain.Job{}, ErrNotFound
+	}
+	return s.GetJob(ctx, jobID)
+}
+
 func (s *SQLiteStore) RetryFailedJobs(ctx context.Context, libraryName domain.LibraryName, now time.Time) (int64, error) {
 	now = defaultNow(now)
 	query := `
@@ -421,8 +501,8 @@ WHERE state = ?
 func (s *SQLiteStore) GetActiveJobForTarget(ctx context.Context, sourceID domain.MediaSourceID, assetID domain.MediaAssetID) (domain.Job, error) {
 	row := s.db.QueryRowContext(ctx, `
 SELECT id, source_id, asset_id, library_name, priority, state, lease_owner,
-	lease_deadline, heartbeat_at, attempt_count, last_error, created_at,
-	updated_at, completed_at
+	lease_deadline, heartbeat_at, attempt_count, last_error, input_size_bytes,
+	output_size_bytes, created_at, updated_at, completed_at
 FROM jobs
 WHERE source_id = ?
 	AND ifnull(asset_id, 0) = ?
@@ -815,8 +895,8 @@ WHERE `+staleWhere+`
 func (s *SQLiteStore) GetJob(ctx context.Context, id domain.JobID) (domain.Job, error) {
 	row := s.db.QueryRowContext(ctx, `
 SELECT id, source_id, asset_id, library_name, priority, state, lease_owner,
-	lease_deadline, heartbeat_at, attempt_count, last_error, created_at,
-	updated_at, completed_at
+	lease_deadline, heartbeat_at, attempt_count, last_error, input_size_bytes,
+	output_size_bytes, created_at, updated_at, completed_at
 FROM jobs
 WHERE id = ?
 `, int64(id))
@@ -950,8 +1030,8 @@ INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)
 func getJobTx(ctx context.Context, tx *sql.Tx, id domain.JobID) (domain.Job, error) {
 	row := tx.QueryRowContext(ctx, `
 SELECT id, source_id, asset_id, library_name, priority, state, lease_owner,
-	lease_deadline, heartbeat_at, attempt_count, last_error, created_at,
-	updated_at, completed_at
+	lease_deadline, heartbeat_at, attempt_count, last_error, input_size_bytes,
+	output_size_bytes, created_at, updated_at, completed_at
 FROM jobs
 WHERE id = ?
 `, int64(id))
@@ -1052,6 +1132,8 @@ func scanJob(row scanner) (domain.Job, error) {
 		&heartbeatAt,
 		&job.AttemptCount,
 		&job.LastError,
+		&job.InputSizeBytes,
+		&job.OutputSizeBytes,
 		&createdAt,
 		&updatedAt,
 		&completedAt,
@@ -1095,6 +1177,8 @@ func scanJobSummary(row scanner) (JobSummary, error) {
 		&heartbeatAt,
 		&summary.Job.AttemptCount,
 		&summary.Job.LastError,
+		&summary.Job.InputSizeBytes,
+		&summary.Job.OutputSizeBytes,
 		&createdAt,
 		&updatedAt,
 		&completedAt,
