@@ -34,6 +34,7 @@ type ScanResult struct {
 	ExistingJobs    int
 	SkippedIgnored  int
 	SkippedUnstable int
+	NextStableAt    time.Time
 }
 
 type LibraryPlan struct {
@@ -41,6 +42,7 @@ type LibraryPlan struct {
 	Candidates      []CandidatePlan
 	SkippedIgnored  int
 	SkippedUnstable int
+	NextStableAt    time.Time
 }
 
 type CandidatePlan struct {
@@ -123,6 +125,10 @@ func (s Scanner) PlanLibrary(ctx context.Context, library config.LibraryConfig) 
 		enqueueable := !candidate.ignored && !unstable && enqueueableRole(candidate.role)
 		if unstable {
 			plan.SkippedUnstable++
+			stableAt := stat.modTime.Add(stableFor).UTC()
+			if plan.NextStableAt.IsZero() || stableAt.Before(plan.NextStableAt) {
+				plan.NextStableAt = stableAt
+			}
 		}
 		plan.Candidates = append(plan.Candidates, CandidatePlan{
 			LibraryName:         domain.LibraryName(library.Name),
@@ -151,6 +157,7 @@ func (s Scanner) applyPlan(ctx context.Context, plan LibraryPlan) (ScanResult, e
 		Libraries:       1,
 		SkippedIgnored:  plan.SkippedIgnored,
 		SkippedUnstable: plan.SkippedUnstable,
+		NextStableAt:    plan.NextStableAt,
 	}
 	sourceByKey := make(map[string]domain.MediaSource)
 	now := s.now()
@@ -238,6 +245,9 @@ func (r *ScanResult) add(other ScanResult) {
 	r.ExistingJobs += other.ExistingJobs
 	r.SkippedIgnored += other.SkippedIgnored
 	r.SkippedUnstable += other.SkippedUnstable
+	if !other.NextStableAt.IsZero() && (r.NextStableAt.IsZero() || other.NextStableAt.Before(r.NextStableAt)) {
+		r.NextStableAt = other.NextStableAt
+	}
 }
 
 type candidate struct {

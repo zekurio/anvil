@@ -309,7 +309,7 @@ func runDaemon(cfg config.Config, opts options) error {
 
 	runConfiguredStagingCleanup(cfg)
 
-	slog.Info("starting anvild", "mode", mode, "config", configPathLabel(opts.configPath), "temp_dir", cfg.Daemon.TempDir, "store", cfg.Daemon.StorePath, "workers", cfg.Daemon.WorkerCount, "threads", cfg.Daemon.TotalThreads, "shutdown_policy", cfg.Daemon.ShutdownPolicy, "shutdown_timeout", cfg.Daemon.ShutdownTimeout, "log_level", cfg.Daemon.LogLevel, "recovered_jobs", recovered)
+	slog.Info("starting anvild", "mode", mode, "config", configPathLabel(opts.configPath), "temp_dir", cfg.Daemon.TempDir, "store", cfg.Daemon.StorePath, "workers", cfg.Daemon.WorkerCount, "threads", cfg.Daemon.TotalThreads, "filesystem_event_debounce", cfg.FilesystemEventDebounce(), "shutdown_policy", cfg.Daemon.ShutdownPolicy, "shutdown_timeout", cfg.Daemon.ShutdownTimeout, "log_level", cfg.Daemon.LogLevel, "recovered_jobs", recovered)
 	logConfiguredWork(cfg)
 
 	var wg sync.WaitGroup
@@ -538,7 +538,29 @@ func runInitialScan(ctx context.Context, cfg config.Config, state *store.SQLiteS
 		slog.Error("initial scan failed", "error", err)
 		return
 	}
-	slog.Info("initial scan complete", "libraries", result.Libraries, "sources", result.Sources, "assets", result.Assets, "enqueued_jobs", result.EnqueuedJobs, "existing_jobs", result.ExistingJobs, "skipped_ignored", result.SkippedIgnored, "skipped_unstable", result.SkippedUnstable)
+	logScanComplete("initial scan complete", "", "", result)
+}
+
+func logScanComplete(message string, library string, reason string, result scanner.ScanResult) {
+	args := []any{
+		"libraries", result.Libraries,
+		"sources", result.Sources,
+		"assets", result.Assets,
+		"enqueued_jobs", result.EnqueuedJobs,
+		"existing_jobs", result.ExistingJobs,
+		"skipped_ignored", result.SkippedIgnored,
+		"skipped_unstable", result.SkippedUnstable,
+	}
+	if library != "" {
+		args = append([]any{"library", library}, args...)
+	}
+	if reason != "" {
+		args = append([]any{"reason", reason}, args...)
+	}
+	if !result.NextStableAt.IsZero() {
+		args = append(args, "next_stable_at", result.NextStableAt)
+	}
+	slog.Info(message, args...)
 }
 
 func startReloadLoop(ctx context.Context, wg *sync.WaitGroup, opts options, runtimeCfg *runtimeConfig, reloadSignals <-chan os.Signal) {
@@ -565,7 +587,7 @@ func startReloadLoop(ctx context.Context, wg *sync.WaitGroup, opts options, runt
 					continue
 				}
 				runtimeCfg.Set(next)
-				slog.Info("config reloaded", "config", configPathLabel(opts.configPath), "libraries", len(next.Libraries), "flows", len(next.Flows), "profiles", len(next.Profiles), "workers", next.Daemon.WorkerCount, "threads", next.Daemon.TotalThreads, "log_level", next.Daemon.LogLevel)
+				slog.Info("config reloaded", "config", configPathLabel(opts.configPath), "libraries", len(next.Libraries), "flows", len(next.Flows), "profiles", len(next.Profiles), "workers", next.Daemon.WorkerCount, "threads", next.Daemon.TotalThreads, "filesystem_event_debounce", next.FilesystemEventDebounce(), "log_level", next.Daemon.LogLevel)
 			}
 		}
 	}()
@@ -617,7 +639,7 @@ func startScannerLoop(ctx context.Context, wg *sync.WaitGroup, cfgProvider func(
 				slog.Error("scan failed", "library", library.Name, "reason", reason, "error", err)
 				return
 			}
-			slog.Info("scan complete", "library", library.Name, "reason", reason, "sources", result.Sources, "assets", result.Assets, "enqueued_jobs", result.EnqueuedJobs, "existing_jobs", result.ExistingJobs, "skipped_ignored", result.SkippedIgnored, "skipped_unstable", result.SkippedUnstable)
+			logScanComplete("scan complete", library.Name, reason, result)
 		},
 		OnEventError: func(err error) {
 			if !errors.Is(err, context.Canceled) {
@@ -730,7 +752,7 @@ func runConfiguredStagingCleanup(cfg config.Config) {
 }
 
 func printScanResult(result scanner.ScanResult) {
-	fmt.Fprintf(os.Stdout, "libraries=%d sources=%d assets=%d enqueued_jobs=%d existing_jobs=%d skipped_ignored=%d skipped_unstable=%d\n",
+	fmt.Fprintf(os.Stdout, "libraries=%d sources=%d assets=%d enqueued_jobs=%d existing_jobs=%d skipped_ignored=%d skipped_unstable=%d",
 		result.Libraries,
 		result.Sources,
 		result.Assets,
@@ -739,6 +761,10 @@ func printScanResult(result scanner.ScanResult) {
 		result.SkippedIgnored,
 		result.SkippedUnstable,
 	)
+	if !result.NextStableAt.IsZero() {
+		fmt.Fprintf(os.Stdout, " next_stable_at=%s", result.NextStableAt.Format(time.RFC3339))
+	}
+	fmt.Fprintln(os.Stdout)
 }
 
 func printCleanupResult(result staging.CleanupStaleResult, dryRun bool) {

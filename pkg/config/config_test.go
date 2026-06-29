@@ -50,6 +50,9 @@ path = "/srv/media/movies"
 	if got := cfg.Daemon.LogLevel; got != DefaultLogLevel {
 		t.Fatalf("expected default log level %q, got %q", DefaultLogLevel, got)
 	}
+	if got := cfg.Daemon.FSDebounce; got != DefaultFSDebounce {
+		t.Fatalf("expected default filesystem event debounce %q, got %q", DefaultFSDebounce, got)
+	}
 	if got := cfg.Libraries["movies"].Flow; got != DefaultFlowName {
 		t.Fatalf("expected default flow %q, got %q", DefaultFlowName, got)
 	}
@@ -120,6 +123,42 @@ path = "/srv/media/movies"
 	}
 	if !strings.Contains(err.Error(), "daemon.log_level") {
 		t.Fatalf("Load() error = %q, want daemon.log_level", err.Error())
+	}
+}
+
+func TestLoadDaemonFilesystemEventDebounce(t *testing.T) {
+	path := writeConfig(t, `
+	[daemon]
+	filesystem_event_debounce = "750ms"
+
+	[libraries.movies]
+	path = "/srv/media/movies"
+	`)
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if got := cfg.FilesystemEventDebounce().String(); got != "750ms" {
+		t.Fatalf("filesystem event debounce = %q, want 750ms", got)
+	}
+}
+
+func TestLoadRejectsInvalidDaemonFilesystemEventDebounce(t *testing.T) {
+	path := writeConfig(t, `
+	[daemon]
+	filesystem_event_debounce = "-1s"
+
+	[libraries.movies]
+	path = "/srv/media/movies"
+	`)
+
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("Load() error = nil, want invalid filesystem event debounce")
+	}
+	if !strings.Contains(err.Error(), "daemon.filesystem_event_debounce") {
+		t.Fatalf("Load() error = %q, want daemon.filesystem_event_debounce", err.Error())
 	}
 }
 

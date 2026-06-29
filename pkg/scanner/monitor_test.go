@@ -3,6 +3,7 @@ package scanner
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -105,6 +106,108 @@ func TestMonitorScansLibraryFromFilesystemTrigger(t *testing.T) {
 	}
 }
 
+func TestMonitorDelaysDownloadFilesystemTriggerUntilPathStable(t *testing.T) {
+	cfg := monitorTestConfig()
+	root := t.TempDir()
+	path := filepath.Join(root, "Movie.mkv")
+	now := time.Date(2026, 6, 29, 12, 0, 0, 0, time.UTC)
+	if err := os.WriteFile(path, []byte("movie"), 0o644); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	if err := os.Chtimes(path, now, now); err != nil {
+		t.Fatalf("chtimes: %v", err)
+	}
+	library := config.LibraryConfig{
+		Kind:    "download",
+		Path:    root,
+		Flow:    config.DefaultFlowName,
+		Profile: config.DefaultProfileName,
+		Download: config.DownloadLibraryConfig{
+			HandoffPath: "/imports/movies",
+			StableFor:   "5m",
+		},
+	}
+	cfg.Libraries["downloads"] = library
+
+	monitor := Monitor{
+		Debounce: 2 * time.Second,
+		Now: func() time.Time {
+			return now
+		},
+	}
+	got := monitor.triggerDue(cfg, library, ScanTrigger{
+		LibraryName: "downloads",
+		Reason:      "filesystem",
+		Path:        path,
+	})
+	want := now.Add(5*time.Minute + 2*time.Second)
+	if !got.Equal(want) {
+		t.Fatalf("trigger due = %s, want %s", got, want)
+	}
+}
+
+func TestMonitorRetriesFilesystemScanAfterSkippedUnstable(t *testing.T) {
+	cfg := monitorTestConfig()
+	cfg.Libraries["downloads"] = config.LibraryConfig{
+		Kind:    "download",
+		Path:    t.TempDir(),
+		Flow:    config.DefaultFlowName,
+		Profile: config.DefaultProfileName,
+		Download: config.DownloadLibraryConfig{
+			HandoffPath: "/imports/movies",
+			StableFor:   "20ms",
+		},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan struct{})
+	scanner := newFakeMonitorScanner(func(counts map[domain.LibraryName]int) bool {
+		return counts["downloads"] >= 2
+	}, cancel, done)
+	scanner.result = func(_ domain.LibraryName, count int) ScanResult {
+		if count == 1 {
+			return ScanResult{
+				Libraries:       1,
+				SkippedUnstable: 1,
+				NextStableAt:    time.Now().Add(20 * time.Millisecond).UTC(),
+			}
+		}
+		return ScanResult{Libraries: 1}
+	}
+
+	var mu sync.Mutex
+	var reasons []string
+	errC := make(chan error, 1)
+	go func() {
+		errC <- (&Monitor{
+			Scanner:        scanner,
+			ConfigProvider: func() config.Config { return cfg },
+			EventSource: scriptedEventSource{Triggers: []ScanTrigger{
+				{LibraryName: "downloads", Reason: "filesystem", Path: filepath.Join(cfg.Libraries["downloads"].Path, "Movie.mkv")},
+			}},
+			Debounce:          time.Millisecond,
+			ReconcileInterval: time.Millisecond,
+			OnScan: func(_ config.LibraryConfig, reason string, _ ScanResult, _ error) {
+				mu.Lock()
+				defer mu.Unlock()
+				reasons = append(reasons, reason)
+			},
+		}).Run(ctx)
+	}()
+
+	waitMonitorDone(t, done, errC)
+	counts := scanner.Counts()
+	if counts["downloads"] != 2 {
+		t.Fatalf("downloads scan count = %d, want 2", counts["downloads"])
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(reasons) != 2 || reasons[0] != "filesystem" || reasons[1] != "filesystem-stability" {
+		t.Fatalf("scan reasons = %v, want [filesystem filesystem-stability]", reasons)
+	}
+}
+
 func TestLibrariesForPathMatchesNestedRoots(t *testing.T) {
 	root := t.TempDir()
 	movies := filepath.Join(root, "movies")
@@ -137,6 +240,7 @@ type fakeMonitorScanner struct {
 	done   chan struct{}
 	cancel context.CancelFunc
 	target func(map[domain.LibraryName]int) bool
+	result func(domain.LibraryName, int) ScanResult
 	closed bool
 }
 
@@ -154,12 +258,17 @@ func (f *fakeMonitorScanner) ScanLibrary(_ context.Context, library config.Libra
 	defer f.mu.Unlock()
 	name := domain.LibraryName(library.Name)
 	f.counts[name]++
+	count := f.counts[name]
+	result := ScanResult{Libraries: 1}
+	if f.result != nil {
+		result = f.result(name, count)
+	}
 	if !f.closed && f.target != nil && f.target(f.counts) {
 		f.closed = true
 		close(f.done)
 		f.cancel()
 	}
-	return ScanResult{Libraries: 1}, nil
+	return result, nil
 }
 
 func (f *fakeMonitorScanner) Counts() map[domain.LibraryName]int {

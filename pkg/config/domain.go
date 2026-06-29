@@ -71,6 +71,13 @@ func (c Config) ScanInterval() time.Duration {
 	return mustDuration(c.Daemon.ScanInterval)
 }
 
+func (c Config) FilesystemEventDebounce() time.Duration {
+	if strings.TrimSpace(c.Daemon.FSDebounce) == "" {
+		return mustDuration(DefaultFSDebounce)
+	}
+	return mustDuration(c.Daemon.FSDebounce)
+}
+
 func (c Config) ScanIntervalForLibrary(name domain.LibraryName) time.Duration {
 	library, ok := c.FindLibrary(name)
 	if ok && strings.TrimSpace(library.ScanInterval) != "" {

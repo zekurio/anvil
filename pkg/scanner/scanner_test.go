@@ -152,6 +152,9 @@ func TestScanDownloadLibrarySkipsUnstablePackage(t *testing.T) {
 	if result.SkippedUnstable != 1 {
 		t.Fatalf("skipped unstable = %d, want 1", result.SkippedUnstable)
 	}
+	if got, want := result.NextStableAt, now.Add(4*time.Minute).UTC(); !got.Equal(want) {
+		t.Fatalf("next stable at = %s, want %s", got, want)
+	}
 }
 
 func TestScanDownloadLibraryStabilityIncludesCompanionFiles(t *testing.T) {

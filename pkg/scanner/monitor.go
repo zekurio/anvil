@@ -144,10 +144,11 @@ func (m *Monitor) scheduleTrigger(cfg config.Config, schedules map[domain.Librar
 	if trigger.LibraryName == "" {
 		return
 	}
-	if _, ok := cfg.FindLibrary(trigger.LibraryName); !ok {
+	library, ok := cfg.FindLibrary(trigger.LibraryName)
+	if !ok {
 		return
 	}
-	due := m.now().Add(m.debounce())
+	due := m.triggerDue(cfg, library, trigger)
 	current, exists := schedules[trigger.LibraryName]
 	if !exists || current.After(due) {
 		schedules[trigger.LibraryName] = due
@@ -189,18 +190,99 @@ func (m *Monitor) scanDue(ctx context.Context, cfg config.Config, schedules map[
 		if err != nil && ctx.Err() != nil {
 			return ctx.Err()
 		}
-		schedules[name] = m.now().Add(cfg.ScanIntervalForLibrary(name))
-		delete(reasons, name)
+		nextDue := m.now().Add(cfg.ScanIntervalForLibrary(name))
+		nextReason := ""
+		if err == nil {
+			if retryDue, ok := m.stabilityRetryDue(cfg, library, result); ok && retryDue.Before(nextDue) {
+				nextDue = retryDue
+				nextReason = "stability"
+				if filesystemReason(reason) {
+					nextReason = "filesystem-stability"
+				}
+				slog.Info("scheduled stability rescan", "library", library.Name, "reason", nextReason, "due", nextDue, "skipped_unstable", result.SkippedUnstable)
+			}
+		}
+		schedules[name] = nextDue
+		if nextReason == "" {
+			delete(reasons, name)
+		} else {
+			reasons[name] = nextReason
+		}
 	}
 
 	return nil
 }
 
-func (m *Monitor) debounce() time.Duration {
+func (m *Monitor) triggerDue(cfg config.Config, library config.LibraryConfig, trigger ScanTrigger) time.Time {
+	now := m.now()
+	due := now.Add(m.debounce(cfg))
+	if library.Kind != "download" {
+		return due
+	}
+	stableFor := downloadStableFor(library)
+	if stableFor <= 0 || strings.TrimSpace(trigger.Path) == "" {
+		return due
+	}
+	info, err := os.Stat(trigger.Path)
+	if err != nil {
+		return due
+	}
+	stableDue := info.ModTime().UTC().Add(stableFor).Add(m.debounce(cfg))
+	if stableDue.After(due) {
+		return stableDue
+	}
+	return due
+}
+
+func (m *Monitor) stabilityRetryDue(cfg config.Config, library config.LibraryConfig, result ScanResult) (time.Time, bool) {
+	if result.SkippedUnstable <= 0 || library.Kind != "download" {
+		return time.Time{}, false
+	}
+	now := m.now()
+	due := result.NextStableAt
+	if due.IsZero() {
+		stableFor := downloadStableFor(library)
+		if stableFor <= 0 {
+			return time.Time{}, false
+		}
+		due = now.Add(stableFor)
+	}
+	due = due.Add(m.debounce(cfg))
+	if due.Before(now) {
+		due = now
+	}
+	return due, true
+}
+
+func (m *Monitor) debounce(cfg config.Config) time.Duration {
 	if m.Debounce > 0 {
 		return m.Debounce
 	}
-	return DefaultFilesystemEventDebounce
+	debounce := cfg.FilesystemEventDebounce()
+	if debounce < 0 {
+		return DefaultFilesystemEventDebounce
+	}
+	return debounce
+}
+
+func filesystemReason(reason string) bool {
+	reason = strings.TrimSpace(reason)
+	return reason == "filesystem" || strings.HasPrefix(reason, "filesystem-")
+}
+
+func downloadStableFor(library config.LibraryConfig) time.Duration {
+	if library.Kind != "download" {
+		return 0
+	}
+	stableFor := strings.TrimSpace(library.Download.StableFor)
+	if stableFor == "" {
+		stableFor = config.DefaultStableFor
+	}
+	duration, err := time.ParseDuration(stableFor)
+	if err != nil {
+		return 0
+	}
+	return duration
 }
 
 func (m *Monitor) reconcileInterval(cfg config.Config) time.Duration {

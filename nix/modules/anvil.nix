@@ -114,6 +114,7 @@ let
       total_threads = cfg.daemon.totalThreads;
       max_attempts = cfg.daemon.maxAttempts;
       scan_interval = cfg.daemon.scanInterval;
+      filesystem_event_debounce = cfg.daemon.filesystemEventDebounce;
       scheduler_interval = cfg.daemon.schedulerInterval;
       lease_duration = cfg.daemon.leaseDuration;
       shutdown_policy = cfg.daemon.shutdownPolicy;
@@ -653,6 +654,11 @@ in
         type = types.str;
         default = "30m";
         description = "Library scan interval.";
+      };
+      filesystemEventDebounce = mkOption {
+        type = types.str;
+        default = "2s";
+        description = "Delay used to coalesce filesystem events before scanning a library.";
       };
       schedulerInterval = mkOption {
         type = types.str;
