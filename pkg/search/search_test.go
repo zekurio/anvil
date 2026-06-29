@@ -76,7 +76,7 @@ func TestSearchArgsIncludesCropFilter(t *testing.T) {
 	}
 }
 
-func TestSearchArgsUsesQSVInputWhenNoFilterIsNeeded(t *testing.T) {
+func TestSearchArgsDoesNotForceQSVInputForABAV1Samples(t *testing.T) {
 	args := SearchArgs(domain.EncodePlan{
 		InputPath:       "/input.mkv",
 		CRFMin:          18,
@@ -86,18 +86,15 @@ func TestSearchArgsUsesQSVInputWhenNoFilterIsNeeded(t *testing.T) {
 		InputVideoCodec: "hevc",
 		Accelerator:     "qsv",
 	})
-	for _, pair := range [][2]string{
-		{"--enc-input", "hwaccel=qsv"},
-		{"--enc-input", "hwaccel_output_format=qsv"},
-		{"--enc-input", "c:v=hevc_qsv"},
-	} {
-		if !containsPair(args, pair[0], pair[1]) {
-			t.Fatalf("SearchArgs() = %v, missing %v", args, pair)
-		}
+	if containsArg(args, "--enc-input") || containsArg(args, "hwaccel=qsv") || containsArg(args, "hwaccel_output_format=qsv") {
+		t.Fatalf("SearchArgs() = %v, did not expect QSV input args for ab-av1 samples", args)
+	}
+	if !containsPair(args, "--encoder", "av1_qsv") {
+		t.Fatalf("SearchArgs() = %v, want QSV encoder selection", args)
 	}
 }
 
-func TestSearchArgsAvoidsQSVInputWhenSoftwareCropIsNeeded(t *testing.T) {
+func TestSearchArgsKeepsSoftwareCropForABAV1Samples(t *testing.T) {
 	args := SearchArgs(domain.EncodePlan{
 		InputPath:       "/input.mkv",
 		CRFMin:          18,
@@ -110,11 +107,25 @@ func TestSearchArgsAvoidsQSVInputWhenSoftwareCropIsNeeded(t *testing.T) {
 		Accelerator:     "qsv",
 		CropFilter:      "crop=1920:800:0:140",
 	})
-	if containsArg(args, "hwaccel=qsv") {
-		t.Fatalf("SearchArgs() = %v, did not expect QSV input args with software crop", args)
+	if containsArg(args, "--enc-input") || containsArg(args, "hwaccel=qsv") {
+		t.Fatalf("SearchArgs() = %v, did not expect QSV input args for ab-av1 samples", args)
 	}
 	if !containsPair(args, "--vfilter", "crop=1920:800:0:140") {
 		t.Fatalf("SearchArgs() = %v, want software crop vfilter", args)
+	}
+}
+
+func TestSearchArgsOmitsNoOpCropFilter(t *testing.T) {
+	args := SearchArgs(domain.EncodePlan{
+		InputPath:   "/input.mkv",
+		CRFMin:      18,
+		CRFMax:      40,
+		InputWidth:  3840,
+		InputHeight: 2160,
+		CropFilter:  "crop=3840:2160:0:0",
+	})
+	if containsArg(args, "--vfilter") {
+		t.Fatalf("SearchArgs() = %v, did not expect no-op crop vfilter", args)
 	}
 }
 
