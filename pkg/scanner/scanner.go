@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"path"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -271,8 +272,12 @@ func discoverCandidates(ctx context.Context, root string, library config.Library
 	sourceStats := make(map[string]sourceStat)
 	var skipped int
 	excludePatterns := effectiveExcludeGlobs(library)
+	ignoreRegexps, err := compileIgnoreRegexps(library.IgnoreRegex)
+	if err != nil {
+		return nil, nil, skipped, err
+	}
 
-	err := filepath.WalkDir(root, func(absPath string, entry fs.DirEntry, walkErr error) error {
+	err = filepath.WalkDir(root, func(absPath string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
@@ -289,6 +294,21 @@ func discoverCandidates(ctx context.Context, root string, library config.Library
 			return err
 		}
 		rel = filepath.ToSlash(rel)
+
+		if ignoredByRegex(ignoreRegexps, rel, entry.IsDir()) {
+			skipped++
+			if entry.IsDir() {
+				return filepath.SkipDir
+			}
+			info, err := entry.Info()
+			if err != nil {
+				return err
+			}
+			if likelyMediaFile(rel) {
+				candidates = append(candidates, buildCandidate(library, rel, info, true, "ignore_regex"))
+			}
+			return nil
+		}
 
 		excluded, err := matchesAny(excludePatterns, rel)
 		if err != nil {
@@ -357,6 +377,38 @@ func discoverCandidates(ctx context.Context, root string, library config.Library
 	}
 
 	return candidates, sourceStats, skipped, nil
+}
+
+func compileIgnoreRegexps(patterns []string) ([]*regexp.Regexp, error) {
+	if len(patterns) == 0 {
+		return nil, nil
+	}
+
+	regexps := make([]*regexp.Regexp, 0, len(patterns))
+	for i, pattern := range patterns {
+		pattern = strings.TrimSpace(pattern)
+		if pattern == "" {
+			return nil, fmt.Errorf("ignore_regex[%d] must not be empty", i)
+		}
+		compiled, err := regexp.Compile(pattern)
+		if err != nil {
+			return nil, fmt.Errorf("ignore_regex[%d] is invalid: %w", i, err)
+		}
+		regexps = append(regexps, compiled)
+	}
+	return regexps, nil
+}
+
+func ignoredByRegex(patterns []*regexp.Regexp, rel string, isDir bool) bool {
+	for _, pattern := range patterns {
+		if pattern.MatchString(rel) {
+			return true
+		}
+		if isDir && pattern.MatchString(rel+"/") {
+			return true
+		}
+	}
+	return false
 }
 
 func buildCandidate(library config.LibraryConfig, rel string, info fs.FileInfo, ignored bool, ignoreReason string) candidate {

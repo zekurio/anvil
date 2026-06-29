@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"sort"
 	"strings"
@@ -166,6 +167,7 @@ type LibraryConfig struct {
 	Priority         int                   `toml:"priority"`
 	Include          []string              `toml:"include"`
 	Exclude          []string              `toml:"exclude"`
+	IgnoreRegex      []string              `toml:"ignore_regex"`
 	ConcurrencyLimit int                   `toml:"concurrency_limit"`
 	Arr              string                `toml:"arr"`
 	Media            MediaLibraryConfig    `toml:"media"`
@@ -429,6 +431,7 @@ func (c Config) Validate() error {
 		if strings.TrimSpace(library.ScanInterval) != "" {
 			validatePositiveDuration(&problems, fmt.Sprintf("library %q scan_interval", name), library.ScanInterval)
 		}
+		validateRegexps(&problems, fmt.Sprintf("library %q ignore_regex", name), library.IgnoreRegex)
 		if strings.TrimSpace(library.Arr) != "" {
 			if _, exists := arrs[library.Arr]; !exists {
 				problems = append(problems, fmt.Sprintf("library %q references unknown arr %q", name, library.Arr))
@@ -628,6 +631,19 @@ func validateNonNegativeDuration(problems *[]string, name string, value string) 
 	}
 	if duration < 0 {
 		*problems = append(*problems, fmt.Sprintf("%s must be non-negative", name))
+	}
+}
+
+func validateRegexps(problems *[]string, name string, values []string) {
+	for i, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			*problems = append(*problems, fmt.Sprintf("%s[%d] must not be empty", name, i))
+			continue
+		}
+		if _, err := regexp.Compile(value); err != nil {
+			*problems = append(*problems, fmt.Sprintf("%s[%d] is invalid: %v", name, i, err))
+		}
 	}
 }
 
