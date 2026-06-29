@@ -113,7 +113,6 @@ func SearchArgs(plan domain.EncodePlan) []string {
 	if plan.PixelFormat != "" {
 		args = append(args, "--pix-format", plan.PixelFormat)
 	}
-	args = append(args, searchInputArgs(plan)...)
 	if filter := searchVideoFilter(plan); filter != "" {
 		args = append(args, "--vfilter", filter)
 	}
@@ -186,43 +185,11 @@ func searchPlan(job *pipeline.JobContext) domain.EncodePlan {
 	}
 }
 
-func searchInputArgs(plan domain.EncodePlan) []string {
-	if !qsvSearchInputPipeline(plan) {
-		return nil
-	}
-	decoder, ok := videocodec.QSVDecoder(plan.InputVideoCodec)
-	if !ok {
-		return nil
-	}
-	return []string{
-		"--enc-input", "hwaccel=qsv",
-		"--enc-input", "hwaccel_output_format=qsv",
-		"--enc-input", "c:v=" + decoder,
-	}
-}
-
 func searchVideoFilter(plan domain.EncodePlan) string {
 	if strings.TrimSpace(plan.CropFilter) == "" || videocodec.NoOpCrop(plan.CropFilter, plan.InputWidth, plan.InputHeight) {
 		return ""
 	}
 	return plan.CropFilter
-}
-
-func qsvSearchInputPipeline(plan domain.EncodePlan) bool {
-	if plan.VideoCopy {
-		return false
-	}
-	if plan.Accelerator != videocodec.AcceleratorQSV {
-		return false
-	}
-	if videocodec.EncoderAccelerator(plan.VideoCodec) != videocodec.AcceleratorQSV {
-		return false
-	}
-	if strings.TrimSpace(searchVideoFilter(plan)) != "" {
-		return false
-	}
-	_, ok := videocodec.QSVDecoder(plan.InputVideoCodec)
-	return ok
 }
 
 func inputVideo(probe *domain.ProbeResult) (string, int, int) {
