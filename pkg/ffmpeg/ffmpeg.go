@@ -56,8 +56,25 @@ type BuildPlanRequest struct {
 	Probe      *domain.ProbeResult
 }
 
-// BuildPlan builds the ffmpeg encode plan for request.
-func BuildPlan(request BuildPlanRequest) (domain.EncodePlan, error) {
+func BuildPlan(profile domain.Profile, inputPath string, outputPath string, allocation domain.ResourceAllocation, search *domain.SearchResult, audio *domain.AudioSelection, metadata domain.JobMetadata) (domain.EncodePlan, error) {
+	return BuildPlanWithProbe(profile, inputPath, outputPath, allocation, search, audio, metadata, nil)
+}
+
+func BuildPlanWithProbe(profile domain.Profile, inputPath string, outputPath string, allocation domain.ResourceAllocation, search *domain.SearchResult, audio *domain.AudioSelection, metadata domain.JobMetadata, probe *domain.ProbeResult) (domain.EncodePlan, error) {
+	return BuildPlanFromRequest(BuildPlanRequest{
+		Profile:    profile,
+		InputPath:  inputPath,
+		OutputPath: outputPath,
+		Resources:  allocation,
+		Search:     search,
+		Audio:      audio,
+		Metadata:   metadata,
+		Probe:      probe,
+	})
+}
+
+// BuildPlanFromRequest builds the ffmpeg encode plan for request.
+func BuildPlanFromRequest(request BuildPlanRequest) (domain.EncodePlan, error) {
 	if err := request.validate(); err != nil {
 		return domain.EncodePlan{}, err
 	}
@@ -190,7 +207,7 @@ func (Block) Name() string {
 }
 
 func (b Block) Run(ctx context.Context, job *pipeline.JobContext) error {
-	plan, err := BuildPlan(buildPlanRequest(job))
+	plan, err := BuildPlanFromRequest(buildPlanRequest(job))
 	if err != nil {
 		return err
 	}

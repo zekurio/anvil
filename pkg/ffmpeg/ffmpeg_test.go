@@ -493,7 +493,7 @@ func testBuildPlanRequest() BuildPlanRequest {
 
 func mustBuildPlan(t *testing.T, request BuildPlanRequest) domain.EncodePlan {
 	t.Helper()
-	plan, err := BuildPlan(request)
+	plan, err := BuildPlanFromRequest(request)
 	if err != nil {
 		t.Fatalf("BuildPlan() error = %v", err)
 	}
