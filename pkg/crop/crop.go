@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"regexp"
 	"strconv"
+	"strings"
 
 	"github.com/zekurio/anvil/pkg/domain"
 	"github.com/zekurio/anvil/pkg/pipeline"
@@ -19,14 +20,24 @@ const (
 	defaultFrameLimit      = 300
 )
 
+var defaultSeekOffsets = []string{
+	"",
+	"00:02:00",
+	"00:05:00",
+	"00:12:00",
+	"00:20:00",
+	"00:30:00",
+}
+
 type Detector interface {
 	Detect(ctx context.Context, path string) (domain.CropResult, error)
 }
 
 type FFmpegDetector struct {
-	Runner     process.Runner
-	Binary     string
-	FrameLimit int
+	Runner      process.Runner
+	Binary      string
+	FrameLimit  int
+	SeekOffsets []string
 }
 
 func (d FFmpegDetector) Detect(ctx context.Context, path string) (domain.CropResult, error) {
@@ -41,26 +52,43 @@ func (d FFmpegDetector) Detect(ctx context.Context, path string) (domain.CropRes
 	if binary == "" {
 		binary = "ffmpeg"
 	}
-	result, err := runner.Run(ctx, process.Command{Name: binary, Args: d.args(path)})
-	output := combinedOutput(result)
+	var (
+		command []string
+		output  []byte
+		errs    []error
+	)
+	offsets := d.seekOffsets()
+	for _, offset := range offsets {
+		result, err := runner.Run(ctx, process.Command{Name: binary, Args: d.args(path, offset)})
+		command = result.Command
+		output = appendOutput(output, combinedOutput(result))
+		if err != nil {
+			errs = append(errs, fmt.Errorf("offset %q: %w", offset, err))
+		}
+	}
 	crop := domain.CropResult{
 		Filter:     ParseFilter(output),
 		RawOutput:  string(output),
-		RawCommand: result.Command,
+		RawCommand: command,
 	}
-	if err != nil {
-		return crop, fmt.Errorf("ffmpeg cropdetect: %w", err)
+	if len(errs) == len(offsets) || (crop.Filter == "" && len(errs) > 0) {
+		return crop, fmt.Errorf("ffmpeg cropdetect: %w", errors.Join(errs...))
 	}
 	return crop, nil
 }
 
-func (d FFmpegDetector) args(path string) []string {
+func (d FFmpegDetector) args(path string, offset string) []string {
 	frames := d.FrameLimit
 	if frames <= 0 {
 		frames = defaultFrameLimit
 	}
-	return []string{
+	args := []string{
 		"-hide_banner",
+	}
+	if offset = strings.TrimSpace(offset); offset != "" {
+		args = append(args, "-ss", offset)
+	}
+	args = append(args,
 		"-i", path,
 		"-vf", fmt.Sprintf("cropdetect=%d:%d:%d", defaultCropDetectLimit, defaultCropDetectRound, defaultCropDetectReset),
 		"-frames:v", strconv.Itoa(frames),
@@ -69,7 +97,15 @@ func (d FFmpegDetector) args(path string) []string {
 		"-dn",
 		"-f", "null",
 		"-",
+	)
+	return args
+}
+
+func (d FFmpegDetector) seekOffsets() []string {
+	if len(d.SeekOffsets) > 0 {
+		return append([]string(nil), d.SeekOffsets...)
 	}
+	return append([]string(nil), defaultSeekOffsets...)
 }
 
 type Block struct {
@@ -139,4 +175,14 @@ func combinedOutput(result process.Result) []byte {
 	}
 	output = append(output, result.Stderr...)
 	return output
+}
+
+func appendOutput(output []byte, next []byte) []byte {
+	if len(next) == 0 {
+		return output
+	}
+	if len(output) > 0 {
+		output = append(output, '\n')
+	}
+	return append(output, next...)
 }

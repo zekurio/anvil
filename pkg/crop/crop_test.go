@@ -31,7 +31,7 @@ func TestParseFilterBreaksTiesWithLatestCrop(t *testing.T) {
 }
 
 func TestFFmpegDetectorBuildsCommandAndStoresRawData(t *testing.T) {
-	runner := fakeRunner{stderr: []byte("[Parsed_cropdetect_0] crop=1920:800:0:140")}
+	runner := &fakeRunner{stderrs: [][]byte{[]byte("[Parsed_cropdetect_0] crop=1920:800:0:140")}}
 	result, err := FFmpegDetector{Runner: runner, FrameLimit: 42}.Detect(context.Background(), "/input.mkv")
 	if err != nil {
 		t.Fatalf("Detect() error = %v", err)
@@ -44,6 +44,36 @@ func TestFFmpegDetectorBuildsCommandAndStoresRawData(t *testing.T) {
 	}
 	if !contains(result.RawCommand, "cropdetect=64:16:0") {
 		t.Fatalf("raw command = %v, want HDR-safe cropdetect limit", result.RawCommand)
+	}
+}
+
+func TestFFmpegDetectorSamplesMultipleOffsets(t *testing.T) {
+	runner := &fakeRunner{
+		stderrs: [][]byte{
+			[]byte("[Parsed_cropdetect_0] crop=1920:864:0:108"),
+			[]byte("[Parsed_cropdetect_0] crop=1920:816:0:132"),
+			[]byte("[Parsed_cropdetect_0] crop=1920:816:0:132"),
+		},
+	}
+	result, err := FFmpegDetector{
+		Runner:      runner,
+		FrameLimit:  42,
+		SeekOffsets: []string{"", "00:02:00", "00:05:00"},
+	}.Detect(context.Background(), "/input.mkv")
+	if err != nil {
+		t.Fatalf("Detect() error = %v", err)
+	}
+	if got, want := result.Filter, "crop=1920:816:0:132"; got != want {
+		t.Fatalf("filter = %q, want %q", got, want)
+	}
+	if len(runner.commands) != 3 {
+		t.Fatalf("commands = %v, want three cropdetect samples", runner.commands)
+	}
+	if contains(runner.commands[0], "-ss") {
+		t.Fatalf("first command = %v, did not expect seek offset", runner.commands[0])
+	}
+	if !contains(runner.commands[1], "-ss") || !contains(runner.commands[1], "00:02:00") {
+		t.Fatalf("second command = %v, want seek offset", runner.commands[1])
 	}
 }
 
@@ -79,11 +109,20 @@ func TestBlockSkipsDetectionForAnvilEncodedVideo(t *testing.T) {
 }
 
 type fakeRunner struct {
-	stderr []byte
+	stderrs  [][]byte
+	commands [][]string
 }
 
-func (f fakeRunner) Run(_ context.Context, command process.Command) (process.Result, error) {
-	return process.Result{Command: command.ArgsWithName(), Stderr: f.stderr}, nil
+func (f *fakeRunner) Run(_ context.Context, command process.Command) (process.Result, error) {
+	index := len(f.commands)
+	f.commands = append(f.commands, command.ArgsWithName())
+	stderr := []byte(nil)
+	if index < len(f.stderrs) {
+		stderr = f.stderrs[index]
+	} else if len(f.stderrs) > 0 {
+		stderr = f.stderrs[len(f.stderrs)-1]
+	}
+	return process.Result{Command: command.ArgsWithName(), Stderr: stderr}, nil
 }
 
 type staticDetector struct {
