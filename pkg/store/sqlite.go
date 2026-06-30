@@ -590,6 +590,26 @@ WHERE id = ? AND state = ?
 	return &job, nil
 }
 
+func (s *SQLiteStore) ReleaseLeasedJob(ctx context.Context, jobID domain.JobID, workerID string, now time.Time) (domain.Job, error) {
+	now = defaultNow(now)
+	result, err := s.db.ExecContext(ctx, `
+UPDATE jobs
+SET state = ?, lease_owner = '', lease_deadline = NULL, heartbeat_at = NULL, updated_at = ?
+WHERE id = ? AND lease_owner = ? AND state = ?
+`, string(domain.JobStatePending), encodeTime(now), int64(jobID), workerID, string(domain.JobStateLeased))
+	if err != nil {
+		return domain.Job{}, fmt.Errorf("release leased job: %w", err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return domain.Job{}, fmt.Errorf("release leased job rows affected: %w", err)
+	}
+	if rows == 0 {
+		return domain.Job{}, ErrNotFound
+	}
+	return s.GetJob(ctx, jobID)
+}
+
 func (s *SQLiteStore) HeartbeatJob(ctx context.Context, jobID domain.JobID, workerID string, leaseDeadline time.Time, now time.Time) (domain.Job, error) {
 	now = defaultNow(now)
 	result, err := s.db.ExecContext(ctx, `
