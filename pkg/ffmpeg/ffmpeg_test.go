@@ -14,10 +14,10 @@ import (
 )
 
 func TestBuildPlanUsesSearchCRF(t *testing.T) {
-	plan, err := BuildPlan(testProfile(), "/in.mkv", "/out.mkv", domain.ResourceAllocation{Threads: 6}, &domain.SearchResult{CRF: 29}, nil, domain.JobMetadata{})
-	if err != nil {
-		t.Fatalf("BuildPlan() error = %v", err)
-	}
+	request := testBuildPlanRequest()
+	request.Resources.Threads = 6
+	request.Search = &domain.SearchResult{CRF: 29}
+	plan := mustBuildPlan(t, request)
 	if plan.CRF != 29 {
 		t.Fatalf("CRF = %d, want 29", plan.CRF)
 	}
@@ -30,9 +30,18 @@ func TestBuildPlanUsesSearchCRF(t *testing.T) {
 }
 
 func TestArgsPreserveStreamsAndStripMetadata(t *testing.T) {
-	plan, _ := BuildPlan(testProfile(), "/in.mkv", "/out.mkv", domain.ResourceAllocation{Threads: 2}, &domain.SearchResult{CRF: 24}, nil, domain.JobMetadata{})
+	plan := mustBuildPlan(t, testBuildPlanRequest())
 	args := Args(plan)
-	want := []string{"-c:v", "libsvtav1", "-crf", "24", "-threads", "2", "-c:a", "copy", "-c:s", "copy", "-map_metadata", "-1", "-map_chapters", "-1", "/out.mkv"}
+	want := []string{
+		"-c:v", "libsvtav1",
+		"-crf", "24",
+		"-threads", "2",
+		"-c:a", "copy",
+		"-c:s", "copy",
+		"-map_metadata", "-1",
+		"-map_chapters", "-1",
+		"/out.mkv",
+	}
 	for _, token := range want {
 		if !containsArg(args, token) {
 			t.Fatalf("Args() = %v, missing %q", args, token)
@@ -49,7 +58,13 @@ func TestArgsPreserveStreamsAndStripMetadata(t *testing.T) {
 	if containsPair(args, "-map", "0") {
 		t.Fatalf("Args() = %v, did not expect global stream map", args)
 	}
-	for _, pair := range [][2]string{{"-metadata:s:v:0", "anvil.processed=true"}, {"-metadata:s:v:0", "anvil.encoded=true"}, {"-metadata:s:v:0", "anvil.profile=default-av1"}, {"-metadata:s:v:0", "anvil.video.action=encode"}, {"-metadata:s:v:0", "anvil.video.crf=24"}} {
+	for _, pair := range [][2]string{
+		{"-metadata:s:v:0", "anvil.processed=true"},
+		{"-metadata:s:v:0", "anvil.encoded=true"},
+		{"-metadata:s:v:0", "anvil.profile=default-av1"},
+		{"-metadata:s:v:0", "anvil.video.action=encode"},
+		{"-metadata:s:v:0", "anvil.video.crf=24"},
+	} {
 		if !containsPair(args, pair[0], pair[1]) {
 			t.Fatalf("Args() = %v, missing Anvil marker %v", args, pair)
 		}
@@ -57,12 +72,9 @@ func TestArgsPreserveStreamsAndStripMetadata(t *testing.T) {
 }
 
 func TestArgsCanPreserveTrackTitles(t *testing.T) {
-	profile := testProfile()
-	profile.Metadata.TrackTitles = domain.TrackTitleModePreserve
-	plan, err := BuildPlan(profile, "/in.mkv", "/out.mkv", domain.ResourceAllocation{Threads: 2}, &domain.SearchResult{CRF: 24}, nil, domain.JobMetadata{})
-	if err != nil {
-		t.Fatalf("BuildPlan() error = %v", err)
-	}
+	request := testBuildPlanRequest()
+	request.Profile.Metadata.TrackTitles = domain.TrackTitleModePreserve
+	plan := mustBuildPlan(t, request)
 	args := Args(plan)
 	if containsPair(args, "-metadata:s", "title=") {
 		t.Fatalf("Args() = %v, did not expect stream title strip", args)
@@ -73,12 +85,9 @@ func TestArgsCanPreserveTrackTitles(t *testing.T) {
 }
 
 func TestArgsCanStandardizeTrackTitles(t *testing.T) {
-	profile := testProfile()
-	profile.Metadata.TrackTitles = domain.TrackTitleModeStandardize
-	plan, err := BuildPlan(profile, "/in.mkv", "/out.mkv", domain.ResourceAllocation{Threads: 2}, &domain.SearchResult{CRF: 24}, nil, domain.JobMetadata{})
-	if err != nil {
-		t.Fatalf("BuildPlan() error = %v", err)
-	}
+	request := testBuildPlanRequest()
+	request.Profile.Metadata.TrackTitles = domain.TrackTitleModeStandardize
+	plan := mustBuildPlan(t, request)
 	args := Args(plan)
 	for _, pair := range [][2]string{
 		{"-metadata:s:v", "title=Video"},
@@ -92,20 +101,31 @@ func TestArgsCanStandardizeTrackTitles(t *testing.T) {
 }
 
 func TestArgsStandardizesTrackTitlesFromProbeStreams(t *testing.T) {
-	profile := testProfile()
-	profile.Metadata.TrackTitles = domain.TrackTitleModeStandardize
+	request := testBuildPlanRequest()
+	request.Profile.Metadata.TrackTitles = domain.TrackTitleModeStandardize
 	audio := &domain.AudioSelection{StreamIndexes: []int{2, 1}}
 	probe := &domain.ProbeResult{Streams: []domain.MediaStream{
 		{Index: 0, Type: "video", Codec: "hevc", Width: 1920, Height: 800, ColorTransfer: "smpte2084"},
 		{Index: 1, Type: "audio", Codec: "eac3", Language: "eng", Channels: 6, BitRate: 640000},
 		{Index: 2, Type: "audio", Codec: "aac", Language: "jpn", Channels: 2, BitRate: 128000},
-		{Index: 3, Type: "subtitle", Codec: "hdmv_pgs_subtitle", Language: "eng", Disposition: map[string]bool{"forced": true}},
-		{Index: 4, Type: "subtitle", Codec: "subrip", Language: "deu", Disposition: map[string]bool{"hearing_impaired": true}},
+		{
+			Index:       3,
+			Type:        "subtitle",
+			Codec:       "hdmv_pgs_subtitle",
+			Language:    "eng",
+			Disposition: map[string]bool{"forced": true},
+		},
+		{
+			Index:       4,
+			Type:        "subtitle",
+			Codec:       "subrip",
+			Language:    "deu",
+			Disposition: map[string]bool{"hearing_impaired": true},
+		},
 	}}
-	plan, err := BuildPlanWithProbe(profile, "/in.mkv", "/out.mkv", domain.ResourceAllocation{Threads: 2}, &domain.SearchResult{CRF: 24}, audio, domain.JobMetadata{}, probe)
-	if err != nil {
-		t.Fatalf("BuildPlanWithProbe() error = %v", err)
-	}
+	request.Audio = audio
+	request.Probe = probe
+	plan := mustBuildPlan(t, request)
 	args := Args(plan)
 	for _, pair := range [][2]string{
 		{"-metadata:s", "title="},
@@ -167,12 +187,10 @@ func TestResolutionLabelUsesStandardBuckets(t *testing.T) {
 }
 
 func TestArgsMarksOnlyVideoStreamWithAnvilTags(t *testing.T) {
-	plan, err := BuildPlan(testProfile(), "/in.mkv", "/out.mkv", domain.ResourceAllocation{Threads: 2}, &domain.SearchResult{CRF: 24}, &domain.AudioSelection{StreamIndexes: []int{1, 2}}, domain.JobMetadata{
-		StreamCleanupDisabled: true,
-	})
-	if err != nil {
-		t.Fatalf("BuildPlan() error = %v", err)
-	}
+	request := testBuildPlanRequest()
+	request.Audio = &domain.AudioSelection{StreamIndexes: []int{1, 2}}
+	request.Metadata.StreamCleanupDisabled = true
+	plan := mustBuildPlan(t, request)
 	args := Args(plan)
 	if !containsPair(args, "-metadata:s:v:0", "anvil.encoded=true") {
 		t.Fatalf("Args() = %v, missing video Anvil marker", args)
@@ -185,11 +203,10 @@ func TestArgsMarksOnlyVideoStreamWithAnvilTags(t *testing.T) {
 }
 
 func TestArgsMapsSelectedAudioAndAppliesCrop(t *testing.T) {
-	audio := &domain.AudioSelection{StreamIndexes: []int{2, 4}}
-	plan, err := BuildPlan(testProfile(), "/in.mkv", "/out.mkv", domain.ResourceAllocation{Threads: 2}, &domain.SearchResult{CRF: 24}, audio, domain.JobMetadata{CropFilter: "crop=1920:800:0:140"})
-	if err != nil {
-		t.Fatalf("BuildPlan() error = %v", err)
-	}
+	request := testBuildPlanRequest()
+	request.Audio = &domain.AudioSelection{StreamIndexes: []int{2, 4}}
+	request.Metadata.CropFilter = "crop=1920:800:0:140"
+	plan := mustBuildPlan(t, request)
 	if !plan.AudioSelectionApplied {
 		t.Fatal("AudioSelectionApplied = false, want true")
 	}
@@ -205,14 +222,13 @@ func TestArgsMapsSelectedAudioAndAppliesCrop(t *testing.T) {
 }
 
 func TestArgsUsesQSVInputAndVPPForQSVProfile(t *testing.T) {
-	profile := testProfile()
-	profile.Video.Accelerator = "qsv"
-	plan, err := BuildPlanWithProbe(profile, "/in.mkv", "/out.mkv", domain.ResourceAllocation{Threads: 2}, &domain.SearchResult{CRF: 24}, nil, domain.JobMetadata{CropFilter: "crop=1920:800:0:140"}, &domain.ProbeResult{
+	request := testBuildPlanRequest()
+	request.Profile.Video.Accelerator = "qsv"
+	request.Metadata.CropFilter = "crop=1920:800:0:140"
+	request.Probe = &domain.ProbeResult{
 		Streams: []domain.MediaStream{{Type: "video", Codec: "hevc", Width: 3840, Height: 2160}},
-	})
-	if err != nil {
-		t.Fatalf("BuildPlanWithProbe() error = %v", err)
 	}
+	plan := mustBuildPlan(t, request)
 	args := Args(plan)
 	for _, pair := range [][2]string{
 		{"-hwaccel", "qsv"},
@@ -235,12 +251,12 @@ func TestArgsUsesQSVInputAndVPPForQSVProfile(t *testing.T) {
 }
 
 func TestArgsOmitsNoOpCrop(t *testing.T) {
-	plan, err := BuildPlanWithProbe(testProfile(), "/in.mkv", "/out.mkv", domain.ResourceAllocation{Threads: 2}, &domain.SearchResult{CRF: 24}, nil, domain.JobMetadata{CropFilter: "crop=3840:2160:0:0"}, &domain.ProbeResult{
+	request := testBuildPlanRequest()
+	request.Metadata.CropFilter = "crop=3840:2160:0:0"
+	request.Probe = &domain.ProbeResult{
 		Streams: []domain.MediaStream{{Type: "video", Codec: "hevc", Width: 3840, Height: 2160}},
-	})
-	if err != nil {
-		t.Fatalf("BuildPlanWithProbe() error = %v", err)
 	}
+	plan := mustBuildPlan(t, request)
 	args := Args(plan)
 	if containsArg(args, "-vf") {
 		t.Fatalf("Args() = %v, did not expect no-op crop filter", args)
@@ -248,14 +264,13 @@ func TestArgsOmitsNoOpCrop(t *testing.T) {
 }
 
 func TestArgsUsesQSVVPPFormatForNoOpCrop(t *testing.T) {
-	profile := testProfile()
-	profile.Video.Accelerator = "qsv"
-	plan, err := BuildPlanWithProbe(profile, "/in.mkv", "/out.mkv", domain.ResourceAllocation{Threads: 2}, &domain.SearchResult{CRF: 24}, nil, domain.JobMetadata{CropFilter: "crop=3840:2160:0:0"}, &domain.ProbeResult{
+	request := testBuildPlanRequest()
+	request.Profile.Video.Accelerator = "qsv"
+	request.Metadata.CropFilter = "crop=3840:2160:0:0"
+	request.Probe = &domain.ProbeResult{
 		Streams: []domain.MediaStream{{Type: "video", Codec: "hevc", Width: 3840, Height: 2160}},
-	})
-	if err != nil {
-		t.Fatalf("BuildPlanWithProbe() error = %v", err)
 	}
+	plan := mustBuildPlan(t, request)
 	args := Args(plan)
 	if !containsPair(args, "-vf", "vpp_qsv=format=p010le") {
 		t.Fatalf("Args() = %v, want QSV format filter for no-op crop", args)
@@ -266,12 +281,9 @@ func TestArgsUsesQSVVPPFormatForNoOpCrop(t *testing.T) {
 }
 
 func TestArgsIncludesCustomFFmpegArgs(t *testing.T) {
-	profile := testProfile()
-	profile.Video.FFmpegArgs = []string{"-svtav1-params", "film-grain=8"}
-	plan, err := BuildPlan(profile, "/in.mkv", "/out.mkv", domain.ResourceAllocation{Threads: 2}, &domain.SearchResult{CRF: 24}, nil, domain.JobMetadata{})
-	if err != nil {
-		t.Fatalf("BuildPlan() error = %v", err)
-	}
+	request := testBuildPlanRequest()
+	request.Profile.Video.FFmpegArgs = []string{"-svtav1-params", "film-grain=8"}
+	plan := mustBuildPlan(t, request)
 	args := Args(plan)
 	if !containsPair(args, "-svtav1-params", "film-grain=8") {
 		t.Fatalf("Args() = %v, missing custom ffmpeg args", args)
@@ -279,9 +291,9 @@ func TestArgsIncludesCustomFFmpegArgs(t *testing.T) {
 }
 
 func TestBuildPlanUsesDolbyVisionEncoderOverride(t *testing.T) {
-	profile := testProfile()
-	profile.Video.FFmpegArgs = []string{"-base", "1"}
-	profile.Video.DolbyVision = domain.DolbyVisionProfile{
+	request := testBuildPlanRequest()
+	request.Profile.Video.FFmpegArgs = []string{"-base", "1"}
+	request.Profile.Video.DolbyVision = domain.DolbyVisionProfile{
 		Mode:        domain.DolbyVisionModeAuto,
 		Codec:       "hevc",
 		Accelerator: "qsv",
@@ -289,16 +301,12 @@ func TestBuildPlanUsesDolbyVisionEncoderOverride(t *testing.T) {
 		BitDepth:    10,
 		FFmpegArgs:  []string{"-global_quality", "24"},
 	}
-	plan, err := BuildPlan(profile, "/in.mkv", "/out.mkv", domain.ResourceAllocation{Threads: 2}, &domain.SearchResult{CRF: 24}, nil, domain.JobMetadata{
-		HDR: domain.HDRMetadata{
-			DolbyVision:                &domain.DolbyVisionMetadata{Profile: 8},
-			DolbyVisionToolAvailable:   true,
-			DolbyVisionEncoderSelected: true,
-		},
-	})
-	if err != nil {
-		t.Fatalf("BuildPlan() error = %v", err)
+	request.Metadata.HDR = domain.HDRMetadata{
+		DolbyVision:                &domain.DolbyVisionMetadata{Profile: 8},
+		DolbyVisionToolAvailable:   true,
+		DolbyVisionEncoderSelected: true,
 	}
+	plan := mustBuildPlan(t, request)
 	if got, want := plan.VideoCodec, "hevc_qsv"; got != want {
 		t.Fatalf("VideoCodec = %q, want %q", got, want)
 	}
@@ -393,7 +401,9 @@ func TestDolbyVisionBlockNoopsForNonDolbyVisionJobs(t *testing.T) {
 }
 
 func TestArgsCopiesVideoWhenInputHasCompatibleAnvilMarker(t *testing.T) {
-	plan, err := BuildPlan(testProfile(), "/in.mkv", "/out.mkv", domain.ResourceAllocation{Threads: 2}, nil, nil, domain.JobMetadata{
+	request := testBuildPlanRequest()
+	request.Search = nil
+	request.Metadata = domain.JobMetadata{
 		VideoAlreadyEncoded: true,
 		CropFilter:          "crop=1920:800:0:140",
 		AnvilTags: map[string]string{
@@ -403,10 +413,8 @@ func TestArgsCopiesVideoWhenInputHasCompatibleAnvilMarker(t *testing.T) {
 			"anvil.video.pixel_format": "yuv420p10le",
 			"anvil.video.crf":          "29",
 		},
-	})
-	if err != nil {
-		t.Fatalf("BuildPlan() error = %v", err)
 	}
+	plan := mustBuildPlan(t, request)
 	if !plan.VideoCopy {
 		t.Fatal("VideoCopy = false, want true")
 	}
@@ -432,15 +440,15 @@ func TestArgsCopiesVideoWhenInputHasCompatibleAnvilMarker(t *testing.T) {
 }
 
 func TestArgsCopiesVideoWhenSearchSkipsEncode(t *testing.T) {
-	audio := &domain.AudioSelection{StreamIndexes: []int{1}}
 	reason := "ab-av1 did not find a CRF satisfying VMAF/size constraints"
-	plan, err := BuildPlan(testProfile(), "/in.mkv", "/out.mkv", domain.ResourceAllocation{Threads: 2}, &domain.SearchResult{
+	request := testBuildPlanRequest()
+	request.Audio = &domain.AudioSelection{StreamIndexes: []int{1}}
+	request.Search = &domain.SearchResult{
 		SkipVideoEncode:       true,
 		VideoEncodeSkipReason: reason,
-	}, audio, domain.JobMetadata{CropFilter: "crop=1920:800:0:140"})
-	if err != nil {
-		t.Fatalf("BuildPlan() error = %v", err)
 	}
+	request.Metadata.CropFilter = "crop=1920:800:0:140"
+	plan := mustBuildPlan(t, request)
 	if !plan.VideoCopy {
 		t.Fatal("VideoCopy = false, want true")
 	}
@@ -471,6 +479,25 @@ func TestArgsCopiesVideoWhenSearchSkipsEncode(t *testing.T) {
 	if containsPair(args, "-metadata:s:v:0", marker.TagEncoded+"=true") {
 		t.Fatalf("Args() = %v, did not expect encoded marker for skipped video encode", args)
 	}
+}
+
+func testBuildPlanRequest() BuildPlanRequest {
+	return BuildPlanRequest{
+		Profile:    testProfile(),
+		InputPath:  "/in.mkv",
+		OutputPath: "/out.mkv",
+		Resources:  domain.ResourceAllocation{Threads: 2},
+		Search:     &domain.SearchResult{CRF: 24},
+	}
+}
+
+func mustBuildPlan(t *testing.T, request BuildPlanRequest) domain.EncodePlan {
+	t.Helper()
+	plan, err := BuildPlan(request)
+	if err != nil {
+		t.Fatalf("BuildPlan() error = %v", err)
+	}
+	return plan
 }
 
 func testProfile() domain.Profile {

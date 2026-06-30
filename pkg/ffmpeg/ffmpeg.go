@@ -42,48 +42,39 @@ func (e Encoder) Encode(ctx context.Context, plan domain.EncodePlan) (process.Re
 	return runner.Run(ctx, process.Command{Name: binary, Args: Args(plan)})
 }
 
-func BuildPlan(profile domain.Profile, inputPath string, outputPath string, allocation domain.ResourceAllocation, search *domain.SearchResult, audio *domain.AudioSelection, metadata domain.JobMetadata) (domain.EncodePlan, error) {
-	return BuildPlanWithProbe(profile, inputPath, outputPath, allocation, search, audio, metadata, nil)
+// BuildPlanRequest contains the inputs used to construct an ffmpeg encode plan.
+// Search, Audio, and Probe are optional; nil means that pipeline stage has not
+// produced a result for this job.
+type BuildPlanRequest struct {
+	Profile    domain.Profile
+	InputPath  string
+	OutputPath string
+	Resources  domain.ResourceAllocation
+	Search     *domain.SearchResult
+	Audio      *domain.AudioSelection
+	Metadata   domain.JobMetadata
+	Probe      *domain.ProbeResult
 }
 
-func BuildPlanWithProbe(profile domain.Profile, inputPath string, outputPath string, allocation domain.ResourceAllocation, search *domain.SearchResult, audio *domain.AudioSelection, metadata domain.JobMetadata, probe *domain.ProbeResult) (domain.EncodePlan, error) {
-	if inputPath == "" {
-		return domain.EncodePlan{}, errors.New("input path is required")
+// BuildPlan builds the ffmpeg encode plan for request.
+func BuildPlan(request BuildPlanRequest) (domain.EncodePlan, error) {
+	if err := request.validate(); err != nil {
+		return domain.EncodePlan{}, err
 	}
-	if outputPath == "" {
-		return domain.EncodePlan{}, errors.New("output path is required")
-	}
-	videoCopy := metadata.VideoAlreadyEncoded
-	videoCopyReason := ""
-	if metadata.VideoAlreadyEncoded {
-		videoCopyReason = "compatible Anvil video marker"
-	}
-	if search != nil && search.SkipVideoEncode {
-		videoCopy = true
-		videoCopyReason = search.VideoEncodeSkipReason
-		if videoCopyReason == "" {
-			videoCopyReason = "CRF search skipped video encode"
-		}
-	}
-	video := domain.EffectiveVideoProfile(profile, metadata)
-	inputVideoCodec, inputWidth, inputHeight := inputVideo(probe)
-	crf := 0
-	if !videoCopy {
-		crf = video.CRFMin
-		if search != nil && search.CRF > 0 {
-			crf = search.CRF
-		}
-	}
+	videoCopy, videoCopyReason := videoCopyState(request.Metadata, request.Search)
+	video := domain.EffectiveVideoProfile(request.Profile, request.Metadata)
+	inputVideoCodec, inputWidth, inputHeight := inputVideo(request.Probe)
+	crf := selectedCRF(video, videoCopy, request.Search)
 	plan := domain.EncodePlan{
-		InputPath:          inputPath,
-		OutputPath:         outputPath,
-		ProfileName:        profile.Name,
+		InputPath:          request.InputPath,
+		OutputPath:         request.OutputPath,
+		ProfileName:        request.Profile.Name,
 		VideoCodec:         videocodec.ResolveEncoder(video.Codec, video.Accelerator),
 		InputVideoCodec:    inputVideoCodec,
 		InputWidth:         inputWidth,
 		InputHeight:        inputHeight,
 		Accelerator:        videocodec.ResolveAccelerator(video.Accelerator),
-		VideoSource:        domain.EffectiveVideoSource(metadata),
+		VideoSource:        domain.EffectiveVideoSource(request.Metadata),
 		VideoCopy:          videoCopy,
 		VideoCopyReason:    videoCopyReason,
 		Preset:             video.Preset,
@@ -95,25 +86,65 @@ func BuildPlanWithProbe(profile domain.Profile, inputPath string, outputPath str
 		TargetVMAF:         video.TargetVMAF,
 		MinSavingsPercent:  video.MinSavingsPercent,
 		ForceEncodeOnNoFit: video.ForceEncodeOnNoFit,
-		Threads:            allocation.Threads,
-		Container:          profile.Container,
-		CropFilter:         metadata.CropFilter,
-		SubtitleMode:       profile.Subtitles.Mode,
-		MetadataMode:       profile.Metadata.Mode,
-		TrackTitleMode:     trackTitleModeOrDefault(profile.Metadata.TrackTitles),
-		AttachmentMode:     profile.Attachments.Mode,
-		ChapterMode:        profile.Chapters.Mode,
-		AnvilTags:          copyTags(metadata.AnvilTags),
+		Threads:            request.Resources.Threads,
+		Container:          request.Profile.Container,
+		CropFilter:         request.Metadata.CropFilter,
+		SubtitleMode:       request.Profile.Subtitles.Mode,
+		MetadataMode:       request.Profile.Metadata.Mode,
+		TrackTitleMode:     trackTitleModeOrDefault(request.Profile.Metadata.TrackTitles),
+		AttachmentMode:     request.Profile.Attachments.Mode,
+		ChapterMode:        request.Profile.Chapters.Mode,
+		AnvilTags:          copyTags(request.Metadata.AnvilTags),
 		FFmpegArgs:         append([]string(nil), video.FFmpegArgs...),
 		ABAV1Args:          append([]string(nil), video.ABAV1Args...),
-		HDR:                metadata.HDR,
+		HDR:                request.Metadata.HDR,
 	}
+	applyAudioSelection(&plan, request.Audio)
+	plan.TrackTitles = standardizedTrackTitles(plan, request.Probe)
+	return plan, nil
+}
+
+func (request BuildPlanRequest) validate() error {
+	if request.InputPath == "" {
+		return errors.New("input path is required")
+	}
+	if request.OutputPath == "" {
+		return errors.New("output path is required")
+	}
+	return nil
+}
+
+func videoCopyState(metadata domain.JobMetadata, search *domain.SearchResult) (bool, string) {
+	videoCopy := metadata.VideoAlreadyEncoded
+	videoCopyReason := ""
+	if videoCopy {
+		videoCopyReason = "compatible Anvil video marker"
+	}
+	if search != nil && search.SkipVideoEncode {
+		videoCopy = true
+		videoCopyReason = search.VideoEncodeSkipReason
+		if videoCopyReason == "" {
+			videoCopyReason = "CRF search skipped video encode"
+		}
+	}
+	return videoCopy, videoCopyReason
+}
+
+func selectedCRF(video domain.VideoProfile, videoCopy bool, search *domain.SearchResult) int {
+	if videoCopy {
+		return 0
+	}
+	if search != nil && search.CRF > 0 {
+		return search.CRF
+	}
+	return video.CRFMin
+}
+
+func applyAudioSelection(plan *domain.EncodePlan, audio *domain.AudioSelection) {
 	if audio != nil {
 		plan.AudioSelectionApplied = true
 		plan.AudioStreamIndexes = append([]int(nil), audio.StreamIndexes...)
 	}
-	plan.TrackTitles = standardizedTrackTitles(plan, probe)
-	return plan, nil
 }
 
 func Args(plan domain.EncodePlan) []string {
@@ -159,7 +190,7 @@ func (Block) Name() string {
 }
 
 func (b Block) Run(ctx context.Context, job *pipeline.JobContext) error {
-	plan, err := BuildPlanWithProbe(job.Profile, job.InputPath, job.OutputPath, job.Resources, job.Search, job.Audio, job.Metadata, job.Probe)
+	plan, err := BuildPlan(buildPlanRequest(job))
 	if err != nil {
 		return err
 	}
@@ -169,6 +200,19 @@ func (b Block) Run(ctx context.Context, job *pipeline.JobContext) error {
 		return fmt.Errorf("ffmpeg encode: %w", err)
 	}
 	return nil
+}
+
+func buildPlanRequest(job *pipeline.JobContext) BuildPlanRequest {
+	return BuildPlanRequest{
+		Profile:    job.Profile,
+		InputPath:  job.InputPath,
+		OutputPath: job.OutputPath,
+		Resources:  job.Resources,
+		Search:     job.Search,
+		Audio:      job.Audio,
+		Metadata:   job.Metadata,
+		Probe:      job.Probe,
+	}
 }
 
 type DolbyVisionBlock struct {
@@ -213,18 +257,55 @@ func (b DolbyVisionBlock) Run(ctx context.Context, job *pipeline.JobContext) err
 	paths := doviWorkPaths(dir)
 	defer cleanupDoviPaths(paths)
 
-	originalForRPU := job.InputPath
-	if !strings.EqualFold(filepath.Ext(job.InputPath), ".mkv") {
-		if err := b.run(ctx, b.ffmpeg(), "-v", "quiet", "-stats", "-i", job.InputPath, "-c:v", "copy", paths.originalHEVC); err != nil {
-			return err
-		}
-		originalForRPU = paths.originalHEVC
-	}
-
-	extractArgs := doviArgs(job, "--crop", "--mode", "2", "extract-rpu", "-o", paths.originalRPU, originalForRPU)
-	if err := b.run(ctx, b.doviTool(), extractArgs...); err != nil {
+	if err := b.extractDolbyVisionRPU(ctx, job, paths); err != nil {
 		return err
 	}
+	if err := b.injectDolbyVisionRPU(ctx, job, paths); err != nil {
+		return err
+	}
+	if err := b.muxDolbyVisionOutput(ctx, job.OutputPath, paths); err != nil {
+		return err
+	}
+	if err := replaceOutput(job.OutputPath, paths.fixedMKV); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (b DolbyVisionBlock) extractDolbyVisionRPU(ctx context.Context, job *pipeline.JobContext, paths doviPaths) error {
+	originalForRPU, err := b.originalVideoForRPU(ctx, job.InputPath, paths)
+	if err != nil {
+		return err
+	}
+	extractArgs := doviArgs(
+		job,
+		"--crop", "--mode", "2",
+		"extract-rpu",
+		"-o", paths.originalRPU,
+		originalForRPU,
+	)
+	return b.run(ctx, b.doviTool(), extractArgs...)
+}
+
+func (b DolbyVisionBlock) originalVideoForRPU(ctx context.Context, inputPath string, paths doviPaths) (string, error) {
+	if strings.EqualFold(filepath.Ext(inputPath), ".mkv") {
+		return inputPath, nil
+	}
+	err := b.run(
+		ctx,
+		b.ffmpeg(),
+		"-v", "quiet", "-stats",
+		"-i", inputPath,
+		"-c:v", "copy",
+		paths.originalHEVC,
+	)
+	if err != nil {
+		return "", err
+	}
+	return paths.originalHEVC, nil
+}
+
+func (b DolbyVisionBlock) injectDolbyVisionRPU(ctx context.Context, job *pipeline.JobContext, paths doviPaths) error {
 	if err := b.run(ctx, b.mkvExtract(), "tracks", job.OutputPath, "0:"+paths.convertedHEVC); err != nil {
 		return err
 	}
@@ -235,25 +316,34 @@ func (b DolbyVisionBlock) Run(ctx context.Context, job *pipeline.JobContext) err
 		"--input", paths.convertedHEVC,
 		"--output", paths.fixedHEVC,
 	)
-	if err := b.run(ctx, b.doviTool(), injectArgs...); err != nil {
-		return err
-	}
+	return b.run(ctx, b.doviTool(), injectArgs...)
+}
 
-	fps, err := b.outputFPS(ctx, job.OutputPath)
+func (b DolbyVisionBlock) muxDolbyVisionOutput(ctx context.Context, outputPath string, paths doviPaths) error {
+	fps, err := b.outputFPS(ctx, outputPath)
 	if err != nil {
 		return err
 	}
-	muxArgs := []string{"-o", paths.fixedMKV, paths.fixedHEVC, "-D", job.OutputPath, "--track-order", "1:0"}
+	return b.run(ctx, b.mkvMerge(), doviMuxArgs(outputPath, paths, fps)...)
+}
+
+func doviMuxArgs(outputPath string, paths doviPaths, fps string) []string {
+	args := []string{
+		"-o", paths.fixedMKV,
+		paths.fixedHEVC,
+		"-D", outputPath,
+		"--track-order", "1:0",
+	}
 	if fps != "" {
-		muxArgs = append([]string{"--default-duration", "0:" + fps + "fps", "--fix-bitstream-timing-information", "0"}, muxArgs...)
+		args = append(
+			[]string{
+				"--default-duration", "0:" + fps + "fps",
+				"--fix-bitstream-timing-information", "0",
+			},
+			args...,
+		)
 	}
-	if err := b.run(ctx, b.mkvMerge(), muxArgs...); err != nil {
-		return err
-	}
-	if err := replaceOutput(job.OutputPath, paths.fixedMKV); err != nil {
-		return err
-	}
-	return nil
+	return args
 }
 
 type doviPaths struct {
@@ -369,7 +459,13 @@ func replaceOutput(outputPath string, fixedPath string) error {
 }
 
 func cleanupDoviPaths(paths doviPaths) {
-	for _, path := range []string{paths.originalHEVC, paths.originalRPU, paths.convertedHEVC, paths.fixedHEVC, paths.fixedMKV} {
+	for _, path := range []string{
+		paths.originalHEVC,
+		paths.originalRPU,
+		paths.convertedHEVC,
+		paths.fixedHEVC,
+		paths.fixedMKV,
+	} {
 		_ = os.Remove(path)
 	}
 }
@@ -392,17 +488,22 @@ func inputArgs(plan domain.EncodePlan) []string {
 func videoFilter(plan domain.EncodePlan) string {
 	if qsvInputPipeline(plan) {
 		format := videocodec.QSVVPPFormat(plan.BitDepth)
-		if strings.TrimSpace(plan.CropFilter) == "" || videocodec.NoOpCrop(plan.CropFilter, plan.InputWidth, plan.InputHeight) {
+		if noCropFilter(plan) {
 			return videocodec.QSVFormatFilter(format)
 		}
 		if filter, ok := videocodec.QSVCropFilter(plan.CropFilter, format); ok {
 			return filter
 		}
 	}
-	if strings.TrimSpace(plan.CropFilter) == "" || videocodec.NoOpCrop(plan.CropFilter, plan.InputWidth, plan.InputHeight) {
+	if noCropFilter(plan) {
 		return ""
 	}
 	return plan.CropFilter
+}
+
+func noCropFilter(plan domain.EncodePlan) bool {
+	return strings.TrimSpace(plan.CropFilter) == "" ||
+		videocodec.NoOpCrop(plan.CropFilter, plan.InputWidth, plan.InputHeight)
 }
 
 func qsvInputPipeline(plan domain.EncodePlan) bool {
@@ -757,7 +858,8 @@ func codecLabel(codec string) string {
 	normalized := strings.ToLower(original)
 	normalized = strings.ReplaceAll(normalized, "_", "-")
 	switch normalized {
-	case "av1", "libsvtav1", "svt-av1", "svtav1", "libaom-av1", "librav1e", "rav1e", "av1-qsv", "av1-nvenc", "av1-amf", "av1-vaapi", "av1-videotoolbox":
+	case "av1", "libsvtav1", "svt-av1", "svtav1", "libaom-av1", "librav1e", "rav1e",
+		"av1-qsv", "av1-nvenc", "av1-amf", "av1-vaapi", "av1-videotoolbox":
 		return "AV1"
 	case "aac":
 		return "AAC"
@@ -771,9 +873,11 @@ func codecLabel(codec string) string {
 		return "DTS"
 	case "flac":
 		return "FLAC"
-	case "h264", "h-264", "avc", "libx264", "x264", "h264-qsv", "h264-nvenc", "h264-amf", "h264-vaapi", "h264-videotoolbox":
+	case "h264", "h-264", "avc", "libx264", "x264", "h264-qsv", "h264-nvenc",
+		"h264-amf", "h264-vaapi", "h264-videotoolbox":
 		return "H.264"
-	case "h265", "h-265", "hevc", "libx265", "x265", "hevc-qsv", "hevc-nvenc", "hevc-amf", "hevc-vaapi", "hevc-videotoolbox":
+	case "h265", "h-265", "hevc", "libx265", "x265", "hevc-qsv", "hevc-nvenc",
+		"hevc-amf", "hevc-vaapi", "hevc-videotoolbox":
 		return "HEVC"
 	case "hdmv-pgs-subtitle", "pgs":
 		return "PGS"
