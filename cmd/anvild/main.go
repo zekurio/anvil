@@ -288,9 +288,8 @@ type shutdownRequest struct {
 
 func runDaemon(ctx context.Context, cfg config.Config, opts options) error {
 	runtimeCfg := newRuntimeConfig(cfg)
-	serviceCtx, stopServices := context.WithCancel(ctx)
+	serviceCtx, stopServices, workerCtx, stopWorkers := daemonContexts(ctx)
 	defer stopServices()
-	workerCtx, stopWorkers := context.WithCancel(ctx)
 	defer stopWorkers()
 
 	shutdownSignals := make(chan os.Signal, 2)
@@ -365,7 +364,13 @@ func runDaemon(ctx context.Context, cfg config.Config, opts options) error {
 	if err := waitForShutdown(done, shutdownSignals, shutdownCfg.ShutdownTimeout(), stopWorkers); err != nil {
 		return err
 	}
-	return request.err
+	return nil
+}
+
+func daemonContexts(ctx context.Context) (context.Context, context.CancelFunc, context.Context, context.CancelFunc) {
+	serviceCtx, stopServices := context.WithCancel(ctx)
+	workerCtx, stopWorkers := context.WithCancel(context.WithoutCancel(ctx))
+	return serviceCtx, stopServices, workerCtx, stopWorkers
 }
 
 func waitForShutdown(done <-chan struct{}, signals <-chan os.Signal, timeout time.Duration, stopWorkers context.CancelFunc) error {
