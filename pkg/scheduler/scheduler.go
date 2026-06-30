@@ -92,6 +92,9 @@ func (s *Scheduler) scheduleAvailable(ctx context.Context, limit int) (int, erro
 	if err := s.validate(); err != nil {
 		return 0, err
 	}
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
 
 	cfg := s.ConfigProvider()
 	active := s.activeSnapshot()
@@ -187,10 +190,6 @@ func (s *Scheduler) allocator(cfg config.Config) resources.Allocator {
 	return resources.NewAllocator(cfg.Daemon.TotalThreads)
 }
 
-func (s *Scheduler) eligibleLibraries(cfg config.Config) []domain.LibraryName {
-	return eligibleLibrariesForCounts(cfg, s.activeSnapshot().byLibrary)
-}
-
 func eligibleLibrariesForCounts(cfg config.Config, activeByLibrary map[domain.LibraryName]int) []domain.LibraryName {
 	allowed := make([]domain.LibraryName, 0, len(cfg.Libraries))
 	for libraryName, library := range cfg.Libraries {
@@ -215,6 +214,10 @@ func (s *Scheduler) leaseAvailable(ctx context.Context, cfg config.Config, activ
 
 	leased := make([]leasedAssignment, 0, maxJobs)
 	for len(leased) < maxJobs {
+		if err := ctx.Err(); err != nil {
+			return leased, err
+		}
+
 		allowed := eligibleLibrariesForCounts(cfg, counts)
 		if len(allowed) == 0 {
 			if len(leased) == 0 {
@@ -322,10 +325,6 @@ func (s *Scheduler) newWorkerID() string {
 		prefix = "anvil-worker"
 	}
 	return fmt.Sprintf("%s-%d", prefix, s.nextWorker.Add(1))
-}
-
-func (s *Scheduler) workerCount() int {
-	return s.workerCountForConfig(s.ConfigProvider())
 }
 
 func (s *Scheduler) workerCountForConfig(cfg config.Config) int {
