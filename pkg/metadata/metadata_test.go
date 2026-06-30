@@ -61,7 +61,7 @@ func TestResolverGetsRadarrOriginalLanguageFromParseWhenDownloadPathDoesNotMatch
 		assertMetadataRequest(t, w, r)
 		switch r.URL.Path {
 		case "/api/v3/movie":
-			fmt.Fprint(w, `[{
+			writeMetadataResponse(t, w, `[{
 				"path": "/media/movies/Movie (2026)",
 				"originalLanguage": {"name": "English"},
 				"movieFile": {"path": "/media/movies/Movie (2026)/Movie.mkv"}
@@ -72,7 +72,7 @@ func TestResolverGetsRadarrOriginalLanguageFromParseWhenDownloadPathDoesNotMatch
 				http.Error(w, "missing title", http.StatusBadRequest)
 				return
 			}
-			fmt.Fprint(w, `{
+			writeMetadataResponse(t, w, `{
 				"title": "Movie.2026.1080p",
 				"movie": {
 					"path": "/media/movies/Movie (2026)",
@@ -110,7 +110,7 @@ func TestResolverGetsSonarrOriginalLanguageFromParseWhenDownloadPathDoesNotMatch
 		assertMetadataRequest(t, w, r)
 		switch r.URL.Path {
 		case "/api/v3/series":
-			fmt.Fprint(w, `[{
+			writeMetadataResponse(t, w, `[{
 				"path": "/media/tv/Show",
 				"originalLanguage": {"name": "Japanese"}
 			}]`)
@@ -125,7 +125,7 @@ func TestResolverGetsSonarrOriginalLanguageFromParseWhenDownloadPathDoesNotMatch
 				http.Error(w, "missing path", http.StatusBadRequest)
 				return
 			}
-			fmt.Fprint(w, `{
+			writeMetadataResponse(t, w, `{
 				"title": "Show.S01E01.1080p",
 				"series": {
 					"path": "/media/tv/Show",
@@ -163,13 +163,13 @@ func TestResolverDisablesStreamCleanupWhenRadarrDoesNotMatch(t *testing.T) {
 		assertMetadataRequest(t, w, r)
 		switch r.URL.Path {
 		case "/api/v3/movie":
-			fmt.Fprint(w, `[{
+			writeMetadataResponse(t, w, `[{
 				"path": "/media/movies/Other Movie (2026)",
 				"originalLanguage": {"name": "English"},
 				"movieFile": {"path": "/media/movies/Other Movie (2026)/Other Movie.mkv"}
 			}]`)
 		case "/api/v3/parse":
-			fmt.Fprint(w, `{}`)
+			writeMetadataResponse(t, w, `{}`)
 		default:
 			http.NotFound(w, r)
 		}
@@ -204,12 +204,12 @@ func TestResolverDisablesStreamCleanupWhenSonarrDoesNotMatch(t *testing.T) {
 		assertMetadataRequest(t, w, r)
 		switch r.URL.Path {
 		case "/api/v3/series":
-			fmt.Fprint(w, `[{
+			writeMetadataResponse(t, w, `[{
 				"path": "/media/tv/Other Show",
 				"originalLanguage": {"name": "Japanese"}
 			}]`)
 		case "/api/v3/parse":
-			fmt.Fprint(w, `{}`)
+			writeMetadataResponse(t, w, `{}`)
 		default:
 			http.NotFound(w, r)
 		}
@@ -305,7 +305,7 @@ func metadataServer(t *testing.T, expectedPath string, body string) *httptest.Se
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, body)
+		writeMetadataResponse(t, w, body)
 	})
 }
 
@@ -329,5 +329,12 @@ func assertMetadataRequest(t *testing.T, w http.ResponseWriter, r *http.Request)
 	if r.URL.Path == "/api/v3/movie" && r.URL.Query().Get("includeMovieFile") != "true" {
 		t.Error("includeMovieFile query missing")
 		http.Error(w, "missing query", http.StatusBadRequest)
+	}
+}
+
+func writeMetadataResponse(t *testing.T, w http.ResponseWriter, body string) {
+	t.Helper()
+	if _, err := fmt.Fprint(w, body); err != nil {
+		t.Errorf("write metadata response: %v", err)
 	}
 }

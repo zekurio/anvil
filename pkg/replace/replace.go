@@ -418,22 +418,27 @@ func ignorable(root string, path string, isDir bool, patterns []string) bool {
 		if pattern == "" {
 			continue
 		}
-		if matched, _ := doublestar.PathMatch(pattern, rel); matched {
+		if pathMatches(pattern, rel) {
 			return true
 		}
 		if isDir {
-			if matched, _ := doublestar.PathMatch(pattern, rel+"/"); matched {
+			if pathMatches(pattern, rel+"/") {
 				return true
 			}
 			if strings.HasSuffix(pattern, "/**") {
 				prefix := strings.TrimSuffix(pattern, "/**")
-				if matched, _ := doublestar.PathMatch(prefix, rel); matched {
+				if pathMatches(prefix, rel) {
 					return true
 				}
 			}
 		}
 	}
 	return false
+}
+
+func pathMatches(pattern string, rel string) bool {
+	matched, err := doublestar.PathMatch(pattern, rel)
+	return err == nil && matched
 }
 
 func inside(root string, path string) bool {

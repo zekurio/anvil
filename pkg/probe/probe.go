@@ -124,8 +124,8 @@ func parseFFProbe(path string, data []byte) (domain.ProbeResult, error) {
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return domain.ProbeResult{}, fmt.Errorf("parse ffprobe json: %w", err)
 	}
-	duration, _ := strconv.ParseFloat(raw.Format.Duration, 64)
-	size, _ := strconv.ParseInt(raw.Format.Size, 10, 64)
+	duration := parseFFProbeFloat(raw.Format.Duration)
+	size := parseFFProbeInt(raw.Format.Size)
 	probed := domain.ProbeResult{
 		Path:            path,
 		FormatName:      raw.Format.FormatName,
@@ -138,7 +138,7 @@ func parseFFProbe(path string, data []byte) (domain.ProbeResult, error) {
 		for key, value := range stream.Disposition {
 			disposition[key] = value != 0
 		}
-		bitRate, _ := strconv.ParseInt(stream.BitRate, 10, 64)
+		bitRate := parseFFProbeInt(stream.BitRate)
 		probed.Streams = append(probed.Streams, domain.MediaStream{
 			Index:          stream.Index,
 			Type:           stream.CodecType,
@@ -161,6 +161,22 @@ func parseFFProbe(path string, data []byte) (domain.ProbeResult, error) {
 		})
 	}
 	return probed, nil
+}
+
+func parseFFProbeFloat(value string) float64 {
+	parsed, err := strconv.ParseFloat(value, 64)
+	if err != nil {
+		return 0
+	}
+	return parsed
+}
+
+func parseFFProbeInt(value string) int64 {
+	parsed, err := strconv.ParseInt(value, 10, 64)
+	if err != nil {
+		return 0
+	}
+	return parsed
 }
 
 type DolbyVisionToolChecker interface {

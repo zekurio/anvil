@@ -250,17 +250,17 @@ func (b DolbyVisionBlock) Run(ctx context.Context, job *pipeline.JobContext) err
 		return nil
 	}
 	if strings.TrimSpace(job.OutputPath) == "" {
-		return errors.New("Dolby Vision fix output path is required")
+		return errors.New("dolby vision fix output path is required")
 	}
 	if !strings.EqualFold(filepath.Ext(job.OutputPath), ".mkv") {
-		return fmt.Errorf("Dolby Vision fix requires MKV output, got %q", filepath.Ext(job.OutputPath))
+		return fmt.Errorf("dolby vision fix requires MKV output, got %q", filepath.Ext(job.OutputPath))
 	}
 	codec := job.EncodePlan.VideoCodec
 	if strings.TrimSpace(codec) == "" {
 		codec = job.Profile.Video.DolbyVision.Codec
 	}
 	if !hevcEncoder(codec) {
-		return fmt.Errorf("Dolby Vision fix requires HEVC output, got encoder %q", codec)
+		return fmt.Errorf("dolby vision fix requires HEVC output, got encoder %q", codec)
 	}
 
 	dir := strings.TrimSpace(job.StagingDir)
@@ -461,12 +461,12 @@ func hevcEncoder(codec string) bool {
 
 func replaceOutput(outputPath string, fixedPath string) error {
 	backupPath := outputPath + ".pre-dovi"
-	_ = os.Remove(backupPath)
+	_ = os.Remove(backupPath) //nolint:errcheck // stale backup removal is best-effort before replacement
 	if err := os.Rename(outputPath, backupPath); err != nil {
 		return fmt.Errorf("backup pre-Dolby Vision output: %w", err)
 	}
 	if err := os.Rename(fixedPath, outputPath); err != nil {
-		_ = os.Rename(backupPath, outputPath)
+		_ = os.Rename(backupPath, outputPath) //nolint:errcheck // restore attempt is best-effort; install error is returned
 		return fmt.Errorf("install Dolby Vision fixed output: %w", err)
 	}
 	if err := os.Remove(backupPath); err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -483,7 +483,7 @@ func cleanupDoviPaths(paths doviPaths) {
 		paths.fixedHEVC,
 		paths.fixedMKV,
 	} {
-		_ = os.Remove(path)
+		_ = os.Remove(path) //nolint:errcheck // temporary Dolby Vision work files are best-effort cleanup
 	}
 }
 

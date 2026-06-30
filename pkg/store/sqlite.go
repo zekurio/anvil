@@ -70,12 +70,10 @@ func Open(ctx context.Context, path string) (*SQLiteStore, error) {
 
 	store := &SQLiteStore{db: db}
 	if err := store.configure(ctx); err != nil {
-		_ = db.Close()
-		return nil, err
+		return nil, closeDBOnError(db, err)
 	}
 	if err := store.migrate(ctx); err != nil {
-		_ = db.Close()
-		return nil, err
+		return nil, closeDBOnError(db, err)
 	}
 
 	return store, nil
@@ -104,8 +102,7 @@ func OpenReadOnly(ctx context.Context, path string) (*SQLiteStore, error) {
 
 	store := &SQLiteStore{db: db}
 	if err := store.configureReadOnly(ctx); err != nil {
-		_ = db.Close()
-		return nil, err
+		return nil, closeDBOnError(db, err)
 	}
 	return store, nil
 }
@@ -115,4 +112,11 @@ func (s *SQLiteStore) Close() error {
 		return nil
 	}
 	return s.db.Close()
+}
+
+func closeDBOnError(db *sql.DB, cause error) error {
+	if closeErr := db.Close(); closeErr != nil {
+		return errors.Join(cause, fmt.Errorf("close sqlite store after error: %w", closeErr))
+	}
+	return cause
 }

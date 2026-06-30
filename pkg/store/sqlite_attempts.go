@@ -123,7 +123,7 @@ WHERE id = ?
 	return scanAttemptEvent(row)
 }
 
-func (s *SQLiteStore) ListAttemptEvents(ctx context.Context, attemptID domain.AttemptID) ([]domain.AttemptEvent, error) {
+func (s *SQLiteStore) ListAttemptEvents(ctx context.Context, attemptID domain.AttemptID) (events []domain.AttemptEvent, err error) {
 	rows, err := s.db.QueryContext(ctx, `
 SELECT id, attempt_id, type, name, message, payload, created_at
 FROM attempt_events
@@ -133,9 +133,8 @@ ORDER BY id ASC
 	if err != nil {
 		return nil, fmt.Errorf("list attempt events: %w", err)
 	}
-	defer rows.Close()
+	defer closeRows(rows, &err, "close attempt events")
 
-	var events []domain.AttemptEvent
 	for rows.Next() {
 		event, err := scanAttemptEvent(rows)
 		if err != nil {
@@ -159,7 +158,7 @@ WHERE id = ?
 	return scanAttempt(row)
 }
 
-func (s *SQLiteStore) ListAttemptsForJob(ctx context.Context, jobID domain.JobID) ([]domain.Attempt, error) {
+func (s *SQLiteStore) ListAttemptsForJob(ctx context.Context, jobID domain.JobID) (attempts []domain.Attempt, err error) {
 	rows, err := s.db.QueryContext(ctx, `
 SELECT id, job_id, number, worker_id, state, resolved_library_json,
 	resolved_flow_json, resolved_profile_json, started_at, finished_at, error
@@ -170,9 +169,8 @@ ORDER BY number ASC, id ASC
 	if err != nil {
 		return nil, fmt.Errorf("list attempts for job: %w", err)
 	}
-	defer rows.Close()
+	defer closeRows(rows, &err, "close attempts for job")
 
-	var attempts []domain.Attempt
 	for rows.Next() {
 		attempt, err := scanAttempt(rows)
 		if err != nil {
