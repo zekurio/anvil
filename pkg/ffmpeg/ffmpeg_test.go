@@ -30,7 +30,10 @@ func TestBuildPlanUsesSearchCRF(t *testing.T) {
 }
 
 func TestArgsPreserveStreamsAndStripMetadata(t *testing.T) {
-	plan, _ := BuildPlan(testProfile(), "/in.mkv", "/out.mkv", domain.ResourceAllocation{Threads: 2}, &domain.SearchResult{CRF: 24}, nil, domain.JobMetadata{})
+	plan, err := BuildPlan(testProfile(), "/in.mkv", "/out.mkv", domain.ResourceAllocation{Threads: 2}, &domain.SearchResult{CRF: 24}, nil, domain.JobMetadata{})
+	if err != nil {
+		t.Fatalf("BuildPlan() error = %v", err)
+	}
 	args := Args(plan)
 	want := []string{"-c:v", "libsvtav1", "-crf", "24", "-threads", "2", "-c:a", "copy", "-c:s", "copy", "-map_metadata", "-1", "-map_chapters", "-1", "/out.mkv"}
 	for _, token := range want {

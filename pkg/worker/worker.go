@@ -305,7 +305,7 @@ func (r Runner) cleanupFailedStaging(ctx context.Context, job *pipeline.JobConte
 	if err == nil || r.Store == nil {
 		return
 	}
-	_, _ = r.Store.RecordAttemptEvent(ctx, domain.AttemptEvent{
+	_, _ = r.Store.RecordAttemptEvent(ctx, domain.AttemptEvent{ //nolint:errcheck // failed cleanup telemetry is best-effort
 		AttemptID: job.Attempt.ID,
 		Type:      domain.AttemptEventArtifact,
 		Name:      "failed-staging-cleanup",
@@ -348,7 +348,7 @@ func (r Runner) startHeartbeat(ctx context.Context, jobID domain.JobID, workerID
 				return
 			case <-ticker.C:
 				now := r.now()
-				_, _ = r.Store.HeartbeatJob(heartbeatCtx, jobID, workerID, now.Add(leaseDuration), now)
+				_, _ = r.Store.HeartbeatJob(heartbeatCtx, jobID, workerID, now.Add(leaseDuration), now) //nolint:errcheck // next heartbeat or stale recovery handles transient heartbeat failure
 			}
 		}
 	}()

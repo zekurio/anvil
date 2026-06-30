@@ -11,3 +11,6 @@ linters:
     - ineffassign
     - staticcheck
     - unused
+  settings:
+    errcheck:
+      check-blank: true

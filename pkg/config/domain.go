@@ -103,7 +103,10 @@ func (c Config) StagingCleanupAge() time.Duration {
 }
 
 func (l LibraryConfig) ToDomain(arr ArrConfig) domain.Library {
-	stableFor, _ := time.ParseDuration(l.Download.StableFor)
+	stableFor := time.Duration(0)
+	if strings.TrimSpace(l.Download.StableFor) != "" {
+		stableFor = mustDuration(l.Download.StableFor)
+	}
 	return domain.Library{
 		Name:             domain.LibraryName(l.Name),
 		Kind:             domain.LibraryKind(l.Kind),
