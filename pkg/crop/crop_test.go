@@ -42,6 +42,9 @@ func TestFFmpegDetectorBuildsCommandAndStoresRawData(t *testing.T) {
 	if !contains(result.RawCommand, "ffmpeg") || !contains(result.RawCommand, "-frames:v") || !contains(result.RawCommand, "42") {
 		t.Fatalf("raw command = %v, want ffmpeg cropdetect frame limit", result.RawCommand)
 	}
+	if !contains(result.RawCommand, "cropdetect=64:16:0") {
+		t.Fatalf("raw command = %v, want HDR-safe cropdetect limit", result.RawCommand)
+	}
 }
 
 func TestBlockStoresCropInJobMetadata(t *testing.T) {
