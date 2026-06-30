@@ -189,6 +189,24 @@ path = "/srv/media/movies"
 	}
 }
 
+func TestLoadReportsUnknownKeysInStableOrder(t *testing.T) {
+	path := writeConfig(t, `
+unknown_z = true
+unknown_a = true
+
+[libraries.movies]
+path = "/srv/media/movies"
+`)
+
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("Load() error = nil, want unknown key rejection")
+	}
+	if !strings.Contains(err.Error(), "unknown_a, unknown_z") {
+		t.Fatalf("Load() error = %q, want stable sorted unknown keys", err.Error())
+	}
+}
+
 func TestLoadDaemonFilesystemEventDebounce(t *testing.T) {
 	path := writeConfig(t, `
 	[daemon]
