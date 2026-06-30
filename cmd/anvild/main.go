@@ -2,10 +2,10 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -14,7 +14,6 @@ import (
 	"strings"
 	"sync"
 	"syscall"
-	"text/tabwriter"
 	"time"
 
 	"github.com/zekurio/anvil/pkg/config"
@@ -91,12 +90,16 @@ func main() {
 }
 
 func run(args []string) error {
+	return runWithContext(context.Background(), args)
+}
+
+func runWithContext(ctx context.Context, args []string) error {
 	opts, err := parseOptions(args)
 	if err != nil {
 		return err
 	}
 	if opts.command == commandHelp {
-		return printUsage()
+		return writeUsage(os.Stdout)
 	}
 
 	cfg, err := loadRuntimeConfig(opts.configPath, opts)
@@ -107,27 +110,35 @@ func run(args []string) error {
 		return err
 	}
 
+	return dispatchCommand(ctx, cfg, opts)
+}
+
+func dispatchCommand(ctx context.Context, cfg config.Config, opts options) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
 	switch opts.command {
 	case commandRun:
-		return runDaemon(cfg, opts)
+		return runDaemon(ctx, cfg, opts)
 	case commandCheckConfig:
 		return runCheckConfig(cfg, opts)
 	case commandScan:
-		return runScanCommand(context.Background(), cfg, opts)
+		return runScanCommand(ctx, cfg, opts)
 	case commandPreflight:
-		return runPreflightCommand(context.Background(), cfg, opts)
+		return runPreflightCommand(ctx, cfg, opts)
 	case commandJobs:
-		return runJobsCommand(context.Background(), cfg, opts)
+		return runJobsCommand(ctx, cfg, opts)
 	case commandStats:
-		return runStatsCommand(context.Background(), cfg, opts)
+		return runStatsCommand(ctx, cfg, opts)
 	case commandInspect:
-		return runInspectCommand(context.Background(), cfg, opts)
+		return runInspectCommand(ctx, cfg, opts)
 	case commandRetry:
-		return runRetryCommand(context.Background(), cfg, opts)
+		return runRetryCommand(ctx, cfg, opts)
 	case commandRecover:
-		return runRecoverCommand(context.Background(), cfg, opts)
+		return runRecoverCommand(ctx, cfg, opts)
 	case commandCleanup:
-		return runCleanupStagingCommand(context.Background(), cfg, opts)
+		return runCleanupStagingCommand(ctx, cfg, opts)
 	default:
 		return fmt.Errorf("unknown command %q", opts.command)
 	}
@@ -270,11 +281,15 @@ func addShutdownFlags(flags *flag.FlagSet, opts *options) {
 	flags.StringVar(&opts.shutdownTimeout, "shutdown-timeout", opts.shutdownTimeout, "override maximum graceful shutdown wait; 0s waits indefinitely")
 }
 
-func runDaemon(cfg config.Config, opts options) error {
+type shutdownRequest struct {
+	signal os.Signal
+	err    error
+}
+
+func runDaemon(ctx context.Context, cfg config.Config, opts options) error {
 	runtimeCfg := newRuntimeConfig(cfg)
-	serviceCtx, stopServices := context.WithCancel(context.Background())
+	serviceCtx, stopServices, workerCtx, stopWorkers := daemonContexts(ctx)
 	defer stopServices()
-	workerCtx, stopWorkers := context.WithCancel(context.Background())
 	defer stopWorkers()
 
 	shutdownSignals := make(chan os.Signal, 2)
@@ -283,10 +298,20 @@ func runDaemon(cfg config.Config, opts options) error {
 	signal.Notify(reloadSignals, syscall.SIGHUP)
 	defer signal.Stop(shutdownSignals)
 	defer signal.Stop(reloadSignals)
-	firstSignal := make(chan os.Signal, 1)
+	shutdown := make(chan shutdownRequest, 1)
+	stopSignalWatcher := make(chan struct{})
+	defer close(stopSignalWatcher)
 	go func() {
-		sig := <-shutdownSignals
-		firstSignal <- sig
+		var request shutdownRequest
+		select {
+		case sig := <-shutdownSignals:
+			request.signal = sig
+		case <-ctx.Done():
+			request.err = ctx.Err()
+		case <-stopSignalWatcher:
+			return
+		}
+		shutdown <- request
 		stopServices()
 	}()
 
@@ -318,9 +343,13 @@ func runDaemon(cfg config.Config, opts options) error {
 	startRecoveryLoop(serviceCtx, &wg, runtimeCfg.Get, state)
 	planner := startSchedulerLoop(serviceCtx, workerCtx, &wg, runtimeCfg.Get, state)
 
-	sig := <-firstSignal
+	request := <-shutdown
 	shutdownCfg := runtimeCfg.Get()
-	slog.Info("stopping anvild", "signal", sig.String(), "policy", shutdownCfg.Daemon.ShutdownPolicy)
+	if request.err != nil {
+		slog.Info("stopping anvild", "reason", request.err, "policy", shutdownCfg.Daemon.ShutdownPolicy)
+	} else {
+		slog.Info("stopping anvild", "signal", request.signal.String(), "policy", shutdownCfg.Daemon.ShutdownPolicy)
+	}
 	if shutdownCfg.Daemon.ShutdownPolicy == "cancel" {
 		stopWorkers()
 	}
@@ -332,7 +361,16 @@ func runDaemon(cfg config.Config, opts options) error {
 		planner.Wait()
 	}()
 
-	return waitForShutdown(done, shutdownSignals, shutdownCfg.ShutdownTimeout(), stopWorkers)
+	if err := waitForShutdown(done, shutdownSignals, shutdownCfg.ShutdownTimeout(), stopWorkers); err != nil {
+		return err
+	}
+	return nil
+}
+
+func daemonContexts(ctx context.Context) (context.Context, context.CancelFunc, context.Context, context.CancelFunc) {
+	serviceCtx, stopServices := context.WithCancel(ctx)
+	workerCtx, stopWorkers := context.WithCancel(context.WithoutCancel(ctx))
+	return serviceCtx, stopServices, workerCtx, stopWorkers
 }
 
 func waitForShutdown(done <-chan struct{}, signals <-chan os.Signal, timeout time.Duration, stopWorkers context.CancelFunc) error {
@@ -393,7 +431,7 @@ func runScanCommand(ctx context.Context, cfg config.Config, opts options) error 
 	if err != nil {
 		return err
 	}
-	return printScanResult(result)
+	return writeScanResult(os.Stdout, result)
 }
 
 func runJobsCommand(ctx context.Context, cfg config.Config, opts options) error {
@@ -412,11 +450,9 @@ func runJobsCommand(ctx context.Context, cfg config.Config, opts options) error 
 		return err
 	}
 	if opts.jsonOutput {
-		encoder := json.NewEncoder(os.Stdout)
-		encoder.SetIndent("", "  ")
-		return encoder.Encode(jobs)
+		return writeIndentedJSON(os.Stdout, jobs)
 	}
-	return printJobs(jobs)
+	return writeJobs(os.Stdout, jobs)
 }
 
 func runStatsCommand(ctx context.Context, cfg config.Config, opts options) error {
@@ -433,11 +469,9 @@ func runStatsCommand(ctx context.Context, cfg config.Config, opts options) error
 		return err
 	}
 	if opts.jsonOutput {
-		encoder := json.NewEncoder(os.Stdout)
-		encoder.SetIndent("", "  ")
-		return encoder.Encode(stats)
+		return writeIndentedJSON(os.Stdout, stats)
 	}
-	return printLibraryStats(stats)
+	return writeLibraryStats(os.Stdout, stats)
 }
 
 func runRetryCommand(ctx context.Context, cfg config.Config, opts options) error {
@@ -448,13 +482,15 @@ func runRetryCommand(ctx context.Context, cfg config.Config, opts options) error
 	defer closeStore(state)
 
 	now := time.Now().UTC()
+	w := newOutputWriter(os.Stdout)
 	if opts.retryFailed {
 		count, err := state.RetryFailedJobs(ctx, domain.LibraryName(opts.libraryName), now)
 		if err != nil {
 			return err
 		}
-		if _, err := fmt.Fprintf(os.Stdout, "retried_failed_jobs=%d\n", count); err != nil {
-			return fmt.Errorf("write retry summary: %w", err)
+		w.printf("retried_failed_jobs=%d\n", count)
+		if w.err != nil {
+			return fmt.Errorf("write output: %w", w.err)
 		}
 	}
 	for _, id := range opts.jobIDs {
@@ -462,8 +498,9 @@ func runRetryCommand(ctx context.Context, cfg config.Config, opts options) error
 		if err != nil {
 			return err
 		}
-		if _, err := fmt.Fprintf(os.Stdout, "job_id=%d state=%s\n", job.ID, job.State); err != nil {
-			return fmt.Errorf("write retry job summary: %w", err)
+		w.printf("job_id=%d state=%s\n", job.ID, job.State)
+		if w.err != nil {
+			return fmt.Errorf("write output: %w", w.err)
 		}
 	}
 	return nil
@@ -480,10 +517,9 @@ func runRecoverCommand(ctx context.Context, cfg config.Config, opts options) err
 	if err != nil {
 		return err
 	}
-	if _, err := fmt.Fprintf(os.Stdout, "recovered_jobs=%d\n", recovered); err != nil {
-		return fmt.Errorf("write recovery summary: %w", err)
-	}
-	return nil
+	return writeOutput(os.Stdout, func(w *outputWriter) {
+		w.printf("recovered_jobs=%d\n", recovered)
+	})
 }
 
 func runCleanupStagingCommand(ctx context.Context, cfg config.Config, opts options) error {
@@ -505,7 +541,7 @@ func runCleanupStagingCommand(ctx context.Context, cfg config.Config, opts optio
 	if err != nil {
 		return err
 	}
-	if err := printCleanupResult(result, opts.cleanupDryRun); err != nil {
+	if err := writeCleanupResult(os.Stdout, os.Stderr, result, opts.cleanupDryRun); err != nil {
 		return err
 	}
 	if len(result.Errors) > 0 {
@@ -755,96 +791,78 @@ func runConfiguredStagingCleanup(cfg config.Config) {
 	}
 }
 
-func printScanResult(result scanner.ScanResult) error {
-	if _, err := fmt.Fprintf(os.Stdout, "libraries=%d sources=%d assets=%d enqueued_jobs=%d existing_jobs=%d skipped_ignored=%d skipped_unstable=%d",
-		result.Libraries,
-		result.Sources,
-		result.Assets,
-		result.EnqueuedJobs,
-		result.ExistingJobs,
-		result.SkippedIgnored,
-		result.SkippedUnstable,
-	); err != nil {
-		return fmt.Errorf("write scan result: %w", err)
-	}
-	if !result.NextStableAt.IsZero() {
-		if _, err := fmt.Fprintf(os.Stdout, " next_stable_at=%s", result.NextStableAt.Format(time.RFC3339)); err != nil {
-			return fmt.Errorf("write next stable timestamp: %w", err)
+func writeScanResult(out io.Writer, result scanner.ScanResult) error {
+	return writeOutput(out, func(w *outputWriter) {
+		w.printf("libraries=%d sources=%d assets=%d enqueued_jobs=%d existing_jobs=%d skipped_ignored=%d skipped_unstable=%d",
+			result.Libraries,
+			result.Sources,
+			result.Assets,
+			result.EnqueuedJobs,
+			result.ExistingJobs,
+			result.SkippedIgnored,
+			result.SkippedUnstable,
+		)
+		if !result.NextStableAt.IsZero() {
+			w.printf(" next_stable_at=%s", result.NextStableAt.Format(time.RFC3339))
 		}
-	}
-	if _, err := fmt.Fprintln(os.Stdout); err != nil {
-		return fmt.Errorf("write scan result newline: %w", err)
-	}
-	return nil
+		w.println()
+	})
 }
 
-func printCleanupResult(result staging.CleanupStaleResult, dryRun bool) error {
-	if _, err := fmt.Fprintf(os.Stdout, "dry_run=%t candidates=%d removed=%d skipped=%d errors=%d\n",
-		dryRun,
-		result.Candidates,
-		result.Removed,
-		result.Skipped,
-		len(result.Errors),
-	); err != nil {
-		return fmt.Errorf("write cleanup result: %w", err)
+func writeCleanupResult(out io.Writer, errOut io.Writer, result staging.CleanupStaleResult, dryRun bool) error {
+	if err := writeOutput(out, func(w *outputWriter) {
+		w.printf("dry_run=%t candidates=%d removed=%d skipped=%d errors=%d\n",
+			dryRun,
+			result.Candidates,
+			result.Removed,
+			result.Skipped,
+			len(result.Errors),
+		)
+	}); err != nil {
+		return err
 	}
-	for _, message := range result.Errors {
-		if _, err := fmt.Fprintf(os.Stderr, "cleanup_error=%q\n", message); err != nil {
-			return fmt.Errorf("write cleanup error: %w", err)
+	return writeOutput(errOut, func(w *outputWriter) {
+		for _, message := range result.Errors {
+			w.printf("cleanup_error=%q\n", message)
 		}
-	}
-	return nil
+	})
 }
 
 func stagingRoot(cfg config.Config) string {
 	return filepath.Join(cfg.Daemon.TempDir, "staging")
 }
 
-func printJobs(jobs []store.JobSummary) error {
-	table := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	if _, err := fmt.Fprintln(table, "ID\tSTATE\tLIBRARY\tATTEMPTS\tUPDATED\tPATH\tERROR"); err != nil {
-		return fmt.Errorf("write jobs header: %w", err)
-	}
-	for _, summary := range jobs {
-		if _, err := fmt.Fprintf(table, "%d\t%s\t%s\t%d\t%s\t%s\t%s\n",
-			summary.Job.ID,
-			summary.Job.State,
-			summary.Job.LibraryName,
-			summary.Job.AttemptCount,
-			summary.Job.UpdatedAt.Format(time.RFC3339),
-			jobPath(summary),
-			summary.Job.LastError,
-		); err != nil {
-			return fmt.Errorf("write job row: %w", err)
+func writeJobs(out io.Writer, jobs []store.JobSummary) error {
+	return writeTable(out, func(w *outputWriter) {
+		w.println("ID\tSTATE\tLIBRARY\tATTEMPTS\tUPDATED\tPATH\tERROR")
+		for _, summary := range jobs {
+			w.printf("%d\t%s\t%s\t%d\t%s\t%s\t%s\n",
+				summary.Job.ID,
+				summary.Job.State,
+				summary.Job.LibraryName,
+				summary.Job.AttemptCount,
+				summary.Job.UpdatedAt.Format(time.RFC3339),
+				jobPath(summary),
+				summary.Job.LastError,
+			)
 		}
-	}
-	if err := table.Flush(); err != nil {
-		return fmt.Errorf("flush jobs table: %w", err)
-	}
-	return nil
+	})
 }
 
-func printLibraryStats(stats []store.LibraryStats) error {
-	table := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	if _, err := fmt.Fprintln(table, "LIBRARY\tJOBS\tBEFORE\tAFTER\tSAVED\tSAVED%"); err != nil {
-		return fmt.Errorf("write library stats header: %w", err)
-	}
-	for _, stat := range stats {
-		if _, err := fmt.Fprintf(table, "%s\t%d\t%s\t%s\t%s\t%s\n",
-			stat.LibraryName,
-			stat.Jobs,
-			formatBytes(stat.InputSizeBytes),
-			formatBytes(stat.OutputSizeBytes),
-			formatBytes(stat.SavedBytes),
-			formatPercent(stat.SavedPercent),
-		); err != nil {
-			return fmt.Errorf("write library stats row: %w", err)
+func writeLibraryStats(out io.Writer, stats []store.LibraryStats) error {
+	return writeTable(out, func(w *outputWriter) {
+		w.println("LIBRARY\tJOBS\tBEFORE\tAFTER\tSAVED\tSAVED%")
+		for _, stat := range stats {
+			w.printf("%s\t%d\t%s\t%s\t%s\t%s\n",
+				stat.LibraryName,
+				stat.Jobs,
+				formatBytes(stat.InputSizeBytes),
+				formatBytes(stat.OutputSizeBytes),
+				formatBytes(stat.SavedBytes),
+				formatPercent(stat.SavedPercent),
+			)
 		}
-	}
-	if err := table.Flush(); err != nil {
-		return fmt.Errorf("flush library stats table: %w", err)
-	}
-	return nil
+	})
 }
 
 func jobPath(summary store.JobSummary) string {
@@ -937,8 +955,9 @@ func isCommand(value string) bool {
 	}
 }
 
-func printUsage() error {
-	if _, err := fmt.Fprintln(os.Stdout, `Usage:
+func writeUsage(out io.Writer) error {
+	return writeOutput(out, func(w *outputWriter) {
+		w.println(`Usage:
   anvild [--config PATH] [--daemon] [--shutdown-policy drain|cancel] [--shutdown-timeout DURATION]
   anvild run [--config PATH] [--daemon] [--shutdown-policy drain|cancel] [--shutdown-timeout DURATION]
   anvild check-config [--config PATH]
@@ -952,10 +971,8 @@ func printUsage() error {
   anvild recover [--config PATH]
   anvild cleanup-staging [--config PATH] [--older-than DURATION] [--dry-run]
 
-Legacy --check-config is still accepted.`); err != nil {
-		return fmt.Errorf("write usage: %w", err)
-	}
-	return nil
+Legacy --check-config is still accepted.`)
+	})
 }
 
 func configPathLabel(path string) string {

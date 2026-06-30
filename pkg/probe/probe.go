@@ -41,11 +41,11 @@ func (p FFProbe) Probe(ctx context.Context, path string) (domain.ProbeResult, er
 		Args: []string{"-v", "error", "-print_format", "json", "-show_format", "-show_streams", path},
 	})
 	if err != nil {
-		return domain.ProbeResult{}, err
+		return domain.ProbeResult{}, fmt.Errorf("run ffprobe for %q: %w", path, err)
 	}
 	probed, err := parseFFProbe(path, result.Stdout)
 	if err != nil {
-		return domain.ProbeResult{}, err
+		return domain.ProbeResult{}, fmt.Errorf("parse ffprobe output for %q: %w", path, err)
 	}
 	return probed, nil
 }

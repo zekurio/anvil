@@ -2,6 +2,8 @@ package probe
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"testing"
 
 	"github.com/zekurio/anvil/pkg/domain"
@@ -12,8 +14,27 @@ import (
 func TestFFProbeParsesJSON(t *testing.T) {
 	runner := fakeRunner{stdout: []byte(`{
 		"streams": [
-				{"index":0,"codec_type":"video","codec_name":"hevc","width":1920,"height":800,"pix_fmt":"yuv420p10le","bit_rate":"4200000","tags":{"language":"eng","title":"Main"},"disposition":{"default":1}},
-				{"index":1,"codec_type":"audio","codec_name":"aac","bit_rate":"128000","channels":2,"channel_layout":"stereo","tags":{"language":"jpn"},"disposition":{"default":0}}
+			{
+				"index":0,
+				"codec_type":"video",
+				"codec_name":"hevc",
+				"width":1920,
+				"height":800,
+				"pix_fmt":"yuv420p10le",
+				"bit_rate":"4200000",
+				"tags":{"language":"eng","title":"Main"},
+				"disposition":{"default":1}
+			},
+			{
+				"index":1,
+				"codec_type":"audio",
+				"codec_name":"aac",
+				"bit_rate":"128000",
+				"channels":2,
+				"channel_layout":"stereo",
+				"tags":{"language":"jpn"},
+				"disposition":{"default":0}
+			}
 		],
 		"format": {"format_name":"matroska,webm","duration":"123.456","size":"98765"}
 	}`)}
@@ -50,6 +71,22 @@ func TestFFProbeParsesJSON(t *testing.T) {
 	}
 	if got, want := result.Streams[0].Tags["title"], "Main"; got != want {
 		t.Fatalf("first stream title tag = %q, want %q", got, want)
+	}
+}
+
+func TestFFProbeWrapsRunnerErrorWithPath(t *testing.T) {
+	runnerErr := errors.New("exit status 1")
+	_, err := FFProbe{Runner: fakeRunner{err: runnerErr}}.Probe(context.Background(), "/media/input.mkv")
+	if err == nil {
+		t.Fatal("Probe() error = nil, want ffprobe runner error")
+	}
+	for _, want := range []string{"run ffprobe", "/media/input.mkv", "exit status 1"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("Probe() error = %q, want %q", err, want)
+		}
+	}
+	if !errors.Is(err, runnerErr) {
+		t.Fatalf("Probe() error does not wrap runner error: %v", err)
 	}
 }
 
@@ -168,7 +205,11 @@ func TestBlockSelectsDolbyVisionEncoderWhenDoviToolAvailable(t *testing.T) {
 			},
 		},
 	}
-	if err := (Block{Prober: FFProbe{Runner: runner}, DolbyVisionTool: fakeDolbyVisionTool{available: true}}).Run(context.Background(), job); err != nil {
+	block := Block{
+		Prober:          FFProbe{Runner: runner},
+		DolbyVisionTool: fakeDolbyVisionTool{available: true},
+	}
+	if err := block.Run(context.Background(), job); err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
 	if !job.Metadata.HDR.DolbyVisionEncoderSelected {
@@ -186,7 +227,15 @@ func TestBlockSelectsDolbyVisionEncoderWhenDoviToolAvailable(t *testing.T) {
 func TestBlockRequireDolbyVisionFailsWhenDoviToolUnavailable(t *testing.T) {
 	runner := fakeRunner{stdout: []byte(`{
 		"streams": [
-			{"index":0,"codec_type":"video","codec_name":"hevc","side_data_list":[{"side_data_type":"DOVI configuration record","dv_profile":8}]}
+			{
+				"index":0,
+				"codec_type":"video",
+				"codec_name":"hevc",
+				"side_data_list":[{
+					"side_data_type":"DOVI configuration record",
+					"dv_profile":8
+				}]
+			}
 		],
 		"format": {"format_name":"matroska,webm","duration":"123.456","size":"98765"}
 	}`)}
@@ -203,7 +252,11 @@ func TestBlockRequireDolbyVisionFailsWhenDoviToolUnavailable(t *testing.T) {
 			},
 		},
 	}
-	err := (Block{Prober: FFProbe{Runner: runner}, DolbyVisionTool: fakeDolbyVisionTool{available: false}}).Run(context.Background(), job)
+	block := Block{
+		Prober:          FFProbe{Runner: runner},
+		DolbyVisionTool: fakeDolbyVisionTool{available: false},
+	}
+	err := block.Run(context.Background(), job)
 	if err == nil {
 		t.Fatal("Run() error = nil, want dovi_tool availability failure")
 	}
@@ -211,10 +264,11 @@ func TestBlockRequireDolbyVisionFailsWhenDoviToolUnavailable(t *testing.T) {
 
 type fakeRunner struct {
 	stdout []byte
+	err    error
 }
 
 func (f fakeRunner) Run(_ context.Context, command process.Command) (process.Result, error) {
-	return process.Result{Command: command.ArgsWithName(), Stdout: f.stdout}, nil
+	return process.Result{Command: command.ArgsWithName(), Stdout: f.stdout}, f.err
 }
 
 type fakeDolbyVisionTool struct {
