@@ -16,6 +16,7 @@ import (
 
 type Store interface {
 	LeaseNextJobForLibraries(ctx context.Context, workerID string, leaseDeadline time.Time, now time.Time, allowedLibraries []domain.LibraryName) (*domain.Job, error)
+	ReleaseLeasedJob(ctx context.Context, jobID domain.JobID, workerID string, now time.Time) (domain.Job, error)
 }
 
 type Worker interface {
@@ -92,6 +93,9 @@ func (s *Scheduler) scheduleAvailable(ctx context.Context, limit int) (int, erro
 	if err := s.validate(); err != nil {
 		return 0, err
 	}
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
 
 	cfg := s.ConfigProvider()
 	active := s.activeSnapshot()
@@ -120,6 +124,11 @@ func (s *Scheduler) scheduleAvailable(ctx context.Context, limit int) (int, erro
 	}
 
 	leased, err := s.leaseAvailable(ctx, cfg, active.byLibrary, maxJobs)
+	if workerErr := s.workerContextError(ctx); workerErr != nil {
+		releaseErr := s.releaseLeased(context.WithoutCancel(ctx), leased)
+		return 0, errors.Join(err, workerErr, releaseErr)
+	}
+
 	started := s.dispatchLeased(ctx, leased, allocator, availableThreads, active.count)
 	if err != nil {
 		return started, err
@@ -187,10 +196,6 @@ func (s *Scheduler) allocator(cfg config.Config) resources.Allocator {
 	return resources.NewAllocator(cfg.Daemon.TotalThreads)
 }
 
-func (s *Scheduler) eligibleLibraries(cfg config.Config) []domain.LibraryName {
-	return eligibleLibrariesForCounts(cfg, s.activeSnapshot().byLibrary)
-}
-
 func eligibleLibrariesForCounts(cfg config.Config, activeByLibrary map[domain.LibraryName]int) []domain.LibraryName {
 	allowed := make([]domain.LibraryName, 0, len(cfg.Libraries))
 	for libraryName, library := range cfg.Libraries {
@@ -215,6 +220,10 @@ func (s *Scheduler) leaseAvailable(ctx context.Context, cfg config.Config, activ
 
 	leased := make([]leasedAssignment, 0, maxJobs)
 	for len(leased) < maxJobs {
+		if err := ctx.Err(); err != nil {
+			return leased, err
+		}
+
 		allowed := eligibleLibrariesForCounts(cfg, counts)
 		if len(allowed) == 0 {
 			if len(leased) == 0 {
@@ -266,6 +275,24 @@ func (s *Scheduler) dispatchLeased(ctx context.Context, leased []leasedAssignmen
 		go s.runWorker(workerCtx, assignment)
 	}
 	return len(leased)
+}
+
+func (s *Scheduler) workerContextError(ctx context.Context) error {
+	workerCtx := ctx
+	if s.WorkerContext != nil {
+		workerCtx = s.WorkerContext
+	}
+	return workerCtx.Err()
+}
+
+func (s *Scheduler) releaseLeased(ctx context.Context, leased []leasedAssignment) error {
+	var errs []error
+	for _, assignment := range leased {
+		if _, err := s.Store.ReleaseLeasedJob(ctx, assignment.job.ID, assignment.workerID, s.now()); err != nil {
+			errs = append(errs, fmt.Errorf("release leased job %d for worker %q: %w", assignment.job.ID, assignment.workerID, err))
+		}
+	}
+	return errors.Join(errs...)
 }
 
 func (s *Scheduler) runWorker(ctx context.Context, assignment Assignment) {
@@ -322,10 +349,6 @@ func (s *Scheduler) newWorkerID() string {
 		prefix = "anvil-worker"
 	}
 	return fmt.Sprintf("%s-%d", prefix, s.nextWorker.Add(1))
-}
-
-func (s *Scheduler) workerCount() int {
-	return s.workerCountForConfig(s.ConfigProvider())
 }
 
 func (s *Scheduler) workerCountForConfig(cfg config.Config) int {

@@ -2,6 +2,7 @@ package scheduler
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -163,6 +164,88 @@ func TestScheduleAvailableFillsOpenSlots(t *testing.T) {
 	}
 }
 
+func TestScheduleAvailableStopsLeasingWhenContextCanceled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	store := &fakeScheduleStore{
+		jobs: []domain.Job{
+			{ID: 1, LibraryName: "movies", State: domain.JobStatePending},
+			{ID: 2, LibraryName: "tv", State: domain.JobStatePending},
+		},
+		afterLease: cancel,
+	}
+	worker := newBlockingWorker()
+	defer worker.releaseAll()
+
+	s := &Scheduler{
+		Store:          store,
+		Worker:         worker,
+		ConfigProvider: scheduleConfig,
+		Allocator:      resources.NewAllocator(4),
+		WorkerCount:    2,
+		LeaseDuration:  time.Minute,
+	}
+
+	started, err := s.ScheduleAvailable(ctx)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("ScheduleAvailable() error = %v, want context canceled", err)
+	}
+	if started != 0 {
+		t.Fatalf("started = %d, want 0 when cancellation releases the leased job", started)
+	}
+	if len(store.allowed) != 1 {
+		t.Fatalf("lease calls = %d, want 1 after cancellation", len(store.allowed))
+	}
+	if len(store.released) != 1 {
+		t.Fatalf("released jobs = %d, want 1", len(store.released))
+	}
+	if store.released[0].ID != 1 {
+		t.Fatalf("released job ID = %d, want 1", store.released[0].ID)
+	}
+
+	waitCtx, cancelWait := context.WithTimeout(context.Background(), time.Second)
+	defer cancelWait()
+	if err := s.WaitContext(waitCtx); err != nil {
+		t.Fatalf("WaitContext() error = %v", err)
+	}
+}
+
+func TestScheduleAvailableReleasesLeaseWhenWorkerContextCanceled(t *testing.T) {
+	ctx := context.Background()
+	workerCtx, stopWorker := context.WithCancel(context.Background())
+	stopWorker()
+
+	store := &fakeScheduleStore{
+		jobs: []domain.Job{{ID: 1, LibraryName: "movies", State: domain.JobStatePending}},
+	}
+	worker := newBlockingWorker()
+	defer worker.releaseAll()
+
+	s := &Scheduler{
+		Store:          store,
+		Worker:         worker,
+		ConfigProvider: scheduleConfig,
+		WorkerContext:  workerCtx,
+		Allocator:      resources.NewAllocator(4),
+		WorkerCount:    1,
+		LeaseDuration:  time.Minute,
+	}
+
+	started, err := s.ScheduleAvailable(ctx)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("ScheduleAvailable() error = %v, want context canceled", err)
+	}
+	if started != 0 {
+		t.Fatalf("started = %d, want 0 when worker context is canceled", started)
+	}
+	if len(store.released) != 1 {
+		t.Fatalf("released jobs = %d, want 1", len(store.released))
+	}
+	if store.released[0].LeaseOwner != "" {
+		t.Fatalf("released job lease owner = %q, want empty", store.released[0].LeaseOwner)
+	}
+}
+
 func TestWorkerContextCanOutliveSchedulerContext(t *testing.T) {
 	schedulerCtx, stopScheduling := context.WithCancel(context.Background())
 	workerCtx, stopWorker := context.WithCancel(context.Background())
@@ -227,8 +310,11 @@ func resourceScheduleConfig() config.Config {
 }
 
 type fakeScheduleStore struct {
-	jobs    []domain.Job
-	allowed [][]domain.LibraryName
+	jobs       []domain.Job
+	leased     []domain.Job
+	released   []domain.Job
+	allowed    [][]domain.LibraryName
+	afterLease func()
 }
 
 func (f *fakeScheduleStore) LeaseNextJobForLibraries(_ context.Context, workerID string, leaseDeadline time.Time, now time.Time, allowedLibraries []domain.LibraryName) (*domain.Job, error) {
@@ -242,9 +328,30 @@ func (f *fakeScheduleStore) LeaseNextJobForLibraries(_ context.Context, workerID
 		job.LeaseDeadline = &leaseDeadline
 		job.HeartbeatAt = &now
 		job.State = domain.JobStateLeased
+		f.leased = append(f.leased, job)
+		if f.afterLease != nil {
+			f.afterLease()
+		}
 		return &job, nil
 	}
 	return nil, nil
+}
+
+func (f *fakeScheduleStore) ReleaseLeasedJob(_ context.Context, jobID domain.JobID, workerID string, now time.Time) (domain.Job, error) {
+	for i, job := range f.leased {
+		if job.ID != jobID || job.LeaseOwner != workerID {
+			continue
+		}
+		f.leased = append(f.leased[:i], f.leased[i+1:]...)
+		job.State = domain.JobStatePending
+		job.LeaseOwner = ""
+		job.LeaseDeadline = nil
+		job.HeartbeatAt = nil
+		job.UpdatedAt = now
+		f.released = append(f.released, job)
+		return job, nil
+	}
+	return domain.Job{}, errors.New("leased job not found")
 }
 
 type blockingWorker struct {

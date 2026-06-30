@@ -179,6 +179,47 @@ func TestLeaseNextJobForLibraries(t *testing.T) {
 	}
 }
 
+func TestReleaseLeasedJob(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	now := testNow()
+
+	source := upsertTestSource(t, ctx, store, "movies", "Movie.mkv")
+	enqueued, _, err := store.EnqueueJob(ctx, EnqueueJobInput{
+		SourceID:    source.ID,
+		LibraryName: source.LibraryName,
+		Now:         now,
+	})
+	if err != nil {
+		t.Fatalf("EnqueueJob() error = %v", err)
+	}
+
+	leased, err := store.LeaseNextJob(ctx, "worker-1", now.Add(time.Minute), now)
+	if err != nil {
+		t.Fatalf("LeaseNextJob() error = %v", err)
+	}
+	if leased == nil {
+		t.Fatal("LeaseNextJob() = nil, want job")
+	}
+
+	released, err := store.ReleaseLeasedJob(ctx, enqueued.ID, "worker-1", now.Add(time.Second))
+	if err != nil {
+		t.Fatalf("ReleaseLeasedJob() error = %v", err)
+	}
+	if released.State != domain.JobStatePending {
+		t.Fatalf("released state = %q, want %q", released.State, domain.JobStatePending)
+	}
+	if released.LeaseOwner != "" {
+		t.Fatalf("released lease owner = %q, want empty", released.LeaseOwner)
+	}
+	if released.LeaseDeadline != nil {
+		t.Fatalf("released lease deadline = %v, want nil", released.LeaseDeadline)
+	}
+	if released.HeartbeatAt != nil {
+		t.Fatalf("released heartbeat = %v, want nil", released.HeartbeatAt)
+	}
+}
+
 func TestListJobsFiltersByLibraryStateAndLimit(t *testing.T) {
 	ctx := context.Background()
 	store := openTestStore(t)

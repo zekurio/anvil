@@ -323,7 +323,11 @@ func (s FilesystemEventSource) Run(ctx context.Context, cfgProvider ConfigProvid
 	if err != nil {
 		return fmt.Errorf("create filesystem watcher: %w", err)
 	}
-	defer watcher.Close()
+	defer func() {
+		if err := watcher.Close(); err != nil {
+			slog.Debug("close filesystem watcher", "error", err)
+		}
+	}()
 
 	roots := make(map[domain.LibraryName]string)
 	watched := make(map[string]map[domain.LibraryName]struct{})
