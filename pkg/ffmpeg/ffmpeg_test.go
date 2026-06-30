@@ -361,7 +361,13 @@ func TestDolbyVisionBlockRepairsHEVCMKVOutput(t *testing.T) {
 			DolbyVision:                &domain.DolbyVisionMetadata{Profile: 8},
 			DolbyVisionEncoderSelected: true,
 		}},
-		EncodePlan: &domain.EncodePlan{VideoCodec: "hevc_qsv"},
+		EncodePlan: &domain.EncodePlan{
+			ProfileName: "default-av1",
+			VideoCodec:  "hevc_qsv",
+			CropFilter:  "crop=1920:1072:0:4",
+			CRF:         19,
+			TrackTitles: []domain.TrackTitle{{Type: "v", Index: 0, Title: "1080p Dolby Vision HEVC"}},
+		},
 	}
 	if err := (DolbyVisionBlock{Runner: runner}).Run(context.Background(), job); err != nil {
 		t.Fatalf("Run() error = %v", err)
@@ -384,6 +390,22 @@ func TestDolbyVisionBlockRepairsHEVCMKVOutput(t *testing.T) {
 	}
 	if !runner.hasCommand("mkvmerge", "--default-duration", "0:23.976fps", "--fix-bitstream-timing-information", "0") {
 		t.Fatalf("commands = %v, want mkvmerge fps fix", runner.commands)
+	}
+	if !runner.hasCommand("mkvpropedit", "--tags") {
+		t.Fatalf("commands = %v, want mkvpropedit tags restore", runner.commands)
+	}
+	if !runner.hasCommand("mkvpropedit", "--edit", "track:v1", "--set", "name=1080p Dolby Vision HEVC") {
+		t.Fatalf("commands = %v, want mkvpropedit video track name restore", runner.commands)
+	}
+	for _, want := range []string{
+		"<Name>anvil.crop</Name>",
+		"<String>crop=1920:1072:0:4</String>",
+		"<Name>anvil.processed</Name>",
+		"<String>true</String>",
+	} {
+		if !strings.Contains(runner.tagXML, want) {
+			t.Fatalf("tag XML = %s, missing %q", runner.tagXML, want)
+		}
 	}
 }
 
@@ -538,6 +560,7 @@ func containsPair(args []string, key string, value string) bool {
 
 type doviFakeRunner struct {
 	commands [][]string
+	tagXML   string
 }
 
 func (r *doviFakeRunner) Run(_ context.Context, command process.Command) (process.Result, error) {
@@ -570,6 +593,17 @@ func (r *doviFakeRunner) Run(_ context.Context, command process.Command) (proces
 		if output != "" {
 			if err := os.WriteFile(output, []byte("fixed-mkv"), 0o600); err != nil {
 				return process.Result{Command: args}, err
+			}
+		}
+	case "mkvpropedit":
+		if tags := argValue(command.Args, "--tags"); tags != "" {
+			index := strings.LastIndex(tags, ":")
+			if index >= 0 && index < len(tags)-1 {
+				data, err := os.ReadFile(tags[index+1:])
+				if err != nil {
+					return process.Result{Command: args}, err
+				}
+				r.tagXML = string(data)
 			}
 		}
 	}
