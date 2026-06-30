@@ -143,9 +143,11 @@ func TestPrintPreflightReportHumanBasics(t *testing.T) {
 			Description: "would enqueue new job",
 		}},
 	}
-	output := captureStdout(t, func() {
-		printPreflightReport(report)
-	})
+	var buf bytes.Buffer
+	if err := writePreflightReport(&buf, report); err != nil {
+		t.Fatalf("writePreflightReport() error = %v", err)
+	}
+	output := buf.String()
 	for _, want := range []string{"preflight libraries=1", "savings_policy=ab-av1/search", "no-fit:", "video-copy/remux", "encode: enabled=true", "publish: copy"} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("human output missing %q:\n%s", want, output)
@@ -212,26 +214,4 @@ func writePreflightFile(t *testing.T, root string, rel string, modTime time.Time
 	if err := os.Chtimes(path, modTime, modTime); err != nil {
 		t.Fatalf("Chtimes() error = %v", err)
 	}
-}
-
-func captureStdout(t *testing.T, fn func()) string {
-	t.Helper()
-	old := os.Stdout
-	read, write, err := os.Pipe()
-	if err != nil {
-		t.Fatalf("Pipe() error = %v", err)
-	}
-	os.Stdout = write
-	defer func() {
-		os.Stdout = old
-	}()
-	fn()
-	if err := write.Close(); err != nil {
-		t.Fatalf("Close() error = %v", err)
-	}
-	var buf bytes.Buffer
-	if _, err := buf.ReadFrom(read); err != nil {
-		t.Fatalf("ReadFrom() error = %v", err)
-	}
-	return buf.String()
 }

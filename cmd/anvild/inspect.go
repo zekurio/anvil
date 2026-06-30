@@ -98,9 +98,7 @@ func runInspectCommand(ctx context.Context, cfg config.Config, opts options) err
 		return err
 	}
 	if opts.jsonOutput {
-		encoder := json.NewEncoder(os.Stdout)
-		encoder.SetIndent("", "  ")
-		return encoder.Encode(report)
+		return writeIndentedJSON(os.Stdout, report)
 	}
 	return writeInspectReport(os.Stdout, report)
 }
@@ -226,74 +224,62 @@ func decodeInspectPayload(payload []byte) *inspectPayload {
 	return result
 }
 
-type inspectWriter struct {
-	w   io.Writer
-	err error
-}
-
-func (w *inspectWriter) printf(format string, args ...any) {
-	if w.err != nil {
-		return
-	}
-	_, w.err = fmt.Fprintf(w.w, format, args...)
-}
-
 func writeInspectReport(out io.Writer, report inspectReport) error {
-	w := &inspectWriter{w: out}
-	job := report.Job
-	w.printf("Job %d\n", job.ID)
-	w.printf("  State: %s\n", job.State)
-	w.printf("  Library: %s\n", job.Library)
-	w.printf("  Attempts: %d\n", job.AttemptCount)
-	w.printf("  Updated: %s\n", formatInspectTime(job.UpdatedAt))
-	w.printf("  Source path: %s\n", displayOrNone(job.SourcePath))
-	w.printf("  Asset path: %s\n", displayOrNone(job.AssetPath))
-	w.printf("  Path: %s\n", displayOrNone(job.Path))
-	w.printf("  Last error: %s\n", displayOrNone(job.LastError))
+	return writeOutput(out, func(w *outputWriter) {
+		job := report.Job
+		w.printf("Job %d\n", job.ID)
+		w.printf("  State: %s\n", job.State)
+		w.printf("  Library: %s\n", job.Library)
+		w.printf("  Attempts: %d\n", job.AttemptCount)
+		w.printf("  Updated: %s\n", formatInspectTime(job.UpdatedAt))
+		w.printf("  Source path: %s\n", displayOrNone(job.SourcePath))
+		w.printf("  Asset path: %s\n", displayOrNone(job.AssetPath))
+		w.printf("  Path: %s\n", displayOrNone(job.Path))
+		w.printf("  Last error: %s\n", displayOrNone(job.LastError))
 
-	if len(report.Attempts) == 0 {
-		w.printf("\nAttempts: none\n")
-		return w.err
-	}
-
-	w.printf("\nAttempts:\n")
-	for _, attempt := range report.Attempts {
-		w.printf("\n  Attempt %d (id=%d)\n", attempt.Number, attempt.ID)
-		w.printf("    State: %s\n", attempt.State)
-		w.printf("    Worker: %s\n", displayOrNone(attempt.WorkerID))
-		w.printf("    Started: %s\n", formatInspectTime(attempt.StartedAt))
-		w.printf("    Finished: %s\n", formatInspectTimePtr(attempt.FinishedAt))
-		w.printf("    Error: %s\n", displayOrNone(attempt.Error))
-
-		if len(attempt.Events) == 0 {
-			w.printf("    Events: none\n")
-			continue
+		if len(report.Attempts) == 0 {
+			w.printf("\nAttempts: none\n")
+			return
 		}
-		w.printf("    Events:\n")
-		for _, event := range attempt.Events {
-			w.printf("      [%d] %s type=%s name=%s message=%q\n",
-				event.ID,
-				formatInspectTime(event.CreatedAt),
-				event.Type,
-				event.Name,
-				event.Message,
-			)
-			if event.PayloadError != "" {
-				w.printf("        payload_error: %s\n", event.PayloadError)
-			}
-			if event.ProcessOutput != nil {
-				writeProcessOutput(w, "        ", *event.ProcessOutput)
+
+		w.printf("\nAttempts:\n")
+		for _, attempt := range report.Attempts {
+			w.printf("\n  Attempt %d (id=%d)\n", attempt.Number, attempt.ID)
+			w.printf("    State: %s\n", attempt.State)
+			w.printf("    Worker: %s\n", displayOrNone(attempt.WorkerID))
+			w.printf("    Started: %s\n", formatInspectTime(attempt.StartedAt))
+			w.printf("    Finished: %s\n", formatInspectTimePtr(attempt.FinishedAt))
+			w.printf("    Error: %s\n", displayOrNone(attempt.Error))
+
+			if len(attempt.Events) == 0 {
+				w.printf("    Events: none\n")
 				continue
 			}
-			if event.Payload != nil {
-				w.printf("        payload: %s\n", inspectPayloadDisplay(event.Payload))
+			w.printf("    Events:\n")
+			for _, event := range attempt.Events {
+				w.printf("      [%d] %s type=%s name=%s message=%q\n",
+					event.ID,
+					formatInspectTime(event.CreatedAt),
+					event.Type,
+					event.Name,
+					event.Message,
+				)
+				if event.PayloadError != "" {
+					w.printf("        payload_error: %s\n", event.PayloadError)
+				}
+				if event.ProcessOutput != nil {
+					writeProcessOutput(w, "        ", *event.ProcessOutput)
+					continue
+				}
+				if event.Payload != nil {
+					w.printf("        payload: %s\n", inspectPayloadDisplay(event.Payload))
+				}
 			}
 		}
-	}
-	return w.err
+	})
 }
 
-func writeProcessOutput(w *inspectWriter, indent string, output inspectProcessOutput) {
+func writeProcessOutput(w *outputWriter, indent string, output inspectProcessOutput) {
 	w.printf("%sprocess output:\n", indent)
 	w.printf("%s  step: %s\n", indent, displayOrNone(output.Step))
 	w.printf("%s  command: %s\n", indent, formatCommand(output.Command))
