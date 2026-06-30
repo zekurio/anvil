@@ -1,5 +1,13 @@
 package store
 
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"fmt"
+	"time"
+)
+
 type migration struct {
 	version int
 	sql     string
@@ -104,4 +112,91 @@ CREATE INDEX attempt_events_attempt_idx
 ON attempt_events(attempt_id, id);
 `,
 	},
+}
+
+func (s *SQLiteStore) configure(ctx context.Context) error {
+	pragmas := []string{
+		"PRAGMA foreign_keys = ON",
+		"PRAGMA busy_timeout = 5000",
+		"PRAGMA journal_mode = WAL",
+	}
+	for _, pragma := range pragmas {
+		if _, err := s.db.ExecContext(ctx, pragma); err != nil {
+			return fmt.Errorf("configure sqlite %q: %w", pragma, err)
+		}
+	}
+	return nil
+}
+
+func (s *SQLiteStore) configureReadOnly(ctx context.Context) error {
+	pragmas := []string{
+		"PRAGMA foreign_keys = ON",
+		"PRAGMA busy_timeout = 5000",
+	}
+	for _, pragma := range pragmas {
+		if _, err := s.db.ExecContext(ctx, pragma); err != nil {
+			return fmt.Errorf("configure read-only sqlite %q: %w", pragma, err)
+		}
+	}
+	return nil
+}
+
+func (s *SQLiteStore) migrate(ctx context.Context) error {
+	if _, err := s.db.ExecContext(ctx, `
+CREATE TABLE IF NOT EXISTS schema_migrations (
+	version INTEGER PRIMARY KEY,
+	applied_at TEXT NOT NULL
+)
+`); err != nil {
+		return fmt.Errorf("create migrations table: %w", err)
+	}
+
+	for _, migration := range migrations {
+		applied, err := s.migrationApplied(ctx, migration.version)
+		if err != nil {
+			return err
+		}
+		if applied {
+			continue
+		}
+		if err := s.applyMigration(ctx, migration); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *SQLiteStore) migrationApplied(ctx context.Context, version int) (bool, error) {
+	var exists int
+	err := s.db.QueryRowContext(ctx, `
+SELECT 1 FROM schema_migrations WHERE version = ?
+`, version).Scan(&exists)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("check migration %d: %w", version, err)
+	}
+	return true, nil
+}
+
+func (s *SQLiteStore) applyMigration(ctx context.Context, migration migration) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin migration %d: %w", migration.version, err)
+	}
+	defer rollback(tx)
+
+	if _, err := tx.ExecContext(ctx, migration.sql); err != nil {
+		return fmt.Errorf("apply migration %d: %w", migration.version, err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)
+`, migration.version, encodeTime(time.Now())); err != nil {
+		return fmt.Errorf("record migration %d: %w", migration.version, err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit migration %d: %w", migration.version, err)
+	}
+	return nil
 }
