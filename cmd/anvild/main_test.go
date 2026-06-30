@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"log/slog"
 	"strings"
@@ -41,6 +42,26 @@ func TestParseOptionsSupportsLegacyCheckConfig(t *testing.T) {
 	}
 	if opts.command != commandCheckConfig {
 		t.Fatalf("command = %q, want check-config", opts.command)
+	}
+}
+
+func TestDaemonWorkerContextOutlivesParentContext(t *testing.T) {
+	parentCtx, stopParent := context.WithCancel(context.Background())
+	serviceCtx, stopServices, workerCtx, stopWorkers := daemonContexts(parentCtx)
+	defer stopServices()
+	defer stopWorkers()
+
+	stopParent()
+	if err := serviceCtx.Err(); err != context.Canceled {
+		t.Fatalf("service context error = %v, want context canceled", err)
+	}
+	if err := workerCtx.Err(); err != nil {
+		t.Fatalf("worker context error = %v, want nil before explicit worker stop", err)
+	}
+
+	stopWorkers()
+	if err := workerCtx.Err(); err != context.Canceled {
+		t.Fatalf("worker context error after stop = %v, want context canceled", err)
 	}
 }
 
