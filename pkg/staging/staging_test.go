@@ -109,3 +109,23 @@ func TestCleanupStaleDryRunKeepsCandidates(t *testing.T) {
 		t.Fatalf("expected dry-run dir to remain: %v", err)
 	}
 }
+
+func TestCleanupStaleRejectsUnsafeRoot(t *testing.T) {
+	tests := []struct {
+		name string
+		root string
+	}{
+		{name: "empty", root: ""},
+		{name: "current directory", root: "."},
+		{name: "filesystem root", root: string(filepath.Separator)},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := (Manager{Root: tt.root}).CleanupStale(time.Hour, time.Now(), false)
+			if err == nil {
+				t.Fatal("CleanupStale() error = nil, want unsafe root refusal")
+			}
+		})
+	}
+}
