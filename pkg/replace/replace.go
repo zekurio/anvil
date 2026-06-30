@@ -17,6 +17,14 @@ import (
 
 type Manager struct{}
 
+const (
+	replacementActionCopy    = "copy"
+	replacementActionReplace = "replace"
+
+	handoffActionCopy = "copy"
+	handoffActionMove = "move"
+)
+
 type ReplacementPlan struct {
 	Action        string
 	Mode          domain.ReplacementMode
@@ -41,7 +49,7 @@ func (Manager) Replace(_ context.Context, inputPath string, candidatePath string
 		return "", err
 	}
 	switch plan.Action {
-	case "copy":
+	case replacementActionCopy:
 		if err := copyFile(candidatePath, plan.CopyPath); err != nil {
 			return "", err
 		}
@@ -61,10 +69,10 @@ func PlanReplacement(inputPath string, candidatePath string, mode domain.Replace
 	plan := ReplacementPlan{Mode: mode}
 	switch mode {
 	case domain.ReplacementModeCopy:
-		plan.Action = "copy"
+		plan.Action = replacementActionCopy
 		plan.CopyPath = replacementCopyPath(inputPath, filepath.Ext(candidatePath))
 	default:
-		plan.Action = "replace"
+		plan.Action = replacementActionReplace
 		plan.ReplaceTarget = replaceExtension(inputPath, filepath.Ext(candidatePath))
 		plan.BackupPath = inputPath + ".anvil.bak"
 	}
@@ -114,9 +122,9 @@ func PlanHandoff(job *pipeline.JobContext) (HandoffPlan, error) {
 		return HandoffPlan{}, err
 	}
 	mode := job.Library.Download.HandoffMode
-	action := "copy"
+	action := handoffActionCopy
 	if mode == domain.HandoffModeMove {
-		action = "move"
+		action = handoffActionMove
 	}
 	return HandoffPlan{
 		Action:             action,
@@ -248,7 +256,7 @@ func moveFile(src string, dst string) error {
 	return nil
 }
 
-func copyFile(src string, dst string) error {
+func copyFile(src string, dst string) (err error) {
 	dstDir := filepath.Dir(dst)
 	if err := os.MkdirAll(dstDir, 0o750); err != nil {
 		return fmt.Errorf("create destination dir: %w", err)
@@ -261,14 +269,14 @@ func copyFile(src string, dst string) error {
 	if err != nil {
 		return fmt.Errorf("open source %q: %w", src, err)
 	}
-	defer in.Close()
+	defer closeFile(in, "source", &err)
 
 	tmp, err := os.CreateTemp(dstDir, "."+filepath.Base(dst)+".tmp-*")
 	if err != nil {
 		return fmt.Errorf("create temporary destination for %q: %w", dst, err)
 	}
 	tmpPath := tmp.Name()
-	defer os.Remove(tmpPath)
+	defer removeTempFile(tmpPath, &err)
 
 	_, copyErr := io.Copy(tmp, in)
 	chmodErr := tmp.Chmod(info.Mode().Perm())
@@ -291,9 +299,33 @@ func copyFile(src string, dst string) error {
 	return nil
 }
 
+func closeFile(file *os.File, description string, err *error) {
+	if closeErr := file.Close(); closeErr != nil {
+		wrapped := fmt.Errorf("close %s %q: %w", description, file.Name(), closeErr)
+		if *err != nil {
+			*err = errors.Join(*err, wrapped)
+			return
+		}
+		*err = wrapped
+	}
+}
+
+func removeTempFile(path string, err *error) {
+	if removeErr := os.Remove(path); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+		wrapped := fmt.Errorf("remove temporary destination %q: %w", path, removeErr)
+		if *err != nil {
+			*err = errors.Join(*err, wrapped)
+			return
+		}
+		*err = wrapped
+	}
+}
+
 func PruneEmptyDirs(root string, start string, ignorableGlobs []string) error {
-	root = filepath.Clean(root)
-	dir := filepath.Clean(start)
+	root, dir, err := prunePaths(root, start)
+	if err != nil {
+		return err
+	}
 	if root == "." || root == string(filepath.Separator) {
 		return errors.New("refusing to prune unsafe root")
 	}
@@ -314,6 +346,32 @@ func PruneEmptyDirs(root string, start string, ignorableGlobs []string) error {
 		dir = filepath.Dir(dir)
 	}
 	return nil
+}
+
+func prunePaths(root string, start string) (string, string, error) {
+	root = filepath.Clean(root)
+	dir := filepath.Clean(start)
+	if root == "." || root == string(filepath.Separator) {
+		return root, dir, nil
+	}
+
+	resolvedRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return "", "", fmt.Errorf("resolve prune root %q: %w", root, err)
+	}
+	resolvedDir, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return root, dir, nil
+		}
+		return "", "", fmt.Errorf("resolve prune start %q: %w", dir, err)
+	}
+	resolvedRoot = filepath.Clean(resolvedRoot)
+	resolvedDir = filepath.Clean(resolvedDir)
+	if !inside(resolvedRoot, resolvedDir) {
+		return "", "", fmt.Errorf("prune start %q resolves outside root %q", dir, root)
+	}
+	return resolvedRoot, resolvedDir, nil
 }
 
 func removeIgnorableAndDetectKept(root string, dir string, ignorableGlobs []string) (bool, error) {

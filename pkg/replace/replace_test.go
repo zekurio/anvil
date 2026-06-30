@@ -274,6 +274,27 @@ func TestHandoffMoveRefusesExistingDestination(t *testing.T) {
 	}
 }
 
+func TestPruneEmptyDirsRejectsSymlinkStartOutsideRoot(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	outsideEpisode := filepath.Join(outside, "episode")
+	ignorable := filepath.Join(outsideEpisode, ".nfs123")
+	writeFile(t, ignorable, "lock")
+
+	link := filepath.Join(root, "linked-episode")
+	if err := os.Symlink(outsideEpisode, link); err != nil {
+		t.Skipf("create symlink: %v", err)
+	}
+
+	err := PruneEmptyDirs(root, link, []string{"**/.nfs*"})
+	if err == nil {
+		t.Fatal("PruneEmptyDirs() error = nil, want symlink escape refusal")
+	}
+	if got := readFile(t, ignorable); got != "lock" {
+		t.Fatalf("outside ignorable content = %q, want lock", got)
+	}
+}
+
 func writeFile(t *testing.T, path string, body string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {

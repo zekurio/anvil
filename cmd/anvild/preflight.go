@@ -2,9 +2,9 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -199,12 +199,9 @@ func runPreflightCommand(ctx context.Context, cfg config.Config, opts options) e
 		return err
 	}
 	if opts.jsonOutput {
-		encoder := json.NewEncoder(os.Stdout)
-		encoder.SetIndent("", "  ")
-		return encoder.Encode(report)
+		return writeIndentedJSON(os.Stdout, report)
 	}
-	printPreflightReport(report)
-	return nil
+	return writePreflightReport(os.Stdout, report)
 }
 
 func openPreflightStore(ctx context.Context, cfg config.Config) (*store.SQLiteStore, bool, error) {
@@ -629,103 +626,117 @@ func preflightDescription(status preflightStatus) string {
 	}
 }
 
-func printPreflightReport(report preflightReport) {
-	fmt.Fprintf(os.Stdout, "preflight libraries=%d candidates=%d shown=%d ignored=%d unstable=%d enqueueable=%d existing_jobs=%d would_enqueue=%d store_read_only=%t\n",
-		report.Summary.Libraries,
-		report.Summary.Candidates,
-		report.Summary.Shown,
-		report.Summary.Ignored,
-		report.Summary.Unstable,
-		report.Summary.Enqueueable,
-		report.Summary.ExistingJobs,
-		report.Summary.WouldEnqueue,
-		report.Summary.StoreReadOnly,
-	)
-	for _, warning := range report.Warnings {
-		fmt.Fprintf(os.Stdout, "warning: %s\n", warning)
-	}
-	for _, item := range report.Candidates {
-		fmt.Fprintf(os.Stdout, "\n[%s] %s %s role=%s source=%s asset_size=%d asset_mod=%s\n",
-			item.Description,
-			item.Library.Name,
-			item.Asset.LibraryRelativePath,
-			item.Asset.Role,
-			item.Source.Kind,
-			item.Asset.SizeBytes,
-			item.Asset.ModTime.Format(time.RFC3339),
+func writePreflightReport(out io.Writer, report preflightReport) error {
+	return writeOutput(out, func(w *outputWriter) {
+		w.printf("preflight libraries=%d candidates=%d shown=%d ignored=%d unstable=%d enqueueable=%d existing_jobs=%d would_enqueue=%d store_read_only=%t\n",
+			report.Summary.Libraries,
+			report.Summary.Candidates,
+			report.Summary.Shown,
+			report.Summary.Ignored,
+			report.Summary.Unstable,
+			report.Summary.Enqueueable,
+			report.Summary.ExistingJobs,
+			report.Summary.WouldEnqueue,
+			report.Summary.StoreReadOnly,
 		)
-		fmt.Fprintf(os.Stdout, "  library: kind=%s root=%s\n", item.Library.Kind, item.Library.Root)
-		fmt.Fprintf(os.Stdout, "  source: %s kind=%s size=%d mod=%s asset: %s\n",
-			item.Source.RelativePath,
-			item.Source.Kind,
-			item.Source.SizeBytes,
-			item.Source.ModTime.Format(time.RFC3339),
-			item.Asset.RelativePath,
-		)
-		fmt.Fprintf(os.Stdout, "  status: ignored=%t unstable=%t enqueueable=%t existing_job=%t would_enqueue=%t\n",
-			item.Status.Ignored,
-			item.Status.Unstable,
-			item.Status.Enqueueable,
-			item.Status.AlreadyHasJob,
-			item.Status.WouldEnqueueNewJob,
-		)
-		if item.Status.AlreadyHasJob {
-			fmt.Fprintf(os.Stdout, "  job: id=%d state=%s attempt=%s\n", item.Status.ExistingJobID, item.Status.ExistingJobState, item.Status.ExistingAttemptHint)
+		for _, warning := range report.Warnings {
+			w.printf("warning: %s\n", warning)
 		}
-		fmt.Fprintf(os.Stdout, "  flow: %s [%s]\n", item.Flow.Name, strings.Join(item.Flow.Steps, " -> "))
-		fmt.Fprintf(os.Stdout, "  profile: %s container=%s codec=%s accelerator=%s bit_depth=%d\n", item.Profile.Name, item.Profile.Container, item.Profile.VideoCodec, item.Profile.VideoAccelerator, item.Profile.VideoBitDepth)
-		if item.Profile.DolbyVision.Mode != "" || item.Profile.DolbyVision.Codec != "" {
-			fmt.Fprintf(os.Stdout, "  dolby-vision: mode=%s codec=%s accelerator=%s bit_depth=%s remove_hdr10plus=%t\n", item.Profile.DolbyVision.Mode, displayOrNone(item.Profile.DolbyVision.Codec), displayOrNone(item.Profile.DolbyVision.Accelerator), displayIntOrNone(item.Profile.DolbyVision.BitDepth), item.Profile.DolbyVision.RemoveHDR10Plus)
-		}
-		if item.Search.Enabled {
-			fmt.Fprintf(os.Stdout, "  search: %s crf=%d..%d target_vmaf=%s savings_policy=%s\n",
-				item.Search.Tool,
-				item.Search.CRFMin,
-				item.Search.CRFMax,
-				item.Search.TargetVMAF,
-				item.Search.SavingsPolicy,
+		for _, item := range report.Candidates {
+			w.printf("\n[%s] %s %s role=%s source=%s asset_size=%d asset_mod=%s\n",
+				item.Description,
+				item.Library.Name,
+				item.Asset.LibraryRelativePath,
+				item.Asset.Role,
+				item.Source.Kind,
+				item.Asset.SizeBytes,
+				item.Asset.ModTime.Format(time.RFC3339),
 			)
-			if len(item.Search.CustomArgs) > 0 || len(item.Search.DolbyVisionCustomArgs) > 0 {
-				fmt.Fprintf(os.Stdout, "  search args: custom=%v dolby_vision=%v\n", item.Search.CustomArgs, item.Search.DolbyVisionCustomArgs)
+			w.printf("  library: kind=%s root=%s\n", item.Library.Kind, item.Library.Root)
+			w.printf("  source: %s kind=%s size=%d mod=%s asset: %s\n",
+				item.Source.RelativePath,
+				item.Source.Kind,
+				item.Source.SizeBytes,
+				item.Source.ModTime.Format(time.RFC3339),
+				item.Asset.RelativePath,
+			)
+			w.printf("  status: ignored=%t unstable=%t enqueueable=%t existing_job=%t would_enqueue=%t\n",
+				item.Status.Ignored,
+				item.Status.Unstable,
+				item.Status.Enqueueable,
+				item.Status.AlreadyHasJob,
+				item.Status.WouldEnqueueNewJob,
+			)
+			if item.Status.AlreadyHasJob {
+				w.printf("  job: id=%d state=%s attempt=%s\n", item.Status.ExistingJobID, item.Status.ExistingJobState, item.Status.ExistingAttemptHint)
 			}
-			fmt.Fprintf(os.Stdout, "  no-fit: %s\n", item.Search.NoFitBehavior)
+			w.printf("  flow: %s [%s]\n", item.Flow.Name, strings.Join(item.Flow.Steps, " -> "))
+			w.printf("  profile: %s container=%s codec=%s accelerator=%s bit_depth=%d\n",
+				item.Profile.Name,
+				item.Profile.Container,
+				item.Profile.VideoCodec,
+				item.Profile.VideoAccelerator,
+				item.Profile.VideoBitDepth,
+			)
+			if item.Profile.DolbyVision.Mode != "" || item.Profile.DolbyVision.Codec != "" {
+				w.printf("  dolby-vision: mode=%s codec=%s accelerator=%s bit_depth=%s remove_hdr10plus=%t\n",
+					item.Profile.DolbyVision.Mode,
+					displayOrNone(item.Profile.DolbyVision.Codec),
+					displayOrNone(item.Profile.DolbyVision.Accelerator),
+					displayIntOrNone(item.Profile.DolbyVision.BitDepth),
+					item.Profile.DolbyVision.RemoveHDR10Plus,
+				)
+			}
+			if item.Search.Enabled {
+				w.printf("  search: %s crf=%d..%d target_vmaf=%s savings_policy=%s\n",
+					item.Search.Tool,
+					item.Search.CRFMin,
+					item.Search.CRFMax,
+					item.Search.TargetVMAF,
+					item.Search.SavingsPolicy,
+				)
+				if len(item.Search.CustomArgs) > 0 || len(item.Search.DolbyVisionCustomArgs) > 0 {
+					w.printf("  search args: custom=%v dolby_vision=%v\n", item.Search.CustomArgs, item.Search.DolbyVisionCustomArgs)
+				}
+				w.printf("  no-fit: %s\n", item.Search.NoFitBehavior)
+			}
+			w.printf("  encode: enabled=%t video=%s output=%s\n", item.Encode.Enabled, item.Encode.VideoAction, item.Encode.Output)
+			if len(item.Encode.CustomArgs) > 0 || len(item.Encode.DolbyVisionCustomArgs) > 0 {
+				w.printf("  encode args: custom=%v dolby_vision=%v\n", item.Encode.CustomArgs, item.Encode.DolbyVisionCustomArgs)
+			}
+			if item.Encode.DolbyVisionAction != "" {
+				w.printf("  encode dolby-vision: %s\n", item.Encode.DolbyVisionAction)
+			}
+			if item.Encode.NoFitAction != "" {
+				w.printf("  encode no-fit: %s\n", item.Encode.NoFitAction)
+			}
+			w.printf("  input: %s\n", item.Paths.Input)
+			w.printf("  staging: %s -> %s\n", item.Paths.StagingDir, item.Paths.Output)
+			writePreflightPublish(w, item.Publish)
+			w.printf("  cleanup: staging=%s download_cleanup_source=%t prune_empty_dirs=%t\n",
+				item.Cleanup.StagingCleanupAction,
+				item.Cleanup.DownloadCleanupSource,
+				item.Cleanup.DownloadPruneEmptyDirs,
+			)
+			for _, warning := range item.Warnings {
+				w.printf("  warning: %s\n", warning)
+			}
 		}
-		fmt.Fprintf(os.Stdout, "  encode: enabled=%t video=%s output=%s\n", item.Encode.Enabled, item.Encode.VideoAction, item.Encode.Output)
-		if len(item.Encode.CustomArgs) > 0 || len(item.Encode.DolbyVisionCustomArgs) > 0 {
-			fmt.Fprintf(os.Stdout, "  encode args: custom=%v dolby_vision=%v\n", item.Encode.CustomArgs, item.Encode.DolbyVisionCustomArgs)
-		}
-		if item.Encode.DolbyVisionAction != "" {
-			fmt.Fprintf(os.Stdout, "  encode dolby-vision: %s\n", item.Encode.DolbyVisionAction)
-		}
-		if item.Encode.NoFitAction != "" {
-			fmt.Fprintf(os.Stdout, "  encode no-fit: %s\n", item.Encode.NoFitAction)
-		}
-		fmt.Fprintf(os.Stdout, "  input: %s\n", item.Paths.Input)
-		fmt.Fprintf(os.Stdout, "  staging: %s -> %s\n", item.Paths.StagingDir, item.Paths.Output)
-		printPreflightPublish(item.Publish)
-		fmt.Fprintf(os.Stdout, "  cleanup: staging=%s download_cleanup_source=%t prune_empty_dirs=%t\n",
-			item.Cleanup.StagingCleanupAction,
-			item.Cleanup.DownloadCleanupSource,
-			item.Cleanup.DownloadPruneEmptyDirs,
-		)
-		for _, warning := range item.Warnings {
-			fmt.Fprintf(os.Stdout, "  warning: %s\n", warning)
-		}
-	}
+	})
 }
 
-func printPreflightPublish(publish preflightPublish) {
+func writePreflightPublish(w *outputWriter, publish preflightPublish) {
 	switch publish.Action {
 	case "copy":
-		fmt.Fprintf(os.Stdout, "  publish: copy %s\n", publish.CopyPath)
+		w.printf("  publish: copy %s\n", publish.CopyPath)
 	case "replace":
-		fmt.Fprintf(os.Stdout, "  publish: replace target=%s backup=%s\n", publish.ReplaceTarget, publish.ReplacementBackup)
+		w.printf("  publish: replace target=%s backup=%s\n", publish.ReplaceTarget, publish.ReplacementBackup)
 	case "handoff":
-		fmt.Fprintf(os.Stdout, "  publish: handoff mode=%s destination=%s\n", publish.Mode, publish.HandoffDestination)
+		w.printf("  publish: handoff mode=%s destination=%s\n", publish.Mode, publish.HandoffDestination)
 	case "error":
-		fmt.Fprintf(os.Stdout, "  publish: error %v\n", publish.Plan)
+		w.printf("  publish: error %v\n", publish.Plan)
 	default:
-		fmt.Fprintln(os.Stdout, "  publish: none")
+		w.println("  publish: none")
 	}
 }
 
