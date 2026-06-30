@@ -1,0 +1,177 @@
+package store
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"fmt"
+
+	"github.com/zekurio/anvil/pkg/domain"
+)
+
+func (s *SQLiteStore) GetJob(ctx context.Context, id domain.JobID) (domain.Job, error) {
+	row := s.db.QueryRowContext(ctx, `
+SELECT id, source_id, asset_id, library_name, priority, state, lease_owner,
+	lease_deadline, heartbeat_at, attempt_count, last_error, input_size_bytes,
+	output_size_bytes, created_at, updated_at, completed_at
+FROM jobs
+WHERE id = ?
+`, int64(id))
+	return scanJob(row)
+}
+
+func (s *SQLiteStore) GetJobForTarget(ctx context.Context, sourceID domain.MediaSourceID, assetID domain.MediaAssetID) (domain.Job, error) {
+	row := s.db.QueryRowContext(ctx, `
+SELECT id, source_id, asset_id, library_name, priority, state, lease_owner,
+	lease_deadline, heartbeat_at, attempt_count, last_error, input_size_bytes,
+	output_size_bytes, created_at, updated_at, completed_at
+FROM jobs
+WHERE source_id = ?
+	AND ifnull(asset_id, 0) = ?
+ORDER BY id DESC
+LIMIT 1
+`, int64(sourceID), int64(assetID))
+	return scanJob(row)
+}
+
+func (s *SQLiteStore) FindJobForTarget(ctx context.Context, sourceID domain.MediaSourceID, assetID domain.MediaAssetID) (domain.Job, bool, error) {
+	job, err := s.GetJobForTarget(ctx, sourceID, assetID)
+	if errors.Is(err, ErrNotFound) {
+		return domain.Job{}, false, nil
+	}
+	if err != nil {
+		return domain.Job{}, false, err
+	}
+	return job, true, nil
+}
+
+func (s *SQLiteStore) GetActiveJobForTarget(ctx context.Context, sourceID domain.MediaSourceID, assetID domain.MediaAssetID) (domain.Job, error) {
+	row := s.db.QueryRowContext(ctx, `
+SELECT id, source_id, asset_id, library_name, priority, state, lease_owner,
+	lease_deadline, heartbeat_at, attempt_count, last_error, input_size_bytes,
+	output_size_bytes, created_at, updated_at, completed_at
+FROM jobs
+WHERE source_id = ?
+	AND ifnull(asset_id, 0) = ?
+	AND state IN (?, ?, ?, ?, ?, ?)
+ORDER BY id DESC
+LIMIT 1
+`, int64(sourceID), int64(assetID),
+		string(domain.JobStatePending), string(domain.JobStateLeased), string(domain.JobStateRunning),
+		string(domain.JobStateValidating), string(domain.JobStateReplacing), string(domain.JobStateRetrying))
+	return scanJob(row)
+}
+
+func (s *SQLiteStore) ListJobs(ctx context.Context, filter JobListFilter) ([]JobSummary, error) {
+	query := `
+SELECT j.id, j.source_id, j.asset_id, j.library_name, j.priority, j.state,
+	j.lease_owner, j.lease_deadline, j.heartbeat_at, j.attempt_count,
+	j.last_error, j.input_size_bytes, j.output_size_bytes, j.created_at,
+	j.updated_at, j.completed_at,
+	s.kind, s.relative_path, a.relative_path, a.role
+FROM jobs j
+JOIN media_sources s ON s.id = j.source_id
+LEFT JOIN media_assets a ON a.id = j.asset_id
+WHERE 1 = 1
+`
+	var args []any
+	if filter.LibraryName != "" {
+		query += " AND j.library_name = ?\n"
+		args = append(args, string(filter.LibraryName))
+	}
+	if len(filter.States) > 0 {
+		query += " AND j.state IN (" + placeholders(len(filter.States)) + ")\n"
+		for _, state := range filter.States {
+			args = append(args, string(state))
+		}
+	}
+	query += "ORDER BY j.created_at DESC, j.id DESC\n"
+	if filter.Limit > 0 {
+		query += "LIMIT ?\n"
+		args = append(args, filter.Limit)
+	}
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list jobs: %w", err)
+	}
+	defer rows.Close()
+
+	var jobs []JobSummary
+	for rows.Next() {
+		job, err := scanJobSummary(rows)
+		if err != nil {
+			return nil, err
+		}
+		jobs = append(jobs, job)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate jobs: %w", err)
+	}
+	return jobs, nil
+}
+
+func (s *SQLiteStore) GetJobSummary(ctx context.Context, id domain.JobID) (JobSummary, error) {
+	row := s.db.QueryRowContext(ctx, `
+SELECT j.id, j.source_id, j.asset_id, j.library_name, j.priority, j.state,
+	j.lease_owner, j.lease_deadline, j.heartbeat_at, j.attempt_count,
+	j.last_error, j.input_size_bytes, j.output_size_bytes, j.created_at,
+	j.updated_at, j.completed_at,
+	s.kind, s.relative_path, a.relative_path, a.role
+FROM jobs j
+JOIN media_sources s ON s.id = j.source_id
+LEFT JOIN media_assets a ON a.id = j.asset_id
+WHERE j.id = ?
+`, int64(id))
+	return scanJobSummary(row)
+}
+
+func (s *SQLiteStore) ListLibraryStats(ctx context.Context, filter LibraryStatsFilter) ([]LibraryStats, error) {
+	query := `
+SELECT library_name, COUNT(*), COALESCE(SUM(input_size_bytes), 0), COALESCE(SUM(output_size_bytes), 0)
+FROM jobs
+WHERE state = ?
+	AND input_size_bytes > 0
+	AND output_size_bytes > 0
+`
+	args := []any{string(domain.JobStateComplete)}
+	if filter.LibraryName != "" {
+		query += " AND library_name = ?\n"
+		args = append(args, string(filter.LibraryName))
+	}
+	query += "GROUP BY library_name\nORDER BY library_name ASC\n"
+
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list library stats: %w", err)
+	}
+	defer rows.Close()
+
+	var stats []LibraryStats
+	for rows.Next() {
+		var stat LibraryStats
+		if err := rows.Scan(&stat.LibraryName, &stat.Jobs, &stat.InputSizeBytes, &stat.OutputSizeBytes); err != nil {
+			return nil, fmt.Errorf("scan library stats: %w", err)
+		}
+		stat.SavedBytes = stat.InputSizeBytes - stat.OutputSizeBytes
+		if stat.InputSizeBytes > 0 {
+			stat.SavedPercent = float64(stat.SavedBytes) / float64(stat.InputSizeBytes) * 100
+		}
+		stats = append(stats, stat)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate library stats: %w", err)
+	}
+	return stats, nil
+}
+
+func getJobTx(ctx context.Context, tx *sql.Tx, id domain.JobID) (domain.Job, error) {
+	row := tx.QueryRowContext(ctx, `
+SELECT id, source_id, asset_id, library_name, priority, state, lease_owner,
+	lease_deadline, heartbeat_at, attempt_count, last_error, input_size_bytes,
+	output_size_bytes, created_at, updated_at, completed_at
+FROM jobs
+WHERE id = ?
+`, int64(id))
+	return scanJob(row)
+}
