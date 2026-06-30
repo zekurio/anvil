@@ -203,8 +203,7 @@ func runPreflightCommand(ctx context.Context, cfg config.Config, opts options) e
 		encoder.SetIndent("", "  ")
 		return encoder.Encode(report)
 	}
-	printPreflightReport(report)
-	return nil
+	return printPreflightReport(report)
 }
 
 func openPreflightStore(ctx context.Context, cfg config.Config) (*store.SQLiteStore, bool, error) {
@@ -629,8 +628,9 @@ func preflightDescription(status preflightStatus) string {
 	}
 }
 
-func printPreflightReport(report preflightReport) {
-	fmt.Fprintf(os.Stdout, "preflight libraries=%d candidates=%d shown=%d ignored=%d unstable=%d enqueueable=%d existing_jobs=%d would_enqueue=%d store_read_only=%t\n",
+func printPreflightReport(report preflightReport) error {
+	printer := preflightPrinter{}
+	printer.printf("preflight libraries=%d candidates=%d shown=%d ignored=%d unstable=%d enqueueable=%d existing_jobs=%d would_enqueue=%d store_read_only=%t\n",
 		report.Summary.Libraries,
 		report.Summary.Candidates,
 		report.Summary.Shown,
@@ -642,10 +642,10 @@ func printPreflightReport(report preflightReport) {
 		report.Summary.StoreReadOnly,
 	)
 	for _, warning := range report.Warnings {
-		fmt.Fprintf(os.Stdout, "warning: %s\n", warning)
+		printer.printf("warning: %s\n", warning)
 	}
 	for _, item := range report.Candidates {
-		fmt.Fprintf(os.Stdout, "\n[%s] %s %s role=%s source=%s asset_size=%d asset_mod=%s\n",
+		printer.printf("\n[%s] %s %s role=%s source=%s asset_size=%d asset_mod=%s\n",
 			item.Description,
 			item.Library.Name,
 			item.Asset.LibraryRelativePath,
@@ -654,15 +654,15 @@ func printPreflightReport(report preflightReport) {
 			item.Asset.SizeBytes,
 			item.Asset.ModTime.Format(time.RFC3339),
 		)
-		fmt.Fprintf(os.Stdout, "  library: kind=%s root=%s\n", item.Library.Kind, item.Library.Root)
-		fmt.Fprintf(os.Stdout, "  source: %s kind=%s size=%d mod=%s asset: %s\n",
+		printer.printf("  library: kind=%s root=%s\n", item.Library.Kind, item.Library.Root)
+		printer.printf("  source: %s kind=%s size=%d mod=%s asset: %s\n",
 			item.Source.RelativePath,
 			item.Source.Kind,
 			item.Source.SizeBytes,
 			item.Source.ModTime.Format(time.RFC3339),
 			item.Asset.RelativePath,
 		)
-		fmt.Fprintf(os.Stdout, "  status: ignored=%t unstable=%t enqueueable=%t existing_job=%t would_enqueue=%t\n",
+		printer.printf("  status: ignored=%t unstable=%t enqueueable=%t existing_job=%t would_enqueue=%t\n",
 			item.Status.Ignored,
 			item.Status.Unstable,
 			item.Status.Enqueueable,
@@ -670,15 +670,15 @@ func printPreflightReport(report preflightReport) {
 			item.Status.WouldEnqueueNewJob,
 		)
 		if item.Status.AlreadyHasJob {
-			fmt.Fprintf(os.Stdout, "  job: id=%d state=%s attempt=%s\n", item.Status.ExistingJobID, item.Status.ExistingJobState, item.Status.ExistingAttemptHint)
+			printer.printf("  job: id=%d state=%s attempt=%s\n", item.Status.ExistingJobID, item.Status.ExistingJobState, item.Status.ExistingAttemptHint)
 		}
-		fmt.Fprintf(os.Stdout, "  flow: %s [%s]\n", item.Flow.Name, strings.Join(item.Flow.Steps, " -> "))
-		fmt.Fprintf(os.Stdout, "  profile: %s container=%s codec=%s accelerator=%s bit_depth=%d\n", item.Profile.Name, item.Profile.Container, item.Profile.VideoCodec, item.Profile.VideoAccelerator, item.Profile.VideoBitDepth)
+		printer.printf("  flow: %s [%s]\n", item.Flow.Name, strings.Join(item.Flow.Steps, " -> "))
+		printer.printf("  profile: %s container=%s codec=%s accelerator=%s bit_depth=%d\n", item.Profile.Name, item.Profile.Container, item.Profile.VideoCodec, item.Profile.VideoAccelerator, item.Profile.VideoBitDepth)
 		if item.Profile.DolbyVision.Mode != "" || item.Profile.DolbyVision.Codec != "" {
-			fmt.Fprintf(os.Stdout, "  dolby-vision: mode=%s codec=%s accelerator=%s bit_depth=%s remove_hdr10plus=%t\n", item.Profile.DolbyVision.Mode, displayOrNone(item.Profile.DolbyVision.Codec), displayOrNone(item.Profile.DolbyVision.Accelerator), displayIntOrNone(item.Profile.DolbyVision.BitDepth), item.Profile.DolbyVision.RemoveHDR10Plus)
+			printer.printf("  dolby-vision: mode=%s codec=%s accelerator=%s bit_depth=%s remove_hdr10plus=%t\n", item.Profile.DolbyVision.Mode, displayOrNone(item.Profile.DolbyVision.Codec), displayOrNone(item.Profile.DolbyVision.Accelerator), displayIntOrNone(item.Profile.DolbyVision.BitDepth), item.Profile.DolbyVision.RemoveHDR10Plus)
 		}
 		if item.Search.Enabled {
-			fmt.Fprintf(os.Stdout, "  search: %s crf=%d..%d target_vmaf=%s savings_policy=%s\n",
+			printer.printf("  search: %s crf=%d..%d target_vmaf=%s savings_policy=%s\n",
 				item.Search.Tool,
 				item.Search.CRFMin,
 				item.Search.CRFMax,
@@ -686,46 +686,69 @@ func printPreflightReport(report preflightReport) {
 				item.Search.SavingsPolicy,
 			)
 			if len(item.Search.CustomArgs) > 0 || len(item.Search.DolbyVisionCustomArgs) > 0 {
-				fmt.Fprintf(os.Stdout, "  search args: custom=%v dolby_vision=%v\n", item.Search.CustomArgs, item.Search.DolbyVisionCustomArgs)
+				printer.printf("  search args: custom=%v dolby_vision=%v\n", item.Search.CustomArgs, item.Search.DolbyVisionCustomArgs)
 			}
-			fmt.Fprintf(os.Stdout, "  no-fit: %s\n", item.Search.NoFitBehavior)
+			printer.printf("  no-fit: %s\n", item.Search.NoFitBehavior)
 		}
-		fmt.Fprintf(os.Stdout, "  encode: enabled=%t video=%s output=%s\n", item.Encode.Enabled, item.Encode.VideoAction, item.Encode.Output)
+		printer.printf("  encode: enabled=%t video=%s output=%s\n", item.Encode.Enabled, item.Encode.VideoAction, item.Encode.Output)
 		if len(item.Encode.CustomArgs) > 0 || len(item.Encode.DolbyVisionCustomArgs) > 0 {
-			fmt.Fprintf(os.Stdout, "  encode args: custom=%v dolby_vision=%v\n", item.Encode.CustomArgs, item.Encode.DolbyVisionCustomArgs)
+			printer.printf("  encode args: custom=%v dolby_vision=%v\n", item.Encode.CustomArgs, item.Encode.DolbyVisionCustomArgs)
 		}
 		if item.Encode.DolbyVisionAction != "" {
-			fmt.Fprintf(os.Stdout, "  encode dolby-vision: %s\n", item.Encode.DolbyVisionAction)
+			printer.printf("  encode dolby-vision: %s\n", item.Encode.DolbyVisionAction)
 		}
 		if item.Encode.NoFitAction != "" {
-			fmt.Fprintf(os.Stdout, "  encode no-fit: %s\n", item.Encode.NoFitAction)
+			printer.printf("  encode no-fit: %s\n", item.Encode.NoFitAction)
 		}
-		fmt.Fprintf(os.Stdout, "  input: %s\n", item.Paths.Input)
-		fmt.Fprintf(os.Stdout, "  staging: %s -> %s\n", item.Paths.StagingDir, item.Paths.Output)
-		printPreflightPublish(item.Publish)
-		fmt.Fprintf(os.Stdout, "  cleanup: staging=%s download_cleanup_source=%t prune_empty_dirs=%t\n",
+		printer.printf("  input: %s\n", item.Paths.Input)
+		printer.printf("  staging: %s -> %s\n", item.Paths.StagingDir, item.Paths.Output)
+		printer.printPublish(item.Publish)
+		printer.printf("  cleanup: staging=%s download_cleanup_source=%t prune_empty_dirs=%t\n",
 			item.Cleanup.StagingCleanupAction,
 			item.Cleanup.DownloadCleanupSource,
 			item.Cleanup.DownloadPruneEmptyDirs,
 		)
 		for _, warning := range item.Warnings {
-			fmt.Fprintf(os.Stdout, "  warning: %s\n", warning)
+			printer.printf("  warning: %s\n", warning)
 		}
+	}
+	return printer.err
+}
+
+type preflightPrinter struct {
+	err error
+}
+
+func (p *preflightPrinter) printf(format string, args ...any) {
+	if p.err != nil {
+		return
+	}
+	if _, err := fmt.Fprintf(os.Stdout, format, args...); err != nil {
+		p.err = fmt.Errorf("write preflight report: %w", err)
 	}
 }
 
-func printPreflightPublish(publish preflightPublish) {
+func (p *preflightPrinter) println(args ...any) {
+	if p.err != nil {
+		return
+	}
+	if _, err := fmt.Fprintln(os.Stdout, args...); err != nil {
+		p.err = fmt.Errorf("write preflight report: %w", err)
+	}
+}
+
+func (p *preflightPrinter) printPublish(publish preflightPublish) {
 	switch publish.Action {
 	case "copy":
-		fmt.Fprintf(os.Stdout, "  publish: copy %s\n", publish.CopyPath)
+		p.printf("  publish: copy %s\n", publish.CopyPath)
 	case "replace":
-		fmt.Fprintf(os.Stdout, "  publish: replace target=%s backup=%s\n", publish.ReplaceTarget, publish.ReplacementBackup)
+		p.printf("  publish: replace target=%s backup=%s\n", publish.ReplaceTarget, publish.ReplacementBackup)
 	case "handoff":
-		fmt.Fprintf(os.Stdout, "  publish: handoff mode=%s destination=%s\n", publish.Mode, publish.HandoffDestination)
+		p.printf("  publish: handoff mode=%s destination=%s\n", publish.Mode, publish.HandoffDestination)
 	case "error":
-		fmt.Fprintf(os.Stdout, "  publish: error %v\n", publish.Plan)
+		p.printf("  publish: error %v\n", publish.Plan)
 	default:
-		fmt.Fprintln(os.Stdout, "  publish: none")
+		p.println("  publish: none")
 	}
 }
 

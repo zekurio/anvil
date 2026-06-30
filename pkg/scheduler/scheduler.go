@@ -187,10 +187,6 @@ func (s *Scheduler) allocator(cfg config.Config) resources.Allocator {
 	return resources.NewAllocator(cfg.Daemon.TotalThreads)
 }
 
-func (s *Scheduler) eligibleLibraries(cfg config.Config) []domain.LibraryName {
-	return eligibleLibrariesForCounts(cfg, s.activeSnapshot().byLibrary)
-}
-
 func eligibleLibrariesForCounts(cfg config.Config, activeByLibrary map[domain.LibraryName]int) []domain.LibraryName {
 	allowed := make([]domain.LibraryName, 0, len(cfg.Libraries))
 	for libraryName, library := range cfg.Libraries {
@@ -322,10 +318,6 @@ func (s *Scheduler) newWorkerID() string {
 		prefix = "anvil-worker"
 	}
 	return fmt.Sprintf("%s-%d", prefix, s.nextWorker.Add(1))
-}
-
-func (s *Scheduler) workerCount() int {
-	return s.workerCountForConfig(s.ConfigProvider())
 }
 
 func (s *Scheduler) workerCountForConfig(cfg config.Config) int {

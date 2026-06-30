@@ -144,7 +144,9 @@ func TestPrintPreflightReportHumanBasics(t *testing.T) {
 		}},
 	}
 	output := captureStdout(t, func() {
-		printPreflightReport(report)
+		if err := printPreflightReport(report); err != nil {
+			t.Fatalf("printPreflightReport() error = %v", err)
+		}
 	})
 	for _, want := range []string{"preflight libraries=1", "savings_policy=ab-av1/search", "no-fit:", "video-copy/remux", "encode: enabled=true", "publish: copy"} {
 		if !strings.Contains(output, want) {

@@ -248,7 +248,7 @@ func moveFile(src string, dst string) error {
 	return nil
 }
 
-func copyFile(src string, dst string) error {
+func copyFile(src string, dst string) (err error) {
 	dstDir := filepath.Dir(dst)
 	if err := os.MkdirAll(dstDir, 0o750); err != nil {
 		return fmt.Errorf("create destination dir: %w", err)
@@ -261,14 +261,14 @@ func copyFile(src string, dst string) error {
 	if err != nil {
 		return fmt.Errorf("open source %q: %w", src, err)
 	}
-	defer in.Close()
+	defer closeFile(in, "source", &err)
 
 	tmp, err := os.CreateTemp(dstDir, "."+filepath.Base(dst)+".tmp-*")
 	if err != nil {
 		return fmt.Errorf("create temporary destination for %q: %w", dst, err)
 	}
 	tmpPath := tmp.Name()
-	defer os.Remove(tmpPath)
+	defer removeTempFile(tmpPath, &err)
 
 	_, copyErr := io.Copy(tmp, in)
 	chmodErr := tmp.Chmod(info.Mode().Perm())
@@ -289,6 +289,28 @@ func copyFile(src string, dst string) error {
 		return fmt.Errorf("publish temporary destination %q: %w", dst, err)
 	}
 	return nil
+}
+
+func closeFile(file *os.File, description string, err *error) {
+	if closeErr := file.Close(); closeErr != nil {
+		wrapped := fmt.Errorf("close %s %q: %w", description, file.Name(), closeErr)
+		if *err != nil {
+			*err = errors.Join(*err, wrapped)
+			return
+		}
+		*err = wrapped
+	}
+}
+
+func removeTempFile(path string, err *error) {
+	if removeErr := os.Remove(path); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+		wrapped := fmt.Errorf("remove temporary destination %q: %w", path, removeErr)
+		if *err != nil {
+			*err = errors.Join(*err, wrapped)
+			return
+		}
+		*err = wrapped
+	}
 }
 
 func PruneEmptyDirs(root string, start string, ignorableGlobs []string) error {

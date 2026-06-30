@@ -318,12 +318,16 @@ type FilesystemEventSource struct {
 	ReconcileInterval time.Duration
 }
 
-func (s FilesystemEventSource) Run(ctx context.Context, cfgProvider ConfigProvider, triggers chan<- ScanTrigger) error {
+func (s FilesystemEventSource) Run(ctx context.Context, cfgProvider ConfigProvider, triggers chan<- ScanTrigger) (err error) {
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
 		return fmt.Errorf("create filesystem watcher: %w", err)
 	}
-	defer watcher.Close()
+	defer func() {
+		if closeErr := watcher.Close(); closeErr != nil && err == nil {
+			err = fmt.Errorf("close filesystem watcher: %w", closeErr)
+		}
+	}()
 
 	roots := make(map[domain.LibraryName]string)
 	watched := make(map[string]map[domain.LibraryName]struct{})

@@ -96,8 +96,7 @@ func run(args []string) error {
 		return err
 	}
 	if opts.command == commandHelp {
-		printUsage()
-		return nil
+		return printUsage()
 	}
 
 	cfg, err := loadRuntimeConfig(opts.configPath, opts)
@@ -394,8 +393,7 @@ func runScanCommand(ctx context.Context, cfg config.Config, opts options) error 
 	if err != nil {
 		return err
 	}
-	printScanResult(result)
-	return nil
+	return printScanResult(result)
 }
 
 func runJobsCommand(ctx context.Context, cfg config.Config, opts options) error {
@@ -418,8 +416,7 @@ func runJobsCommand(ctx context.Context, cfg config.Config, opts options) error 
 		encoder.SetIndent("", "  ")
 		return encoder.Encode(jobs)
 	}
-	printJobs(jobs)
-	return nil
+	return printJobs(jobs)
 }
 
 func runStatsCommand(ctx context.Context, cfg config.Config, opts options) error {
@@ -440,8 +437,7 @@ func runStatsCommand(ctx context.Context, cfg config.Config, opts options) error
 		encoder.SetIndent("", "  ")
 		return encoder.Encode(stats)
 	}
-	printLibraryStats(stats)
-	return nil
+	return printLibraryStats(stats)
 }
 
 func runRetryCommand(ctx context.Context, cfg config.Config, opts options) error {
@@ -457,14 +453,18 @@ func runRetryCommand(ctx context.Context, cfg config.Config, opts options) error
 		if err != nil {
 			return err
 		}
-		fmt.Fprintf(os.Stdout, "retried_failed_jobs=%d\n", count)
+		if _, err := fmt.Fprintf(os.Stdout, "retried_failed_jobs=%d\n", count); err != nil {
+			return fmt.Errorf("write retry summary: %w", err)
+		}
 	}
 	for _, id := range opts.jobIDs {
 		job, err := state.RetryJob(ctx, id, now)
 		if err != nil {
 			return err
 		}
-		fmt.Fprintf(os.Stdout, "job_id=%d state=%s\n", job.ID, job.State)
+		if _, err := fmt.Fprintf(os.Stdout, "job_id=%d state=%s\n", job.ID, job.State); err != nil {
+			return fmt.Errorf("write retry job summary: %w", err)
+		}
 	}
 	return nil
 }
@@ -480,7 +480,9 @@ func runRecoverCommand(ctx context.Context, cfg config.Config, opts options) err
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(os.Stdout, "recovered_jobs=%d\n", recovered)
+	if _, err := fmt.Fprintf(os.Stdout, "recovered_jobs=%d\n", recovered); err != nil {
+		return fmt.Errorf("write recovery summary: %w", err)
+	}
 	return nil
 }
 
@@ -503,7 +505,9 @@ func runCleanupStagingCommand(ctx context.Context, cfg config.Config, opts optio
 	if err != nil {
 		return err
 	}
-	printCleanupResult(result, opts.cleanupDryRun)
+	if err := printCleanupResult(result, opts.cleanupDryRun); err != nil {
+		return err
+	}
 	if len(result.Errors) > 0 {
 		return fmt.Errorf("staging cleanup completed with %d errors", len(result.Errors))
 	}
@@ -751,8 +755,8 @@ func runConfiguredStagingCleanup(cfg config.Config) {
 	}
 }
 
-func printScanResult(result scanner.ScanResult) {
-	fmt.Fprintf(os.Stdout, "libraries=%d sources=%d assets=%d enqueued_jobs=%d existing_jobs=%d skipped_ignored=%d skipped_unstable=%d",
+func printScanResult(result scanner.ScanResult) error {
+	if _, err := fmt.Fprintf(os.Stdout, "libraries=%d sources=%d assets=%d enqueued_jobs=%d existing_jobs=%d skipped_ignored=%d skipped_unstable=%d",
 		result.Libraries,
 		result.Sources,
 		result.Assets,
@@ -760,35 +764,49 @@ func printScanResult(result scanner.ScanResult) {
 		result.ExistingJobs,
 		result.SkippedIgnored,
 		result.SkippedUnstable,
-	)
-	if !result.NextStableAt.IsZero() {
-		fmt.Fprintf(os.Stdout, " next_stable_at=%s", result.NextStableAt.Format(time.RFC3339))
+	); err != nil {
+		return fmt.Errorf("write scan result: %w", err)
 	}
-	fmt.Fprintln(os.Stdout)
+	if !result.NextStableAt.IsZero() {
+		if _, err := fmt.Fprintf(os.Stdout, " next_stable_at=%s", result.NextStableAt.Format(time.RFC3339)); err != nil {
+			return fmt.Errorf("write next stable timestamp: %w", err)
+		}
+	}
+	if _, err := fmt.Fprintln(os.Stdout); err != nil {
+		return fmt.Errorf("write scan result newline: %w", err)
+	}
+	return nil
 }
 
-func printCleanupResult(result staging.CleanupStaleResult, dryRun bool) {
-	fmt.Fprintf(os.Stdout, "dry_run=%t candidates=%d removed=%d skipped=%d errors=%d\n",
+func printCleanupResult(result staging.CleanupStaleResult, dryRun bool) error {
+	if _, err := fmt.Fprintf(os.Stdout, "dry_run=%t candidates=%d removed=%d skipped=%d errors=%d\n",
 		dryRun,
 		result.Candidates,
 		result.Removed,
 		result.Skipped,
 		len(result.Errors),
-	)
-	for _, message := range result.Errors {
-		fmt.Fprintf(os.Stderr, "cleanup_error=%q\n", message)
+	); err != nil {
+		return fmt.Errorf("write cleanup result: %w", err)
 	}
+	for _, message := range result.Errors {
+		if _, err := fmt.Fprintf(os.Stderr, "cleanup_error=%q\n", message); err != nil {
+			return fmt.Errorf("write cleanup error: %w", err)
+		}
+	}
+	return nil
 }
 
 func stagingRoot(cfg config.Config) string {
 	return filepath.Join(cfg.Daemon.TempDir, "staging")
 }
 
-func printJobs(jobs []store.JobSummary) {
+func printJobs(jobs []store.JobSummary) error {
 	table := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(table, "ID\tSTATE\tLIBRARY\tATTEMPTS\tUPDATED\tPATH\tERROR")
+	if _, err := fmt.Fprintln(table, "ID\tSTATE\tLIBRARY\tATTEMPTS\tUPDATED\tPATH\tERROR"); err != nil {
+		return fmt.Errorf("write jobs header: %w", err)
+	}
 	for _, summary := range jobs {
-		fmt.Fprintf(table, "%d\t%s\t%s\t%d\t%s\t%s\t%s\n",
+		if _, err := fmt.Fprintf(table, "%d\t%s\t%s\t%d\t%s\t%s\t%s\n",
 			summary.Job.ID,
 			summary.Job.State,
 			summary.Job.LibraryName,
@@ -796,25 +814,37 @@ func printJobs(jobs []store.JobSummary) {
 			summary.Job.UpdatedAt.Format(time.RFC3339),
 			jobPath(summary),
 			summary.Job.LastError,
-		)
+		); err != nil {
+			return fmt.Errorf("write job row: %w", err)
+		}
 	}
-	_ = table.Flush()
+	if err := table.Flush(); err != nil {
+		return fmt.Errorf("flush jobs table: %w", err)
+	}
+	return nil
 }
 
-func printLibraryStats(stats []store.LibraryStats) {
+func printLibraryStats(stats []store.LibraryStats) error {
 	table := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(table, "LIBRARY\tJOBS\tBEFORE\tAFTER\tSAVED\tSAVED%")
+	if _, err := fmt.Fprintln(table, "LIBRARY\tJOBS\tBEFORE\tAFTER\tSAVED\tSAVED%"); err != nil {
+		return fmt.Errorf("write library stats header: %w", err)
+	}
 	for _, stat := range stats {
-		fmt.Fprintf(table, "%s\t%d\t%s\t%s\t%s\t%s\n",
+		if _, err := fmt.Fprintf(table, "%s\t%d\t%s\t%s\t%s\t%s\n",
 			stat.LibraryName,
 			stat.Jobs,
 			formatBytes(stat.InputSizeBytes),
 			formatBytes(stat.OutputSizeBytes),
 			formatBytes(stat.SavedBytes),
 			formatPercent(stat.SavedPercent),
-		)
+		); err != nil {
+			return fmt.Errorf("write library stats row: %w", err)
+		}
 	}
-	_ = table.Flush()
+	if err := table.Flush(); err != nil {
+		return fmt.Errorf("flush library stats table: %w", err)
+	}
+	return nil
 }
 
 func jobPath(summary store.JobSummary) string {
@@ -907,8 +937,8 @@ func isCommand(value string) bool {
 	}
 }
 
-func printUsage() {
-	fmt.Fprintln(os.Stdout, `Usage:
+func printUsage() error {
+	if _, err := fmt.Fprintln(os.Stdout, `Usage:
   anvild [--config PATH] [--daemon] [--shutdown-policy drain|cancel] [--shutdown-timeout DURATION]
   anvild run [--config PATH] [--daemon] [--shutdown-policy drain|cancel] [--shutdown-timeout DURATION]
   anvild check-config [--config PATH]
@@ -922,7 +952,10 @@ func printUsage() {
   anvild recover [--config PATH]
   anvild cleanup-staging [--config PATH] [--older-than DURATION] [--dry-run]
 
-Legacy --check-config is still accepted.`)
+Legacy --check-config is still accepted.`); err != nil {
+		return fmt.Errorf("write usage: %w", err)
+	}
+	return nil
 }
 
 func configPathLabel(path string) string {

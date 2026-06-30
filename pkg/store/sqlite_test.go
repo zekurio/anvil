@@ -400,7 +400,11 @@ func TestOpenReadOnlyRejectsWrites(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenReadOnly() error = %v", err)
 	}
-	defer readonly.Close()
+	defer func() {
+		if err := readonly.Close(); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	}()
 	if _, err := readonly.UpsertMediaSource(ctx, domain.MediaSource{
 		LibraryName:  "movies",
 		Kind:         domain.SourceKindFile,

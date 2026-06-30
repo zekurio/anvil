@@ -189,17 +189,17 @@ func (b DolbyVisionBlock) Run(ctx context.Context, job *pipeline.JobContext) err
 		return nil
 	}
 	if strings.TrimSpace(job.OutputPath) == "" {
-		return errors.New("Dolby Vision fix output path is required")
+		return errors.New("dolby vision fix output path is required")
 	}
 	if !strings.EqualFold(filepath.Ext(job.OutputPath), ".mkv") {
-		return fmt.Errorf("Dolby Vision fix requires MKV output, got %q", filepath.Ext(job.OutputPath))
+		return fmt.Errorf("dolby vision fix requires MKV output, got %q", filepath.Ext(job.OutputPath))
 	}
 	codec := job.EncodePlan.VideoCodec
 	if strings.TrimSpace(codec) == "" {
 		codec = job.Profile.Video.DolbyVision.Codec
 	}
 	if !hevcEncoder(codec) {
-		return fmt.Errorf("Dolby Vision fix requires HEVC output, got encoder %q", codec)
+		return fmt.Errorf("dolby vision fix requires HEVC output, got encoder %q", codec)
 	}
 
 	dir := strings.TrimSpace(job.StagingDir)

@@ -97,7 +97,7 @@ func (r Resolver) resolveArrParse(ctx context.Context, policy domain.MetadataPro
 	return domain.JobMetadata{}, false, nil
 }
 
-func (r Resolver) getJSON(ctx context.Context, policy domain.MetadataProviderPolicy, apiPath string, query map[string]string, target any) error {
+func (r Resolver) getJSON(ctx context.Context, policy domain.MetadataProviderPolicy, apiPath string, query map[string]string, target any) (err error) {
 	if strings.TrimSpace(policy.BaseURL) == "" {
 		return errors.New("metadata base URL is required")
 	}
@@ -119,7 +119,11 @@ func (r Resolver) getJSON(ctx context.Context, policy domain.MetadataProviderPol
 	if err != nil {
 		return fmt.Errorf("fetch metadata: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() {
+		if closeErr := resp.Body.Close(); closeErr != nil && err == nil {
+			err = fmt.Errorf("close metadata response body: %w", closeErr)
+		}
+	}()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return fmt.Errorf("fetch metadata: unexpected status %s", resp.Status)
 	}
