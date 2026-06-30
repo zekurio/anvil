@@ -107,7 +107,7 @@ func (r Runner) Run(ctx context.Context, job *JobContext) error {
 		}
 		if err := block.Run(stepCtx, job); err != nil {
 			slog.Error("pipeline step failed", "job_id", int64(job.Job.ID), "attempt_id", int64(job.Attempt.ID), "step", step.Name, "step_index", index, "duration", time.Since(started), "error", err)
-			_ = r.record(ctx, job.Attempt.ID, domain.AttemptEventBlockFailed, step.Name, err.Error(), map[string]any{"step_index": index})
+			_ = r.record(ctx, job.Attempt.ID, domain.AttemptEventBlockFailed, step.Name, err.Error(), map[string]any{"step_index": index}) //nolint:errcheck // preserve the block error; failed-event recording is best-effort
 			return fmt.Errorf("run block %q: %w", step.Name, err)
 		}
 		slog.Info("pipeline step finished", "job_id", int64(job.Job.ID), "attempt_id", int64(job.Attempt.ID), "step", step.Name, "step_index", index, "duration", time.Since(started))

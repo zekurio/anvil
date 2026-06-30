@@ -62,7 +62,7 @@ LIMIT 1
 	return scanJob(row)
 }
 
-func (s *SQLiteStore) ListJobs(ctx context.Context, filter JobListFilter) ([]JobSummary, error) {
+func (s *SQLiteStore) ListJobs(ctx context.Context, filter JobListFilter) (jobs []JobSummary, err error) {
 	query := `
 SELECT j.id, j.source_id, j.asset_id, j.library_name, j.priority, j.state,
 	j.lease_owner, j.lease_deadline, j.heartbeat_at, j.attempt_count,
@@ -95,9 +95,8 @@ WHERE 1 = 1
 	if err != nil {
 		return nil, fmt.Errorf("list jobs: %w", err)
 	}
-	defer rows.Close()
+	defer closeRows(rows, &err, "close jobs")
 
-	var jobs []JobSummary
 	for rows.Next() {
 		job, err := scanJobSummary(rows)
 		if err != nil {
@@ -126,7 +125,7 @@ WHERE j.id = ?
 	return scanJobSummary(row)
 }
 
-func (s *SQLiteStore) ListLibraryStats(ctx context.Context, filter LibraryStatsFilter) ([]LibraryStats, error) {
+func (s *SQLiteStore) ListLibraryStats(ctx context.Context, filter LibraryStatsFilter) (stats []LibraryStats, err error) {
 	query := `
 SELECT library_name, COUNT(*), COALESCE(SUM(input_size_bytes), 0), COALESCE(SUM(output_size_bytes), 0)
 FROM jobs
@@ -145,9 +144,8 @@ WHERE state = ?
 	if err != nil {
 		return nil, fmt.Errorf("list library stats: %w", err)
 	}
-	defer rows.Close()
+	defer closeRows(rows, &err, "close library stats")
 
-	var stats []LibraryStats
 	for rows.Next() {
 		var stat LibraryStats
 		if err := rows.Scan(&stat.LibraryName, &stat.Jobs, &stat.InputSizeBytes, &stat.OutputSizeBytes); err != nil {

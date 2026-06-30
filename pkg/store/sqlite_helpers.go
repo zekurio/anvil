@@ -89,7 +89,13 @@ func defaultNow(t time.Time) time.Time {
 }
 
 func rollback(tx *sql.Tx) {
-	_ = tx.Rollback()
+	_ = tx.Rollback() //nolint:errcheck // rollback is best-effort; callers return the primary error
+}
+
+func closeRows(rows *sql.Rows, err *error, operation string) {
+	if closeErr := rows.Close(); closeErr != nil && *err == nil {
+		*err = fmt.Errorf("%s: %w", operation, closeErr)
+	}
 }
 
 func ensureParentDir(path string) error {
