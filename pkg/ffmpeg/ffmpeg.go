@@ -2,6 +2,7 @@ package ffmpeg
 
 import (
 	"context"
+	"encoding/xml"
 	"errors"
 	"fmt"
 	"os"
@@ -233,12 +234,13 @@ func buildPlanRequest(job *pipeline.JobContext) BuildPlanRequest {
 }
 
 type DolbyVisionBlock struct {
-	Runner     process.Runner
-	DoviTool   string
-	MKVExtract string
-	MKVMerge   string
-	MKVInfo    string
-	FFmpeg     string
+	Runner      process.Runner
+	DoviTool    string
+	MKVExtract  string
+	MKVMerge    string
+	MKVInfo     string
+	MKVPropEdit string
+	FFmpeg      string
 }
 
 func (DolbyVisionBlock) Name() string {
@@ -281,6 +283,9 @@ func (b DolbyVisionBlock) Run(ctx context.Context, job *pipeline.JobContext) err
 		return err
 	}
 	if err := b.muxDolbyVisionOutput(ctx, job.OutputPath, paths); err != nil {
+		return err
+	}
+	if err := b.restoreVideoTags(ctx, job, paths); err != nil {
 		return err
 	}
 	if err := replaceOutput(job.OutputPath, paths.fixedMKV); err != nil {
@@ -344,6 +349,34 @@ func (b DolbyVisionBlock) muxDolbyVisionOutput(ctx context.Context, outputPath s
 	return b.run(ctx, b.mkvMerge(), doviMuxArgs(outputPath, paths, fps)...)
 }
 
+func (b DolbyVisionBlock) restoreVideoTags(ctx context.Context, job *pipeline.JobContext, paths doviPaths) error {
+	if job == nil || job.EncodePlan == nil {
+		return nil
+	}
+	tags := marker.OutputTags(*job.EncodePlan)
+	if len(tags) == 0 {
+		return nil
+	}
+	if err := writeMatroskaTrackTags(paths.videoTags, tags); err != nil {
+		return err
+	}
+	args := []string{paths.fixedMKV}
+	if title := doviVideoTrackTitle(*job.EncodePlan); title != "" {
+		args = append(args, "--edit", "track:v1", "--set", "name="+title)
+	}
+	args = append(args, "--tags", "track:v1:"+paths.videoTags)
+	return b.run(ctx, b.mkvPropEdit(), args...)
+}
+
+func doviVideoTrackTitle(plan domain.EncodePlan) string {
+	for _, title := range plan.TrackTitles {
+		if title.Type == "v" && title.Index == 0 {
+			return strings.TrimSpace(title.Title)
+		}
+	}
+	return ""
+}
+
 func doviMuxArgs(outputPath string, paths doviPaths, fps string) []string {
 	args := []string{
 		"-o", paths.fixedMKV,
@@ -369,6 +402,7 @@ type doviPaths struct {
 	convertedHEVC string
 	fixedHEVC     string
 	fixedMKV      string
+	videoTags     string
 }
 
 func doviWorkPaths(dir string) doviPaths {
@@ -378,6 +412,7 @@ func doviWorkPaths(dir string) doviPaths {
 		convertedHEVC: filepath.Join(dir, "dovi-converted.hevc"),
 		fixedHEVC:     filepath.Join(dir, "dovi-fixed.hevc"),
 		fixedMKV:      filepath.Join(dir, "dovi-fixed.mkv"),
+		videoTags:     filepath.Join(dir, "dovi-video-tags.xml"),
 	}
 }
 
@@ -444,6 +479,10 @@ func (b DolbyVisionBlock) mkvInfo() string {
 	return valueOr(b.MKVInfo, "mkvinfo")
 }
 
+func (b DolbyVisionBlock) mkvPropEdit() string {
+	return valueOr(b.MKVPropEdit, "mkvpropedit")
+}
+
 func (b DolbyVisionBlock) ffmpeg() string {
 	return valueOr(b.FFmpeg, "ffmpeg")
 }
@@ -482,9 +521,54 @@ func cleanupDoviPaths(paths doviPaths) {
 		paths.convertedHEVC,
 		paths.fixedHEVC,
 		paths.fixedMKV,
+		paths.videoTags,
 	} {
 		_ = os.Remove(path) //nolint:errcheck // temporary Dolby Vision work files are best-effort cleanup
 	}
+}
+
+type matroskaTags struct {
+	XMLName xml.Name      `xml:"Tags"`
+	Tags    []matroskaTag `xml:"Tag"`
+}
+
+type matroskaTag struct {
+	Simple []matroskaSimpleTag `xml:"Simple"`
+}
+
+type matroskaSimpleTag struct {
+	Name   string `xml:"Name"`
+	String string `xml:"String"`
+}
+
+func writeMatroskaTrackTags(path string, tags map[string]string) error {
+	if strings.TrimSpace(path) == "" {
+		return errors.New("matroska tags path is required")
+	}
+	keys := make([]string, 0, len(tags))
+	for key, value := range tags {
+		if strings.TrimSpace(key) != "" && strings.TrimSpace(value) != "" {
+			keys = append(keys, key)
+		}
+	}
+	sort.Strings(keys)
+	document := matroskaTags{Tags: []matroskaTag{{Simple: make([]matroskaSimpleTag, 0, len(keys))}}}
+	for _, key := range keys {
+		document.Tags[0].Simple = append(document.Tags[0].Simple, matroskaSimpleTag{
+			Name:   strings.TrimSpace(key),
+			String: strings.TrimSpace(tags[key]),
+		})
+	}
+	data, err := xml.MarshalIndent(document, "", "  ")
+	if err != nil {
+		return fmt.Errorf("encode matroska video tags: %w", err)
+	}
+	data = append([]byte(xml.Header), data...)
+	data = append(data, '\n')
+	if err := os.WriteFile(path, data, 0o640); err != nil {
+		return fmt.Errorf("write matroska video tags: %w", err)
+	}
+	return nil
 }
 
 func inputArgs(plan domain.EncodePlan) []string {
