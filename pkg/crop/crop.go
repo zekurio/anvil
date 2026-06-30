@@ -13,7 +13,7 @@ import (
 )
 
 const (
-	defaultCropDetectLimit = 24
+	defaultCropDetectLimit = 64
 	defaultCropDetectRound = 16
 	defaultCropDetectReset = 0
 	defaultFrameLimit      = 300
