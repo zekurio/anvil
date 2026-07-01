@@ -242,6 +242,26 @@ func TestValidatorRejectsSubtitleCountMismatch(t *testing.T) {
 	assertErrorContains(t, result, "subtitle stream count")
 }
 
+func TestValidatorRejectsSelectedSubtitleCountMismatch(t *testing.T) {
+	outputPath := writeSizedFile(t, "out.mkv", 800)
+	plan := encodePlan(false)
+	plan.SubtitleSelectionApplied = true
+	plan.SubtitleStreamIndexes = []int{3}
+	probed := outputProbe(plan)
+	probed.Streams = append(probed.Streams, domain.MediaStream{Index: 4, Type: "subtitle", Codec: "subrip"})
+
+	result, err := Validator{Prober: fakeProber{result: probed}}.Validate(context.Background(), Request{
+		SourceProbe: sourceProbe(),
+		OutputPath:  outputPath,
+		Profile:     testProfile(),
+		EncodePlan:  &plan,
+	})
+	if err == nil {
+		t.Fatal("Validate() error = nil, want subtitle count mismatch")
+	}
+	assertErrorContains(t, result, "subtitle stream count")
+}
+
 func TestValidatorAcceptsPreservedHDRAndDolbyVisionMetadata(t *testing.T) {
 	outputPath := writeSizedFile(t, "out.mkv", 800)
 	plan := encodePlan(false)
@@ -374,7 +394,6 @@ func testProfile() domain.Profile {
 			Accelerator: "software",
 			BitDepth:    10,
 		},
-		Subtitles: domain.SubtitleProfile{Mode: domain.StreamPolicyPreserve},
 	}
 }
 

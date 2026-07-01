@@ -24,6 +24,7 @@ import (
 	"github.com/zekurio/anvil/pkg/scheduler"
 	"github.com/zekurio/anvil/pkg/search"
 	"github.com/zekurio/anvil/pkg/staging"
+	"github.com/zekurio/anvil/pkg/subtitle"
 	"github.com/zekurio/anvil/pkg/validate"
 )
 
@@ -177,6 +178,7 @@ func DefaultPipeline(tempDir string) pipeline.Runner {
 			probe.Block{Prober: prober},
 			crop.Block{},
 			audio.Block{},
+			subtitle.Block{},
 			staging.StageBlock{Manager: stageManager},
 			search.Block{},
 			ffmpeg.Block{},
@@ -223,6 +225,11 @@ func disableUnsafeStreamCleanup(profile domain.Profile, metadata *domain.JobMeta
 func usesOriginalLanguage(profile domain.Profile) bool {
 	for _, value := range profile.Audio.LanguagesToKeep {
 		if strings.EqualFold(strings.TrimSpace(value), audio.OriginalLanguageToken) {
+			return true
+		}
+	}
+	for _, value := range profile.Subtitles.LanguagesToKeep {
+		if strings.EqualFold(strings.TrimSpace(value), subtitle.OriginalLanguageToken) {
 			return true
 		}
 	}
