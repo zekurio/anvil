@@ -17,7 +17,6 @@ const (
 	DefaultStableFor       = "5m"
 	DefaultPackageMode     = "auto"
 	DefaultHandoffMode     = "copy"
-	DefaultStreamMode      = "preserve"
 	DefaultStreamFallback  = "keep_all"
 	DefaultMetadataMode    = "preserve"
 	DefaultTrackTitleMode  = "strip"
@@ -124,14 +123,12 @@ type AudioConfig struct {
 
 // SubtitleConfig declares subtitle retention intent.
 type SubtitleConfig struct {
-	Mode               string   `toml:"mode"`
-	PreferredLanguages []string `toml:"preferred_languages"`
-	KeepForced         bool     `toml:"keep_forced"`
-	KeepSDH            bool     `toml:"keep_sdh"`
-	KeepCommentary     bool     `toml:"keep_commentary"`
-	KeepExternal       bool     `toml:"keep_external"`
-	MaxTracks          int      `toml:"max_tracks"`
-	Fallback           string   `toml:"fallback"`
+	LanguagesToKeep   []string `toml:"languages_to_keep"`
+	KeepForced        bool     `toml:"keep_forced"`
+	KeepSDH           bool     `toml:"keep_sdh"`
+	KeepCommentary    bool     `toml:"keep_commentary"`
+	Fallback          string   `toml:"fallback"`
+	UnknownAsOriginal bool     `toml:"unknown_as_original"`
 }
 
 // ValidationConfig declares post-encode safety gates.
