@@ -23,6 +23,9 @@ const (
 
 	handoffActionCopy = "copy"
 	handoffActionMove = "move"
+
+	handoffDirMode  os.FileMode = 0o2775
+	handoffFileMode os.FileMode = 0o664
 )
 
 type ReplacementPlan struct {
@@ -84,8 +87,8 @@ func (m Manager) Handoff(_ context.Context, job *pipeline.JobContext) (string, e
 	if err != nil {
 		return "", err
 	}
-	if err := os.MkdirAll(filepath.Dir(plan.Destination), 0o750); err != nil {
-		return "", fmt.Errorf("create handoff destination dir: %w", err)
+	if err := prepareHandoffDestination(job.Library.Download.HandoffPath, filepath.Dir(plan.Destination)); err != nil {
+		return "", err
 	}
 	switch plan.Mode {
 	case domain.HandoffModeMove:
@@ -96,6 +99,9 @@ func (m Manager) Handoff(_ context.Context, job *pipeline.JobContext) (string, e
 		if err := copyFile(job.OutputPath, plan.Destination); err != nil {
 			return "", err
 		}
+	}
+	if err := os.Chmod(plan.Destination, handoffFileMode); err != nil {
+		return "", fmt.Errorf("set handoff destination mode: %w", err)
 	}
 	if plan.CleanupSourceMedia {
 		if err := os.Remove(plan.SourceMediaPath); err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -229,6 +235,28 @@ func replaceExtension(path string, ext string) string {
 func unsafeRelativePath(path string) bool {
 	clean := filepath.Clean(path)
 	return filepath.IsAbs(clean) || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator))
+}
+
+func prepareHandoffDestination(root string, dir string) error {
+	root = filepath.Clean(strings.TrimSpace(root))
+	dir = filepath.Clean(dir)
+	if root == "" || root == "." || root == string(filepath.Separator) {
+		return errors.New("refusing to prepare unsafe handoff root")
+	}
+	if !inside(root, dir) {
+		return fmt.Errorf("handoff destination dir %q is outside root %q", dir, root)
+	}
+	if err := os.MkdirAll(dir, handoffDirMode); err != nil {
+		return fmt.Errorf("create handoff destination dir: %w", err)
+	}
+	for current := dir; ; current = filepath.Dir(current) {
+		if err := os.Chmod(current, handoffDirMode); err != nil {
+			return fmt.Errorf("set handoff directory mode %q: %w", current, err)
+		}
+		if current == root {
+			return nil
+		}
+	}
 }
 
 func moveFile(src string, dst string) error {
