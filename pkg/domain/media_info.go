@@ -55,6 +55,12 @@ type AudioSelection struct {
 	StreamIndexes    []int
 }
 
+type SubtitleSelection struct {
+	OriginalLanguage string
+	LanguagesToKeep  []string
+	StreamIndexes    []int
+}
+
 type CropResult struct {
 	Filter     string
 	RawOutput  string
@@ -62,41 +68,42 @@ type CropResult struct {
 }
 
 type EncodePlan struct {
-	InputPath             string
-	OutputPath            string
-	ProfileName           ProfileName
-	VideoCodec            string
-	InputVideoCodec       string
-	InputWidth            int
-	InputHeight           int
-	Accelerator           string
-	VideoSource           string
-	VideoCopy             bool
-	VideoCopyReason       string
-	Preset                string
-	BitDepth              int
-	PixelFormat           string
-	CRF                   int
-	CRFMin                int
-	CRFMax                int
-	TargetVMAF            float64
-	MinSavingsPercent     float64
-	ForceEncodeOnNoFit    bool
-	Threads               int
-	Container             string
-	CropFilter            string
-	AudioSelectionApplied bool
-	AudioStreamIndexes    []int
-	SubtitleMode          StreamPolicyMode
-	MetadataMode          MetadataMode
-	TrackTitleMode        TrackTitleMode
-	TrackTitles           []TrackTitle
-	AttachmentMode        MetadataMode
-	ChapterMode           MetadataMode
-	AnvilTags             map[string]string
-	FFmpegArgs            []string
-	ABAV1Args             []string
-	HDR                   HDRMetadata
+	InputPath                string
+	OutputPath               string
+	ProfileName              ProfileName
+	VideoCodec               string
+	InputVideoCodec          string
+	InputWidth               int
+	InputHeight              int
+	Accelerator              string
+	VideoSource              string
+	VideoCopy                bool
+	VideoCopyReason          string
+	Preset                   string
+	BitDepth                 int
+	PixelFormat              string
+	CRF                      int
+	CRFMin                   int
+	CRFMax                   int
+	TargetVMAF               float64
+	MinSavingsPercent        float64
+	ForceEncodeOnNoFit       bool
+	Threads                  int
+	Container                string
+	CropFilter               string
+	AudioSelectionApplied    bool
+	AudioStreamIndexes       []int
+	SubtitleSelectionApplied bool
+	SubtitleStreamIndexes    []int
+	MetadataMode             MetadataMode
+	TrackTitleMode           TrackTitleMode
+	TrackTitles              []TrackTitle
+	AttachmentMode           MetadataMode
+	ChapterMode              MetadataMode
+	AnvilTags                map[string]string
+	FFmpegArgs               []string
+	ABAV1Args                []string
+	HDR                      HDRMetadata
 }
 
 type TrackTitle struct {

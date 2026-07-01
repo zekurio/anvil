@@ -32,6 +32,9 @@ path = "/srv/media/movies"
 	if got := cfg.Profiles[DefaultProfileName].Audio.Fallback; got != DefaultStreamFallback {
 		t.Fatalf("expected default audio fallback %q, got %q", DefaultStreamFallback, got)
 	}
+	if got := cfg.Profiles[DefaultProfileName].Subtitles.Fallback; got != DefaultStreamFallback {
+		t.Fatalf("expected default subtitle fallback %q, got %q", DefaultStreamFallback, got)
+	}
 	if got := cfg.Profiles[DefaultProfileName].Video.MinSavingsPercent; got != DefaultMinSavingsPct {
 		t.Fatalf("expected default min_savings_percent %d, got %v", DefaultMinSavingsPct, got)
 	}
@@ -80,6 +83,9 @@ path = "/srv/media/movies"
 	}
 	if !containsString(flow.Steps, "audio-cleanup") {
 		t.Fatalf("default flow steps = %v, want audio cleanup before encode", flow.Steps)
+	}
+	if !containsString(flow.Steps, "subtitle-cleanup") {
+		t.Fatalf("default flow steps = %v, want subtitle cleanup before encode", flow.Steps)
 	}
 }
 
@@ -421,6 +427,77 @@ path = "/srv/media/movies"
 	}
 	if !profile.Video.DolbyVision.RemoveHDR10Plus {
 		t.Fatal("DolbyVision.RemoveHDR10Plus = false, want true")
+	}
+}
+
+func TestLoadMapsSubtitlePolicyToDomainProfile(t *testing.T) {
+	path := writeConfig(t, `
+[profiles.default-av1.subtitles]
+languages_to_keep = ["orig", "deu"]
+fallback = "keep_first"
+keep_forced = true
+keep_sdh = true
+keep_commentary = true
+unknown_as_original = true
+
+[libraries.movies]
+path = "/srv/media/movies"
+`)
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+
+	_, _, profile, err := cfg.ResolveForLibrary("movies")
+	if err != nil {
+		t.Fatalf("ResolveForLibrary() error = %v", err)
+	}
+	if got, want := profile.Subtitles.LanguagesToKeep, []string{"orig", "deu"}; !sameStrings(got, want) {
+		t.Fatalf("Subtitles.LanguagesToKeep = %v, want %v", got, want)
+	}
+	if got, want := profile.Subtitles.Fallback, domain.StreamFallbackKeepFirst; got != want {
+		t.Fatalf("Subtitles.Fallback = %q, want %q", got, want)
+	}
+	if !profile.Subtitles.KeepForced {
+		t.Fatal("Subtitles.KeepForced = false, want true")
+	}
+	if !profile.Subtitles.KeepSDH {
+		t.Fatal("Subtitles.KeepSDH = false, want true")
+	}
+	if !profile.Subtitles.KeepCommentary {
+		t.Fatal("Subtitles.KeepCommentary = false, want true")
+	}
+	if !profile.Subtitles.UnknownAsOriginal {
+		t.Fatal("Subtitles.UnknownAsOriginal = false, want true")
+	}
+}
+
+func TestLoadRejectsOldSubtitlePolicyKeys(t *testing.T) {
+	path := writeConfig(t, `
+[profiles.default-av1.subtitles]
+mode = "preserve"
+preferred_languages = ["eng"]
+keep_external = true
+max_tracks = 2
+
+[libraries.movies]
+path = "/srv/media/movies"
+`)
+
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("Load() error = nil, want unknown subtitle keys")
+	}
+	for _, want := range []string{
+		"profiles.default-av1.subtitles.keep_external",
+		"profiles.default-av1.subtitles.max_tracks",
+		"profiles.default-av1.subtitles.mode",
+		"profiles.default-av1.subtitles.preferred_languages",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("Load() error = %q, want %s", err.Error(), want)
+		}
 	}
 }
 
