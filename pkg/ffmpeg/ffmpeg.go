@@ -44,8 +44,8 @@ func (e Encoder) Encode(ctx context.Context, plan domain.EncodePlan) (process.Re
 }
 
 // BuildPlanRequest contains the inputs used to construct an ffmpeg encode plan.
-// Search, Audio, and Probe are optional; nil means that pipeline stage has not
-// produced a result for this job.
+// Search, Audio, Subtitles, and Probe are optional; nil means that pipeline
+// stage has not produced a result for this job.
 type BuildPlanRequest struct {
 	Profile    domain.Profile
 	InputPath  string
@@ -53,6 +53,7 @@ type BuildPlanRequest struct {
 	Resources  domain.ResourceAllocation
 	Search     *domain.SearchResult
 	Audio      *domain.AudioSelection
+	Subtitles  *domain.SubtitleSelection
 	Metadata   domain.JobMetadata
 	Probe      *domain.ProbeResult
 }
@@ -107,7 +108,6 @@ func BuildPlanFromRequest(request BuildPlanRequest) (domain.EncodePlan, error) {
 		Threads:            request.Resources.Threads,
 		Container:          request.Profile.Container,
 		CropFilter:         request.Metadata.CropFilter,
-		SubtitleMode:       request.Profile.Subtitles.Mode,
 		MetadataMode:       request.Profile.Metadata.Mode,
 		TrackTitleMode:     trackTitleModeOrDefault(request.Profile.Metadata.TrackTitles),
 		AttachmentMode:     request.Profile.Attachments.Mode,
@@ -118,6 +118,7 @@ func BuildPlanFromRequest(request BuildPlanRequest) (domain.EncodePlan, error) {
 		HDR:                request.Metadata.HDR,
 	}
 	applyAudioSelection(&plan, request.Audio)
+	applySubtitleSelection(&plan, request.Subtitles)
 	plan.TrackTitles = standardizedTrackTitles(plan, request.Probe)
 	return plan, nil
 }
@@ -165,6 +166,13 @@ func applyAudioSelection(plan *domain.EncodePlan, audio *domain.AudioSelection) 
 	}
 }
 
+func applySubtitleSelection(plan *domain.EncodePlan, subtitles *domain.SubtitleSelection) {
+	if subtitles != nil {
+		plan.SubtitleSelectionApplied = true
+		plan.SubtitleStreamIndexes = append([]int(nil), subtitles.StreamIndexes...)
+	}
+}
+
 func Args(plan domain.EncodePlan) []string {
 	args := []string{
 		"-hide_banner",
@@ -181,7 +189,7 @@ func Args(plan domain.EncodePlan) []string {
 		args = append(args, plan.FFmpegArgs...)
 	}
 	args = append(args, audioArgs()...)
-	args = append(args, subtitleArgs(plan.SubtitleMode)...)
+	args = append(args, subtitleArgs()...)
 	if plan.MetadataMode == domain.MetadataModeStrip {
 		args = append(args, "-map_metadata", "-1")
 	}
@@ -228,6 +236,7 @@ func buildPlanRequest(job *pipeline.JobContext) BuildPlanRequest {
 		Resources:  job.Resources,
 		Search:     job.Search,
 		Audio:      job.Audio,
+		Subtitles:  job.Subtitles,
 		Metadata:   job.Metadata,
 		Probe:      job.Probe,
 	}
@@ -642,7 +651,13 @@ func mapArgs(plan domain.EncodePlan) []string {
 	} else {
 		args = append(args, "-map", "0:a?")
 	}
-	args = append(args, "-map", "0:s?")
+	if plan.SubtitleSelectionApplied {
+		for _, streamIndex := range plan.SubtitleStreamIndexes {
+			args = append(args, "-map", "0:"+strconv.Itoa(streamIndex))
+		}
+	} else {
+		args = append(args, "-map", "0:s?")
+	}
 	if plan.AttachmentMode != domain.MetadataModeStrip {
 		args = append(args, "-map", "0:t?")
 	}
@@ -698,13 +713,8 @@ func audioArgs() []string {
 	return []string{"-c:a", "copy"}
 }
 
-func subtitleArgs(mode domain.StreamPolicyMode) []string {
-	switch mode {
-	case domain.StreamPolicyCleanup:
-		return []string{"-c:s", "copy"}
-	default:
-		return []string{"-c:s", "copy"}
-	}
+func subtitleArgs() []string {
+	return []string{"-c:s", "copy"}
 }
 
 func trackTitleArgs(plan domain.EncodePlan) []string {
@@ -753,7 +763,7 @@ func standardizedTrackTitles(plan domain.EncodePlan, probe *domain.ProbeResult) 
 	for outputIndex, stream := range selectedAudioStreams(plan, probe.Streams) {
 		titles = appendTrackTitle(titles, "a", outputIndex, audioTrackTitle(stream))
 	}
-	for outputIndex, stream := range streamsOfType(probe.Streams, "subtitle") {
+	for outputIndex, stream := range selectedSubtitleStreams(plan, probe.Streams) {
 		titles = appendTrackTitle(titles, "s", outputIndex, subtitleTrackTitle(stream))
 	}
 	return titles
@@ -789,6 +799,25 @@ func selectedAudioStreams(plan domain.EncodePlan, streams []domain.MediaStream) 
 	}
 	selected := make([]domain.MediaStream, 0, len(plan.AudioStreamIndexes))
 	for _, index := range plan.AudioStreamIndexes {
+		if stream, ok := byIndex[index]; ok {
+			selected = append(selected, stream)
+		}
+	}
+	return selected
+}
+
+func selectedSubtitleStreams(plan domain.EncodePlan, streams []domain.MediaStream) []domain.MediaStream {
+	if !plan.SubtitleSelectionApplied {
+		return streamsOfType(streams, "subtitle")
+	}
+	byIndex := make(map[int]domain.MediaStream)
+	for _, stream := range streams {
+		if stream.Type == "subtitle" {
+			byIndex[stream.Index] = stream
+		}
+	}
+	selected := make([]domain.MediaStream, 0, len(plan.SubtitleStreamIndexes))
+	for _, index := range plan.SubtitleStreamIndexes {
 		if stream, ok := byIndex[index]; ok {
 			selected = append(selected, stream)
 		}

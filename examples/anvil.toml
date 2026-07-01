@@ -14,10 +14,10 @@ staging_cleanup_age = "0s"
 log_level = "info"
 
 [flows.av1-replace]
-steps = ["probe", "crop-detect", "audio-cleanup", "stage", "crf-search", "encode", "dovi-fix", "validate", "replace", "cleanup"]
+steps = ["probe", "crop-detect", "audio-cleanup", "subtitle-cleanup", "stage", "crf-search", "encode", "dovi-fix", "validate", "replace", "cleanup"]
 
 [flows.download-av1-handoff]
-steps = ["probe", "crop-detect", "audio-cleanup", "stage", "crf-search", "encode", "dovi-fix", "validate", "handoff", "cleanup"]
+steps = ["probe", "crop-detect", "audio-cleanup", "subtitle-cleanup", "stage", "crf-search", "encode", "dovi-fix", "validate", "handoff", "cleanup"]
 
 [profiles.default-av1]
 container = "mkv"
@@ -52,10 +52,12 @@ keep_commentary = false
 unknown_as_original = true
 
 [profiles.default-av1.subtitles]
-mode = "preserve"
+languages_to_keep = ["orig", "deu"]
 fallback = "keep_all"
 keep_forced = true
-keep_external = true
+keep_sdh = false
+keep_commentary = false
+unknown_as_original = true
 
 [profiles.default-av1.validation]
 duration_tolerance_seconds = 2
