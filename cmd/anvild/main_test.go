@@ -221,6 +221,19 @@ func TestWriteInspectReportShowsProcessOutputAndPayloads(t *testing.T) {
 			Path:         "Movie.mkv",
 			LastError:    "encode failed",
 		},
+		PipelineContext: &inspectPipelineContext{
+			Version: 1,
+			Steps: []inspectPipelineStep{
+				{Name: "crop-detect", AttemptID: 7, FinishedAt: now, Resumable: true},
+				{Name: "crf-search", AttemptID: 7, FinishedAt: now.Add(time.Second), Resumable: true},
+				{Name: "encode", AttemptID: 7, FinishedAt: now.Add(2 * time.Second)},
+			},
+			CropFilter:       "crop=1920:800:0:140",
+			SearchCRF:        24,
+			SearchVMAF:       96.25,
+			EncodeVideoCodec: "libsvtav1",
+			EncodeCRF:        24,
+		},
 		Attempts: []inspectAttempt{
 			{
 				ID:         7,
@@ -285,6 +298,11 @@ func TestWriteInspectReportShowsProcessOutputAndPayloads(t *testing.T) {
 	for _, want := range []string{
 		"Job 42",
 		"Last error: encode failed",
+		"Saved context:",
+		"Steps: crop-detect*, crf-search*, encode",
+		"Crop: crop=1920:800:0:140",
+		"Search: CRF 24 VMAF 96.25",
+		"Encode plan: codec=libsvtav1 crf=24",
 		"[10] 2026-06-27T12:00:00Z type=block_started name=probe message=\"\"",
 		"payload: {\"step_index\":0}",
 		"process output:",
