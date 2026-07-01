@@ -112,6 +112,13 @@ CREATE INDEX attempt_events_attempt_idx
 ON attempt_events(attempt_id, id);
 `,
 	},
+	{
+		version: 3,
+		sql: `
+ALTER TABLE jobs
+ADD COLUMN pipeline_context_json BLOB NOT NULL DEFAULT x'';
+`,
+	},
 }
 
 func (s *SQLiteStore) configure(ctx context.Context) error {
