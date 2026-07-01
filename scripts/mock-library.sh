@@ -163,10 +163,10 @@ staging_cleanup_age = "0s"
 log_level = "debug"
 
 [flows.mock-copy]
-steps = ["probe", "crop-detect", "audio-cleanup", "stage", "encode", "dovi-fix", "validate", "replace", "cleanup"]
+steps = ["probe", "crop-detect", "audio-cleanup", "subtitle-cleanup", "stage", "encode", "dovi-fix", "validate", "replace", "cleanup"]
 
 [flows.mock-handoff]
-steps = ["probe", "crop-detect", "audio-cleanup", "stage", "encode", "dovi-fix", "validate", "handoff", "cleanup"]
+steps = ["probe", "crop-detect", "audio-cleanup", "subtitle-cleanup", "stage", "encode", "dovi-fix", "validate", "handoff", "cleanup"]
 
 [profiles.mock-av1]
 container = "mkv"
@@ -186,10 +186,12 @@ keep_commentary = false
 unknown_as_original = true
 
 [profiles.mock-av1.subtitles]
-mode = "preserve"
+languages_to_keep = ["orig"]
 fallback = "keep_all"
 keep_forced = true
-keep_external = true
+keep_sdh = false
+keep_commentary = false
+unknown_as_original = true
 
 [profiles.mock-av1.metadata]
 mode = "preserve"

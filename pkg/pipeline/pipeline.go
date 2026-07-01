@@ -28,6 +28,7 @@ type JobContext struct {
 
 	Probe      *domain.ProbeResult
 	Audio      *domain.AudioSelection
+	Subtitles  *domain.SubtitleSelection
 	Crop       *domain.CropResult
 	Search     *domain.SearchResult
 	EncodePlan *domain.EncodePlan

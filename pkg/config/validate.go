@@ -109,14 +109,8 @@ func (c Config) Validate() error {
 		if !validStreamFallback(profile.Audio.Fallback) {
 			problems = append(problems, fmt.Sprintf("profile %q audio.fallback %q is invalid", name, profile.Audio.Fallback))
 		}
-		if !validStreamMode(profile.Subtitles.Mode) {
-			problems = append(problems, fmt.Sprintf("profile %q subtitles.mode %q is invalid", name, profile.Subtitles.Mode))
-		}
 		if !validStreamFallback(profile.Subtitles.Fallback) {
 			problems = append(problems, fmt.Sprintf("profile %q subtitles.fallback %q is invalid", name, profile.Subtitles.Fallback))
-		}
-		if profile.Subtitles.MaxTracks < 0 {
-			problems = append(problems, fmt.Sprintf("profile %q subtitles.max_tracks must be non-negative", name))
 		}
 		if profile.Validation.DurationToleranceSeconds < 0 {
 			problems = append(problems, fmt.Sprintf("profile %q validation.duration_tolerance_seconds must be non-negative", name))
@@ -296,10 +290,6 @@ func sortedKeys[V any](values map[string]V) []string {
 	}
 	sort.Strings(keys)
 	return keys
-}
-
-func validStreamMode(mode string) bool {
-	return mode == "preserve" || mode == "prefer" || mode == "cleanup"
 }
 
 func validDolbyVisionMode(mode string) bool {
