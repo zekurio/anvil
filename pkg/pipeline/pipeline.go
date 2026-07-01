@@ -80,11 +80,17 @@ type EventRecorder interface {
 	RecordAttemptEvent(context.Context, domain.AttemptEvent) (domain.AttemptEvent, error)
 }
 
+type StepPersistence interface {
+	ResumeStep(context.Context, string, *JobContext) (bool, error)
+	StepSucceeded(context.Context, string, *JobContext) error
+}
+
 type Runner struct {
-	Registry    Registry
-	Events      EventRecorder
-	StepContext func(context.Context, string) context.Context
-	Now         func() time.Time
+	Registry        Registry
+	Events          EventRecorder
+	StepPersistence StepPersistence
+	StepContext     func(context.Context, string) context.Context
+	Now             func() time.Time
 }
 
 func (r Runner) Run(ctx context.Context, job *JobContext) error {
@@ -96,10 +102,25 @@ func (r Runner) Run(ctx context.Context, job *JobContext) error {
 		if !ok {
 			return fmt.Errorf("pipeline block %q is not registered", step.Name)
 		}
-		if err := r.record(ctx, job.Attempt.ID, domain.AttemptEventBlockStarted, step.Name, "", map[string]any{"step_index": index}); err != nil {
+		resumed, err := r.resumeStep(ctx, step.Name, job)
+		if err != nil {
+			return err
+		}
+		startPayload := map[string]any{"step_index": index}
+		if resumed {
+			startPayload["resumed"] = true
+		}
+		if err := r.record(ctx, job.Attempt.ID, domain.AttemptEventBlockStarted, step.Name, "", startPayload); err != nil {
 			return err
 		}
 		started := time.Now()
+		if resumed {
+			slog.Info("pipeline step resumed", "job_id", int64(job.Job.ID), "attempt_id", int64(job.Attempt.ID), "step", step.Name, "step_index", index)
+			if err := r.record(ctx, job.Attempt.ID, domain.AttemptEventBlockFinished, step.Name, "", map[string]any{"step_index": index, "resumed": true}); err != nil {
+				return err
+			}
+			continue
+		}
 		slog.Info("pipeline step started", "job_id", int64(job.Job.ID), "attempt_id", int64(job.Attempt.ID), "step", step.Name, "step_index", index)
 		stepCtx := ctx
 		if r.StepContext != nil {
@@ -111,9 +132,33 @@ func (r Runner) Run(ctx context.Context, job *JobContext) error {
 			return fmt.Errorf("run block %q: %w", step.Name, err)
 		}
 		slog.Info("pipeline step finished", "job_id", int64(job.Job.ID), "attempt_id", int64(job.Attempt.ID), "step", step.Name, "step_index", index, "duration", time.Since(started))
+		if err := r.stepSucceeded(ctx, step.Name, job); err != nil {
+			return err
+		}
 		if err := r.record(ctx, job.Attempt.ID, domain.AttemptEventBlockFinished, step.Name, "", map[string]any{"step_index": index}); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+func (r Runner) resumeStep(ctx context.Context, step string, job *JobContext) (bool, error) {
+	if r.StepPersistence == nil {
+		return false, nil
+	}
+	resumed, err := r.StepPersistence.ResumeStep(ctx, step, job)
+	if err != nil {
+		return false, fmt.Errorf("resume pipeline step %q: %w", step, err)
+	}
+	return resumed, nil
+}
+
+func (r Runner) stepSucceeded(ctx context.Context, step string, job *JobContext) error {
+	if r.StepPersistence == nil {
+		return nil
+	}
+	if err := r.StepPersistence.StepSucceeded(ctx, step, job); err != nil {
+		return fmt.Errorf("persist pipeline step %q: %w", step, err)
 	}
 	return nil
 }

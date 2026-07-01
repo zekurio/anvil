@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"os"
 	"path/filepath"
@@ -654,6 +655,81 @@ func TestRecordAttemptEvent(t *testing.T) {
 	}
 	if events[0].Name != "probe" {
 		t.Fatalf("event name = %q, want probe", events[0].Name)
+	}
+}
+
+func TestJobPipelineContextRoundTrips(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	now := testNow()
+
+	source := upsertTestSource(t, ctx, store, "movies", "Movie.mkv")
+	job, _, err := store.EnqueueJob(ctx, EnqueueJobInput{
+		SourceID:    source.ID,
+		LibraryName: source.LibraryName,
+		Now:         now,
+	})
+	if err != nil {
+		t.Fatalf("EnqueueJob() error = %v", err)
+	}
+
+	snapshot := domain.JobPipelineContext{
+		Version:           domain.JobPipelineContextVersion,
+		InputPath:         "/media/Movie.mkv",
+		SourceFingerprint: source.Fingerprint,
+		Steps: map[string]domain.JobPipelineStep{
+			"crop-detect": {
+				AttemptID:  1,
+				FinishedAt: now,
+				Resumable:  true,
+			},
+		},
+		Crop:   &domain.CropResult{Filter: "crop=1920:800:0:140"},
+		Search: &domain.SearchResult{CRF: 24, VMAF: 96.5},
+	}
+	if err := store.SaveJobPipelineContext(ctx, job.ID, snapshot, now.Add(time.Second)); err != nil {
+		t.Fatalf("SaveJobPipelineContext() error = %v", err)
+	}
+
+	got, ok, err := store.GetJobPipelineContext(ctx, job.ID)
+	if err != nil {
+		t.Fatalf("GetJobPipelineContext() error = %v", err)
+	}
+	if !ok {
+		t.Fatal("GetJobPipelineContext() ok = false, want true")
+	}
+	if got.Crop == nil || got.Crop.Filter != "crop=1920:800:0:140" {
+		t.Fatalf("crop = %#v, want persisted crop", got.Crop)
+	}
+	if got.Search == nil || got.Search.CRF != 24 {
+		t.Fatalf("search = %#v, want persisted search", got.Search)
+	}
+	if !got.Steps["crop-detect"].Resumable {
+		t.Fatalf("steps = %+v, want resumable crop-detect", got.Steps)
+	}
+}
+
+func TestGetJobPipelineContextTreatsOldSchemaAsEmpty(t *testing.T) {
+	ctx := context.Background()
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("sql.Open() error = %v", err)
+	}
+	store := &SQLiteStore{db: db}
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Fatalf("Close() error = %v", err)
+		}
+	})
+	if _, err := store.db.ExecContext(ctx, `CREATE TABLE jobs (id INTEGER PRIMARY KEY)`); err != nil {
+		t.Fatalf("create old jobs table: %v", err)
+	}
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO jobs (id) VALUES (1)`); err != nil {
+		t.Fatalf("insert old jobs row: %v", err)
+	}
+
+	if _, ok, err := store.GetJobPipelineContext(ctx, 1); err != nil || ok {
+		t.Fatalf("GetJobPipelineContext() ok=%t err=%v, want false nil", ok, err)
 	}
 }
 
