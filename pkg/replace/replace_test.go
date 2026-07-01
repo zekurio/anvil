@@ -4,6 +4,8 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
+	"syscall"
 	"testing"
 
 	"github.com/zekurio/anvil/pkg/domain"
@@ -60,6 +62,53 @@ func TestHandoffMoveCleansOnlyProcessedEpisodeFolder(t *testing.T) {
 	}
 	if _, err := os.Stat(other); err != nil {
 		t.Fatalf("other episode was removed: %v", err)
+	}
+}
+
+func TestHandoffPublishesImportFriendlyModes(t *testing.T) {
+	oldUmask := syscall.Umask(0o077)
+	t.Cleanup(func() {
+		syscall.Umask(oldUmask)
+	})
+
+	root := t.TempDir()
+	imports := filepath.Join(t.TempDir(), "imports")
+	input := filepath.Join(root, "SomeShowS01", "SomeShowS01E01", "episode_1.mkv")
+	candidate := filepath.Join(t.TempDir(), "output.mkv")
+	writeFile(t, input, "source")
+	writeFile(t, candidate, "encoded")
+
+	job := &pipeline.JobContext{
+		Source: domain.MediaSource{
+			Kind:         domain.SourceKindPackage,
+			RelativePath: "SomeShowS01",
+		},
+		Asset: domain.MediaAsset{
+			RelativePath: "SomeShowS01E01/episode_1.mkv",
+		},
+		Library: domain.Library{
+			Kind: domain.LibraryKindDownload,
+			Path: root,
+			Download: domain.DownloadLibraryPolicy{
+				HandoffPath:          imports,
+				HandoffMode:          domain.HandoffModeMove,
+				PreserveRelativePath: true,
+			},
+		},
+		InputPath:  input,
+		OutputPath: candidate,
+	}
+
+	finalPath, err := (Manager{}).Handoff(context.Background(), job)
+	if err != nil {
+		t.Fatalf("Handoff() error = %v", err)
+	}
+	assertHandoffDirMode(t, imports)
+	assertHandoffDirMode(t, filepath.Join(imports, "SomeShowS01"))
+	assertHandoffDirMode(t, filepath.Join(imports, "SomeShowS01", "SomeShowS01E01"))
+	assertMode(t, finalPath, 0o664)
+	if got := readFile(t, finalPath); got != "encoded" {
+		t.Fatalf("final content = %q, want encoded", got)
 	}
 }
 
@@ -312,4 +361,25 @@ func readFile(t *testing.T, path string) string {
 		t.Fatalf("read %q: %v", path, err)
 	}
 	return string(data)
+}
+
+func assertMode(t *testing.T, path string, want os.FileMode) {
+	t.Helper()
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat %q: %v", path, err)
+	}
+	got := info.Mode() & (os.ModeSetgid | os.ModePerm)
+	if got != want {
+		t.Fatalf("mode %q = %v, want %v", path, got, want)
+	}
+}
+
+func assertHandoffDirMode(t *testing.T, path string) {
+	t.Helper()
+	want := os.FileMode(0o775)
+	if runtime.GOOS == "linux" {
+		want |= os.ModeSetgid
+	}
+	assertMode(t, path, want)
 }
