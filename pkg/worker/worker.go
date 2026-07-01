@@ -36,6 +36,8 @@ type Store interface {
 	RecordJobFileSizes(ctx context.Context, jobID domain.JobID, inputSizeBytes int64, outputSizeBytes int64, now time.Time) (domain.Job, error)
 	HeartbeatJob(ctx context.Context, jobID domain.JobID, workerID string, leaseDeadline time.Time, now time.Time) (domain.Job, error)
 	RecordAttemptEvent(ctx context.Context, event domain.AttemptEvent) (domain.AttemptEvent, error)
+	GetJobPipelineContext(ctx context.Context, jobID domain.JobID) (domain.JobPipelineContext, bool, error)
+	SaveJobPipelineContext(ctx context.Context, jobID domain.JobID, snapshot domain.JobPipelineContext, now time.Time) error
 }
 
 type ConfigProvider func() config.Config
@@ -98,6 +100,7 @@ func (r Runner) Run(ctx context.Context, assignment scheduler.Assignment) error 
 		metadata.StreamCleanupDisabledReason = err.Error()
 	}
 	disableUnsafeStreamCleanup(profile, &metadata)
+	initialMetadata := metadata
 
 	jobContext := &pipeline.JobContext{
 		Job:       assignment.Job,
@@ -111,11 +114,15 @@ func (r Runner) Run(ctx context.Context, assignment scheduler.Assignment) error 
 		Metadata:  metadata,
 		InputPath: inputPath,
 	}
+	pipelineRunner := r.Pipeline
+	contextPersistence := newPipelineContextPersistence(ctx, r.Store, jobContext, resolvedLibrary, resolvedFlow, resolvedProfile, initialMetadata, probeMetadataRefresh(pipelineRunner), r.now)
 	slog.Info("worker pipeline started", "worker", assignment.WorkerID, "job_id", int64(assignment.Job.ID), "attempt_id", int64(attempt.ID), "library", string(library.Name), "flow", string(flow.Name), "profile", string(profile.Name), "input", inputPath)
 
-	pipelineRunner := r.Pipeline
 	if pipelineRunner.Events == nil {
 		pipelineRunner.Events = r.Store
+	}
+	if pipelineRunner.StepPersistence == nil {
+		pipelineRunner.StepPersistence = contextPersistence
 	}
 	stepContext := pipelineRunner.StepContext
 	pipelineRunner.StepContext = func(ctx context.Context, step string) context.Context {
@@ -146,6 +153,20 @@ func (r Runner) Run(ctx context.Context, assignment scheduler.Assignment) error 
 	}
 	slog.Info("worker job completed", "worker", assignment.WorkerID, "job_id", int64(assignment.Job.ID), "attempt_id", int64(attempt.ID), "library", string(library.Name), "final_path", jobContext.FinalPath)
 	return nil
+}
+
+type probeMetadataRefresher interface {
+	RefreshDolbyVision(context.Context, *pipeline.JobContext) error
+}
+
+func probeMetadataRefresh(runner pipeline.Runner) resumeProbeMetadataRefresher {
+	block, ok := runner.Registry.Block("probe")
+	if ok {
+		if refresher, ok := block.(probeMetadataRefresher); ok {
+			return refresher.RefreshDolbyVision
+		}
+	}
+	return probe.Block{}.RefreshDolbyVision
 }
 
 func DefaultPipeline(tempDir string) pipeline.Runner {

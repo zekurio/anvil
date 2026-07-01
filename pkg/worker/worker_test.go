@@ -12,6 +12,7 @@ import (
 	"github.com/zekurio/anvil/pkg/config"
 	"github.com/zekurio/anvil/pkg/domain"
 	"github.com/zekurio/anvil/pkg/pipeline"
+	"github.com/zekurio/anvil/pkg/probe"
 	"github.com/zekurio/anvil/pkg/process"
 	"github.com/zekurio/anvil/pkg/scheduler"
 	"github.com/zekurio/anvil/pkg/staging"
@@ -260,6 +261,233 @@ func TestRunnerDoesNotFailJobWhenMetadataResolutionFails(t *testing.T) {
 	}
 }
 
+func TestRunnerResumesPersistedPipelineContext(t *testing.T) {
+	ctx := context.Background()
+	cfg := workerConfig()
+	cfg.Flows["test-flow"] = config.FlowConfig{Steps: []string{"probe", "crop-detect", "crf-search", "encode"}}
+
+	store := newFakeWorkerStore()
+	store.source = domain.MediaSource{
+		ID:           1,
+		LibraryName:  "movies",
+		Kind:         domain.SourceKindFile,
+		RelativePath: "Movie.mkv",
+		Fingerprint:  domain.FileFingerprint{SizeBytes: 1000, ModTime: testTime()},
+	}
+	store.asset = domain.MediaAsset{
+		ID:           2,
+		SourceID:     1,
+		RelativePath: "Movie.mkv",
+		Fingerprint:  domain.FileFingerprint{SizeBytes: 1000, ModTime: testTime()},
+	}
+
+	first := Runner{
+		Store:          store,
+		ConfigProvider: func() config.Config { return cfg },
+		MaxAttempts:    2,
+		Pipeline: pipeline.Runner{
+			Registry: pipeline.NewRegistry(
+				pipeline.BlockFunc{BlockName: "probe", Fn: func(_ context.Context, job *pipeline.JobContext) error {
+					job.Probe = &domain.ProbeResult{Path: job.InputPath, Streams: []domain.MediaStream{{Type: "video", Codec: "h264", Width: 1920, Height: 1080}}}
+					return nil
+				}},
+				pipeline.BlockFunc{BlockName: "crop-detect", Fn: func(_ context.Context, job *pipeline.JobContext) error {
+					job.Crop = &domain.CropResult{Filter: "crop=1920:800:0:140"}
+					job.Metadata.CropFilter = job.Crop.Filter
+					return nil
+				}},
+				pipeline.BlockFunc{BlockName: "crf-search", Fn: func(_ context.Context, job *pipeline.JobContext) error {
+					job.Search = &domain.SearchResult{CRF: 24, VMAF: 96.2}
+					return nil
+				}},
+				pipeline.BlockFunc{BlockName: "encode", Fn: func(context.Context, *pipeline.JobContext) error {
+					return errors.New("interrupted")
+				}},
+			),
+		},
+		Now: testTime,
+	}
+
+	err := first.Run(ctx, scheduler.Assignment{
+		Job:       domain.Job{ID: 99, SourceID: 1, AssetID: 2, LibraryName: "movies", State: domain.JobStateLeased},
+		WorkerID:  "worker-1",
+		Resources: domain.ResourceAllocation{WorkerID: "worker-1", Threads: 4},
+	})
+	if err == nil {
+		t.Fatal("first Run() error = nil, want interrupted failure")
+	}
+	if !store.hasPipelineContext {
+		t.Fatal("pipeline context was not persisted")
+	}
+	if _, ok := store.pipelineContext.Steps["crf-search"]; !ok {
+		t.Fatalf("persisted steps = %+v, want crf-search", store.pipelineContext.Steps)
+	}
+
+	store.attempt = domain.Attempt{ID: 2, JobID: 99, Number: 2, WorkerID: "worker-2", State: domain.AttemptStateRunning}
+	var encoded bool
+	second := Runner{
+		Store:          store,
+		ConfigProvider: func() config.Config { return cfg },
+		MaxAttempts:    2,
+		Pipeline: pipeline.Runner{
+			Registry: pipeline.NewRegistry(
+				pipeline.BlockFunc{BlockName: "probe", Fn: func(context.Context, *pipeline.JobContext) error {
+					t.Fatal("probe block ran; want persisted context resume")
+					return nil
+				}},
+				pipeline.BlockFunc{BlockName: "crop-detect", Fn: func(context.Context, *pipeline.JobContext) error {
+					t.Fatal("crop-detect block ran; want persisted context resume")
+					return nil
+				}},
+				pipeline.BlockFunc{BlockName: "crf-search", Fn: func(context.Context, *pipeline.JobContext) error {
+					t.Fatal("crf-search block ran; want persisted context resume")
+					return nil
+				}},
+				pipeline.BlockFunc{BlockName: "encode", Fn: func(_ context.Context, job *pipeline.JobContext) error {
+					encoded = true
+					if job.Probe == nil || job.Probe.Streams[0].Width != 1920 {
+						t.Fatalf("resumed probe = %#v, want persisted probe", job.Probe)
+					}
+					if got, want := job.Metadata.CropFilter, "crop=1920:800:0:140"; got != want {
+						t.Fatalf("resumed crop filter = %q, want %q", got, want)
+					}
+					if job.Search == nil || job.Search.CRF != 24 {
+						t.Fatalf("resumed search = %#v, want CRF 24", job.Search)
+					}
+					return nil
+				}},
+			),
+		},
+		Now: testTime,
+	}
+
+	if err := second.Run(ctx, scheduler.Assignment{
+		Job:       domain.Job{ID: 99, SourceID: 1, AssetID: 2, LibraryName: "movies", State: domain.JobStateLeased},
+		WorkerID:  "worker-2",
+		Resources: domain.ResourceAllocation{WorkerID: "worker-2", Threads: 4},
+	}); err != nil {
+		t.Fatalf("second Run() error = %v", err)
+	}
+	if !encoded {
+		t.Fatal("encode block did not run")
+	}
+}
+
+func TestRunnerRebuildsPipelineContextWhenDolbyVisionToolAvailabilityChanges(t *testing.T) {
+	ctx := context.Background()
+	cfg := workerConfig()
+	cfg.Flows["test-flow"] = config.FlowConfig{Steps: []string{"probe", "crf-search", "encode"}}
+	profile := cfg.Profiles[config.DefaultProfileName]
+	profile.Video.DolbyVision.Codec = "hevc"
+	cfg.Profiles[config.DefaultProfileName] = profile
+
+	store := newFakeWorkerStore()
+	store.source = domain.MediaSource{
+		ID:           1,
+		LibraryName:  "movies",
+		Kind:         domain.SourceKindFile,
+		RelativePath: "Movie.mkv",
+		Fingerprint:  domain.FileFingerprint{SizeBytes: 1000, ModTime: testTime()},
+	}
+	store.asset = domain.MediaAsset{
+		ID:           2,
+		SourceID:     1,
+		RelativePath: "Movie.mkv",
+		Fingerprint:  domain.FileFingerprint{SizeBytes: 1000, ModTime: testTime()},
+	}
+
+	var doviToolAvailable bool
+	var probeCalls int
+	var searchCodecs []string
+	interruptEncode := true
+	runner := Runner{
+		Store:          store,
+		ConfigProvider: func() config.Config { return cfg },
+		MaxAttempts:    2,
+		Pipeline: pipeline.Runner{
+			Registry: pipeline.NewRegistry(
+				probe.Block{
+					Prober: countingProber{
+						result: domain.ProbeResult{
+							Streams: []domain.MediaStream{{
+								Type:        "video",
+								Codec:       "hevc",
+								DolbyVision: &domain.DolbyVisionMetadata{Profile: 8, RPUPresent: true, BLPresent: true},
+							}},
+						},
+						calls: &probeCalls,
+					},
+					DolbyVisionTool: mutableDolbyVisionTool{available: &doviToolAvailable},
+				},
+				pipeline.BlockFunc{BlockName: "crf-search", Fn: func(_ context.Context, job *pipeline.JobContext) error {
+					video := domain.EffectiveVideoProfile(job.Profile, job.Metadata)
+					searchCodecs = append(searchCodecs, video.Codec)
+					job.Search = &domain.SearchResult{CRF: 24}
+					return nil
+				}},
+				pipeline.BlockFunc{BlockName: "encode", Fn: func(_ context.Context, job *pipeline.JobContext) error {
+					if interruptEncode {
+						return errors.New("interrupted")
+					}
+					if !job.Metadata.HDR.DolbyVisionEncoderSelected {
+						t.Fatal("DolbyVisionEncoderSelected = false, want true after dovi_tool became available")
+					}
+					return nil
+				}},
+			),
+		},
+		Now: testTime,
+	}
+
+	err := runner.Run(ctx, scheduler.Assignment{
+		Job:       domain.Job{ID: 99, SourceID: 1, AssetID: 2, LibraryName: "movies", State: domain.JobStateLeased},
+		WorkerID:  "worker-1",
+		Resources: domain.ResourceAllocation{WorkerID: "worker-1", Threads: 4},
+	})
+	if err == nil {
+		t.Fatal("first Run() error = nil, want interrupted failure")
+	}
+	if !store.hasPipelineContext {
+		t.Fatal("pipeline context was not persisted")
+	}
+
+	doviToolAvailable = true
+	interruptEncode = false
+	store.attempt = domain.Attempt{ID: 2, JobID: 99, Number: 2, WorkerID: "worker-2", State: domain.AttemptStateRunning}
+	if err := runner.Run(ctx, scheduler.Assignment{
+		Job:       domain.Job{ID: 99, SourceID: 1, AssetID: 2, LibraryName: "movies", State: domain.JobStateLeased},
+		WorkerID:  "worker-2",
+		Resources: domain.ResourceAllocation{WorkerID: "worker-2", Threads: 4},
+	}); err != nil {
+		t.Fatalf("second Run() error = %v", err)
+	}
+	if probeCalls != 2 {
+		t.Fatalf("probe calls = %d, want 2 after Dolby Vision tool availability changed", probeCalls)
+	}
+	if len(searchCodecs) != 2 || searchCodecs[0] != "av1" || searchCodecs[1] != "hevc" {
+		t.Fatalf("search effective codecs = %v, want [av1 hevc]", searchCodecs)
+	}
+}
+
+func TestPipelineContextMatchesRequiresCurrentFingerprint(t *testing.T) {
+	now := testTime()
+	base := domain.JobPipelineContext{
+		Version:           domain.JobPipelineContextVersion,
+		InputPath:         "/media/Movie.mkv",
+		SourceFingerprint: domain.FileFingerprint{SizeBytes: 100, ModTime: now},
+		InitialMetadata:   domain.JobMetadata{OriginalLanguage: "eng"},
+	}
+	cached := base
+	if !pipelineContextMatches(base, cached) {
+		t.Fatal("pipelineContextMatches() = false, want true for identical context")
+	}
+
+	cached.SourceFingerprint.SizeBytes = 200
+	if pipelineContextMatches(base, cached) {
+		t.Fatal("pipelineContextMatches() = true, want false after source fingerprint change")
+	}
+}
+
 func workerConfig() config.Config {
 	cfg := config.Default()
 	cfg.Daemon.LeaseDuration = "1m"
@@ -272,6 +500,10 @@ func workerConfig() config.Config {
 		Profile: config.DefaultProfileName,
 	}}
 	return cfg
+}
+
+func testTime() time.Time {
+	return time.Date(2026, 6, 27, 12, 0, 0, 0, time.UTC)
 }
 
 type staticMetadataResolver struct {
@@ -288,6 +520,8 @@ type fakeWorkerStore struct {
 	asset              domain.MediaAsset
 	attempt            domain.Attempt
 	resolvedLibrary    []byte
+	pipelineContext    domain.JobPipelineContext
+	hasPipelineContext bool
 	recordedInputSize  int64
 	recordedOutputSize int64
 	transitions        []domain.JobState
@@ -347,6 +581,16 @@ func (f *fakeWorkerStore) RecordAttemptEvent(_ context.Context, event domain.Att
 	return event, nil
 }
 
+func (f *fakeWorkerStore) GetJobPipelineContext(_ context.Context, _ domain.JobID) (domain.JobPipelineContext, bool, error) {
+	return f.pipelineContext, f.hasPipelineContext, nil
+}
+
+func (f *fakeWorkerStore) SaveJobPipelineContext(_ context.Context, _ domain.JobID, snapshot domain.JobPipelineContext, _ time.Time) error {
+	f.pipelineContext = snapshot
+	f.hasPipelineContext = true
+	return nil
+}
+
 func hasAttemptEvent(events []domain.AttemptEvent, name string) bool {
 	for _, event := range events {
 		if event.Name == name {
@@ -354,4 +598,29 @@ func hasAttemptEvent(events []domain.AttemptEvent, name string) bool {
 		}
 	}
 	return false
+}
+
+type countingProber struct {
+	result domain.ProbeResult
+	calls  *int
+}
+
+func (p countingProber) Probe(_ context.Context, path string) (domain.ProbeResult, error) {
+	if p.calls != nil {
+		*p.calls = *p.calls + 1
+	}
+	result := p.result
+	result.Path = path
+	return result, nil
+}
+
+type mutableDolbyVisionTool struct {
+	available *bool
+}
+
+func (m mutableDolbyVisionTool) Available(context.Context) (bool, string, error) {
+	if m.available == nil {
+		return false, "", nil
+	}
+	return *m.available, "", nil
 }
