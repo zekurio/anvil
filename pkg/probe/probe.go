@@ -70,7 +70,7 @@ func (b Block) Run(ctx context.Context, job *pipeline.JobContext) error {
 	}
 	job.Probe = &result
 	job.Metadata.HDR = hdrMetadata(result)
-	if err := b.configureDolbyVision(ctx, job); err != nil {
+	if err := b.RefreshDolbyVision(ctx, job); err != nil {
 		return err
 	}
 	video := domain.EffectiveVideoProfile(job.Profile, job.Metadata)
@@ -83,6 +83,16 @@ func (b Block) Run(ctx context.Context, job *pipeline.JobContext) error {
 		}
 	}
 	return nil
+}
+
+func (b Block) RefreshDolbyVision(ctx context.Context, job *pipeline.JobContext) error {
+	if job == nil {
+		return nil
+	}
+	job.Metadata.HDR.DolbyVisionToolAvailable = false
+	job.Metadata.HDR.DolbyVisionEncoderSelected = false
+	job.Metadata.HDR.DolbyVisionReason = ""
+	return b.configureDolbyVision(ctx, job)
 }
 
 type ffprobeJSON struct {

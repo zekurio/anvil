@@ -8,7 +8,9 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sort"
 	"strconv"
+	"strings"
 	"time"
 	"unicode/utf8"
 
@@ -20,8 +22,9 @@ import (
 const processOutputArtifactName = "process-output"
 
 type inspectReport struct {
-	Job      inspectJob       `json:"job"`
-	Attempts []inspectAttempt `json:"attempts"`
+	Job             inspectJob              `json:"job"`
+	PipelineContext *inspectPipelineContext `json:"pipeline_context,omitempty"`
+	Attempts        []inspectAttempt        `json:"attempts"`
 }
 
 type inspectJob struct {
@@ -83,6 +86,26 @@ type inspectProcessOutput struct {
 	Error          string   `json:"error"`
 }
 
+type inspectPipelineContext struct {
+	Version          int                   `json:"version"`
+	Steps            []inspectPipelineStep `json:"steps"`
+	CropFilter       string                `json:"crop_filter,omitempty"`
+	SearchCRF        int                   `json:"search_crf,omitempty"`
+	SearchVMAF       float64               `json:"search_vmaf,omitempty"`
+	SearchSkipReason string                `json:"search_skip_reason,omitempty"`
+	EncodeVideoCodec string                `json:"encode_video_codec,omitempty"`
+	EncodeCRF        int                   `json:"encode_crf,omitempty"`
+	ValidationOK     *bool                 `json:"validation_ok,omitempty"`
+	ValidationErrors []string              `json:"validation_errors,omitempty"`
+}
+
+type inspectPipelineStep struct {
+	Name       string    `json:"name"`
+	AttemptID  int64     `json:"attempt_id"`
+	FinishedAt time.Time `json:"finished_at"`
+	Resumable  bool      `json:"resumable"`
+}
+
 func runInspectCommand(ctx context.Context, cfg config.Config, opts options) error {
 	if len(opts.jobIDs) != 1 {
 		return fmt.Errorf("inspect requires exactly one job ID")
@@ -112,10 +135,18 @@ func buildInspectReport(ctx context.Context, state *store.SQLiteStore, jobID dom
 	if err != nil {
 		return inspectReport{}, err
 	}
+	snapshot, hasSnapshot, err := state.GetJobPipelineContext(ctx, jobID)
+	if err != nil {
+		return inspectReport{}, err
+	}
 
 	report := inspectReport{
 		Job:      inspectJobFromSummary(summary),
 		Attempts: make([]inspectAttempt, 0, len(attempts)),
+	}
+	if hasSnapshot {
+		contextSummary := inspectPipelineContextFromDomain(snapshot)
+		report.PipelineContext = &contextSummary
 	}
 	for _, attempt := range attempts {
 		events, err := state.ListAttemptEvents(ctx, attempt.ID)
@@ -224,6 +255,50 @@ func decodeInspectPayload(payload []byte) *inspectPayload {
 	return result
 }
 
+func inspectPipelineContextFromDomain(snapshot domain.JobPipelineContext) inspectPipelineContext {
+	result := inspectPipelineContext{
+		Version: snapshot.Version,
+		Steps:   inspectPipelineSteps(snapshot.Steps),
+	}
+	if snapshot.Crop != nil {
+		result.CropFilter = snapshot.Crop.Filter
+	}
+	if snapshot.Search != nil {
+		result.SearchCRF = snapshot.Search.CRF
+		result.SearchVMAF = snapshot.Search.VMAF
+		result.SearchSkipReason = snapshot.Search.VideoEncodeSkipReason
+	}
+	if snapshot.EncodePlan != nil {
+		result.EncodeVideoCodec = snapshot.EncodePlan.VideoCodec
+		result.EncodeCRF = snapshot.EncodePlan.CRF
+	}
+	if snapshot.Validation != nil {
+		ok := snapshot.Validation.OK
+		result.ValidationOK = &ok
+		result.ValidationErrors = append([]string(nil), snapshot.Validation.Errors...)
+	}
+	return result
+}
+
+func inspectPipelineSteps(steps map[string]domain.JobPipelineStep) []inspectPipelineStep {
+	names := make([]string, 0, len(steps))
+	for name := range steps {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	result := make([]inspectPipelineStep, 0, len(names))
+	for _, name := range names {
+		step := steps[name]
+		result = append(result, inspectPipelineStep{
+			Name:       name,
+			AttemptID:  int64(step.AttemptID),
+			FinishedAt: step.FinishedAt,
+			Resumable:  step.Resumable,
+		})
+	}
+	return result
+}
+
 func writeInspectReport(out io.Writer, report inspectReport) error {
 	return writeOutput(out, func(w *outputWriter) {
 		job := report.Job
@@ -236,6 +311,10 @@ func writeInspectReport(out io.Writer, report inspectReport) error {
 		w.printf("  Asset path: %s\n", displayOrNone(job.AssetPath))
 		w.printf("  Path: %s\n", displayOrNone(job.Path))
 		w.printf("  Last error: %s\n", displayOrNone(job.LastError))
+
+		if report.PipelineContext != nil {
+			writePipelineContext(w, *report.PipelineContext)
+		}
 
 		if len(report.Attempts) == 0 {
 			w.printf("\nAttempts: none\n")
@@ -277,6 +356,51 @@ func writeInspectReport(out io.Writer, report inspectReport) error {
 			}
 		}
 	})
+}
+
+func writePipelineContext(w *outputWriter, context inspectPipelineContext) {
+	w.printf("\nSaved context:\n")
+	w.printf("  Version: %d\n", context.Version)
+	w.printf("  Steps: %s\n", formatPipelineSteps(context.Steps))
+	if context.CropFilter != "" {
+		w.printf("  Crop: %s\n", context.CropFilter)
+	}
+	if context.SearchCRF > 0 || context.SearchSkipReason != "" {
+		if context.SearchSkipReason != "" {
+			w.printf("  Search: skipped video encode (%s)\n", context.SearchSkipReason)
+		} else {
+			w.printf("  Search: CRF %d", context.SearchCRF)
+			if context.SearchVMAF > 0 {
+				w.printf(" VMAF %.2f", context.SearchVMAF)
+			}
+			w.printf("\n")
+		}
+	}
+	if context.EncodeVideoCodec != "" {
+		w.printf("  Encode plan: codec=%s crf=%d\n", context.EncodeVideoCodec, context.EncodeCRF)
+	}
+	if context.ValidationOK != nil {
+		w.printf("  Validation: %t", *context.ValidationOK)
+		if len(context.ValidationErrors) > 0 {
+			w.printf(" (%s)", strings.Join(context.ValidationErrors, "; "))
+		}
+		w.printf("\n")
+	}
+}
+
+func formatPipelineSteps(steps []inspectPipelineStep) string {
+	if len(steps) == 0 {
+		return "<none>"
+	}
+	values := make([]string, 0, len(steps))
+	for _, step := range steps {
+		value := step.Name
+		if step.Resumable {
+			value += "*"
+		}
+		values = append(values, value)
+	}
+	return strings.Join(values, ", ")
 }
 
 func writeProcessOutput(w *outputWriter, indent string, output inspectProcessOutput) {

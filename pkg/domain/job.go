@@ -35,6 +35,33 @@ type Job struct {
 	CompletedAt     *time.Time
 }
 
+const JobPipelineContextVersion = 1
+
+type JobPipelineContext struct {
+	Version             int                        `json:"version"`
+	InputPath           string                     `json:"input_path"`
+	SourceFingerprint   FileFingerprint            `json:"source_fingerprint"`
+	AssetFingerprint    FileFingerprint            `json:"asset_fingerprint"`
+	InitialMetadata     JobMetadata                `json:"initial_metadata"`
+	ResolvedLibraryJSON string                     `json:"resolved_library_json"`
+	ResolvedFlowJSON    string                     `json:"resolved_flow_json"`
+	ResolvedProfileJSON string                     `json:"resolved_profile_json"`
+	Steps               map[string]JobPipelineStep `json:"steps,omitempty"`
+	Metadata            JobMetadata                `json:"metadata"`
+	Probe               *ProbeResult               `json:"probe,omitempty"`
+	Audio               *AudioSelection            `json:"audio,omitempty"`
+	Crop                *CropResult                `json:"crop,omitempty"`
+	Search              *SearchResult              `json:"search,omitempty"`
+	EncodePlan          *EncodePlan                `json:"encode_plan,omitempty"`
+	Validation          *ValidationResult          `json:"validation,omitempty"`
+}
+
+type JobPipelineStep struct {
+	AttemptID  AttemptID `json:"attempt_id"`
+	FinishedAt time.Time `json:"finished_at"`
+	Resumable  bool      `json:"resumable"`
+}
+
 func (s JobState) Terminal() bool {
 	switch s {
 	case JobStateComplete, JobStateFailed, JobStateSkipped:
