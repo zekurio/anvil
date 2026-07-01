@@ -114,10 +114,10 @@ func (r Runner) Run(ctx context.Context, assignment scheduler.Assignment) error 
 		Metadata:  metadata,
 		InputPath: inputPath,
 	}
-	contextPersistence := newPipelineContextPersistence(ctx, r.Store, jobContext, resolvedLibrary, resolvedFlow, resolvedProfile, initialMetadata, r.now)
+	pipelineRunner := r.Pipeline
+	contextPersistence := newPipelineContextPersistence(ctx, r.Store, jobContext, resolvedLibrary, resolvedFlow, resolvedProfile, initialMetadata, probeMetadataRefresh(pipelineRunner), r.now)
 	slog.Info("worker pipeline started", "worker", assignment.WorkerID, "job_id", int64(assignment.Job.ID), "attempt_id", int64(attempt.ID), "library", string(library.Name), "flow", string(flow.Name), "profile", string(profile.Name), "input", inputPath)
 
-	pipelineRunner := r.Pipeline
 	if pipelineRunner.Events == nil {
 		pipelineRunner.Events = r.Store
 	}
@@ -153,6 +153,20 @@ func (r Runner) Run(ctx context.Context, assignment scheduler.Assignment) error 
 	}
 	slog.Info("worker job completed", "worker", assignment.WorkerID, "job_id", int64(assignment.Job.ID), "attempt_id", int64(attempt.ID), "library", string(library.Name), "final_path", jobContext.FinalPath)
 	return nil
+}
+
+type probeMetadataRefresher interface {
+	RefreshDolbyVision(context.Context, *pipeline.JobContext) error
+}
+
+func probeMetadataRefresh(runner pipeline.Runner) resumeProbeMetadataRefresher {
+	block, ok := runner.Registry.Block("probe")
+	if ok {
+		if refresher, ok := block.(probeMetadataRefresher); ok {
+			return refresher.RefreshDolbyVision
+		}
+	}
+	return probe.Block{}.RefreshDolbyVision
 }
 
 func DefaultPipeline(tempDir string) pipeline.Runner {
