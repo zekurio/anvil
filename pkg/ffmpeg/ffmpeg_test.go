@@ -221,6 +221,56 @@ func TestArgsMapsSelectedAudioAndAppliesCrop(t *testing.T) {
 	}
 }
 
+func TestArgsMapsSelectedSubtitles(t *testing.T) {
+	request := testBuildPlanRequest()
+	request.Subtitles = &domain.SubtitleSelection{StreamIndexes: []int{5, 3}}
+	plan := mustBuildPlan(t, request)
+	if !plan.SubtitleSelectionApplied {
+		t.Fatal("SubtitleSelectionApplied = false, want true")
+	}
+	args := Args(plan)
+	for _, pair := range [][2]string{{"-map", "0:5"}, {"-map", "0:3"}} {
+		if !containsPair(args, pair[0], pair[1]) {
+			t.Fatalf("Args() = %v, missing %v", args, pair)
+		}
+	}
+	if containsPair(args, "-map", "0:s?") {
+		t.Fatalf("Args() = %v, did not expect all-subtitle stream map", args)
+	}
+}
+
+func TestArgsStandardizesSelectedSubtitleTrackTitles(t *testing.T) {
+	request := testBuildPlanRequest()
+	request.Profile.Metadata.TrackTitles = domain.TrackTitleModeStandardize
+	request.Subtitles = &domain.SubtitleSelection{StreamIndexes: []int{4}}
+	request.Probe = &domain.ProbeResult{Streams: []domain.MediaStream{
+		{Index: 0, Type: "video", Codec: "hevc", Width: 1920, Height: 1080},
+		{
+			Index:       3,
+			Type:        "subtitle",
+			Codec:       "hdmv_pgs_subtitle",
+			Language:    "eng",
+			Disposition: map[string]bool{"forced": true},
+		},
+		{
+			Index:       4,
+			Type:        "subtitle",
+			Codec:       "subrip",
+			Language:    "deu",
+			Disposition: map[string]bool{"hearing_impaired": true},
+		},
+	}}
+	plan := mustBuildPlan(t, request)
+	args := Args(plan)
+	if !containsPair(args, "-metadata:s:s:0", "title=German Full SDH SRT Subtitle") {
+		t.Fatalf("Args() = %v, missing selected subtitle title", args)
+	}
+	if containsPair(args, "-metadata:s:s:1", "title=German Full SDH SRT Subtitle") ||
+		containsPair(args, "-metadata:s:s:0", "title=English Forced PGS Subtitle") {
+		t.Fatalf("Args() = %v, included unselected subtitle title", args)
+	}
+}
+
 func TestArgsUsesQSVInputAndVPPForQSVProfile(t *testing.T) {
 	request := testBuildPlanRequest()
 	request.Profile.Video.Accelerator = "qsv"
@@ -534,9 +584,8 @@ func testProfile() domain.Profile {
 			CRFMax:      40,
 			TargetVMAF:  95,
 		},
-		Subtitles: domain.SubtitleProfile{Mode: domain.StreamPolicyPreserve},
-		Metadata:  domain.MetadataPolicy{Mode: domain.MetadataModeStrip},
-		Chapters:  domain.ChapterPolicy{Mode: domain.MetadataModeStrip},
+		Metadata: domain.MetadataPolicy{Mode: domain.MetadataModeStrip},
+		Chapters: domain.ChapterPolicy{Mode: domain.MetadataModeStrip},
 	}
 }
 

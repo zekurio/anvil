@@ -36,6 +36,7 @@ type Request struct {
 	Profile     domain.Profile
 	EncodePlan  *domain.EncodePlan
 	Audio       *domain.AudioSelection
+	Subtitles   *domain.SubtitleSelection
 	Metadata    domain.JobMetadata
 }
 
@@ -50,6 +51,7 @@ func RequestFromJob(job *pipeline.JobContext) Request {
 		Profile:     job.Profile,
 		EncodePlan:  job.EncodePlan,
 		Audio:       job.Audio,
+		Subtitles:   job.Subtitles,
 		Metadata:    job.Metadata,
 	}
 }
@@ -222,14 +224,17 @@ func validateAudio(request Request, outputProbe domain.ProbeResult, result *doma
 }
 
 func validateSubtitles(request Request, outputProbe domain.ProbeResult, result *domain.ValidationResult) {
-	if request.SourceProbe == nil {
+	if request.SourceProbe != nil {
+		result.SourceSubtitleStreamCount = countStreams(request.SourceProbe.Streams, "subtitle")
+	}
+	result.OutputSubtitleStreamCount = countStreams(outputProbe.Streams, "subtitle")
+	expected, ok := expectedSubtitleStreamCount(request, result.SourceSubtitleStreamCount)
+	if !ok {
 		return
 	}
-	result.SourceSubtitleStreamCount = countStreams(request.SourceProbe.Streams, "subtitle")
-	result.OutputSubtitleStreamCount = countStreams(outputProbe.Streams, "subtitle")
-	result.ExpectedSubtitleStreamCount = result.SourceSubtitleStreamCount
-	if result.OutputSubtitleStreamCount != result.ExpectedSubtitleStreamCount {
-		addError(result, fmt.Sprintf("output subtitle stream count %d does not match expected %d", result.OutputSubtitleStreamCount, result.ExpectedSubtitleStreamCount))
+	result.ExpectedSubtitleStreamCount = expected
+	if result.OutputSubtitleStreamCount != expected {
+		addError(result, fmt.Sprintf("output subtitle stream count %d does not match expected %d", result.OutputSubtitleStreamCount, expected))
 	}
 }
 
@@ -344,6 +349,19 @@ func expectedAudioStreamCount(request Request, sourceAudioCount int) (int, bool)
 	}
 	if request.SourceProbe != nil {
 		return sourceAudioCount, true
+	}
+	return 0, false
+}
+
+func expectedSubtitleStreamCount(request Request, sourceSubtitleCount int) (int, bool) {
+	if request.EncodePlan != nil && request.EncodePlan.SubtitleSelectionApplied {
+		return len(request.EncodePlan.SubtitleStreamIndexes), true
+	}
+	if request.EncodePlan == nil && request.Subtitles != nil {
+		return len(request.Subtitles.StreamIndexes), true
+	}
+	if request.SourceProbe != nil {
+		return sourceSubtitleCount, true
 	}
 	return 0, false
 }

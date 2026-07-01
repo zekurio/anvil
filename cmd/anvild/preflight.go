@@ -154,6 +154,7 @@ type preflightEncode struct {
 	Output                string   `json:"output,omitempty"`
 	NoFitAction           string   `json:"no_fit_action,omitempty"`
 	AudioAction           string   `json:"audio_action,omitempty"`
+	SubtitleAction        string   `json:"subtitle_action,omitempty"`
 	MetadataAction        string   `json:"metadata_action,omitempty"`
 	CustomArgs            []string `json:"custom_args,omitempty"`
 	DolbyVisionAction     string   `json:"dolby_vision_action,omitempty"`
@@ -503,6 +504,7 @@ func preflightEncodePlan(flow domain.Flow, profile domain.Profile, outputPath st
 		CRFSource:      "ab-av1 crf-search result",
 		Output:         outputPath,
 		AudioAction:    "copy/remux after configured audio cleanup selections",
+		SubtitleAction: "copy/remux after configured subtitle cleanup selections",
 		MetadataAction: fmt.Sprintf("apply metadata=%s, track_titles=%s, attachments=%s, chapters=%s, and Anvil marker policies", profile.Metadata.Mode, profile.Metadata.TrackTitles, profile.Attachments.Mode, profile.Chapters.Mode),
 		CustomArgs:     append([]string(nil), profile.Video.FFmpegArgs...),
 	}

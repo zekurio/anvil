@@ -55,14 +55,6 @@ type DolbyVisionProfile struct {
 	RemoveHDR10Plus bool
 }
 
-type StreamPolicyMode string
-
-const (
-	StreamPolicyPreserve StreamPolicyMode = "preserve"
-	StreamPolicyPrefer   StreamPolicyMode = "prefer"
-	StreamPolicyCleanup  StreamPolicyMode = "cleanup"
-)
-
 type StreamFallback string
 
 const (
@@ -79,14 +71,12 @@ type AudioProfile struct {
 }
 
 type SubtitleProfile struct {
-	Mode               StreamPolicyMode
-	PreferredLanguages []string
-	KeepForced         bool
-	KeepSDH            bool
-	KeepCommentary     bool
-	KeepExternal       bool
-	MaxTracks          int
-	Fallback           StreamFallback
+	LanguagesToKeep   []string
+	KeepForced        bool
+	KeepSDH           bool
+	KeepCommentary    bool
+	Fallback          StreamFallback
+	UnknownAsOriginal bool
 }
 
 type ValidationPolicy struct {

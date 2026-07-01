@@ -31,7 +31,7 @@ func Default() Config {
 		},
 		Flows: map[string]FlowConfig{
 			DefaultFlowName: {
-				Steps: []string{"probe", "crop-detect", "audio-cleanup", "stage", "crf-search", "encode", "dovi-fix", "validate", "replace", "cleanup"},
+				Steps: []string{"probe", "crop-detect", "audio-cleanup", "subtitle-cleanup", "stage", "crf-search", "encode", "dovi-fix", "validate", "replace", "cleanup"},
 			},
 		},
 		Profiles: map[string]ProfileConfig{
@@ -54,7 +54,6 @@ func Default() Config {
 					Fallback: DefaultStreamFallback,
 				},
 				Subtitles: SubtitleConfig{
-					Mode:     DefaultStreamMode,
 					Fallback: DefaultStreamFallback,
 				},
 				Metadata: MetadataConfig{
@@ -191,9 +190,6 @@ func applyProfileDefaults(profile *ProfileConfig) {
 	}
 	if strings.TrimSpace(profile.Audio.Fallback) == "" {
 		profile.Audio.Fallback = DefaultStreamFallback
-	}
-	if strings.TrimSpace(profile.Subtitles.Mode) == "" {
-		profile.Subtitles.Mode = DefaultStreamMode
 	}
 	if strings.TrimSpace(profile.Subtitles.Fallback) == "" {
 		profile.Subtitles.Fallback = DefaultStreamFallback

@@ -18,6 +18,7 @@ let
     "probe"
     "crop-detect"
     "audio-cleanup"
+    "subtitle-cleanup"
     "stage"
     "crf-search"
     "encode"
@@ -59,13 +60,12 @@ let
         unknown_as_original = profile.audio.unknownAsOriginal;
       };
       subtitles = {
-        inherit (profile.subtitles) mode fallback;
-        preferred_languages = profile.subtitles.preferredLanguages;
+        fallback = profile.subtitles.fallback;
+        languages_to_keep = profile.subtitles.languagesToKeep;
         keep_forced = profile.subtitles.keepForced;
         keep_sdh = profile.subtitles.keepSdh;
         keep_commentary = profile.subtitles.keepCommentary;
-        keep_external = profile.subtitles.keepExternal;
-        max_tracks = profile.subtitles.maxTracks;
+        unknown_as_original = profile.subtitles.unknownAsOriginal;
       };
       validation.duration_tolerance_seconds = profile.validation.durationToleranceSeconds;
       metadata = {
@@ -413,19 +413,14 @@ let
       };
 
       subtitles = {
-        mode = mkOption {
-          type = types.enum [
-            "preserve"
-            "prefer"
-            "cleanup"
-          ];
-          default = "preserve";
-          description = "Subtitle stream policy.";
-        };
-        preferredLanguages = mkOption {
+        languagesToKeep = mkOption {
           type = types.listOf types.str;
           default = [ ];
-          description = "Preferred subtitle languages.";
+          example = [
+            "orig"
+            "deu"
+          ];
+          description = "Subtitle languages to keep. The special value \"orig\" uses Arr-derived original language.";
         };
         keepForced = mkOption {
           type = types.bool;
@@ -442,16 +437,6 @@ let
           default = false;
           description = "Keep commentary subtitles.";
         };
-        keepExternal = mkOption {
-          type = types.bool;
-          default = false;
-          description = "Keep external subtitles.";
-        };
-        maxTracks = mkOption {
-          type = types.int;
-          default = 0;
-          description = "Maximum subtitle tracks to keep. Zero means unlimited.";
-        };
         fallback = mkOption {
           type = types.enum [
             "keep_all"
@@ -459,7 +444,12 @@ let
             "fail_job"
           ];
           default = "keep_all";
-          description = "Subtitle fallback behavior.";
+          description = "Fallback when no subtitle stream matches the configured policy.";
+        };
+        unknownAsOriginal = mkOption {
+          type = types.bool;
+          default = false;
+          description = "Treat und/unknown subtitle language as the original language.";
         };
       };
 
