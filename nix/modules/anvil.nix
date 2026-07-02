@@ -4,6 +4,7 @@ let
   cfg = config.services.anvil;
   inherit (lib)
     literalExpression
+    mkDefault
     mkEnableOption
     mkIf
     mkOption
@@ -25,6 +26,20 @@ let
     "dovi-fix"
     "validate"
     "replace"
+    "cleanup"
+  ];
+
+  defaultDownloadFlowSteps = [
+    "probe"
+    "crop-detect"
+    "audio-cleanup"
+    "subtitle-cleanup"
+    "stage"
+    "crf-search"
+    "encode"
+    "dovi-fix"
+    "validate"
+    "handoff"
     "cleanup"
   ];
 
@@ -79,7 +94,14 @@ let
   libraryToToml =
     _name: library:
     {
-      inherit (library) kind path flow profile priority include exclude;
+      inherit (library) kind path profile priority include exclude;
+      flow =
+        if library.flow != "" then
+          library.flow
+        else if library.kind == "download" then
+          "download-av1-handoff"
+        else
+          "av1-crf-search";
       scan_interval = library.scanInterval;
       ignore_regex = library.ignoreRegex;
       concurrency_limit = library.concurrencyLimit;
@@ -497,7 +519,7 @@ let
     };
   };
 
-  libraryModule = types.submodule {
+  libraryModule = types.submodule ({ config, ... }: {
     options = {
       kind = mkOption {
         type = types.enum [
@@ -513,8 +535,9 @@ let
       };
       flow = mkOption {
         type = types.str;
-        default = "av1-crf-search";
-        description = "Flow name used for this library.";
+        default = "";
+        example = "av1-crf-search";
+        description = "Flow name used for this library. Empty uses the kind-specific default.";
       };
       profile = mkOption {
         type = types.str;
@@ -629,7 +652,14 @@ let
         };
       };
     };
-  };
+
+    config.flow = mkDefault (
+      if config.kind == "download" then
+        "download-av1-handoff"
+      else
+        "av1-crf-search"
+    );
+  });
 in
 {
   options.services.anvil = {
@@ -752,6 +782,7 @@ in
       });
       default = {
         av1-crf-search.steps = defaultFlowSteps;
+        download-av1-handoff.steps = defaultDownloadFlowSteps;
       };
       description = "Named pipeline flows.";
     };

@@ -130,6 +130,29 @@ func TestPlanReplacementCopyAndReplace(t *testing.T) {
 	}
 }
 
+func TestIsAnvilCopyOutputPath(t *testing.T) {
+	tests := []struct {
+		name string
+		path string
+		want bool
+	}{
+		{name: "mkv copy output", path: "Movie.anvil.mkv", want: true},
+		{name: "case insensitive", path: "Movie.ANVIL.mkv", want: true},
+		{name: "nested path", path: filepath.Join("Season", "Episode.anvil.mp4"), want: true},
+		{name: "title contains anvil", path: "The.Anvil.2020.mkv", want: false},
+		{name: "no extension", path: "Movie.anvil", want: false},
+		{name: "backup", path: "Movie.mkv.anvil.bak", want: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := IsAnvilCopyOutputPath(tt.path); got != tt.want {
+				t.Fatalf("IsAnvilCopyOutputPath(%q) = %v, want %v", tt.path, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestPlanHandoffDestinationAndCleanup(t *testing.T) {
 	job := &pipeline.JobContext{
 		Source: domain.MediaSource{

@@ -102,6 +102,11 @@ func (p *pipelineContextPersistence) StepSucceeded(ctx context.Context, step str
 		return nil
 	}
 	p.current = p.capture(step, job)
+	// Pipeline context is a resume checkpoint for reusable work, not the
+	// authoritative completion record for irreversible side effects.
+	if !resumableStep(step) {
+		return nil
+	}
 	return p.store.SaveJobPipelineContext(ctx, job.Job.ID, p.current, p.timestamp())
 }
 

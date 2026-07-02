@@ -469,6 +469,59 @@ func TestRunnerRebuildsPipelineContextWhenDolbyVisionToolAvailabilityChanges(t *
 	}
 }
 
+func TestPipelineContextPersistenceSkipsSaveForNonResumableStep(t *testing.T) {
+	ctx := context.Background()
+	tests := []struct {
+		name string
+		step string
+	}{
+		{name: "replace", step: "replace"},
+		{name: "handoff", step: "handoff"},
+		{name: "cleanup", step: "cleanup"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := newFakeWorkerStore()
+			store.savePipelineContextErr = errors.New("save should not be called")
+			persistence := &pipelineContextPersistence{store: store, now: testTime}
+			job := &pipeline.JobContext{
+				Job:     domain.Job{ID: 99},
+				Attempt: domain.Attempt{ID: 1},
+			}
+
+			if err := persistence.StepSucceeded(ctx, tt.step, job); err != nil {
+				t.Fatalf("StepSucceeded() error = %v", err)
+			}
+			if store.savePipelineContextCalls != 0 {
+				t.Fatalf("SaveJobPipelineContext calls = %d, want 0", store.savePipelineContextCalls)
+			}
+			if _, ok := persistence.current.Steps[tt.step]; !ok {
+				t.Fatalf("current steps = %+v, want captured %q", persistence.current.Steps, tt.step)
+			}
+		})
+	}
+}
+
+func TestPipelineContextPersistenceReturnsSaveErrorForResumableStep(t *testing.T) {
+	sentinel := errors.New("save failed")
+	store := newFakeWorkerStore()
+	store.savePipelineContextErr = sentinel
+	persistence := &pipelineContextPersistence{store: store, now: testTime}
+	job := &pipeline.JobContext{
+		Job:     domain.Job{ID: 99},
+		Attempt: domain.Attempt{ID: 1},
+	}
+
+	err := persistence.StepSucceeded(context.Background(), "probe", job)
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("StepSucceeded() error = %v, want %v", err, sentinel)
+	}
+	if store.savePipelineContextCalls != 1 {
+		t.Fatalf("SaveJobPipelineContext calls = %d, want 1", store.savePipelineContextCalls)
+	}
+}
+
 func TestPipelineContextMatchesRequiresCurrentFingerprint(t *testing.T) {
 	now := testTime()
 	base := domain.JobPipelineContext{
@@ -516,16 +569,18 @@ func (s staticMetadataResolver) ResolveJobMetadata(context.Context, domain.Libra
 }
 
 type fakeWorkerStore struct {
-	source             domain.MediaSource
-	asset              domain.MediaAsset
-	attempt            domain.Attempt
-	resolvedLibrary    []byte
-	pipelineContext    domain.JobPipelineContext
-	hasPipelineContext bool
-	recordedInputSize  int64
-	recordedOutputSize int64
-	transitions        []domain.JobState
-	events             []domain.AttemptEvent
+	source                   domain.MediaSource
+	asset                    domain.MediaAsset
+	attempt                  domain.Attempt
+	resolvedLibrary          []byte
+	pipelineContext          domain.JobPipelineContext
+	hasPipelineContext       bool
+	savePipelineContextCalls int
+	savePipelineContextErr   error
+	recordedInputSize        int64
+	recordedOutputSize       int64
+	transitions              []domain.JobState
+	events                   []domain.AttemptEvent
 }
 
 func newFakeWorkerStore() *fakeWorkerStore {
@@ -586,6 +641,10 @@ func (f *fakeWorkerStore) GetJobPipelineContext(_ context.Context, _ domain.JobI
 }
 
 func (f *fakeWorkerStore) SaveJobPipelineContext(_ context.Context, _ domain.JobID, snapshot domain.JobPipelineContext, _ time.Time) error {
+	f.savePipelineContextCalls++
+	if f.savePipelineContextErr != nil {
+		return f.savePipelineContextErr
+	}
 	f.pipelineContext = snapshot
 	f.hasPipelineContext = true
 	return nil
