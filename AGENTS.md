@@ -19,7 +19,46 @@ Valid types are `feat`, `fix`, `docs`, `chore`, `refactor`, and `test`. Scopes a
 
 Examples: `fix(worker): clean staging after failed attempt`, `docs: update daemon config guide`, `chore(nix): refresh package inputs`.
 
-## Picking the right models for workflows and subagents
+## Workflows and subagents (pi)
+
+Pi is the harness this repo is worked on with. It provides two delegation mechanisms: the `Agent` tool for spawning individual subagents, and the `workflow` tool for deterministic multi-agent orchestration. Use them to parallelize independent work, protect the main context window from large search/read results, and route work to cheaper or better-fitting models (see model routing below). Do not delegate when a direct tool call is enough — a known file path is a `read`, a known symbol is a `grep`.
+
+### Subagents (`Agent` tool)
+
+Agent types currently available:
+
+- `general-purpose` — full tool access; for complex multi-step tasks, open-ended research, and implementation work.
+- `Explore` — fast read-only search agent (read/bash/grep/find/ls) for locating code, files, and references. Runs on Haiku, so use it only for locating things, never for review or analysis. Specify breadth: "quick", "medium", or "very thorough".
+- `Plan` — read-only software architect agent that returns step-by-step implementation plans.
+- Custom agents can be defined in `.pi/agents/<name>.md` (project) or `~/.pi/agent/agents/<name>.md` (global); project-level overrides global, and a file named after a default agent overrides it.
+
+Key mechanics:
+
+- `model` overrides the agent's default model (`provider/modelId` or fuzzy, e.g. "opus"); `thinking` sets the extended-thinking level.
+- `run_in_background: true` returns an agent ID immediately; pi notifies on completion — never poll or sleep waiting. Use `get_subagent_result` to fetch results and `steer_subagent` to redirect a running background agent. To run agents in parallel, launch them in a single message with multiple background calls.
+- `resume: <agent-id>` continues a previous agent with its context; a fresh call has no memory of prior runs.
+- `isolation: "worktree"` runs the agent in a temporary git worktree so parallel agents can modify files safely; changes land on a branch.
+- `inherit_context: true` forks the parent conversation into the agent; the default is a fresh context.
+- Subagent results are invisible to the user and describe intent, not outcome — verify actual file changes before reporting delegated work as done.
+
+### Workflows (`workflow` tool)
+
+A workflow is a raw JavaScript script that deterministically orchestrates subagents. Prefer it for decomposable work: repository-wide inspection, independent research or checks, multi-perspective review, and fan-out/fan-in synthesis. Skip it for single quick reads/edits.
+
+- First statement must be `export const meta = { name: 'short_snake_case', description: '...' }`, and the script must call `agent()` at least once.
+- Available globals: `agent(prompt, opts)`, `parallel(thunks)`, `pipeline(items, ...stages)`, `phase(title)`, `log(message)`, `args`, `cwd`, `budget`. Plain JavaScript only — no TypeScript, imports, `fs`, `Date`, or `Math.random()`.
+- `parallel()` takes thunks, not promises: `await parallel(items.map((item) => () => agent(...)))`. Results return in input order.
+- `pipeline(items, ...stages)` runs each item through stages sequentially while items run concurrently; stages receive `(previousValue, originalItem, index)`.
+- Give every `agent()` call a unique short `label` (2-5 words) for readable live status. Pass `opts.model` to route to a specific Claude model and `opts.agentType` to pick an agent type.
+- For machine-readable output, pass a plain JSON Schema via `opts.schema`; `agent()` returns the validated object.
+- Failed branches return `null` and log the failure — check for nulls before synthesizing. When combining multiple subagent results, end with a synthesis/assertion agent that returns a compact JSON value with an ok/verdict.
+- Call `phase(title)` when a new group of work starts; don't predeclare speculative phases.
+
+### Delegate prompts
+
+Prompts for workflow/subagent delegates must be fully self-contained: repo path, relevant rules from this file, exact files or search targets, expected output shape, and verification commands. Delegates do not share the parent session's context — brief them like a smart colleague who just walked in. Never delegate understanding ("based on your findings, fix it"); do the synthesis yourself and hand over concrete instructions.
+
+## Model routing
 
 Rankings, higher = better. Cost reflects what I actually pay (OpenAI has really generous limits), not list price. Intelligence is how hard a problem you can hand the model unsupervised. Coding is sheer coding capability (based on Deep SWE). UI taste covers UI/UX, visual design, API ergonomics, and copy.
 
@@ -37,16 +76,18 @@ How to apply:
 - Bulk/mechanical work (clear-spec implementation, data analysis, migrations): gpt-5.5 - it's effectively free.
 - Anything user-facing or operator-facing (CLI UX, config ergonomics, docs, logs, diagnostics, API design) needs ui taste >= 7 - never gpt-5.5 as the only perspective.
 - Reviews of plans/implementations: fable-5 or opus-4.8, optionally gpt-5.5 as an extra independent perspective.
-- Never use Haiku.
-- Prompts for workflow/subagent delegates must be fully self-contained: include the repo path, relevant rules from this file, exact files or search targets, expected output, and verification commands. Delegates do not reliably share the parent session's context.
-- Keep runtime-specific mechanics out of shared reasoning. Use the current harness's native workflow/subagent controls for Claude-family models, and use the runtime-specific Codex CLI handoff when a delegate should be gpt-5.5.
+- Never use Haiku for anything beyond `Explore`-style code location.
 
-### Pi mechanics
+### Reaching each model in pi
 
-- Claude models (sonnet-5, opus-4.8, fable-5) run via the `Agent`/`workflow` model parameter.
-- gpt-5.5 is only reachable through the Codex CLI, invoked directly via Bash. Use `codex exec "<prompt>"` for implementation, `codex exec -s read-only "<prompt>"` for investigation/analysis that must not touch the tree, and `codex review` for reviews.
-- For long-running gpt-5.5 tasks in Pi, spawn a thin background wrapper agent and have it run Codex, rather than blocking the main session.
-- Inside Pi workflows/subagents, use a thin Claude wrapper whose prompt instructs it to write a self-contained Codex prompt, run `codex exec` via Bash, and return Codex's final message verbatim.
+All four models are directly available to subagents and workflows via the model parameter — no CLI handoffs or wrapper agents needed:
+
+- `anthropic/claude-fable-5` (fable-5)
+- `anthropic/claude-opus-4-8` (opus-4.8)
+- `anthropic/claude-sonnet-5` (sonnet-5)
+- `openai-codex/gpt-5.5` (gpt-5.5)
+
+Pass `model` on the `Agent` tool or `opts.model` on `agent()` inside a workflow; fuzzy names like "opus" or "gpt-5.5" also resolve. For long-running gpt-5.5 tasks, run them as background subagents instead of blocking the main session.
 
 ## Go Skills
 
