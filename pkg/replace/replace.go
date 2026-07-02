@@ -20,6 +20,7 @@ type Manager struct{}
 const (
 	replacementActionCopy    = "copy"
 	replacementActionReplace = "replace"
+	anvilCopySuffix          = ".anvil"
 
 	handoffActionCopy = "copy"
 	handoffActionMove = "move"
@@ -222,7 +223,14 @@ func replacementCopyPath(inputPath string, ext string) string {
 		ext = filepath.Ext(inputPath)
 	}
 	base := strings.TrimSuffix(inputPath, filepath.Ext(inputPath))
-	return base + ".anvil" + ext
+	return base + anvilCopySuffix + ext
+}
+
+func IsAnvilCopyOutputPath(path string) bool {
+	base := filepath.Base(path)
+	ext := filepath.Ext(base)
+	stem := strings.TrimSuffix(base, ext)
+	return ext != "" && strings.HasSuffix(strings.ToLower(stem), anvilCopySuffix)
 }
 
 func replaceExtension(path string, ext string) string {
