@@ -246,6 +246,51 @@ func TestScheduleAvailableReleasesLeaseWhenWorkerContextCanceled(t *testing.T) {
 	}
 }
 
+func TestScheduleAvailableReleasesLeaseWhenSchedulerCanceledBeforeDrainDispatch(t *testing.T) {
+	schedulerCtx, stopScheduling := context.WithCancel(context.Background())
+	workerCtx, stopWorker := context.WithCancel(context.Background())
+	defer stopWorker()
+
+	store := &fakeScheduleStore{
+		jobs:       []domain.Job{{ID: 1, LibraryName: "movies", State: domain.JobStatePending}},
+		afterLease: stopScheduling,
+	}
+	worker := newBlockingWorker()
+	defer worker.releaseAll()
+
+	s := &Scheduler{
+		Store:          store,
+		Worker:         worker,
+		ConfigProvider: scheduleConfig,
+		WorkerContext:  workerCtx,
+		Allocator:      resources.NewAllocator(4),
+		WorkerCount:    1,
+		LeaseDuration:  time.Minute,
+	}
+
+	started, err := s.ScheduleAvailable(schedulerCtx)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("ScheduleAvailable() error = %v, want context canceled", err)
+	}
+	if started != 0 {
+		t.Fatalf("started = %d, want 0", started)
+	}
+	if len(store.released) != 1 {
+		t.Fatalf("released jobs = %d, want 1", len(store.released))
+	}
+	if store.released[0].LeaseOwner != "" || store.released[0].State != domain.JobStatePending {
+		t.Fatalf("released job = %+v, want pending with empty lease owner", store.released[0])
+	}
+	if s.ActiveCount() != 0 {
+		t.Fatalf("active count = %d, want 0", s.ActiveCount())
+	}
+	select {
+	case assignment := <-worker.started:
+		t.Fatalf("worker started after scheduler cancellation: %+v", assignment)
+	default:
+	}
+}
+
 func TestWorkerContextCanOutliveSchedulerContext(t *testing.T) {
 	schedulerCtx, stopScheduling := context.WithCancel(context.Background())
 	workerCtx, stopWorker := context.WithCancel(context.Background())

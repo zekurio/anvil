@@ -545,7 +545,7 @@ func displayIntOrNone(value int) string {
 func preflightExcludeWarnings(candidate scanner.CandidatePlan) []string {
 	lower := strings.ToLower(candidate.LibraryRelativePath)
 	var warnings []string
-	if strings.Contains(lower, ".anvil") && !candidate.Ignored {
+	if replacepkg.IsAnvilCopyOutputPath(candidate.LibraryRelativePath) && !candidate.Ignored {
 		warnings = append(warnings, "candidate path looks like an Anvil output; add an explicit exclude for .anvil outputs")
 	}
 	if (strings.Contains(lower, "/.staging/") || strings.HasPrefix(lower, ".staging/")) && !candidate.Ignored {
