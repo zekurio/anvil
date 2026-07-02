@@ -63,6 +63,49 @@ func TestBuildPreflightReportShowsPlansWithoutExistingStore(t *testing.T) {
 	}
 }
 
+func TestBuildPreflightReportIgnoresAnvilCopyOutputs(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	now := time.Date(2026, 6, 27, 12, 0, 0, 0, time.UTC)
+	writePreflightFile(t, root, "Movie.mkv", now)
+	writePreflightFile(t, root, "Movie.anvil.mkv", now)
+	writePreflightFile(t, root, "The.Anvil.2020.mkv", now)
+
+	report, err := buildPreflightReport(ctx, testPreflightConfig(t, root), options{
+		command:     commandPreflight,
+		libraryName: "movies",
+	}, nil, false)
+	if err != nil {
+		t.Fatalf("buildPreflightReport() error = %v", err)
+	}
+	if report.Summary.WouldEnqueue != 2 {
+		t.Fatalf("would enqueue = %d, want 2", report.Summary.WouldEnqueue)
+	}
+	byPath := make(map[string]preflightCandidate)
+	for _, candidate := range report.Candidates {
+		byPath[candidate.Asset.LibraryRelativePath] = candidate
+	}
+	copyOutput := byPath["Movie.anvil.mkv"]
+	if !copyOutput.Status.Ignored || copyOutput.Status.IgnoreReason != "anvil_output" || copyOutput.Status.WouldEnqueueNewJob {
+		t.Fatalf("copy output = %+v, want ignored anvil_output", copyOutput.Status)
+	}
+	if strings.Contains(strings.Join(copyOutput.Warnings, "\n"), "explicit exclude") {
+		t.Fatalf("copy output warnings = %v, want no explicit exclude guidance", copyOutput.Warnings)
+	}
+	legitimateTitle := byPath["The.Anvil.2020.mkv"]
+	if legitimateTitle.Status.Ignored || !legitimateTitle.Status.WouldEnqueueNewJob {
+		t.Fatalf("legitimate title = %+v, want enqueueable", legitimateTitle.Status)
+	}
+	if len(legitimateTitle.Warnings) != 0 {
+		t.Fatalf("legitimate title warnings = %v, want none", legitimateTitle.Warnings)
+	}
+	for _, warning := range report.Warnings {
+		if strings.Contains(warning, "explicit exclude") {
+			t.Fatalf("report warnings = %v, want no explicit exclude guidance", report.Warnings)
+		}
+	}
+}
+
 func TestBuildPreflightReportShowsForcedNoFitEncodePolicy(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()

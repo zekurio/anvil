@@ -163,8 +163,10 @@ func (c Config) Validate() error {
 		if strings.TrimSpace(library.Path) == "" {
 			problems = append(problems, fmt.Sprintf("library %q path is required", name))
 		}
+		flow, flowExists := c.Flows[library.Flow]
 		if _, exists := flows[library.Flow]; !exists {
 			problems = append(problems, fmt.Sprintf("library %q references unknown flow %q", name, library.Flow))
+			flowExists = false
 		}
 		if _, exists := profiles[library.Profile]; !exists {
 			problems = append(problems, fmt.Sprintf("library %q references unknown profile %q", name, library.Profile))
@@ -181,24 +183,37 @@ func (c Config) Validate() error {
 				problems = append(problems, fmt.Sprintf("library %q references unknown arr %q", name, library.Arr))
 			}
 		}
-		if !validReplacementMode(library.Media.ReplacementMode) {
-			problems = append(problems, fmt.Sprintf("library %q media.replacement_mode %q is invalid", name, library.Media.ReplacementMode))
+		if library.Kind != "download" {
+			if !validReplacementMode(library.Media.ReplacementMode) {
+				problems = append(problems, fmt.Sprintf("library %q media.replacement_mode %q is invalid", name, library.Media.ReplacementMode))
+			}
+			continue
 		}
-		if library.Kind == "download" {
-			if strings.TrimSpace(library.Download.HandoffPath) == "" {
-				problems = append(problems, fmt.Sprintf("download library %q download.handoff_path is required", name))
+
+		if strings.TrimSpace(library.Media.ReplacementMode) != "" {
+			problems = append(problems, fmt.Sprintf("download library %q media.replacement_mode must not be set", name))
+		}
+		if strings.TrimSpace(library.Download.HandoffPath) == "" {
+			problems = append(problems, fmt.Sprintf("download library %q download.handoff_path is required", name))
+		}
+		if flowExists {
+			if !flowHasStep(flow, "handoff") {
+				problems = append(problems, fmt.Sprintf("download library %q flow %q must include handoff", name, library.Flow))
 			}
-			if stableFor, err := time.ParseDuration(library.Download.StableFor); err != nil {
-				problems = append(problems, fmt.Sprintf("download library %q download.stable_for is invalid: %v", name, err))
-			} else if stableFor < 0 {
-				problems = append(problems, fmt.Sprintf("download library %q download.stable_for must be non-negative", name))
+			if flowHasStep(flow, "replace") {
+				problems = append(problems, fmt.Sprintf("download library %q flow %q must not include replace", name, library.Flow))
 			}
-			if !validPackageMode(library.Download.PackageMode) {
-				problems = append(problems, fmt.Sprintf("download library %q download.package_mode %q is invalid", name, library.Download.PackageMode))
-			}
-			if !validHandoffMode(library.Download.HandoffMode) {
-				problems = append(problems, fmt.Sprintf("download library %q download.handoff_mode %q is invalid", name, library.Download.HandoffMode))
-			}
+		}
+		if stableFor, err := time.ParseDuration(library.Download.StableFor); err != nil {
+			problems = append(problems, fmt.Sprintf("download library %q download.stable_for is invalid: %v", name, err))
+		} else if stableFor < 0 {
+			problems = append(problems, fmt.Sprintf("download library %q download.stable_for must be non-negative", name))
+		}
+		if !validPackageMode(library.Download.PackageMode) {
+			problems = append(problems, fmt.Sprintf("download library %q download.package_mode %q is invalid", name, library.Download.PackageMode))
+		}
+		if !validHandoffMode(library.Download.HandoffMode) {
+			problems = append(problems, fmt.Sprintf("download library %q download.handoff_mode %q is invalid", name, library.Download.HandoffMode))
 		}
 	}
 
@@ -211,6 +226,15 @@ func (c Config) Validate() error {
 
 func validLibraryKind(kind string) bool {
 	return kind == "media" || kind == "download"
+}
+
+func flowHasStep(flow FlowConfig, step string) bool {
+	for _, configured := range flow.Steps {
+		if strings.EqualFold(strings.TrimSpace(configured), step) {
+			return true
+		}
+	}
+	return false
 }
 
 func validatePositiveDuration(problems *[]string, name string, value string) {
