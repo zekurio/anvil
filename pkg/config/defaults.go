@@ -33,6 +33,9 @@ func Default() Config {
 			DefaultFlowName: {
 				Steps: []string{"probe", "crop-detect", "audio-cleanup", "subtitle-cleanup", "stage", "crf-search", "encode", "dovi-fix", "validate", "replace", "cleanup"},
 			},
+			DefaultDownloadFlowName: {
+				Steps: []string{"probe", "crop-detect", "audio-cleanup", "subtitle-cleanup", "stage", "crf-search", "encode", "dovi-fix", "validate", "handoff", "cleanup"},
+			},
 		},
 		Profiles: map[string]ProfileConfig{
 			DefaultProfileName: {
@@ -152,6 +155,9 @@ func applyDefaults(c *Config) {
 		}
 		if strings.TrimSpace(library.Flow) == "" {
 			library.Flow = DefaultFlowName
+			if library.Kind == "download" {
+				library.Flow = DefaultDownloadFlowName
+			}
 		}
 		if strings.TrimSpace(library.Profile) == "" {
 			library.Profile = DefaultProfileName
@@ -211,9 +217,13 @@ func applyProfileDefaults(profile *ProfileConfig) {
 }
 
 func applyLibraryPolicyDefaults(library *LibraryConfig) {
-	if strings.TrimSpace(library.Media.ReplacementMode) == "" {
-		library.Media.ReplacementMode = DefaultReplacementMode
+	if library.Kind != "download" {
+		if strings.TrimSpace(library.Media.ReplacementMode) == "" {
+			library.Media.ReplacementMode = DefaultReplacementMode
+		}
+		return
 	}
+
 	if strings.TrimSpace(library.Download.StableFor) == "" {
 		library.Download.StableFor = DefaultStableFor
 	}

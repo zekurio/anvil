@@ -1,29 +1,30 @@
 package config
 
 const (
-	DefaultFlowName        = "av1-crf-search"
-	DefaultProfileName     = "default-av1"
-	DefaultLibraryKind     = "media"
-	DefaultReplacementMode = "replace"
-	DefaultScanInterval    = "30m"
-	DefaultFSDebounce      = "2s"
-	DefaultSchedulerTick   = "5s"
-	DefaultLeaseDuration   = "30m"
-	DefaultShutdownPolicy  = "drain"
-	DefaultShutdownTimeout = "0s"
-	DefaultStagingCleanup  = "0s"
-	DefaultLogLevel        = "info"
-	DefaultMaxAttempts     = 3
-	DefaultStableFor       = "5m"
-	DefaultPackageMode     = "auto"
-	DefaultHandoffMode     = "copy"
-	DefaultStreamFallback  = "keep_all"
-	DefaultMetadataMode    = "preserve"
-	DefaultTrackTitleMode  = "strip"
-	DefaultDolbyVisionMode = "auto"
-	DolbyVisionModeOff     = "off"
-	DolbyVisionModeRequire = "require"
-	DefaultMinSavingsPct   = 20
+	DefaultFlowName         = "av1-crf-search"
+	DefaultDownloadFlowName = "download-av1-handoff"
+	DefaultProfileName      = "default-av1"
+	DefaultLibraryKind      = "media"
+	DefaultReplacementMode  = "replace"
+	DefaultScanInterval     = "30m"
+	DefaultFSDebounce       = "2s"
+	DefaultSchedulerTick    = "5s"
+	DefaultLeaseDuration    = "30m"
+	DefaultShutdownPolicy   = "drain"
+	DefaultShutdownTimeout  = "0s"
+	DefaultStagingCleanup   = "0s"
+	DefaultLogLevel         = "info"
+	DefaultMaxAttempts      = 3
+	DefaultStableFor        = "5m"
+	DefaultPackageMode      = "auto"
+	DefaultHandoffMode      = "copy"
+	DefaultStreamFallback   = "keep_all"
+	DefaultMetadataMode     = "preserve"
+	DefaultTrackTitleMode   = "strip"
+	DefaultDolbyVisionMode  = "auto"
+	DolbyVisionModeOff      = "off"
+	DolbyVisionModeRequire  = "require"
+	DefaultMinSavingsPct    = 20
 )
 
 var DefaultIgnorableGlobs = []string{

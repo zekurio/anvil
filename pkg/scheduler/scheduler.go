@@ -124,14 +124,18 @@ func (s *Scheduler) scheduleAvailable(ctx context.Context, limit int) (int, erro
 	}
 
 	leased, err := s.leaseAvailable(ctx, cfg, active.byLibrary, maxJobs)
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		releaseErr := s.releaseLeased(context.WithoutCancel(ctx), leased)
+		return 0, errors.Join(err, ctxErr, releaseErr)
+	}
 	if workerErr := s.workerContextError(ctx); workerErr != nil {
 		releaseErr := s.releaseLeased(context.WithoutCancel(ctx), leased)
 		return 0, errors.Join(err, workerErr, releaseErr)
 	}
 
-	started := s.dispatchLeased(ctx, leased, allocator, availableThreads, active.count)
-	if err != nil {
-		return started, err
+	started, dispatchErr := s.dispatchLeased(ctx, leased, allocator, availableThreads, active.count)
+	if err != nil || dispatchErr != nil {
+		return started, errors.Join(err, dispatchErr)
 	}
 	return started, nil
 }
@@ -254,15 +258,20 @@ func (s *Scheduler) leaseAvailable(ctx context.Context, cfg config.Config, activ
 	return leased, nil
 }
 
-func (s *Scheduler) dispatchLeased(ctx context.Context, leased []leasedAssignment, allocator resources.Allocator, availableThreads int, activeBefore int) int {
+func (s *Scheduler) dispatchLeased(ctx context.Context, leased []leasedAssignment, allocator resources.Allocator, availableThreads int, activeBefore int) (int, error) {
 	if len(leased) == 0 {
-		return 0
+		return 0, nil
 	}
 	workerCtx := ctx
 	if s.WorkerContext != nil {
 		workerCtx = s.WorkerContext
 	}
+	started := 0
 	for i, leasedAssignment := range leased {
+		if err := ctx.Err(); err != nil {
+			releaseErr := s.releaseLeased(context.WithoutCancel(ctx), leased[i:])
+			return started, errors.Join(err, releaseErr)
+		}
 		allocation := allocator.AllocateFrom(leasedAssignment.workerID, availableThreads, len(leased))
 		assignment := Assignment{
 			Job:       leasedAssignment.job,
@@ -273,8 +282,9 @@ func (s *Scheduler) dispatchLeased(ctx context.Context, leased []leasedAssignmen
 		s.register(assignment)
 		s.workerWG.Add(1)
 		go s.runWorker(workerCtx, assignment)
+		started++
 	}
-	return len(leased)
+	return started, nil
 }
 
 func (s *Scheduler) workerContextError(ctx context.Context) error {

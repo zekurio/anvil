@@ -13,6 +13,7 @@ usage() {
 Usage:
   scripts/mock-library.sh setup [root]
   scripts/mock-library.sh run [root]
+  scripts/mock-library.sh config [root]
   scripts/mock-library.sh serve-arrs [root]
   scripts/mock-library.sh reset [root]
   scripts/mock-library.sh paths [root]
@@ -36,6 +37,11 @@ main() {
       ;;
     run)
       run_smoke "$root"
+      ;;
+    config)
+      mkdir -p "$root"
+      write_config "$root"
+      print_paths "$root"
       ;;
     serve-arrs)
       setup_library "$root"
@@ -162,6 +168,7 @@ shutdown_timeout = "0s"
 staging_cleanup_age = "0s"
 log_level = "debug"
 
+# Mock smoke bypasses CRF search for speed and uses the configured CRF bounds directly.
 [flows.mock-copy]
 steps = ["probe", "crop-detect", "audio-cleanup", "subtitle-cleanup", "stage", "encode", "dovi-fix", "validate", "replace", "cleanup"]
 
@@ -172,9 +179,10 @@ steps = ["probe", "crop-detect", "audio-cleanup", "subtitle-cleanup", "stage", "
 container = "mkv"
 
 [profiles.mock-av1.video]
-codec = "libsvtav1"
+codec = "av1"
+accelerator = "software"
 preset = "13"
-pixel_format = "yuv420p10le"
+bit_depth = 10
 crf_min = 45
 crf_max = 45
 target_vmaf = 0
@@ -401,7 +409,7 @@ require_tool() {
   local tool="$1"
   if ! command -v "$tool" >/dev/null 2>&1; then
     echo "Required tool not found on PATH: $tool" >&2
-    echo "Enter the devenv shell first: devenv shell" >&2
+    echo "Enter the Nix shell first: nix develop --no-pure-eval" >&2
     exit 1
   fi
 }

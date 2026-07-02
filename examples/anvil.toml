@@ -16,6 +16,7 @@ log_level = "info"
 [flows.av1-replace]
 steps = ["probe", "crop-detect", "audio-cleanup", "subtitle-cleanup", "stage", "crf-search", "encode", "dovi-fix", "validate", "replace", "cleanup"]
 
+# Download libraries must publish through handoff flows, not replace flows.
 [flows.download-av1-handoff]
 steps = ["probe", "crop-detect", "audio-cleanup", "subtitle-cleanup", "stage", "crf-search", "encode", "dovi-fix", "validate", "handoff", "cleanup"]
 
