@@ -13,6 +13,7 @@ import (
 	"github.com/bmatcuk/doublestar/v4"
 	"github.com/zekurio/anvil/pkg/config"
 	"github.com/zekurio/anvil/pkg/domain"
+	replacepkg "github.com/zekurio/anvil/pkg/replace"
 	"github.com/zekurio/anvil/pkg/store"
 )
 
@@ -346,11 +347,17 @@ func discoverCandidates(ctx context.Context, root string, library config.Library
 		if err != nil {
 			return err
 		}
-		recordSourceStat(sourceStats, library, rel, info)
 
 		if !likelyMediaFile(rel) {
+			recordSourceStat(sourceStats, library, rel, info)
 			return nil
 		}
+		if replacepkg.IsAnvilCopyOutputPath(rel) {
+			candidates = append(candidates, buildCandidate(library, rel, info, true, "anvil_output"))
+			skipped++
+			return nil
+		}
+		recordSourceStat(sourceStats, library, rel, info)
 
 		included, err := includedBy(library.Include, rel)
 		if err != nil {

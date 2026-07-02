@@ -87,6 +87,16 @@ path = "/srv/media/movies"
 	if !containsString(flow.Steps, "subtitle-cleanup") {
 		t.Fatalf("default flow steps = %v, want subtitle cleanup before encode", flow.Steps)
 	}
+	if !containsString(flow.Steps, "replace") {
+		t.Fatalf("default flow steps = %v, want replace for media libraries", flow.Steps)
+	}
+	downloadFlow := cfg.Flows[DefaultDownloadFlowName]
+	if !containsString(downloadFlow.Steps, "handoff") {
+		t.Fatalf("default download flow steps = %v, want handoff", downloadFlow.Steps)
+	}
+	if containsString(downloadFlow.Steps, "replace") {
+		t.Fatalf("default download flow steps = %v, want no replace", downloadFlow.Steps)
+	}
 }
 
 func TestLoadAcceptsDaemonLogLevels(t *testing.T) {
@@ -142,20 +152,32 @@ path = "/srv/media/movies"
 }
 
 func TestLoadRejectsConcreteFFmpegEncoderAsVideoCodec(t *testing.T) {
-	path := writeConfig(t, `
+	tests := []struct {
+		name  string
+		codec string
+	}{
+		{name: "qsv encoder", codec: "av1_qsv"},
+		{name: "svt encoder", codec: "libsvtav1"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := writeConfig(t, `
 [profiles.default-av1.video]
-codec = "av1_qsv"
+codec = "`+tt.codec+`"
 
 [libraries.movies]
 path = "/srv/media/movies"
 `)
 
-	_, err := Load(path)
-	if err == nil {
-		t.Fatal("Load() error = nil, want invalid semantic video codec")
-	}
-	if !strings.Contains(err.Error(), "video.codec") {
-		t.Fatalf("Load() error = %q, want video.codec", err.Error())
+			_, err := Load(path)
+			if err == nil {
+				t.Fatal("Load() error = nil, want invalid semantic video codec")
+			}
+			if !strings.Contains(err.Error(), "video.codec") {
+				t.Fatalf("Load() error = %q, want video.codec", err.Error())
+			}
+		})
 	}
 }
 
@@ -696,8 +718,84 @@ handoff_path = "/imports/tv"
 	if got := library.Download.HandoffMode; got != DefaultHandoffMode {
 		t.Fatalf("expected default handoff_mode %q, got %q", DefaultHandoffMode, got)
 	}
+	if library.Media.ReplacementMode != "" {
+		t.Fatalf("media.replacement_mode = %q, want empty for download library", library.Media.ReplacementMode)
+	}
 	if library.Download.CleanupSourceMedia {
 		t.Fatal("cleanup_source_media default = true, want explicit opt-in")
+	}
+}
+
+func TestLoadDefaultsDownloadLibraryToHandoffFlow(t *testing.T) {
+	path := writeConfig(t, `
+[libraries.usenet-tv]
+kind = "download"
+path = "/downloads/complete/tv"
+
+[libraries.usenet-tv.download]
+handoff_path = "/imports/tv"
+`)
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+
+	library := cfg.Libraries["usenet-tv"]
+	if got := library.Flow; got != DefaultDownloadFlowName {
+		t.Fatalf("download library flow = %q, want %q", got, DefaultDownloadFlowName)
+	}
+	flow := cfg.Flows[DefaultDownloadFlowName]
+	if !containsString(flow.Steps, "handoff") {
+		t.Fatalf("download flow steps = %v, want handoff", flow.Steps)
+	}
+	if containsString(flow.Steps, "replace") {
+		t.Fatalf("download flow steps = %v, want no replace", flow.Steps)
+	}
+}
+
+func TestLoadRejectsDownloadLibraryUsingReplaceFlow(t *testing.T) {
+	path := writeConfig(t, `
+[flows.replace-download]
+steps = ["probe", "stage", "replace", "cleanup"]
+
+[libraries.usenet-tv]
+kind = "download"
+path = "/downloads/complete/tv"
+flow = "replace-download"
+
+[libraries.usenet-tv.download]
+handoff_path = "/imports/tv"
+`)
+
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("Load() error = nil, want replace flow rejection")
+	}
+	if !strings.Contains(err.Error(), `download library "usenet-tv"`) || !strings.Contains(err.Error(), "replace") {
+		t.Fatalf("Load() error = %q, want download library replace rejection", err.Error())
+	}
+}
+
+func TestLoadRejectsDownloadLibraryMediaReplacementMode(t *testing.T) {
+	path := writeConfig(t, `
+[libraries.usenet-tv]
+kind = "download"
+path = "/downloads/complete/tv"
+
+[libraries.usenet-tv.media]
+replacement_mode = "replace"
+
+[libraries.usenet-tv.download]
+handoff_path = "/imports/tv"
+`)
+
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("Load() error = nil, want media replacement mode rejection")
+	}
+	if !strings.Contains(err.Error(), "media.replacement_mode") {
+		t.Fatalf("Load() error = %q, want media.replacement_mode", err.Error())
 	}
 }
 

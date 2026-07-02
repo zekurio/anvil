@@ -54,6 +54,60 @@ func TestScanMediaLibraryEnqueuesRecursiveMediaFiles(t *testing.T) {
 	}
 }
 
+func TestScanMediaLibraryIgnoresAnvilCopyOutputs(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	now := testNow()
+
+	writeTestFile(t, root, "Movie.mkv", now.Add(-time.Hour))
+	writeTestFile(t, root, "Movie.anvil.mkv", now.Add(-time.Hour))
+	writeTestFile(t, root, "Other.ANVIL.mkv", now.Add(-time.Hour))
+	writeTestFile(t, root, "The.Anvil.2020.mkv", now.Add(-time.Hour))
+
+	library := config.LibraryConfig{
+		Name:    "movies",
+		Kind:    "media",
+		Path:    root,
+		Include: []string{"*.mkv"},
+	}
+	plan, err := (Scanner{Now: func() time.Time { return now }}).PlanLibrary(ctx, library)
+	if err != nil {
+		t.Fatalf("PlanLibrary() error = %v", err)
+	}
+
+	byPath := make(map[string]CandidatePlan)
+	for _, candidate := range plan.Candidates {
+		byPath[candidate.LibraryRelativePath] = candidate
+	}
+	for _, path := range []string{"Movie.anvil.mkv", "Other.ANVIL.mkv"} {
+		candidate := byPath[path]
+		if !candidate.Ignored || candidate.IgnoreReason != "anvil_output" || candidate.Enqueueable {
+			t.Fatalf("%s plan = %+v, want ignored anvil_output", path, candidate)
+		}
+	}
+	for _, path := range []string{"Movie.mkv", "The.Anvil.2020.mkv"} {
+		candidate := byPath[path]
+		if candidate.Ignored || !candidate.Enqueueable {
+			t.Fatalf("%s plan = %+v, want enqueueable", path, candidate)
+		}
+	}
+
+	fake := newFakeStore()
+	result, err := (Scanner{
+		Store: fake,
+		Now:   func() time.Time { return now },
+	}).ScanLibrary(ctx, library)
+	if err != nil {
+		t.Fatalf("ScanLibrary() error = %v", err)
+	}
+	if result.EnqueuedJobs != 2 {
+		t.Fatalf("enqueued jobs = %d, want 2", result.EnqueuedJobs)
+	}
+	if len(fake.jobs) != 2 {
+		t.Fatalf("jobs = %d, want 2", len(fake.jobs))
+	}
+}
+
 func TestScanDownloadLibraryGroupsNestedPackageAssets(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
