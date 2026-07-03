@@ -39,7 +39,7 @@ func Detect(probe domain.ProbeResult, profile domain.Profile) Match {
 
 func DetectVideo(probe domain.ProbeResult, profileName domain.ProfileName, videoCodec string, pixelFormat string) Match {
 	for _, stream := range probe.Streams {
-		if stream.Type != "video" {
+		if stream.Type != "video" || stream.AttachedPic() {
 			continue
 		}
 		tags := NormalizeTags(stream.Tags)
@@ -56,7 +56,7 @@ func DetectVideo(probe domain.ProbeResult, profileName domain.ProfileName, video
 
 func DetectProcessed(probe domain.ProbeResult, profile domain.Profile) Match {
 	for _, stream := range probe.Streams {
-		if stream.Type != "video" {
+		if stream.Type != "video" || stream.AttachedPic() {
 			continue
 		}
 		tags := NormalizeTags(stream.Tags)

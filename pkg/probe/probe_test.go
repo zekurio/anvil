@@ -134,6 +134,20 @@ func TestFFProbeParsesHDRAndDolbyVisionMetadata(t *testing.T) {
 	}
 }
 
+func TestHDRMetadataUsesPrimaryVideoStream(t *testing.T) {
+	result := domain.ProbeResult{Streams: []domain.MediaStream{
+		{Index: 0, Type: "video", Codec: "png", Disposition: map[string]bool{"attached_pic": true}},
+		{Index: 1, Type: "video", Codec: "hevc", ColorTransfer: "smpte2084", ColorPrimaries: "bt2020"},
+	}}
+	metadata := hdrMetadata(result)
+	if got, want := metadata.ColorTransfer, "smpte2084"; got != want {
+		t.Fatalf("ColorTransfer = %q, want %q", got, want)
+	}
+	if got, want := metadata.ColorPrimaries, "bt2020"; got != want {
+		t.Fatalf("ColorPrimaries = %q, want %q", got, want)
+	}
+}
+
 func TestBlockMarksCompatibleAnvilEncodedVideo(t *testing.T) {
 	runner := fakeRunner{stdout: []byte(`{
 		"streams": [

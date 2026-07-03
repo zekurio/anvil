@@ -38,6 +38,26 @@ func TestDetectRejectsDifferentProfile(t *testing.T) {
 	}
 }
 
+func TestDetectIgnoresCoverArtStreams(t *testing.T) {
+	probed := domain.ProbeResult{Streams: []domain.MediaStream{
+		{
+			Index:       0,
+			Type:        "video",
+			Codec:       "png",
+			Disposition: map[string]bool{"attached_pic": true},
+			Tags: map[string]string{
+				TagEncoded:    "true",
+				TagProfile:    "default-av1",
+				TagVideoCodec: "libsvtav1",
+			},
+		},
+	}}
+	match := Detect(probed, testProfile())
+	if match.Compatible || len(match.Tags) > 0 {
+		t.Fatalf("match = %+v, want no match for cover art stream", match)
+	}
+}
+
 func TestDetectProcessedFindsCompatibleProcessedMarker(t *testing.T) {
 	probed := domain.ProbeResult{Streams: []domain.MediaStream{
 		{Index: 0, Type: "video", Tags: map[string]string{
