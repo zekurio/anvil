@@ -47,7 +47,7 @@ func TestArgsPreserveStreamsAndStripMetadata(t *testing.T) {
 			t.Fatalf("Args() = %v, missing %q", args, token)
 		}
 	}
-	for _, pair := range [][2]string{{"-map", "0:v?"}, {"-map", "0:a?"}, {"-map", "0:s?"}} {
+	for _, pair := range [][2]string{{"-map", "0:V?"}, {"-map", "0:a?"}, {"-map", "0:s?"}} {
 		if !containsPair(args, pair[0], pair[1]) {
 			t.Fatalf("Args() = %v, missing %v", args, pair)
 		}
@@ -218,6 +218,34 @@ func TestArgsMapsSelectedAudioAndAppliesCrop(t *testing.T) {
 	}
 	if containsPair(args, "-map", "0:a?") {
 		t.Fatalf("Args() = %v, did not expect all-audio stream map", args)
+	}
+}
+
+func TestArgsMapPrimaryVideoAndDropCoverArt(t *testing.T) {
+	request := testBuildPlanRequest()
+	request.Probe = &domain.ProbeResult{Streams: []domain.MediaStream{
+		{Index: 0, Type: "video", Codec: "png", Disposition: map[string]bool{"attached_pic": true}},
+		{Index: 1, Type: "video", Codec: "hevc", Width: 1920, Height: 1080},
+		{Index: 2, Type: "audio", Codec: "aac"},
+	}}
+	plan := mustBuildPlan(t, request)
+	if !plan.VideoSelectionApplied {
+		t.Fatal("VideoSelectionApplied = false, want true")
+	}
+	if plan.VideoStreamIndex != 1 {
+		t.Fatalf("VideoStreamIndex = %d, want 1", plan.VideoStreamIndex)
+	}
+	if got, want := plan.InputVideoCodec, "hevc"; got != want {
+		t.Fatalf("InputVideoCodec = %q, want %q", got, want)
+	}
+	args := Args(plan)
+	if !containsPair(args, "-map", "0:1") {
+		t.Fatalf("Args() = %v, missing primary video map", args)
+	}
+	for _, pair := range [][2]string{{"-map", "0:v?"}, {"-map", "0:V?"}, {"-map", "0:0"}} {
+		if containsPair(args, pair[0], pair[1]) {
+			t.Fatalf("Args() = %v, did not expect %v", args, pair)
+		}
 	}
 }
 

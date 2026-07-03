@@ -130,14 +130,13 @@ func (v Validator) validateDuration(request Request, outputProbe domain.ProbeRes
 }
 
 func validateVideo(request Request, outputProbe domain.ProbeResult, result *domain.ValidationResult) {
-	outputVideos := streamsByType(outputProbe.Streams, "video")
-	result.OutputVideoStreamCount = len(outputVideos)
-	if len(outputVideos) == 0 {
-		addError(result, "output has no video streams")
+	result.OutputVideoStreamCount = countStreams(outputProbe.Streams, "video")
+	outputVideo, ok := domain.PrimaryVideoStream(outputProbe.Streams)
+	if !ok {
+		addError(result, "output has no primary video stream")
 		return
 	}
 
-	outputVideo := outputVideos[0]
 	result.OutputVideoCodec = outputVideo.Codec
 	result.OutputVideoPixelFormat = outputVideo.PixelFormat
 
@@ -242,8 +241,8 @@ func validateHDR(request Request, outputProbe domain.ProbeResult, result *domain
 	if request.SourceProbe == nil {
 		return
 	}
-	sourceVideo, sourceOK := firstVideo(request.SourceProbe.Streams)
-	outputVideo, outputOK := firstVideo(outputProbe.Streams)
+	sourceVideo, sourceOK := domain.PrimaryVideoStream(request.SourceProbe.Streams)
+	outputVideo, outputOK := domain.PrimaryVideoStream(outputProbe.Streams)
 	if !sourceOK || !outputOK {
 		return
 	}
@@ -310,11 +309,11 @@ func expectedVideoCodec(request Request) (string, bool) {
 		if request.SourceProbe == nil {
 			return "", false
 		}
-		sourceVideos := streamsByType(request.SourceProbe.Streams, "video")
-		if len(sourceVideos) == 0 {
+		sourceVideo, ok := domain.PrimaryVideoStream(request.SourceProbe.Streams)
+		if !ok {
 			return "", false
 		}
-		return normalizeCodec(sourceVideos[0].Codec), true
+		return normalizeCodec(sourceVideo.Codec), true
 	}
 	codec := ""
 	if request.EncodePlan != nil {
@@ -390,25 +389,6 @@ func normalizeCodec(codec string) string {
 	codec = strings.ToLower(strings.TrimSpace(codec))
 	codec = strings.ReplaceAll(codec, "_", "-")
 	return codec
-}
-
-func streamsByType(streams []domain.MediaStream, streamType string) []domain.MediaStream {
-	var result []domain.MediaStream
-	for _, stream := range streams {
-		if stream.Type == streamType {
-			result = append(result, stream)
-		}
-	}
-	return result
-}
-
-func firstVideo(streams []domain.MediaStream) (domain.MediaStream, bool) {
-	for _, stream := range streams {
-		if stream.Type == "video" {
-			return stream, true
-		}
-	}
-	return domain.MediaStream{}, false
 }
 
 func countStreams(streams []domain.MediaStream, streamType string) int {

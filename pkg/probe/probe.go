@@ -264,23 +264,21 @@ func (b Block) configureDolbyVision(ctx context.Context, job *pipeline.JobContex
 }
 
 func hdrMetadata(result domain.ProbeResult) domain.HDRMetadata {
-	for _, stream := range result.Streams {
-		if stream.Type != "video" {
-			continue
-		}
-		metadata := domain.HDRMetadata{
-			ColorRange:     stream.ColorRange,
-			ColorSpace:     stream.ColorSpace,
-			ColorTransfer:  stream.ColorTransfer,
-			ColorPrimaries: stream.ColorPrimaries,
-		}
-		if stream.DolbyVision != nil {
-			copied := *stream.DolbyVision
-			metadata.DolbyVision = &copied
-		}
-		return metadata
+	stream, ok := domain.PrimaryVideoStream(result.Streams)
+	if !ok {
+		return domain.HDRMetadata{}
 	}
-	return domain.HDRMetadata{}
+	metadata := domain.HDRMetadata{
+		ColorRange:     stream.ColorRange,
+		ColorSpace:     stream.ColorSpace,
+		ColorTransfer:  stream.ColorTransfer,
+		ColorPrimaries: stream.ColorPrimaries,
+	}
+	if stream.DolbyVision != nil {
+		copied := *stream.DolbyVision
+		metadata.DolbyVision = &copied
+	}
+	return metadata
 }
 
 func dolbyVisionMetadata(sideDataList []struct {

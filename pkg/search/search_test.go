@@ -225,6 +225,23 @@ func TestBlockSearchPlanUsesDolbyVisionOverride(t *testing.T) {
 	}
 }
 
+func TestSearchPlanUsesPrimaryVideoStream(t *testing.T) {
+	job := &pipeline.JobContext{
+		InputPath: "/input.mkv",
+		Probe: &domain.ProbeResult{Streams: []domain.MediaStream{
+			{Index: 0, Type: "video", Codec: "png", Width: 600, Height: 900, Disposition: map[string]bool{"attached_pic": true}},
+			{Index: 1, Type: "video", Codec: "hevc", Width: 1920, Height: 1080},
+		}},
+	}
+	plan := searchPlan(job)
+	if got, want := plan.InputVideoCodec, "hevc"; got != want {
+		t.Fatalf("InputVideoCodec = %q, want %q", got, want)
+	}
+	if plan.InputWidth != 1920 || plan.InputHeight != 1080 {
+		t.Fatalf("input dimensions = %dx%d, want 1920x1080", plan.InputWidth, plan.InputHeight)
+	}
+}
+
 func TestParseResultReturnsSkipForNoSuitableCRF(t *testing.T) {
 	result, err := ParseResult([]byte("crf 18 vmaf 94.7 (103%)\nError: Failed to find a suitable crf\n"))
 	if err != nil {
