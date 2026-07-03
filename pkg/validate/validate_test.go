@@ -78,6 +78,32 @@ func TestValidatorRejectsWrongVideoCodec(t *testing.T) {
 	assertErrorContains(t, result, "video codec")
 }
 
+func TestValidatorIgnoresCoverArtStreamsForVideoChecks(t *testing.T) {
+	outputPath := writeSizedFile(t, "out.mkv", 800)
+	plan := encodePlan(false)
+	cover := domain.MediaStream{Index: 4, Type: "video", Codec: "png", Disposition: map[string]bool{"attached_pic": true}}
+	probed := outputProbe(plan)
+	probed.Streams = append([]domain.MediaStream{cover}, probed.Streams...)
+	source := sourceProbe()
+	source.Streams = append([]domain.MediaStream{cover}, source.Streams...)
+
+	result, err := Validator{Prober: fakeProber{result: probed}}.Validate(context.Background(), Request{
+		SourceProbe: source,
+		OutputPath:  outputPath,
+		Profile:     testProfile(),
+		EncodePlan:  &plan,
+	})
+	if err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+	if !result.OK {
+		t.Fatalf("result.OK = false, errors = %v", result.Errors)
+	}
+	if got, want := result.OutputVideoCodec, "av1"; got != want {
+		t.Fatalf("output video codec = %q, want %q", got, want)
+	}
+}
+
 func TestBlockRecordsValidationMismatchWithoutRejectingEncode(t *testing.T) {
 	outputPath := writeSizedFile(t, "out.mkv", 800)
 	plan := encodePlan(false)

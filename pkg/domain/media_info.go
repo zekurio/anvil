@@ -21,6 +21,24 @@ type MediaStream struct {
 	Disposition    map[string]bool
 }
 
+// AttachedPic reports whether the stream is an embedded image, such as cover
+// art, exposed as a video stream with the attached_pic disposition.
+func (s MediaStream) AttachedPic() bool {
+	return s.Type == "video" && s.Disposition["attached_pic"]
+}
+
+// PrimaryVideoStream returns the first video stream that is not an attached
+// picture. Embedded cover art shows up as an extra video stream and must not
+// be treated as the main video for encoding, HDR detection, or validation.
+func PrimaryVideoStream(streams []MediaStream) (MediaStream, bool) {
+	for _, stream := range streams {
+		if stream.Type == "video" && !stream.AttachedPic() {
+			return stream, true
+		}
+	}
+	return MediaStream{}, false
+}
+
 type DolbyVisionMetadata struct {
 	Profile                  int
 	Level                    int
@@ -91,6 +109,8 @@ type EncodePlan struct {
 	Threads                  int
 	Container                string
 	CropFilter               string
+	VideoSelectionApplied    bool
+	VideoStreamIndex         int
 	AudioSelectionApplied    bool
 	AudioStreamIndexes       []int
 	SubtitleSelectionApplied bool

@@ -203,12 +203,11 @@ func inputVideo(probe *domain.ProbeResult) (string, int, int) {
 	if probe == nil {
 		return "", 0, 0
 	}
-	for _, stream := range probe.Streams {
-		if stream.Type == "video" {
-			return stream.Codec, stream.Width, stream.Height
-		}
+	stream, ok := domain.PrimaryVideoStream(probe.Streams)
+	if !ok {
+		return "", 0, 0
 	}
-	return "", 0, 0
+	return stream.Codec, stream.Width, stream.Height
 }
 
 func crfMin(plan domain.EncodePlan) int {

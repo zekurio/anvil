@@ -5,6 +5,7 @@ import (
 	"encoding/xml"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -82,16 +83,16 @@ func BuildPlanFromRequest(request BuildPlanRequest) (domain.EncodePlan, error) {
 	}
 	videoCopy, videoCopyReason := videoCopyState(request.Metadata, request.Search)
 	video := domain.EffectiveVideoProfile(request.Profile, request.Metadata)
-	inputVideoCodec, inputWidth, inputHeight := inputVideo(request.Probe)
+	inputVideo, inputVideoFound := primaryInputVideo(request.Probe)
 	crf := selectedCRF(video, videoCopy, request.Search)
 	plan := domain.EncodePlan{
 		InputPath:          request.InputPath,
 		OutputPath:         request.OutputPath,
 		ProfileName:        request.Profile.Name,
 		VideoCodec:         videocodec.ResolveEncoder(video.Codec, video.Accelerator),
-		InputVideoCodec:    inputVideoCodec,
-		InputWidth:         inputWidth,
-		InputHeight:        inputHeight,
+		InputVideoCodec:    inputVideo.Codec,
+		InputWidth:         inputVideo.Width,
+		InputHeight:        inputVideo.Height,
 		Accelerator:        videocodec.ResolveAccelerator(video.Accelerator),
 		VideoSource:        domain.EffectiveVideoSource(request.Metadata),
 		VideoCopy:          videoCopy,
@@ -116,6 +117,10 @@ func BuildPlanFromRequest(request BuildPlanRequest) (domain.EncodePlan, error) {
 		FFmpegArgs:         append([]string(nil), video.FFmpegArgs...),
 		ABAV1Args:          append([]string(nil), video.ABAV1Args...),
 		HDR:                request.Metadata.HDR,
+	}
+	if inputVideoFound {
+		plan.VideoSelectionApplied = true
+		plan.VideoStreamIndex = inputVideo.Index
 	}
 	applyAudioSelection(&plan, request.Audio)
 	applySubtitleSelection(&plan, request.Subtitles)
@@ -220,12 +225,31 @@ func (b Block) Run(ctx context.Context, job *pipeline.JobContext) error {
 	if err != nil {
 		return err
 	}
+	if dropped := attachedPicStreams(job.Probe); len(dropped) > 0 {
+		slog.Info("dropping embedded cover art video streams",
+			"input", plan.InputPath,
+			"streams", dropped,
+		)
+	}
 	job.EncodePlan = &plan
 	_, err = b.Encoder.Encode(ctx, plan)
 	if err != nil {
 		return fmt.Errorf("ffmpeg encode: %w", err)
 	}
 	return nil
+}
+
+func attachedPicStreams(probe *domain.ProbeResult) []string {
+	if probe == nil {
+		return nil
+	}
+	var dropped []string
+	for _, stream := range probe.Streams {
+		if stream.AttachedPic() {
+			dropped = append(dropped, fmt.Sprintf("0:%d(%s)", stream.Index, stream.Codec))
+		}
+	}
+	return dropped
 }
 
 func buildPlanRequest(job *pipeline.JobContext) BuildPlanRequest {
@@ -630,20 +654,23 @@ func qsvInputPipeline(plan domain.EncodePlan) bool {
 	return ok
 }
 
-func inputVideo(probe *domain.ProbeResult) (string, int, int) {
+func primaryInputVideo(probe *domain.ProbeResult) (domain.MediaStream, bool) {
 	if probe == nil {
-		return "", 0, 0
+		return domain.MediaStream{}, false
 	}
-	for _, stream := range probe.Streams {
-		if stream.Type == "video" {
-			return stream.Codec, stream.Width, stream.Height
-		}
-	}
-	return "", 0, 0
+	return domain.PrimaryVideoStream(probe.Streams)
 }
 
 func mapArgs(plan domain.EncodePlan) []string {
-	args := []string{"-map", "0:v?"}
+	// Embedded cover art appears as an extra video stream (attached_pic) and
+	// must never reach the video encoder. Map the resolved primary video
+	// stream explicitly; without a probe, 0:V excludes attached pictures.
+	var args []string
+	if plan.VideoSelectionApplied {
+		args = []string{"-map", "0:" + strconv.Itoa(plan.VideoStreamIndex)}
+	} else {
+		args = []string{"-map", "0:V?"}
+	}
 	if plan.AudioSelectionApplied {
 		for _, streamIndex := range plan.AudioStreamIndexes {
 			args = append(args, "-map", "0:"+strconv.Itoa(streamIndex))
@@ -757,8 +784,8 @@ func standardizedTrackTitles(plan domain.EncodePlan, probe *domain.ProbeResult) 
 		return nil
 	}
 	var titles []domain.TrackTitle
-	for outputIndex, stream := range streamsOfType(probe.Streams, "video") {
-		titles = appendTrackTitle(titles, "v", outputIndex, videoTrackTitle(plan, stream))
+	if video, ok := domain.PrimaryVideoStream(probe.Streams); ok {
+		titles = appendTrackTitle(titles, "v", 0, videoTrackTitle(plan, video))
 	}
 	for outputIndex, stream := range selectedAudioStreams(plan, probe.Streams) {
 		titles = appendTrackTitle(titles, "a", outputIndex, audioTrackTitle(stream))
