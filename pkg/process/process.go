@@ -55,8 +55,8 @@ func (OSRunner) Run(ctx context.Context, command Command) (Result, error) {
 
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
+	cmd.Stdout = io.MultiWriter(&stdout, outputWriter{ctx: ctx, command: command, stream: "stdout"})
+	cmd.Stderr = io.MultiWriter(&stderr, outputWriter{ctx: ctx, command: command, stream: "stderr"})
 
 	err := cmd.Run()
 	result := Result{
@@ -81,4 +81,15 @@ func (OSRunner) Run(ctx context.Context, command Command) (Result, error) {
 	}
 	recordProcessOutput(ctx, command, result, runErr)
 	return result, runErr
+}
+
+type outputWriter struct {
+	ctx     context.Context
+	command Command
+	stream  string
+}
+
+func (w outputWriter) Write(p []byte) (int, error) {
+	streamProcessOutput(w.ctx, w.command, w.stream, p)
+	return len(p), nil
 }

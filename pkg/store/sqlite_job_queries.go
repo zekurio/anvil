@@ -5,13 +5,15 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strconv"
+	"strings"
 
 	"github.com/zekurio/anvil/pkg/domain"
 )
 
 func (s *SQLiteStore) GetJob(ctx context.Context, id domain.JobID) (domain.Job, error) {
 	row := s.db.QueryRowContext(ctx, `
-SELECT id, source_id, asset_id, library_name, priority, state, lease_owner,
+SELECT id, slug, source_id, asset_id, library_name, priority, state, lease_owner,
 	lease_deadline, heartbeat_at, attempt_count, last_error, input_size_bytes,
 	output_size_bytes, created_at, updated_at, completed_at
 FROM jobs
@@ -20,9 +22,28 @@ WHERE id = ?
 	return scanJob(row)
 }
 
+func (s *SQLiteStore) GetJobBySlug(ctx context.Context, slug string) (domain.Job, error) {
+	row := s.db.QueryRowContext(ctx, `
+SELECT id, slug, source_id, asset_id, library_name, priority, state, lease_owner,
+	lease_deadline, heartbeat_at, attempt_count, last_error, input_size_bytes,
+	output_size_bytes, created_at, updated_at, completed_at
+FROM jobs
+WHERE slug = ?
+`, strings.TrimSpace(slug))
+	return scanJob(row)
+}
+
+func (s *SQLiteStore) ResolveJobReference(ctx context.Context, reference string) (domain.Job, error) {
+	reference = strings.TrimSpace(reference)
+	if id, err := strconv.ParseInt(reference, 10, 64); err == nil && id > 0 {
+		return s.GetJob(ctx, domain.JobID(id))
+	}
+	return s.GetJobBySlug(ctx, reference)
+}
+
 func (s *SQLiteStore) GetJobForTarget(ctx context.Context, sourceID domain.MediaSourceID, assetID domain.MediaAssetID) (domain.Job, error) {
 	row := s.db.QueryRowContext(ctx, `
-SELECT id, source_id, asset_id, library_name, priority, state, lease_owner,
+SELECT id, slug, source_id, asset_id, library_name, priority, state, lease_owner,
 	lease_deadline, heartbeat_at, attempt_count, last_error, input_size_bytes,
 	output_size_bytes, created_at, updated_at, completed_at
 FROM jobs
@@ -47,7 +68,7 @@ func (s *SQLiteStore) FindJobForTarget(ctx context.Context, sourceID domain.Medi
 
 func (s *SQLiteStore) GetActiveJobForTarget(ctx context.Context, sourceID domain.MediaSourceID, assetID domain.MediaAssetID) (domain.Job, error) {
 	row := s.db.QueryRowContext(ctx, `
-SELECT id, source_id, asset_id, library_name, priority, state, lease_owner,
+SELECT id, slug, source_id, asset_id, library_name, priority, state, lease_owner,
 	lease_deadline, heartbeat_at, attempt_count, last_error, input_size_bytes,
 	output_size_bytes, created_at, updated_at, completed_at
 FROM jobs
@@ -64,7 +85,7 @@ LIMIT 1
 
 func (s *SQLiteStore) ListJobs(ctx context.Context, filter JobListFilter) (jobs []JobSummary, err error) {
 	query := `
-SELECT j.id, j.source_id, j.asset_id, j.library_name, j.priority, j.state,
+SELECT j.id, j.slug, j.source_id, j.asset_id, j.library_name, j.priority, j.state,
 	j.lease_owner, j.lease_deadline, j.heartbeat_at, j.attempt_count,
 	j.last_error, j.input_size_bytes, j.output_size_bytes, j.created_at,
 	j.updated_at, j.completed_at,
@@ -112,7 +133,7 @@ WHERE 1 = 1
 
 func (s *SQLiteStore) GetJobSummary(ctx context.Context, id domain.JobID) (JobSummary, error) {
 	row := s.db.QueryRowContext(ctx, `
-SELECT j.id, j.source_id, j.asset_id, j.library_name, j.priority, j.state,
+SELECT j.id, j.slug, j.source_id, j.asset_id, j.library_name, j.priority, j.state,
 	j.lease_owner, j.lease_deadline, j.heartbeat_at, j.attempt_count,
 	j.last_error, j.input_size_bytes, j.output_size_bytes, j.created_at,
 	j.updated_at, j.completed_at,
@@ -165,7 +186,7 @@ WHERE state = ?
 
 func getJobTx(ctx context.Context, tx *sql.Tx, id domain.JobID) (domain.Job, error) {
 	row := tx.QueryRowContext(ctx, `
-SELECT id, source_id, asset_id, library_name, priority, state, lease_owner,
+SELECT id, slug, source_id, asset_id, library_name, priority, state, lease_owner,
 	lease_deadline, heartbeat_at, attempt_count, last_error, input_size_bytes,
 	output_size_bytes, created_at, updated_at, completed_at
 FROM jobs

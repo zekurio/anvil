@@ -1,6 +1,9 @@
 package domain
 
-import "time"
+import (
+	"fmt"
+	"time"
+)
 
 type JobState string
 
@@ -18,6 +21,7 @@ const (
 
 type Job struct {
 	ID              JobID
+	Slug            string
 	SourceID        MediaSourceID
 	AssetID         MediaAssetID
 	LibraryName     LibraryName
@@ -33,6 +37,13 @@ type Job struct {
 	CreatedAt       time.Time
 	UpdatedAt       time.Time
 	CompletedAt     *time.Time
+}
+
+func (j Job) Label() string {
+	if j.Slug != "" {
+		return j.Slug
+	}
+	return fmt.Sprintf("job-%d", j.ID)
 }
 
 const JobPipelineContextVersion = 1

@@ -15,23 +15,35 @@ func (s *SQLiteStore) EnqueueJob(ctx context.Context, input EnqueueJobInput) (do
 	now := defaultNow(input.Now)
 	assetID := nullableAssetID(input.AssetID)
 
-	result, err := s.db.ExecContext(ctx, `
+	for range 100 {
+		slug, err := newJobSlug()
+		if err != nil {
+			return domain.Job{}, false, err
+		}
+		result, err := s.db.ExecContext(ctx, `
 INSERT OR IGNORE INTO jobs (
-	source_id, asset_id, library_name, priority, state, created_at, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?)
-`, int64(input.SourceID), assetID, string(input.LibraryName), input.Priority,
-		string(domain.JobStatePending), encodeTime(now), encodeTime(now))
-	if err != nil {
-		return domain.Job{}, false, fmt.Errorf("enqueue job: %w", err)
+	slug, source_id, asset_id, library_name, priority, state, created_at, updated_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+`, slug, int64(input.SourceID), assetID, string(input.LibraryName), input.Priority,
+			string(domain.JobStatePending), encodeTime(now), encodeTime(now))
+		if err != nil {
+			return domain.Job{}, false, fmt.Errorf("enqueue job: %w", err)
+		}
+
+		rows, err := result.RowsAffected()
+		if err != nil {
+			return domain.Job{}, false, fmt.Errorf("enqueue job rows affected: %w", err)
+		}
+		job, getErr := s.GetJobForTarget(ctx, input.SourceID, input.AssetID)
+		if getErr == nil {
+			return job, rows > 0, nil
+		}
+		if !errors.Is(getErr, ErrNotFound) {
+			return domain.Job{}, false, getErr
+		}
 	}
 
-	rows, err := result.RowsAffected()
-	if err != nil {
-		return domain.Job{}, false, fmt.Errorf("enqueue job rows affected: %w", err)
-	}
-
-	job, err := s.GetJobForTarget(ctx, input.SourceID, input.AssetID)
-	return job, rows > 0, err
+	return domain.Job{}, false, errors.New("could not allocate unique job slug")
 }
 
 func (s *SQLiteStore) RetryJob(ctx context.Context, id domain.JobID, now time.Time) (domain.Job, error) {
