@@ -35,28 +35,28 @@ func newPipelineContextPersistence(ctx context.Context, store Store, job *pipeli
 
 	snapshot, ok, err := store.GetJobPipelineContext(ctx, job.Job.ID)
 	if err != nil {
-		slog.Warn("job pipeline context ignored", "job_id", int64(job.Job.ID), "error", err)
+		slog.Warn("job pipeline context ignored", "job", job.Job.Label(), "error", err)
 		return persistence
 	}
 	if !ok {
 		return persistence
 	}
 	if !pipelineContextMatches(base, snapshot) {
-		slog.Info("job pipeline context is stale; rebuilding", "job_id", int64(job.Job.ID))
+		slog.Info("job pipeline context is stale; rebuilding", "job", job.Job.Label())
 		return persistence
 	}
 	probeMetadataCurrent, err := pipelineContextProbeMetadataCurrent(ctx, refreshProbeMetadata, job, snapshot)
 	if err != nil {
-		slog.Info("job pipeline context is stale; rebuilding", "job_id", int64(job.Job.ID), "reason", "probe metadata refresh failed", "error", err)
+		slog.Info("job pipeline context is stale; rebuilding", "job", job.Job.Label(), "reason", "probe metadata refresh failed", "error", err)
 		return persistence
 	}
 	if !probeMetadataCurrent {
-		slog.Info("job pipeline context is stale; rebuilding", "job_id", int64(job.Job.ID), "reason", "probe metadata changed")
+		slog.Info("job pipeline context is stale; rebuilding", "job", job.Job.Label(), "reason", "probe metadata changed")
 		return persistence
 	}
 	persistence.cached = &snapshot
 	persistence.current = snapshot
-	slog.Info("job pipeline context loaded", "job_id", int64(job.Job.ID), "steps", len(snapshot.Steps))
+	slog.Info("job pipeline context loaded", "job", job.Job.Label(), "steps", len(snapshot.Steps))
 	return persistence
 }
 

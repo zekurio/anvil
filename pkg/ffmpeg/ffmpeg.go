@@ -182,6 +182,9 @@ func Args(plan domain.EncodePlan) []string {
 	args := []string{
 		"-hide_banner",
 		"-y",
+		"-nostats",
+		"-stats_period", "5",
+		"-progress", "pipe:1",
 	}
 	args = append(args, inputArgs(plan)...)
 	args = append(args, "-i", plan.InputPath)

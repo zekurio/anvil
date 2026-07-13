@@ -29,6 +29,7 @@ type inspectReport struct {
 
 type inspectJob struct {
 	ID           int64      `json:"id"`
+	Slug         string     `json:"slug"`
 	State        string     `json:"state"`
 	Library      string     `json:"library"`
 	AttemptCount int        `json:"attempt_count"`
@@ -107,8 +108,8 @@ type inspectPipelineStep struct {
 }
 
 func runInspectCommand(ctx context.Context, cfg config.Config, opts options) error {
-	if len(opts.jobIDs) != 1 {
-		return fmt.Errorf("inspect requires exactly one job ID")
+	if len(opts.jobRefs) != 1 {
+		return fmt.Errorf("inspect requires exactly one job reference")
 	}
 	state, err := openStore(ctx, cfg)
 	if err != nil {
@@ -116,7 +117,11 @@ func runInspectCommand(ctx context.Context, cfg config.Config, opts options) err
 	}
 	defer closeStore(state)
 
-	report, err := buildInspectReport(ctx, state, opts.jobIDs[0])
+	job, err := state.ResolveJobReference(ctx, opts.jobRefs[0])
+	if err != nil {
+		return fmt.Errorf("resolve job %q: %w", opts.jobRefs[0], err)
+	}
+	report, err := buildInspectReport(ctx, state, job.ID)
 	if err != nil {
 		return err
 	}
@@ -161,6 +166,7 @@ func buildInspectReport(ctx context.Context, state *store.SQLiteStore, jobID dom
 func inspectJobFromSummary(summary store.JobSummary) inspectJob {
 	return inspectJob{
 		ID:           int64(summary.Job.ID),
+		Slug:         summary.Job.Label(),
 		State:        string(summary.Job.State),
 		Library:      string(summary.Job.LibraryName),
 		AttemptCount: summary.Job.AttemptCount,
@@ -302,7 +308,7 @@ func inspectPipelineSteps(steps map[string]domain.JobPipelineStep) []inspectPipe
 func writeInspectReport(out io.Writer, report inspectReport) error {
 	return writeOutput(out, func(w *outputWriter) {
 		job := report.Job
-		w.printf("Job %d\n", job.ID)
+		w.printf("Job %s (id=%d)\n", job.Slug, job.ID)
 		w.printf("  State: %s\n", job.State)
 		w.printf("  Library: %s\n", job.Library)
 		w.printf("  Attempts: %d\n", job.AttemptCount)
@@ -323,7 +329,7 @@ func writeInspectReport(out io.Writer, report inspectReport) error {
 
 		w.printf("\nAttempts:\n")
 		for _, attempt := range report.Attempts {
-			w.printf("\n  Attempt %d (id=%d)\n", attempt.Number, attempt.ID)
+			w.printf("\n  Attempt %d\n", attempt.Number)
 			w.printf("    State: %s\n", attempt.State)
 			w.printf("    Worker: %s\n", displayOrNone(attempt.WorkerID))
 			w.printf("    Started: %s\n", formatInspectTime(attempt.StartedAt))

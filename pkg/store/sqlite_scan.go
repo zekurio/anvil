@@ -81,6 +81,7 @@ func scanJob(row scanner) (domain.Job, error) {
 	var updatedAt string
 	err := row.Scan(
 		&job.ID,
+		&job.Slug,
 		&job.SourceID,
 		&assetID,
 		&job.LibraryName,
@@ -126,6 +127,7 @@ func scanJobSummary(row scanner) (JobSummary, error) {
 	var assetRole sql.NullString
 	err := row.Scan(
 		&summary.Job.ID,
+		&summary.Job.Slug,
 		&summary.Job.SourceID,
 		&assetID,
 		&summary.Job.LibraryName,

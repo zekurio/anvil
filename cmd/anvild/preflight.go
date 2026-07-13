@@ -97,6 +97,7 @@ type preflightStatus struct {
 	AlreadyHasJob       bool            `json:"already_has_job"`
 	WouldEnqueueNewJob  bool            `json:"would_enqueue_new_job"`
 	ExistingJobID       domain.JobID    `json:"existing_job_id,omitempty"`
+	ExistingJobSlug     string          `json:"existing_job_slug,omitempty"`
 	ExistingJobState    domain.JobState `json:"existing_job_state,omitempty"`
 	ExistingAttemptHint string          `json:"existing_attempt_hint,omitempty"`
 }
@@ -323,6 +324,7 @@ func buildPreflightCandidate(ctx context.Context, cfg config.Config, state prefl
 					status.AlreadyHasJob = true
 					status.WouldEnqueueNewJob = false
 					status.ExistingJobID = job.ID
+					status.ExistingJobSlug = job.Label()
 					status.ExistingJobState = job.State
 					status.ExistingAttemptHint = "attempt-<new>"
 				}
@@ -333,7 +335,7 @@ func buildPreflightCandidate(ctx context.Context, cfg config.Config, state prefl
 	inputPath := worker.InputPath(library.Path, source, asset)
 	jobLabel := "<new>"
 	if status.AlreadyHasJob {
-		jobLabel = strconv.FormatInt(int64(status.ExistingJobID), 10)
+		jobLabel = status.ExistingJobSlug
 	}
 	stagingPlan, err := staging.Manager{Root: stagingRoot(cfg)}.Plan(jobLabel, "<new>", profile.Container, inputPath)
 	if err != nil {
@@ -670,7 +672,7 @@ func writePreflightReport(out io.Writer, report preflightReport) error {
 				item.Status.WouldEnqueueNewJob,
 			)
 			if item.Status.AlreadyHasJob {
-				w.printf("  job: id=%d state=%s attempt=%s\n", item.Status.ExistingJobID, item.Status.ExistingJobState, item.Status.ExistingAttemptHint)
+				w.printf("  job: %s (id=%d) state=%s attempt=%s\n", item.Status.ExistingJobSlug, item.Status.ExistingJobID, item.Status.ExistingJobState, item.Status.ExistingAttemptHint)
 			}
 			w.printf("  flow: %s [%s]\n", item.Flow.Name, strings.Join(item.Flow.Steps, " -> "))
 			w.printf("  profile: %s container=%s codec=%s accelerator=%s bit_depth=%d\n",
