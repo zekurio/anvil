@@ -20,6 +20,7 @@ func TestProcessLogRecorderWritesFFmpegOutputAndArtifact(t *testing.T) {
 		root:      root,
 		jobID:     99,
 		attemptID: 7,
+		attempt:   7,
 		events:    store,
 		now: func() time.Time {
 			return time.Date(2026, 6, 28, 12, 0, 0, 0, time.UTC)
@@ -38,8 +39,8 @@ func TestProcessLogRecorderWritesFFmpegOutputAndArtifact(t *testing.T) {
 		t.Fatalf("LogProcess() error = %v", err)
 	}
 
-	stdoutPath := filepath.Join(root, "job-99-attempt-7", "encode-ffmpeg.stdout.log")
-	stderrPath := filepath.Join(root, "job-99-attempt-7", "encode-ffmpeg.stderr.log")
+	stdoutPath := filepath.Join(root, "job-99", "attempt-7", "encode-ffmpeg.stdout.log")
+	stderrPath := filepath.Join(root, "job-99", "attempt-7", "encode-ffmpeg.stderr.log")
 	if got, err := os.ReadFile(stdoutPath); err != nil || string(got) != "out" {
 		t.Fatalf("stdout log = %q, err = %v", got, err)
 	}
@@ -72,6 +73,7 @@ func TestProcessLogRecorderKeepsRepeatedCommandLogsUnique(t *testing.T) {
 		root:      root,
 		jobID:     99,
 		attemptID: 7,
+		attempt:   7,
 		events:    store,
 	}
 	ctx := process.WithStep(context.Background(), "encode")
@@ -89,8 +91,8 @@ func TestProcessLogRecorderKeepsRepeatedCommandLogsUnique(t *testing.T) {
 		t.Fatalf("second LogProcess() error = %v", err)
 	}
 
-	firstPath := filepath.Join(root, "job-99-attempt-7", "encode-ffmpeg.stdout.log")
-	secondPath := filepath.Join(root, "job-99-attempt-7", "encode-ffmpeg-2.stdout.log")
+	firstPath := filepath.Join(root, "job-99", "attempt-7", "encode-ffmpeg.stdout.log")
+	secondPath := filepath.Join(root, "job-99", "attempt-7", "encode-ffmpeg-2.stdout.log")
 	if got, err := os.ReadFile(firstPath); err != nil || string(got) != "first" {
 		t.Fatalf("first stdout log = %q, err = %v", got, err)
 	}
@@ -119,6 +121,7 @@ func TestProcessLogRecorderIgnoresFFProbeOutput(t *testing.T) {
 		root:      root,
 		jobID:     99,
 		attemptID: 7,
+		attempt:   7,
 		events:    store,
 	}
 	result := process.Result{
@@ -132,7 +135,7 @@ func TestProcessLogRecorderIgnoresFFProbeOutput(t *testing.T) {
 	if len(store.events) != 0 {
 		t.Fatalf("recorded events = %d, want 0", len(store.events))
 	}
-	if _, err := os.Stat(filepath.Join(root, "job-99-attempt-7")); !errors.Is(err, os.ErrNotExist) {
+	if _, err := os.Stat(filepath.Join(root, "job-99", "attempt-7")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("log dir stat error = %v, want not exist", err)
 	}
 }
@@ -144,6 +147,7 @@ func TestProcessLogRecorderCapturesABAV1Output(t *testing.T) {
 		root:      root,
 		jobID:     99,
 		attemptID: 7,
+		attempt:   7,
 		events:    store,
 	}
 	ctx := process.WithStep(context.Background(), "crf-search")
@@ -155,7 +159,7 @@ func TestProcessLogRecorderCapturesABAV1Output(t *testing.T) {
 	if err := recorder.LogProcess(ctx, process.Command{Name: "ab-av1"}, result, nil); err != nil {
 		t.Fatalf("LogProcess() error = %v", err)
 	}
-	stdoutPath := filepath.Join(root, "job-99-attempt-7", "crf-search-ab-av1.stdout.log")
+	stdoutPath := filepath.Join(root, "job-99", "attempt-7", "crf-search-ab-av1.stdout.log")
 	if got, err := os.ReadFile(stdoutPath); err != nil || string(got) != "crf 28 vmaf 95.5" {
 		t.Fatalf("stdout log = %q, err = %v", got, err)
 	}

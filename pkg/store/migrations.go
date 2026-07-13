@@ -11,6 +11,7 @@ import (
 type migration struct {
 	version int
 	sql     string
+	after   func(context.Context, *sql.Tx) error
 }
 
 var migrations = []migration{
@@ -119,6 +120,14 @@ ALTER TABLE jobs
 ADD COLUMN pipeline_context_json BLOB NOT NULL DEFAULT x'';
 `,
 	},
+	{
+		version: 4,
+		sql: `
+ALTER TABLE jobs
+ADD COLUMN slug TEXT NOT NULL DEFAULT '';
+`,
+		after: backfillJobSlugs,
+	},
 }
 
 func (s *SQLiteStore) configure(ctx context.Context) error {
@@ -196,6 +205,11 @@ func (s *SQLiteStore) applyMigration(ctx context.Context, migration migration) e
 
 	if _, err := tx.ExecContext(ctx, migration.sql); err != nil {
 		return fmt.Errorf("apply migration %d: %w", migration.version, err)
+	}
+	if migration.after != nil {
+		if err := migration.after(ctx, tx); err != nil {
+			return fmt.Errorf("finalize migration %d: %w", migration.version, err)
+		}
 	}
 	if _, err := tx.ExecContext(ctx, `
 INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)

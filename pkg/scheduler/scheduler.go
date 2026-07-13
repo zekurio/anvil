@@ -278,7 +278,7 @@ func (s *Scheduler) dispatchLeased(ctx context.Context, leased []leasedAssignmen
 			WorkerID:  leasedAssignment.workerID,
 			Resources: allocation,
 		}
-		slog.Info("worker scheduled", "worker", assignment.WorkerID, "job_id", int64(assignment.Job.ID), "library", string(assignment.Job.LibraryName), "source_id", int64(assignment.Job.SourceID), "asset_id", int64(assignment.Job.AssetID), "threads", allocation.Threads, "active_workers", activeBefore+i+1, "lease_deadline", leasedAssignment.leaseDeadline)
+		slog.Info("worker scheduled", "worker", assignment.WorkerID, "job", assignment.Job.Label(), "library", string(assignment.Job.LibraryName), "threads", allocation.Threads, "active_workers", activeBefore+i+1, "lease_deadline", leasedAssignment.leaseDeadline)
 		s.register(assignment)
 		s.workerWG.Add(1)
 		go s.runWorker(workerCtx, assignment)
@@ -309,12 +309,12 @@ func (s *Scheduler) runWorker(ctx context.Context, assignment Assignment) {
 	started := time.Now()
 	defer s.workerWG.Done()
 	defer s.unregister(assignment.WorkerID)
-	slog.Info("worker started", "worker", assignment.WorkerID, "job_id", int64(assignment.Job.ID), "library", string(assignment.Job.LibraryName), "threads", assignment.Resources.Threads)
+	slog.Info("worker started", "worker", assignment.WorkerID, "job", assignment.Job.Label(), "library", string(assignment.Job.LibraryName), "threads", assignment.Resources.Threads)
 	if err := s.Worker.Run(ctx, assignment); err != nil {
-		slog.Warn("worker exited with error", "worker", assignment.WorkerID, "job_id", int64(assignment.Job.ID), "library", string(assignment.Job.LibraryName), "duration", time.Since(started), "error", err)
+		slog.Warn("worker exited with error", "worker", assignment.WorkerID, "job", assignment.Job.Label(), "library", string(assignment.Job.LibraryName), "duration", time.Since(started), "error", err)
 		return
 	}
-	slog.Info("worker finished", "worker", assignment.WorkerID, "job_id", int64(assignment.Job.ID), "library", string(assignment.Job.LibraryName), "duration", time.Since(started))
+	slog.Info("worker finished", "worker", assignment.WorkerID, "job", assignment.Job.Label(), "library", string(assignment.Job.LibraryName), "duration", time.Since(started))
 }
 
 func (s *Scheduler) register(assignment Assignment) {

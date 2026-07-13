@@ -116,23 +116,23 @@ func (r Runner) Run(ctx context.Context, job *JobContext) error {
 		}
 		started := time.Now()
 		if resumed {
-			slog.Info("pipeline step resumed", "job_id", int64(job.Job.ID), "attempt_id", int64(job.Attempt.ID), "step", step.Name, "step_index", index)
+			slog.Info("pipeline step resumed", "job", job.Job.Label(), "attempt", job.Attempt.Number, "step", step.Name, "step_index", index)
 			if err := r.record(ctx, job.Attempt.ID, domain.AttemptEventBlockFinished, step.Name, "", map[string]any{"step_index": index, "resumed": true}); err != nil {
 				return err
 			}
 			continue
 		}
-		slog.Info("pipeline step started", "job_id", int64(job.Job.ID), "attempt_id", int64(job.Attempt.ID), "step", step.Name, "step_index", index)
+		slog.Info("pipeline step started", "job", job.Job.Label(), "attempt", job.Attempt.Number, "step", step.Name, "step_index", index)
 		stepCtx := ctx
 		if r.StepContext != nil {
 			stepCtx = r.StepContext(ctx, step.Name)
 		}
 		if err := block.Run(stepCtx, job); err != nil {
-			slog.Error("pipeline step failed", "job_id", int64(job.Job.ID), "attempt_id", int64(job.Attempt.ID), "step", step.Name, "step_index", index, "duration", time.Since(started), "error", err)
+			slog.Error("pipeline step failed", "job", job.Job.Label(), "attempt", job.Attempt.Number, "step", step.Name, "step_index", index, "duration", time.Since(started), "error", err)
 			_ = r.record(ctx, job.Attempt.ID, domain.AttemptEventBlockFailed, step.Name, err.Error(), map[string]any{"step_index": index}) //nolint:errcheck // preserve the block error; failed-event recording is best-effort
 			return fmt.Errorf("run block %q: %w", step.Name, err)
 		}
-		slog.Info("pipeline step finished", "job_id", int64(job.Job.ID), "attempt_id", int64(job.Attempt.ID), "step", step.Name, "step_index", index, "duration", time.Since(started))
+		slog.Info("pipeline step finished", "job", job.Job.Label(), "attempt", job.Attempt.Number, "step", step.Name, "step_index", index, "duration", time.Since(started))
 		if err := r.stepSucceeded(ctx, step.Name, job); err != nil {
 			return err
 		}

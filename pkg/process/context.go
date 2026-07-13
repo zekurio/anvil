@@ -13,6 +13,10 @@ type Logger interface {
 	LogProcess(context.Context, Command, Result, error) error
 }
 
+type StreamLogger interface {
+	LogProcessOutput(context.Context, Command, string, []byte)
+}
+
 func WithLogger(ctx context.Context, logger Logger) context.Context {
 	if logger == nil {
 		return ctx
@@ -40,4 +44,12 @@ func recordProcessOutput(ctx context.Context, command Command, result Result, ru
 	if err := logger.LogProcess(ctx, command, result, runErr); err != nil {
 		slog.Warn("record process output failed", "error", err)
 	}
+}
+
+func streamProcessOutput(ctx context.Context, command Command, stream string, output []byte) {
+	logger, _ := ctx.Value(loggerKey{}).(StreamLogger)
+	if logger == nil || len(output) == 0 {
+		return
+	}
+	logger.LogProcessOutput(ctx, command, stream, output)
 }

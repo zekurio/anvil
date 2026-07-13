@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -32,6 +33,13 @@ func TestEnqueueJobIsIdempotentForActiveTarget(t *testing.T) {
 	if !inserted {
 		t.Fatal("first EnqueueJob() inserted = false, want true")
 	}
+	if parts := strings.Split(first.Slug, "-"); len(parts) != 3 {
+		t.Fatalf("job slug = %q, want three words", first.Slug)
+	}
+	bySlug, err := store.GetJobBySlug(ctx, first.Slug)
+	if err != nil || bySlug.ID != first.ID {
+		t.Fatalf("GetJobBySlug() = id %d, err %v; want id %d", bySlug.ID, err, first.ID)
+	}
 
 	second, inserted, err := store.EnqueueJob(ctx, EnqueueJobInput{
 		SourceID:    source.ID,
@@ -48,6 +56,57 @@ func TestEnqueueJobIsIdempotentForActiveTarget(t *testing.T) {
 	}
 	if second.ID != first.ID {
 		t.Fatalf("second job ID = %d, want %d", second.ID, first.ID)
+	}
+	if second.Slug != first.Slug {
+		t.Fatalf("second job slug = %q, want %q", second.Slug, first.Slug)
+	}
+}
+
+func TestSlugMigrationBackfillsExistingJobs(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "anvil.db")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("sql.Open() error = %v", err)
+	}
+	legacy := &SQLiteStore{db: db}
+	if err := legacy.configure(ctx); err != nil {
+		t.Fatalf("configure legacy store: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)`); err != nil {
+		t.Fatalf("create migrations table: %v", err)
+	}
+	for _, migration := range migrations[:3] {
+		if err := legacy.applyMigration(ctx, migration); err != nil {
+			t.Fatalf("apply legacy migration %d: %v", migration.version, err)
+		}
+	}
+	source := upsertTestSource(t, ctx, legacy, "movies", "Legacy.mkv")
+	if _, err := db.ExecContext(ctx, `
+INSERT INTO jobs (source_id, library_name, state, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?)
+`, source.ID, source.LibraryName, domain.JobStatePending, encodeTime(testNow()), encodeTime(testNow())); err != nil {
+		t.Fatalf("insert legacy job: %v", err)
+	}
+	if err := legacy.Close(); err != nil {
+		t.Fatalf("close legacy store: %v", err)
+	}
+
+	upgraded, err := Open(ctx, path)
+	if err != nil {
+		t.Fatalf("Open(upgraded) error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := upgraded.Close(); err != nil {
+			t.Fatalf("close upgraded store: %v", err)
+		}
+	})
+	job, err := upgraded.GetJob(ctx, 1)
+	if err != nil {
+		t.Fatalf("GetJob() error = %v", err)
+	}
+	if parts := strings.Split(job.Slug, "-"); len(parts) != 3 {
+		t.Fatalf("backfilled slug = %q, want three words", job.Slug)
 	}
 }
 

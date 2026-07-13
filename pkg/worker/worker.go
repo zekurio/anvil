@@ -75,7 +75,7 @@ func (r Runner) Run(ctx context.Context, assignment scheduler.Assignment) error 
 	if err != nil {
 		return fmt.Errorf("start attempt: %w", err)
 	}
-	slog.Info("worker attempt started", "worker", assignment.WorkerID, "job_id", int64(assignment.Job.ID), "attempt_id", int64(attempt.ID), "attempt", attempt.Number, "library", string(assignment.Job.LibraryName), "source_id", int64(assignment.Job.SourceID), "asset_id", int64(assignment.Job.AssetID), "threads", assignment.Resources.Threads)
+	slog.Info("worker attempt started", "worker", assignment.WorkerID, "job", assignment.Job.Label(), "attempt", attempt.Number, "library", string(assignment.Job.LibraryName), "threads", assignment.Resources.Threads)
 	stopHeartbeat := r.startHeartbeat(ctx, assignment.Job.ID, assignment.WorkerID, cfg)
 	defer stopHeartbeat()
 
@@ -117,7 +117,7 @@ func (r Runner) Run(ctx context.Context, assignment scheduler.Assignment) error 
 	}
 	pipelineRunner := r.Pipeline
 	contextPersistence := newPipelineContextPersistence(ctx, r.Store, jobContext, resolvedLibrary, resolvedFlow, resolvedProfile, initialMetadata, probeMetadataRefresh(pipelineRunner), r.now)
-	slog.Info("worker pipeline started", "worker", assignment.WorkerID, "job_id", int64(assignment.Job.ID), "attempt_id", int64(attempt.ID), "library", string(library.Name), "flow", string(flow.Name), "profile", string(profile.Name), "input", inputPath)
+	slog.Info("worker pipeline started", "worker", assignment.WorkerID, "job", assignment.Job.Label(), "attempt", attempt.Number, "library", string(library.Name), "flow", string(flow.Name), "profile", string(profile.Name), "input", inputPath)
 
 	if pipelineRunner.Events == nil {
 		pipelineRunner.Events = r.Store
@@ -135,7 +135,9 @@ func (r Runner) Run(ctx context.Context, assignment scheduler.Assignment) error 
 	pipelineCtx := process.WithLogger(ctx, &processLogRecorder{
 		root:      filepath.Join(r.tempDir(cfg), "process-logs"),
 		jobID:     assignment.Job.ID,
+		jobSlug:   assignment.Job.Slug,
 		attemptID: attempt.ID,
+		attempt:   attempt.Number,
 		events:    r.Store,
 		now:       r.now,
 	})
@@ -152,7 +154,7 @@ func (r Runner) Run(ctx context.Context, assignment scheduler.Assignment) error 
 	if err := r.complete(ctx, assignment.Job.ID, flow); err != nil {
 		return err
 	}
-	slog.Info("worker job completed", "worker", assignment.WorkerID, "job_id", int64(assignment.Job.ID), "attempt_id", int64(attempt.ID), "library", string(library.Name), "final_path", jobContext.FinalPath)
+	slog.Info("worker job completed", "worker", assignment.WorkerID, "job", assignment.Job.Label(), "attempt", attempt.Number, "library", string(library.Name), "final_path", jobContext.FinalPath)
 	return nil
 }
 
@@ -309,13 +311,13 @@ func (r Runner) fail(ctx context.Context, job domain.Job, attempt domain.Attempt
 		maxAttempts = config.DefaultMaxAttempts
 	}
 	if attempt.Number >= maxAttempts {
-		slog.Error("worker attempt failed; job failed", "worker", attempt.WorkerID, "job_id", int64(job.ID), "attempt_id", int64(attempt.ID), "attempt", attempt.Number, "library", string(job.LibraryName), "max_attempts", maxAttempts, "error", cause)
+		slog.Error("worker attempt failed; job failed", "worker", attempt.WorkerID, "job", job.Label(), "attempt", attempt.Number, "library", string(job.LibraryName), "max_attempts", maxAttempts, "error", cause)
 		if _, err := r.Store.TransitionJob(ctx, job.ID, domain.JobStateFailed, r.now(), message); err != nil {
 			return fmt.Errorf("transition job to failed: %w", err)
 		}
 		return cause
 	}
-	slog.Warn("worker attempt failed; job will retry", "worker", attempt.WorkerID, "job_id", int64(job.ID), "attempt_id", int64(attempt.ID), "attempt", attempt.Number, "library", string(job.LibraryName), "max_attempts", maxAttempts, "error", cause)
+	slog.Warn("worker attempt failed; job will retry", "worker", attempt.WorkerID, "job", job.Label(), "attempt", attempt.Number, "library", string(job.LibraryName), "max_attempts", maxAttempts, "error", cause)
 	if _, err := r.Store.TransitionJob(ctx, job.ID, domain.JobStateRetrying, r.now(), message); err != nil {
 		return fmt.Errorf("transition job to retrying: %w", err)
 	}

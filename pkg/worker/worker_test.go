@@ -214,7 +214,7 @@ func TestRunnerCapturesProcessOutputLogs(t *testing.T) {
 		t.Fatalf("Run() error = %v", err)
 	}
 
-	logDir := filepath.Join(tempDir, "process-logs", "job-99-attempt-1")
+	logDir := filepath.Join(tempDir, "process-logs", "job-99", "attempt-1")
 	stdoutPath := filepath.Join(logDir, "run-ffmpeg-ffmpeg.stdout.log")
 	stderrPath := filepath.Join(logDir, "run-ffmpeg-ffmpeg.stderr.log")
 	if got, err := os.ReadFile(stdoutPath); err != nil || string(got) != "stdout" {

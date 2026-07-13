@@ -134,6 +134,31 @@ func TestParseOptionsParsesInspectCommand(t *testing.T) {
 	}
 }
 
+func TestParseOptionsAcceptsJobSlug(t *testing.T) {
+	opts, err := parseOptions([]string{"inspect", "pretty-pink-panther"})
+	if err != nil {
+		t.Fatalf("parseOptions() error = %v", err)
+	}
+	if len(opts.jobRefs) != 1 || opts.jobRefs[0] != "pretty-pink-panther" {
+		t.Fatalf("job refs = %v, want pretty-pink-panther", opts.jobRefs)
+	}
+	if len(opts.jobIDs) != 0 {
+		t.Fatalf("job ids = %v, want none for slug", opts.jobIDs)
+	}
+}
+
+func TestCharmLoggerFormatsHumanReadableLine(t *testing.T) {
+	var buf bytes.Buffer
+	logger := slog.New(newCharmLogger(&buf, slog.LevelInfo))
+	logger.Info("ffmpeg progress", "job", "pretty-pink-panther", "attempt", 2, "speed", "1.4x")
+	line := buf.String()
+	for _, want := range []string{"INFO", "ffmpeg progress", "job=pretty-pink-panther", "attempt=2", "speed=1.4x"} {
+		if !strings.Contains(line, want) {
+			t.Fatalf("log line %q missing %q", line, want)
+		}
+	}
+}
+
 func TestParseOptionsRejectsInspectWithoutSingleJob(t *testing.T) {
 	if _, err := parseOptions([]string{"inspect"}); err == nil {
 		t.Fatal("parseOptions() error = nil, want missing inspect target error")
@@ -212,6 +237,7 @@ func TestWriteInspectReportShowsProcessOutputAndPayloads(t *testing.T) {
 	report := inspectReport{
 		Job: inspectJob{
 			ID:           42,
+			Slug:         "pretty-pink-panther",
 			State:        "failed",
 			Library:      "movies",
 			AttemptCount: 1,
@@ -296,7 +322,7 @@ func TestWriteInspectReportShowsProcessOutputAndPayloads(t *testing.T) {
 	}
 	output := buf.String()
 	for _, want := range []string{
-		"Job 42",
+		"Job pretty-pink-panther (id=42)",
 		"Last error: encode failed",
 		"Saved context:",
 		"Steps: crop-detect*, crf-search*, encode",

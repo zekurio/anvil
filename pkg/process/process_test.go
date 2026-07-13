@@ -3,6 +3,7 @@ package process
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -51,6 +52,9 @@ func TestOSRunnerReportsOutputToContextLogger(t *testing.T) {
 	if logger.calls != 1 {
 		t.Fatalf("logger calls = %d, want 1", logger.calls)
 	}
+	if strings.Join(logger.stdout, "") != "hello" || strings.Join(logger.stderr, "") != "nope" {
+		t.Fatalf("streamed stdout/stderr = %q/%q, want hello/nope", logger.stdout, logger.stderr)
+	}
 	if logger.step != "encode" {
 		t.Fatalf("logger step = %q, want encode", logger.step)
 	}
@@ -70,6 +74,8 @@ type fakeLogger struct {
 	step   string
 	result Result
 	err    error
+	stdout []string
+	stderr []string
 }
 
 func (f *fakeLogger) LogProcess(ctx context.Context, _ Command, result Result, err error) error {
@@ -78,4 +84,12 @@ func (f *fakeLogger) LogProcess(ctx context.Context, _ Command, result Result, e
 	f.result = result
 	f.err = err
 	return nil
+}
+
+func (f *fakeLogger) LogProcessOutput(_ context.Context, _ Command, stream string, output []byte) {
+	if stream == "stdout" {
+		f.stdout = append(f.stdout, string(output))
+	} else {
+		f.stderr = append(f.stderr, string(output))
+	}
 }

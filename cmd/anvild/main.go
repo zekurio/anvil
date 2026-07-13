@@ -16,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	charmlog "charm.land/log/v2"
 	"github.com/zekurio/anvil/pkg/config"
 	"github.com/zekurio/anvil/pkg/domain"
 	"github.com/zekurio/anvil/pkg/metadata"
@@ -57,6 +58,7 @@ type options struct {
 	jsonOutput      bool
 	retryFailed     bool
 	jobIDs          []domain.JobID
+	jobRefs         []string
 	cleanupOlder    string
 	cleanupDryRun   bool
 }
@@ -242,18 +244,20 @@ func parseCommandOptions(opts options, args []string) (options, error) {
 		if err != nil {
 			return options{}, err
 		}
-		if len(ids) != 1 {
-			return options{}, errors.New("inspect requires exactly one job ID")
+		if len(flags.Args()) != 1 {
+			return options{}, errors.New("inspect requires exactly one job reference")
 		}
 		opts.jobIDs = ids
+		opts.jobRefs = append([]string(nil), flags.Args()...)
 	case commandRetry:
 		ids, err := parseJobIDs(flags.Args())
 		if err != nil {
 			return options{}, err
 		}
 		opts.jobIDs = ids
-		if !opts.retryFailed && len(opts.jobIDs) == 0 {
-			return options{}, errors.New("retry requires job IDs or --failed")
+		opts.jobRefs = append([]string(nil), flags.Args()...)
+		if !opts.retryFailed && len(opts.jobRefs) == 0 {
+			return options{}, errors.New("retry requires job references or --failed")
 		}
 		if opts.libraryName != "" && !opts.retryFailed {
 			return options{}, errors.New("--library can only be used with retry --failed")
@@ -493,12 +497,16 @@ func runRetryCommand(ctx context.Context, cfg config.Config, opts options) error
 			return fmt.Errorf("write output: %w", w.err)
 		}
 	}
-	for _, id := range opts.jobIDs {
-		job, err := state.RetryJob(ctx, id, now)
+	for _, reference := range opts.jobRefs {
+		resolved, err := state.ResolveJobReference(ctx, reference)
+		if err != nil {
+			return fmt.Errorf("resolve job %q: %w", reference, err)
+		}
+		job, err := state.RetryJob(ctx, resolved.ID, now)
 		if err != nil {
 			return err
 		}
-		w.printf("job_id=%d state=%s\n", job.ID, job.State)
+		w.printf("job=%s id=%d state=%s\n", job.Label(), job.ID, job.State)
 		if w.err != nil {
 			return fmt.Errorf("write output: %w", w.err)
 		}
@@ -622,7 +630,7 @@ func startReloadLoop(ctx context.Context, wg *sync.WaitGroup, opts options, runt
 					slog.Error("config reload rejected", "error", err)
 					continue
 				}
-				if _, err := applyLogLevel(&activeLogLevel, next.Daemon.LogLevel); err != nil {
+				if err := configureLogging(next.Daemon.LogLevel); err != nil {
 					slog.Error("config reload rejected", "error", err)
 					continue
 				}
@@ -637,8 +645,30 @@ func configureLogging(logLevel string) error {
 	if _, err := applyLogLevel(&activeLogLevel, logLevel); err != nil {
 		return err
 	}
-	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: &activeLogLevel})))
+	slog.SetDefault(slog.New(newCharmLogger(os.Stderr, activeLogLevel.Level())))
 	return nil
+}
+
+func newCharmLogger(out io.Writer, level slog.Level) *charmlog.Logger {
+	return charmlog.NewWithOptions(out, charmlog.Options{
+		Level:           charmLogLevel(level),
+		ReportTimestamp: true,
+		TimeFormat:      "15:04:05",
+		Formatter:       charmlog.TextFormatter,
+	})
+}
+
+func charmLogLevel(level slog.Level) charmlog.Level {
+	switch {
+	case level < slog.LevelInfo:
+		return charmlog.DebugLevel
+	case level >= slog.LevelError:
+		return charmlog.ErrorLevel
+	case level >= slog.LevelWarn:
+		return charmlog.WarnLevel
+	default:
+		return charmlog.InfoLevel
+	}
 }
 
 func applyLogLevel(levelVar *slog.LevelVar, logLevel string) (string, error) {
@@ -834,9 +864,10 @@ func stagingRoot(cfg config.Config) string {
 
 func writeJobs(out io.Writer, jobs []store.JobSummary) error {
 	return writeTable(out, func(w *outputWriter) {
-		w.println("ID\tSTATE\tLIBRARY\tATTEMPTS\tUPDATED\tPATH\tERROR")
+		w.println("JOB\tID\tSTATE\tLIBRARY\tATTEMPTS\tUPDATED\tPATH\tERROR")
 		for _, summary := range jobs {
-			w.printf("%d\t%s\t%s\t%d\t%s\t%s\t%s\n",
+			w.printf("%s\t%d\t%s\t%s\t%d\t%s\t%s\t%s\n",
+				summary.Job.Label(),
 				summary.Job.ID,
 				summary.Job.State,
 				summary.Job.LibraryName,
@@ -938,12 +969,36 @@ func parseJobIDs(args []string) ([]domain.JobID, error) {
 	ids := make([]domain.JobID, 0, len(args))
 	for _, arg := range args {
 		value, err := strconv.ParseInt(arg, 10, 64)
-		if err != nil || value <= 0 {
-			return nil, fmt.Errorf("invalid job id %q", arg)
+		if err != nil {
+			if !validJobSlug(arg) {
+				return nil, fmt.Errorf("invalid job reference %q", arg)
+			}
+			continue
+		}
+		if value <= 0 {
+			return nil, fmt.Errorf("invalid job reference %q", arg)
 		}
 		ids = append(ids, domain.JobID(value))
 	}
 	return ids, nil
+}
+
+func validJobSlug(value string) bool {
+	parts := strings.Split(value, "-")
+	if len(parts) != 3 {
+		return false
+	}
+	for _, part := range parts {
+		if part == "" {
+			return false
+		}
+		for _, r := range part {
+			if r < 'a' || r > 'z' {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func isCommand(value string) bool {
@@ -965,8 +1020,8 @@ func writeUsage(out io.Writer) error {
   anvild preflight [--config PATH] [--library NAME] [--limit N] [--json]
   anvild jobs [--config PATH] [--library NAME] [--state pending,failed] [--limit N] [--json]
   anvild stats [--config PATH] [--library NAME] [--json]
-  anvild inspect [--config PATH] [--json] JOB_ID
-  anvild retry [--config PATH] JOB_ID...
+  anvild inspect [--config PATH] [--json] JOB_ID_OR_SLUG
+  anvild retry [--config PATH] JOB_ID_OR_SLUG...
   anvild retry [--config PATH] --failed [--library NAME]
   anvild recover [--config PATH]
   anvild cleanup-staging [--config PATH] [--older-than DURATION] [--dry-run]

@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -21,12 +23,23 @@ type processLogStore interface {
 type processLogRecorder struct {
 	root      string
 	jobID     domain.JobID
+	jobSlug   string
 	attemptID domain.AttemptID
+	attempt   int
 	events    processLogStore
 	now       func() time.Time
 	mu        sync.Mutex
 	names     map[string]int
+	progress  map[string]*processProgress
 }
+
+type processProgress struct {
+	stdout string
+	stderr string
+	values map[string]string
+}
+
+var ffmpegStatsPattern = regexp.MustCompile(`frame=\s*([0-9]+).*fps=\s*([^ ]+).*time=\s*([^ ]+).*speed=\s*([^ ]+)`)
 
 type processLogArtifact struct {
 	Step           string   `json:"step,omitempty"`
@@ -56,7 +69,18 @@ func (r *processLogRecorder) LogProcess(ctx context.Context, command process.Com
 	if commandName == "" && len(result.Command) > 0 {
 		commandName = result.Command[0]
 	}
-	dir := filepath.Join(root, fmt.Sprintf("job-%d-attempt-%d", r.jobID, r.attemptID))
+	if runErr != nil {
+		slog.Error("external process failed",
+			"job", r.jobLabel(),
+			"attempt", r.attempt,
+			"step", step,
+			"command", filepath.Base(commandName),
+			"exit_code", result.ExitCode,
+			"duration", result.Duration,
+			"diagnostic", lastProcessDiagnostic(result.Stderr),
+		)
+	}
+	dir := filepath.Join(root, r.jobLabel(), fmt.Sprintf("attempt-%d", r.attempt))
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return fmt.Errorf("create process log dir: %w", err)
 	}
@@ -104,6 +128,131 @@ func (r *processLogRecorder) LogProcess(ctx context.Context, command process.Com
 		return fmt.Errorf("record process log artifact: %w", err)
 	}
 	return nil
+}
+
+func lastProcessDiagnostic(output []byte) string {
+	lines := strings.FieldsFunc(string(output), func(r rune) bool { return r == '\r' || r == '\n' })
+	for index := len(lines) - 1; index >= 0; index-- {
+		line := strings.TrimSpace(lines[index])
+		if line != "" && !ffmpegStatsPattern.MatchString(line) {
+			return line
+		}
+	}
+	return ""
+}
+
+func (r *processLogRecorder) LogProcessOutput(ctx context.Context, command process.Command, stream string, output []byte) {
+	key := process.Step(ctx) + "\x00" + strings.Join(command.ArgsWithName(), "\x00")
+	r.mu.Lock()
+	if r.progress == nil {
+		r.progress = make(map[string]*processProgress)
+	}
+	progress := r.progress[key]
+	if progress == nil {
+		progress = &processProgress{values: make(map[string]string)}
+		r.progress[key] = progress
+	}
+	if stream == "stdout" {
+		progress.stdout += string(output)
+		if filepath.Base(command.Name) == "ffmpeg" {
+			progress.stdout = r.consumeProgress(ctx, progress, progress.stdout)
+		} else {
+			progress.stdout = r.consumeToolOutput(ctx, command, stream, progress.stdout)
+		}
+	} else {
+		progress.stderr += string(output)
+		if filepath.Base(command.Name) == "ffmpeg" {
+			progress.stderr = r.consumeProgress(ctx, progress, progress.stderr)
+		} else {
+			progress.stderr = r.consumeToolOutput(ctx, command, stream, progress.stderr)
+		}
+	}
+	r.mu.Unlock()
+}
+
+func (r *processLogRecorder) consumeToolOutput(ctx context.Context, command process.Command, stream, buffered string) string {
+	if !shouldLogLiveOutput(command.Name) {
+		return ""
+	}
+	for {
+		index := strings.IndexAny(buffered, "\r\n")
+		if index < 0 {
+			return buffered
+		}
+		line := strings.TrimSpace(buffered[:index])
+		buffered = strings.TrimLeft(buffered[index+1:], "\r\n")
+		if line != "" {
+			slog.Info("external process output",
+				"job", r.jobLabel(),
+				"attempt", r.attempt,
+				"step", process.Step(ctx),
+				"command", filepath.Base(command.Name),
+				"stream", stream,
+				"message", line,
+			)
+		}
+	}
+}
+
+func shouldLogLiveOutput(command string) bool {
+	switch filepath.Base(command) {
+	case "ab-av1", "dovi_tool", "mkvextract", "mkvmerge", "mkvpropedit":
+		return true
+	default:
+		return false
+	}
+}
+
+func (r *processLogRecorder) consumeProgress(ctx context.Context, progress *processProgress, buffered string) string {
+	for {
+		index := strings.IndexAny(buffered, "\r\n")
+		if index < 0 {
+			return buffered
+		}
+		line := strings.TrimSpace(buffered[:index])
+		buffered = strings.TrimLeft(buffered[index+1:], "\r\n")
+		if line == "" {
+			continue
+		}
+		if key, value, ok := strings.Cut(line, "="); ok && !strings.Contains(key, " ") {
+			progress.values[key] = value
+			if key == "progress" {
+				r.logFFmpegProgress(ctx, progress.values)
+			}
+			continue
+		}
+		matches := ffmpegStatsPattern.FindStringSubmatch(line)
+		if len(matches) == 5 {
+			r.logProgress(ctx, matches[1], matches[2], matches[3], matches[4])
+		}
+	}
+}
+
+func (r *processLogRecorder) logFFmpegProgress(ctx context.Context, values map[string]string) {
+	outTime := values["out_time"]
+	if outTime == "" {
+		outTime = values["out_time_us"]
+	}
+	r.logProgress(ctx, values["frame"], values["fps"], outTime, values["speed"])
+}
+
+func (r *processLogRecorder) logProgress(ctx context.Context, frame, fps, outTime, speed string) {
+	slog.Info("ffmpeg progress",
+		"job", r.jobLabel(),
+		"attempt", r.attempt,
+		"step", process.Step(ctx),
+		"frame", frame,
+		"fps", fps,
+		"media_time", outTime,
+		"speed", speed,
+	)
+}
+
+func (r *processLogRecorder) jobLabel() string {
+	if r.jobSlug != "" {
+		return r.jobSlug
+	}
+	return fmt.Sprintf("job-%d", r.jobID)
 }
 
 func (r *processLogRecorder) uniqueLogBaseName(baseName string) string {
