@@ -1,5 +1,5 @@
 {
-  description = "Anvil development environment";
+  description = "Media-library AV1 encoding daemon";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
