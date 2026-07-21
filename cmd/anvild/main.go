@@ -40,6 +40,7 @@ const (
 	commandCleanup     = "cleanup-staging"
 	commandBackup      = "backup"
 	commandPruneJobs   = "prune-jobs"
+	commandForce       = "force-occurrence"
 	commandHelp        = "help"
 )
 
@@ -65,6 +66,7 @@ type options struct {
 	cleanupDryRun   bool
 	backupPath      string
 	pruneApply      bool
+	forcePath       string
 }
 
 type runtimeConfig struct {
@@ -149,6 +151,8 @@ func dispatchCommand(ctx context.Context, cfg config.Config, opts options) error
 		return runBackupCommand(ctx, cfg, opts)
 	case commandPruneJobs:
 		return runPruneJobsCommand(ctx, cfg, opts)
+	case commandForce:
+		return runForceOccurrenceCommand(ctx, cfg, opts)
 	default:
 		return fmt.Errorf("unknown command %q", opts.command)
 	}
@@ -223,6 +227,8 @@ func parseCommandOptions(opts options, args []string) (options, error) {
 		flags.StringVar(&opts.libraryName, "library", "", "limit pruning to one library")
 		flags.StringVar(&opts.jobStateFilter, "state", "", "comma-separated terminal job states; defaults to complete,failed,skipped")
 		flags.BoolVar(&opts.pruneApply, "apply", false, "delete matching jobs; without this flag the command is a dry run")
+	case commandForce:
+		flags.StringVar(&opts.libraryName, "library", "", "configured library containing the target")
 	case commandHelp:
 	default:
 		return options{}, fmt.Errorf("unknown command %q", opts.command)
@@ -294,6 +300,14 @@ func parseCommandOptions(opts options, args []string) (options, error) {
 		if flags.NArg() > 0 {
 			return options{}, fmt.Errorf("prune-jobs does not accept arguments: %v", flags.Args())
 		}
+	case commandForce:
+		if strings.TrimSpace(opts.libraryName) == "" {
+			return options{}, errors.New("force-occurrence requires --library")
+		}
+		if flags.NArg() != 1 {
+			return options{}, errors.New("force-occurrence requires exactly one relative path")
+		}
+		opts.forcePath = flags.Arg(0)
 	default:
 		if flags.NArg() > 0 {
 			return options{}, fmt.Errorf("%s does not accept arguments: %v", opts.command, flags.Args())
@@ -1036,7 +1050,7 @@ func validJobSlug(value string) bool {
 
 func isCommand(value string) bool {
 	switch value {
-	case commandRun, commandCheckConfig, commandScan, commandPreflight, commandJobs, commandStats, commandInspect, commandRetry, commandRecover, commandCleanup, commandBackup, commandPruneJobs, commandHelp:
+	case commandRun, commandCheckConfig, commandScan, commandPreflight, commandJobs, commandStats, commandInspect, commandRetry, commandRecover, commandCleanup, commandBackup, commandPruneJobs, commandForce, commandHelp:
 		return true
 	default:
 		return false
@@ -1060,6 +1074,7 @@ func writeUsage(out io.Writer) error {
   anvild cleanup-staging [--config PATH] [--older-than DURATION] [--dry-run]
   anvild backup [--config PATH] DESTINATION
   anvild prune-jobs [--config PATH] [--library NAME] [--state complete,failed,skipped] [--apply]
+  anvild force-occurrence [--config PATH] --library NAME RELATIVE_PATH
 
 Legacy --check-config is still accepted.`)
 	})

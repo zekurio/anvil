@@ -70,3 +70,25 @@ func TestParseOptionsRejectsActivePruneState(t *testing.T) {
 		t.Fatal("parseOptions() error = nil, want active-state refusal")
 	}
 }
+
+func TestParseOptionsParsesForceOccurrenceCommand(t *testing.T) {
+	opts, err := parseOptions([]string{"force-occurrence", "--config", "anvil.toml", "--library", "downloads", "Release/Episode.mkv"})
+	if err != nil {
+		t.Fatalf("parseOptions() error = %v", err)
+	}
+	if opts.command != commandForce || opts.libraryName != "downloads" || opts.forcePath != "Release/Episode.mkv" {
+		t.Fatalf("force-occurrence options = %+v", opts)
+	}
+}
+
+func TestParseOptionsRejectsIncompleteForceOccurrenceCommand(t *testing.T) {
+	for _, args := range [][]string{
+		{"force-occurrence", "Movie.mkv"},
+		{"force-occurrence", "--library", "movies"},
+		{"force-occurrence", "--library", "movies", "one.mkv", "two.mkv"},
+	} {
+		if _, err := parseOptions(args); err == nil {
+			t.Fatalf("parseOptions(%v) error = nil, want force-occurrence argument refusal", args)
+		}
+	}
+}
