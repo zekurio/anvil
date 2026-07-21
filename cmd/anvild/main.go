@@ -756,7 +756,7 @@ func startScannerLoop(ctx context.Context, wg *sync.WaitGroup, cfgProvider func(
 				return
 			}
 			logScanComplete("scan complete", library.Name, reason, result)
-			logQueueHealth(library.Name, reason, result, activeWorkers())
+			observeQueueHealth(ctx, state, library.Name, reason, result, activeWorkers())
 		},
 		OnEventError: func(err error) {
 			if !errors.Is(err, context.Canceled) {

@@ -172,6 +172,57 @@ func TestPruneMissingSourceJobsRejectsActiveStates(t *testing.T) {
 	}
 }
 
+func TestHasViableQueueWorkForLibraryMirrorsOccurrenceEligibility(t *testing.T) {
+	ctx := context.Background()
+	state := openTestStore(t)
+	source := upsertTestSource(t, ctx, state, "movies", "Movie.mkv")
+	asset := upsertTestAsset(t, ctx, state, source.ID, "Movie.mkv")
+	job, _, err := state.EnqueueJob(ctx, EnqueueJobInput{
+		SourceID: source.ID, AssetID: asset.ID, LibraryName: source.LibraryName, Now: testNow(),
+	})
+	if err != nil {
+		t.Fatalf("EnqueueJob() error = %v", err)
+	}
+
+	for _, jobState := range []domain.JobState{domain.JobStatePending, domain.JobStateLeased, domain.JobStateRetrying} {
+		if _, err := state.db.ExecContext(ctx, `UPDATE jobs SET state = ? WHERE id = ?`, string(jobState), int64(job.ID)); err != nil {
+			t.Fatalf("set job state %q: %v", jobState, err)
+		}
+		viable, err := state.HasViableQueueWorkForLibrary(ctx, "movies")
+		if err != nil {
+			t.Fatalf("HasViableQueueWorkForLibrary(%q) error = %v", jobState, err)
+		}
+		if !viable {
+			t.Fatalf("HasViableQueueWorkForLibrary(%q) = false, want true", jobState)
+		}
+	}
+
+	if _, err := state.db.ExecContext(ctx, `UPDATE jobs SET state = ? WHERE id = ?`, string(domain.JobStateFailed), int64(job.ID)); err != nil {
+		t.Fatalf("set terminal job state: %v", err)
+	}
+	viable, err := state.HasViableQueueWorkForLibrary(ctx, "movies")
+	if err != nil {
+		t.Fatalf("HasViableQueueWorkForLibrary(failed) error = %v", err)
+	}
+	if viable {
+		t.Fatal("HasViableQueueWorkForLibrary(failed) = true, want false")
+	}
+
+	if _, err := state.db.ExecContext(ctx, `UPDATE jobs SET state = ? WHERE id = ?`, string(domain.JobStatePending), int64(job.ID)); err != nil {
+		t.Fatalf("restore pending job state: %v", err)
+	}
+	if _, err := state.db.ExecContext(ctx, `UPDATE media_sources SET is_current = 0, status = ? WHERE id = ?`, string(domain.MediaSourceMissing), int64(source.ID)); err != nil {
+		t.Fatalf("retire source occurrence: %v", err)
+	}
+	viable, err = state.HasViableQueueWorkForLibrary(ctx, "movies")
+	if err != nil {
+		t.Fatalf("HasViableQueueWorkForLibrary(retired) error = %v", err)
+	}
+	if viable {
+		t.Fatal("HasViableQueueWorkForLibrary(retired) = true, want unleaseable ghost to be ignored")
+	}
+}
+
 func createPruneTestJob(t *testing.T, ctx context.Context, state *SQLiteStore, library string, relativePath string, jobState domain.JobState, missing bool) domain.JobID {
 	t.Helper()
 	source := upsertTestSource(t, ctx, state, library, relativePath)
