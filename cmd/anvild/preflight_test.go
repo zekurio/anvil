@@ -148,8 +148,8 @@ func TestBuildPreflightReportFindsExistingJobReadOnly(t *testing.T) {
 
 	cfg := testPreflightConfig(t, root)
 	state := &fakePreflightStore{
-		source: domain.MediaSource{ID: 12, LibraryName: "movies", Kind: domain.SourceKindFile, RelativePath: "Movie.mkv"},
-		asset:  domain.MediaAsset{ID: 34, SourceID: 12, RelativePath: "Movie.mkv", Role: domain.MediaAssetRolePrimaryVideo},
+		source: domain.MediaSource{ID: 12, LibraryName: "movies", Kind: domain.SourceKindFile, RelativePath: "Movie.mkv", Generation: 1, Current: true, Status: domain.MediaSourceActive, Fingerprint: domain.FileFingerprint{SizeBytes: 5, ModTime: now}},
+		asset:  domain.MediaAsset{ID: 34, SourceID: 12, RelativePath: "Movie.mkv", Generation: 1, Current: true, Role: domain.MediaAssetRolePrimaryVideo, Status: domain.MediaAssetActive, Fingerprint: domain.FileFingerprint{SizeBytes: 5, ModTime: now}},
 		job:    domain.Job{ID: 56, SourceID: 12, AssetID: 34, LibraryName: "movies", State: domain.JobStatePending},
 	}
 	report, err := buildPreflightReport(ctx, cfg, options{command: commandPreflight, libraryName: "movies"}, state, true)
@@ -165,6 +165,25 @@ func TestBuildPreflightReportFindsExistingJobReadOnly(t *testing.T) {
 	}
 	if state.sourceLookups == 0 || state.assetLookups == 0 || state.jobLookups == 0 {
 		t.Fatalf("lookups = source %d asset %d job %d, want read lookups", state.sourceLookups, state.assetLookups, state.jobLookups)
+	}
+}
+
+func TestBuildPreflightReportShowsNextGenerationForReplacement(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	now := time.Date(2026, 6, 27, 12, 0, 0, 0, time.UTC)
+	writePreflightFile(t, root, "Movie.mkv", now)
+	cfg := testPreflightConfig(t, root)
+	state := &fakePreflightStore{
+		source: domain.MediaSource{ID: 12, LibraryName: "movies", Kind: domain.SourceKindFile, RelativePath: "Movie.mkv", Generation: 2, Current: true, Status: domain.MediaSourceProcessed, Fingerprint: domain.FileFingerprint{SizeBytes: 4, ModTime: now.Add(-time.Hour)}},
+	}
+	report, err := buildPreflightReport(ctx, cfg, options{command: commandPreflight, libraryName: "movies"}, state, true)
+	if err != nil {
+		t.Fatalf("buildPreflightReport() error = %v", err)
+	}
+	item := report.Candidates[0]
+	if item.Source.Generation != 3 || item.Asset.Generation != 1 || item.Status.OccurrenceAction != "new_source_generation" || !item.Status.WouldEnqueueNewJob {
+		t.Fatalf("generation-aware status = source %+v asset %+v status %+v", item.Source, item.Asset, item.Status)
 	}
 }
 

@@ -18,9 +18,8 @@ import (
 )
 
 type Store interface {
-	UpsertMediaSource(context.Context, domain.MediaSource) (domain.MediaSource, error)
-	UpsertMediaAsset(context.Context, domain.MediaAsset) (domain.MediaAsset, error)
-	EnqueueJob(context.Context, store.EnqueueJobInput) (domain.Job, bool, error)
+	BeginLibraryScan(context.Context, domain.LibraryName) (store.ScanToken, error)
+	ApplyLibraryScan(context.Context, store.ScanToken, store.ApplyScanInput) (store.ApplyScanResult, error)
 }
 
 type Scanner struct {
@@ -40,6 +39,7 @@ type ScanResult struct {
 }
 
 type LibraryPlan struct {
+	ScanToken       store.ScanToken
 	Library         config.LibraryConfig
 	Candidates      []CandidatePlan
 	SkippedIgnored  int
@@ -86,10 +86,16 @@ func (s Scanner) ScanLibrary(ctx context.Context, library config.LibraryConfig) 
 		return ScanResult{}, fmt.Errorf("scanner store is required")
 	}
 
+	libraryName := domain.LibraryName(library.Name)
+	token, err := s.Store.BeginLibraryScan(ctx, libraryName)
+	if err != nil {
+		return ScanResult{}, fmt.Errorf("begin library scan: %w", err)
+	}
 	plan, err := s.PlanLibrary(ctx, library)
 	if err != nil {
 		return ScanResult{}, err
 	}
+	plan.ScanToken = token
 	return s.applyPlan(ctx, plan)
 }
 
@@ -161,73 +167,28 @@ func (s Scanner) applyPlan(ctx context.Context, plan LibraryPlan) (ScanResult, e
 		SkippedUnstable: plan.SkippedUnstable,
 		NextStableAt:    plan.NextStableAt,
 	}
-	sourceByKey := make(map[string]domain.MediaSource)
 	now := s.now()
-
+	entries := make([]store.ScanEntry, 0, len(plan.Candidates))
 	for _, candidate := range plan.Candidates {
-		if candidate.Ignored || candidate.Unstable {
-			continue
-		}
-
-		key := sourceKey(candidate.SourceKind, candidate.SourceRelativePath)
-		storedSource, exists := sourceByKey[key]
-		if !exists {
-			var err error
-			storedSource, err = s.Store.UpsertMediaSource(ctx, domain.MediaSource{
-				LibraryName:  candidate.LibraryName,
-				Kind:         candidate.SourceKind,
-				RelativePath: candidate.SourceRelativePath,
-				Status:       domain.MediaSourceActive,
-				Fingerprint: domain.FileFingerprint{
-					SizeBytes: candidate.SourceSizeBytes,
-					ModTime:   candidate.SourceModTime,
-				},
-				LastSeenAt: now,
-			})
-			if err != nil {
-				return result, fmt.Errorf("upsert source %q: %w", candidate.SourceRelativePath, err)
-			}
-			sourceByKey[key] = storedSource
-			result.Sources++
-		}
-
-		storedAsset, err := s.Store.UpsertMediaAsset(ctx, domain.MediaAsset{
-			SourceID:     storedSource.ID,
-			RelativePath: candidate.AssetRelativePath,
-			Role:         candidate.Role,
-			Status:       domain.MediaAssetActive,
-			Fingerprint: domain.FileFingerprint{
-				SizeBytes: candidate.SizeBytes,
-				ModTime:   candidate.ModTime,
-			},
-			LastSeenAt: now,
+		entries = append(entries, store.ScanEntry{
+			SourceKind: candidate.SourceKind, SourceRelativePath: candidate.SourceRelativePath,
+			SourceFingerprint: domain.FileFingerprint{SizeBytes: candidate.SourceSizeBytes, ModTime: candidate.SourceModTime},
+			AssetRelativePath: candidate.AssetRelativePath, AssetRole: candidate.Role,
+			AssetFingerprint: domain.FileFingerprint{SizeBytes: candidate.SizeBytes, ModTime: candidate.ModTime},
+			Persist:          !candidate.Ignored && !candidate.Unstable,
+			Enqueue:          candidate.Enqueueable,
 		})
-		if err != nil {
-			return result, fmt.Errorf("upsert asset %q: %w", candidate.LibraryRelativePath, err)
-		}
-		result.Assets++
-
-		if !enqueueableRole(candidate.Role) {
-			result.SkippedIgnored++
-			continue
-		}
-
-		_, inserted, err := s.Store.EnqueueJob(ctx, store.EnqueueJobInput{
-			SourceID:    storedSource.ID,
-			AssetID:     storedAsset.ID,
-			LibraryName: storedSource.LibraryName,
-			Priority:    plan.Library.Priority,
-			Now:         now,
-		})
-		if err != nil {
-			return result, fmt.Errorf("enqueue asset %q: %w", candidate.LibraryRelativePath, err)
-		}
-		if inserted {
-			result.EnqueuedJobs++
-		} else {
-			result.ExistingJobs++
-		}
 	}
+	applied, err := s.Store.ApplyLibraryScan(ctx, plan.ScanToken, store.ApplyScanInput{
+		LibraryName: domain.LibraryName(plan.Library.Name), Priority: plan.Library.Priority, Entries: entries, CompletedAt: now,
+	})
+	if err != nil {
+		return result, fmt.Errorf("apply library scan: %w", err)
+	}
+	result.Sources = applied.Sources
+	result.Assets = applied.Assets
+	result.EnqueuedJobs = applied.EnqueuedJobs
+	result.ExistingJobs = applied.ExistingJobs
 
 	return result, nil
 }

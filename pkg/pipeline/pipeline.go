@@ -90,6 +90,7 @@ type Runner struct {
 	Registry        Registry
 	Events          EventRecorder
 	StepPersistence StepPersistence
+	BeforeStep      func(context.Context, string, *JobContext) error
 	StepContext     func(context.Context, string) context.Context
 	Now             func() time.Time
 }
@@ -121,6 +122,12 @@ func (r Runner) Run(ctx context.Context, job *JobContext) error {
 				return err
 			}
 			continue
+		}
+		if r.BeforeStep != nil {
+			if err := r.BeforeStep(ctx, step.Name, job); err != nil {
+				_ = r.record(ctx, job.Attempt.ID, domain.AttemptEventBlockFailed, step.Name, err.Error(), map[string]any{"step_index": index}) //nolint:errcheck // preserve the pre-step error
+				return fmt.Errorf("before block %q: %w", step.Name, err)
+			}
 		}
 		slog.Info("pipeline step started", "job", job.Job.Label(), "attempt", job.Attempt.Number, "step", step.Name, "step_index", index)
 		stepCtx := ctx

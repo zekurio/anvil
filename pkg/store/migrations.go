@@ -3,55 +3,79 @@ package store
 import (
 	"context"
 	"database/sql"
-	"errors"
 	"fmt"
+	"strings"
 	"time"
 )
 
-type migration struct {
-	version int
-	sql     string
-	after   func(context.Context, *sql.Tx) error
-}
+const currentSchemaVersion = 5
 
-var migrations = []migration{
-	{
-		version: 1,
-		sql: `
+const currentSchema = `
+CREATE TABLE schema_migrations (
+	version INTEGER PRIMARY KEY,
+	applied_at TEXT NOT NULL
+);
+
+CREATE TABLE library_scans (
+	library_name TEXT PRIMARY KEY,
+	next_token INTEGER NOT NULL DEFAULT 0,
+	applied_token INTEGER NOT NULL DEFAULT 0,
+	applied_at TEXT
+);
+
 CREATE TABLE media_sources (
 	id INTEGER PRIMARY KEY AUTOINCREMENT,
 	library_name TEXT NOT NULL,
 	kind TEXT NOT NULL CHECK (kind IN ('file', 'package')),
 	relative_path TEXT NOT NULL,
-	status TEXT NOT NULL CHECK (status IN ('active', 'missing', 'ignored')),
+	generation INTEGER NOT NULL CHECK (generation >= 1),
+	is_current INTEGER NOT NULL DEFAULT 1 CHECK (is_current IN (0, 1)),
+	status TEXT NOT NULL CHECK (status IN ('active', 'processed', 'missing')),
 	size_bytes INTEGER NOT NULL DEFAULT 0,
 	mod_time TEXT,
 	hash_algorithm TEXT NOT NULL DEFAULT '',
 	hash_value TEXT NOT NULL DEFAULT '',
 	first_seen_at TEXT NOT NULL,
 	last_seen_at TEXT NOT NULL,
-	updated_at TEXT NOT NULL DEFAULT '',
-	UNIQUE (library_name, relative_path)
+	updated_at TEXT NOT NULL,
+	UNIQUE (library_name, relative_path, generation)
 );
+
+CREATE UNIQUE INDEX media_sources_current_idx
+ON media_sources(library_name, relative_path)
+WHERE is_current = 1;
+
+CREATE INDEX media_sources_library_path_idx
+ON media_sources(library_name, relative_path, generation DESC);
 
 CREATE TABLE media_assets (
 	id INTEGER PRIMARY KEY AUTOINCREMENT,
 	source_id INTEGER NOT NULL REFERENCES media_sources(id) ON DELETE CASCADE,
 	relative_path TEXT NOT NULL,
+	generation INTEGER NOT NULL CHECK (generation >= 1),
+	is_current INTEGER NOT NULL DEFAULT 1 CHECK (is_current IN (0, 1)),
 	role TEXT NOT NULL CHECK (role IN ('primary_video', 'video', 'sample', 'subtitle', 'metadata', 'extra', 'unknown')),
-	status TEXT NOT NULL CHECK (status IN ('active', 'processed', 'missing', 'ignored')),
+	status TEXT NOT NULL CHECK (status IN ('active', 'processed', 'missing')),
 	size_bytes INTEGER NOT NULL DEFAULT 0,
 	mod_time TEXT,
 	hash_algorithm TEXT NOT NULL DEFAULT '',
 	hash_value TEXT NOT NULL DEFAULT '',
 	first_seen_at TEXT NOT NULL,
 	last_seen_at TEXT NOT NULL,
-	updated_at TEXT NOT NULL DEFAULT '',
-	UNIQUE (source_id, relative_path)
+	updated_at TEXT NOT NULL,
+	UNIQUE (source_id, relative_path, generation)
 );
+
+CREATE UNIQUE INDEX media_assets_current_idx
+ON media_assets(source_id, relative_path)
+WHERE is_current = 1;
+
+CREATE INDEX media_assets_source_path_idx
+ON media_assets(source_id, relative_path, generation DESC);
 
 CREATE TABLE jobs (
 	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	slug TEXT NOT NULL UNIQUE,
 	source_id INTEGER NOT NULL REFERENCES media_sources(id) ON DELETE CASCADE,
 	asset_id INTEGER REFERENCES media_assets(id) ON DELETE CASCADE,
 	library_name TEXT NOT NULL,
@@ -66,12 +90,12 @@ CREATE TABLE jobs (
 	output_size_bytes INTEGER NOT NULL DEFAULT 0,
 	created_at TEXT NOT NULL,
 	updated_at TEXT NOT NULL,
-	completed_at TEXT
+	completed_at TEXT,
+	pipeline_context_json BLOB NOT NULL DEFAULT x''
 );
 
 CREATE UNIQUE INDEX jobs_target_idx
-ON jobs(source_id, ifnull(asset_id, 0))
-;
+ON jobs(source_id, ifnull(asset_id, 0));
 
 CREATE INDEX jobs_state_priority_idx
 ON jobs(state, priority DESC, created_at ASC, id ASC);
@@ -94,11 +118,7 @@ CREATE TABLE attempts (
 	error TEXT NOT NULL DEFAULT '',
 	UNIQUE (job_id, number)
 );
-`,
-	},
-	{
-		version: 2,
-		sql: `
+
 CREATE TABLE attempt_events (
 	id INTEGER PRIMARY KEY AUTOINCREMENT,
 	attempt_id INTEGER NOT NULL REFERENCES attempts(id) ON DELETE CASCADE,
@@ -111,24 +131,7 @@ CREATE TABLE attempt_events (
 
 CREATE INDEX attempt_events_attempt_idx
 ON attempt_events(attempt_id, id);
-`,
-	},
-	{
-		version: 3,
-		sql: `
-ALTER TABLE jobs
-ADD COLUMN pipeline_context_json BLOB NOT NULL DEFAULT x'';
-`,
-	},
-	{
-		version: 4,
-		sql: `
-ALTER TABLE jobs
-ADD COLUMN slug TEXT NOT NULL DEFAULT '';
-`,
-		after: backfillJobSlugs,
-	},
-}
+`
 
 func (s *SQLiteStore) configure(ctx context.Context) error {
 	pragmas := []string{
@@ -158,66 +161,99 @@ func (s *SQLiteStore) configureReadOnly(ctx context.Context) error {
 }
 
 func (s *SQLiteStore) migrate(ctx context.Context) error {
-	if _, err := s.db.ExecContext(ctx, `
-CREATE TABLE IF NOT EXISTS schema_migrations (
-	version INTEGER PRIMARY KEY,
-	applied_at TEXT NOT NULL
-)
-`); err != nil {
-		return fmt.Errorf("create migrations table: %w", err)
-	}
-
-	for _, migration := range migrations {
-		applied, err := s.migrationApplied(ctx, migration.version)
-		if err != nil {
-			return err
-		}
-		if applied {
-			continue
-		}
-		if err := s.applyMigration(ctx, migration); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func (s *SQLiteStore) migrationApplied(ctx context.Context, version int) (bool, error) {
-	var exists int
-	err := s.db.QueryRowContext(ctx, `
-SELECT 1 FROM schema_migrations WHERE version = ?
-`, version).Scan(&exists)
-	if errors.Is(err, sql.ErrNoRows) {
-		return false, nil
-	}
+	compatible, exists, err := s.schemaCompatibility(ctx)
 	if err != nil {
-		return false, fmt.Errorf("check migration %d: %w", version, err)
+		return err
 	}
-	return true, nil
-}
+	if exists {
+		if !compatible {
+			return ErrIncompatibleSchema
+		}
+		return s.verifyForeignKeys(ctx)
+	}
 
-func (s *SQLiteStore) applyMigration(ctx context.Context, migration migration) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("begin migration %d: %w", migration.version, err)
+		return fmt.Errorf("begin schema bootstrap: %w", err)
 	}
 	defer rollback(tx)
 
-	if _, err := tx.ExecContext(ctx, migration.sql); err != nil {
-		return fmt.Errorf("apply migration %d: %w", migration.version, err)
-	}
-	if migration.after != nil {
-		if err := migration.after(ctx, tx); err != nil {
-			return fmt.Errorf("finalize migration %d: %w", migration.version, err)
-		}
+	if _, err := tx.ExecContext(ctx, currentSchema); err != nil {
+		return fmt.Errorf("bootstrap schema version %d: %w", currentSchemaVersion, err)
 	}
 	if _, err := tx.ExecContext(ctx, `
 INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)
-`, migration.version, encodeTime(time.Now())); err != nil {
-		return fmt.Errorf("record migration %d: %w", migration.version, err)
+`, currentSchemaVersion, encodeTime(time.Now())); err != nil {
+		return fmt.Errorf("record schema version %d: %w", currentSchemaVersion, err)
 	}
 	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit migration %d: %w", migration.version, err)
+		return fmt.Errorf("commit schema bootstrap: %w", err)
 	}
-	return nil
+	return s.verifyForeignKeys(ctx)
+}
+
+func (s *SQLiteStore) schemaCompatibility(ctx context.Context) (compatible bool, exists bool, err error) {
+	var tableCount int
+	if err := s.db.QueryRowContext(ctx, `
+SELECT count(*)
+FROM sqlite_master
+WHERE type = 'table' AND name NOT LIKE 'sqlite_%'
+`).Scan(&tableCount); err != nil {
+		return false, false, fmt.Errorf("inspect sqlite schema: %w", err)
+	}
+	if tableCount == 0 {
+		return false, false, nil
+	}
+
+	var migrationsTable int
+	if err := s.db.QueryRowContext(ctx, `
+SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'schema_migrations'
+`).Scan(&migrationsTable); err != nil {
+		return false, true, fmt.Errorf("inspect schema version table: %w", err)
+	}
+	if migrationsTable == 0 {
+		return false, true, nil
+	}
+
+	rows, err := s.db.QueryContext(ctx, `SELECT version FROM schema_migrations ORDER BY version`)
+	if err != nil {
+		return false, true, fmt.Errorf("read schema versions: %w", err)
+	}
+	defer closeRows(rows, &err, "close schema versions")
+
+	var versions []string
+	for rows.Next() {
+		var version int
+		if err := rows.Scan(&version); err != nil {
+			return false, true, fmt.Errorf("scan schema version: %w", err)
+		}
+		versions = append(versions, fmt.Sprint(version))
+	}
+	if err := rows.Err(); err != nil {
+		return false, true, fmt.Errorf("iterate schema versions: %w", err)
+	}
+	return len(versions) == 1 && versions[0] == fmt.Sprint(currentSchemaVersion), true, nil
+}
+
+func (s *SQLiteStore) verifyForeignKeys(ctx context.Context) error {
+	rows, err := s.db.QueryContext(ctx, `PRAGMA foreign_key_check`)
+	if err != nil {
+		return fmt.Errorf("verify foreign keys: %w", err)
+	}
+	defer closeRows(rows, &err, "close foreign key check")
+	if !rows.Next() {
+		return rows.Err()
+	}
+	var table string
+	var rowID sql.NullInt64
+	var parent string
+	var foreignKeyID int
+	if err := rows.Scan(&table, &rowID, &parent, &foreignKeyID); err != nil {
+		return fmt.Errorf("scan foreign key violation: %w", err)
+	}
+	parts := []string{fmt.Sprintf("table %q", table), fmt.Sprintf("parent %q", parent), fmt.Sprintf("foreign key %d", foreignKeyID)}
+	if rowID.Valid {
+		parts = append(parts, fmt.Sprintf("row %d", rowID.Int64))
+	}
+	return fmt.Errorf("verify foreign keys: %s", strings.Join(parts, ", "))
 }
