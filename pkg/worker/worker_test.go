@@ -597,6 +597,78 @@ func TestPipelineContextPersistenceSkipsSaveForNonResumableStep(t *testing.T) {
 	}
 }
 
+func TestRecoverPendingPublishRunsBeforePipeline(t *testing.T) {
+	block := &fakePublishRecoveryBlock{}
+	runner := pipeline.Runner{Registry: pipeline.NewRegistry(block)}
+	job := &pipeline.JobContext{
+		Job:  domain.Job{ID: 99},
+		Flow: domain.Flow{Steps: []domain.FlowStep{{Name: "handoff"}}},
+	}
+	recovered, err := recoverPendingPublish(context.Background(), runner, job)
+	if err != nil {
+		t.Fatalf("recoverPendingPublish() error = %v", err)
+	}
+	if !recovered || block.calls != 1 {
+		t.Fatalf("recoverPendingPublish() = %t, calls = %d; want true, 1", recovered, block.calls)
+	}
+	if job.FinalPath != "/imports/recovered.mkv" {
+		t.Fatalf("FinalPath = %q, want recovered destination", job.FinalPath)
+	}
+}
+
+func TestRunnerRecoversPublishBeforeOccurrenceFingerprintCheck(t *testing.T) {
+	cfg := workerConfig()
+	cfg.Flows["test-flow"] = config.FlowConfig{Steps: []string{"handoff"}}
+	state := newFakeWorkerStore()
+	state.source = domain.MediaSource{ID: 1, LibraryName: "movies", Kind: domain.SourceKindFile, RelativePath: "Movie.mkv"}
+	block := &fakePublishRecoveryBlock{}
+	verifyCalls := 0
+	runner := Runner{
+		Store:          state,
+		ConfigProvider: func() config.Config { return cfg },
+		VerifyFingerprint: func(string, domain.FileFingerprint) error {
+			verifyCalls++
+			return errors.New("published source is already gone")
+		},
+		Pipeline: pipeline.Runner{Registry: pipeline.NewRegistry(block)},
+		Now:      testTime,
+	}
+	err := runner.Run(context.Background(), scheduler.Assignment{
+		Job:      domain.Job{ID: 99, SourceID: 1, LibraryName: "movies", State: domain.JobStateLeased},
+		WorkerID: "worker-1",
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if verifyCalls != 0 {
+		t.Fatalf("fingerprint verification calls = %d, want 0 before journal recovery", verifyCalls)
+	}
+	if block.calls != 1 {
+		t.Fatalf("recovery calls = %d, want 1", block.calls)
+	}
+	if state.attempt.State != domain.AttemptStateSucceeded {
+		t.Fatalf("attempt state = %q, want succeeded", state.attempt.State)
+	}
+}
+
+type fakePublishRecoveryBlock struct {
+	calls int
+}
+
+func (*fakePublishRecoveryBlock) Name() string {
+	return "handoff"
+}
+
+func (*fakePublishRecoveryBlock) Run(context.Context, *pipeline.JobContext) error {
+	return errors.New("pipeline block should not run during recovery")
+}
+
+func (b *fakePublishRecoveryBlock) Recover(_ context.Context, job *pipeline.JobContext) (bool, error) {
+	b.calls++
+	job.FinalPath = "/imports/recovered.mkv"
+	return true, nil
+}
+
 func TestPipelineContextPersistenceReturnsSaveErrorForResumableStep(t *testing.T) {
 	sentinel := errors.New("save failed")
 	store := newFakeWorkerStore()

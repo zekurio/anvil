@@ -758,7 +758,7 @@ func startSchedulerLoop(ctx context.Context, workerCtx context.Context, wg *sync
 		Store:            state,
 		ConfigProvider:   cfgProvider,
 		MetadataResolver: metadata.Resolver{},
-		Pipeline:         worker.DefaultPipeline(cfgProvider().Daemon.TempDir),
+		Pipeline:         worker.DefaultPipeline(cfgProvider().Daemon.TempDir, state),
 		TempDir:          cfgProvider().Daemon.TempDir,
 	}
 	planner := &scheduler.Scheduler{
