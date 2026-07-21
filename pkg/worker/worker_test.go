@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -16,6 +17,7 @@ import (
 	"github.com/zekurio/anvil/pkg/process"
 	"github.com/zekurio/anvil/pkg/scheduler"
 	"github.com/zekurio/anvil/pkg/staging"
+	"github.com/zekurio/anvil/pkg/store"
 )
 
 func TestRunnerResolvesLatestConfigAndCompletesJob(t *testing.T) {
@@ -26,9 +28,10 @@ func TestRunnerResolvesLatestConfigAndCompletesJob(t *testing.T) {
 	store.asset = domain.MediaAsset{ID: 2, SourceID: 1, RelativePath: "Movie.mkv"}
 
 	runner := Runner{
-		Store:            store,
-		ConfigProvider:   workerConfig,
-		MetadataResolver: staticMetadataResolver{metadata: domain.JobMetadata{OriginalLanguage: "eng"}},
+		Store:             store,
+		ConfigProvider:    workerConfig,
+		MetadataResolver:  staticMetadataResolver{metadata: domain.JobMetadata{OriginalLanguage: "eng"}},
+		VerifyFingerprint: acceptFingerprint,
 		Pipeline: pipeline.Runner{
 			Registry: pipeline.NewRegistry(pipeline.BlockFunc{BlockName: "noop", Fn: func(_ context.Context, job *pipeline.JobContext) error {
 				if job.InputPath == "" {
@@ -81,8 +84,9 @@ func TestRunnerRecordsJobFileSizes(t *testing.T) {
 		Fingerprint:  domain.FileFingerprint{SizeBytes: 1000},
 	}
 	runner := Runner{
-		Store:          store,
-		ConfigProvider: workerConfig,
+		Store:             store,
+		ConfigProvider:    workerConfig,
+		VerifyFingerprint: acceptFingerprint,
 		Pipeline: pipeline.Runner{
 			Registry: pipeline.NewRegistry(pipeline.BlockFunc{BlockName: "noop", Fn: func(_ context.Context, job *pipeline.JobContext) error {
 				if err := os.WriteFile(outputPath, make([]byte, 650), 0o600); err != nil {
@@ -112,9 +116,10 @@ func TestRunnerRequeuesFailedAttemptBeforeMaxAttempts(t *testing.T) {
 	store := newFakeWorkerStore()
 	store.source = domain.MediaSource{ID: 1, LibraryName: "movies", Kind: domain.SourceKindFile, RelativePath: "Movie.mkv"}
 	runner := Runner{
-		Store:          store,
-		ConfigProvider: workerConfig,
-		MaxAttempts:    2,
+		Store:             store,
+		ConfigProvider:    workerConfig,
+		MaxAttempts:       2,
+		VerifyFingerprint: acceptFingerprint,
 		Pipeline: pipeline.Runner{
 			Registry: pipeline.NewRegistry(pipeline.BlockFunc{BlockName: "noop", Fn: func(_ context.Context, _ *pipeline.JobContext) error {
 				return errors.New("encode failed")
@@ -145,10 +150,11 @@ func TestRunnerCleansStagingAfterPipelineFailure(t *testing.T) {
 	store.source = domain.MediaSource{ID: 1, LibraryName: "movies", Kind: domain.SourceKindFile, RelativePath: "Movie.mkv"}
 	var stagedDir string
 	runner := Runner{
-		Store:          store,
-		ConfigProvider: func() config.Config { return cfg },
-		TempDir:        tempDir,
-		MaxAttempts:    2,
+		Store:             store,
+		ConfigProvider:    func() config.Config { return cfg },
+		TempDir:           tempDir,
+		MaxAttempts:       2,
+		VerifyFingerprint: acceptFingerprint,
 		Pipeline: pipeline.Runner{
 			Registry: pipeline.NewRegistry(
 				staging.StageBlock{Manager: staging.Manager{Root: filepath.Join(tempDir, "staging")}},
@@ -195,9 +201,10 @@ func TestRunnerCapturesProcessOutputLogs(t *testing.T) {
 	store := newFakeWorkerStore()
 	store.source = domain.MediaSource{ID: 1, LibraryName: "movies", Kind: domain.SourceKindFile, RelativePath: "Movie.mkv"}
 	runner := Runner{
-		Store:          store,
-		ConfigProvider: func() config.Config { return cfg },
-		TempDir:        tempDir,
+		Store:             store,
+		ConfigProvider:    func() config.Config { return cfg },
+		TempDir:           tempDir,
+		VerifyFingerprint: acceptFingerprint,
 		Pipeline: pipeline.Runner{
 			Registry: pipeline.NewRegistry(pipeline.BlockFunc{BlockName: "run-ffmpeg", Fn: func(ctx context.Context, _ *pipeline.JobContext) error {
 				_, err := process.OSRunner{}.Run(ctx, process.Command{Name: ffmpegPath})
@@ -233,9 +240,10 @@ func TestRunnerDoesNotFailJobWhenMetadataResolutionFails(t *testing.T) {
 	store := newFakeWorkerStore()
 	store.source = domain.MediaSource{ID: 1, LibraryName: "movies", Kind: domain.SourceKindFile, RelativePath: "Movie.mkv"}
 	runner := Runner{
-		Store:            store,
-		ConfigProvider:   workerConfig,
-		MetadataResolver: staticMetadataResolver{err: errors.New("arr unavailable")},
+		Store:             store,
+		ConfigProvider:    workerConfig,
+		MetadataResolver:  staticMetadataResolver{err: errors.New("arr unavailable")},
+		VerifyFingerprint: acceptFingerprint,
 		Pipeline: pipeline.Runner{
 			Registry: pipeline.NewRegistry(pipeline.BlockFunc{BlockName: "noop", Fn: func(_ context.Context, job *pipeline.JobContext) error {
 				if !job.Metadata.StreamCleanupDisabled {
@@ -261,6 +269,89 @@ func TestRunnerDoesNotFailJobWhenMetadataResolutionFails(t *testing.T) {
 	}
 }
 
+func TestRunnerRejectsChangedOccurrenceFingerprintBeforeWork(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	inputPath := filepath.Join(root, "Movie.mkv")
+	if err := os.WriteFile(inputPath, []byte("changed"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(inputPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := workerConfig()
+	library := cfg.Libraries["movies"]
+	library.Path = root
+	cfg.Libraries["movies"] = library
+	store := newFakeWorkerStore()
+	store.source = domain.MediaSource{ID: 1, LibraryName: "movies", Kind: domain.SourceKindFile, RelativePath: "Movie.mkv", Generation: 1, Current: true, Status: domain.MediaSourceActive, Fingerprint: domain.FileFingerprint{SizeBytes: info.Size() - 1, ModTime: info.ModTime()}}
+	store.asset = domain.MediaAsset{ID: 2, SourceID: 1, RelativePath: "Movie.mkv", Generation: 1, Current: true, Status: domain.MediaAssetActive, Fingerprint: store.source.Fingerprint}
+	var pipelineRan bool
+	runner := Runner{
+		Store: store, ConfigProvider: func() config.Config { return cfg }, MaxAttempts: 1,
+		Pipeline: pipeline.Runner{Registry: pipeline.NewRegistry(pipeline.BlockFunc{BlockName: "noop", Fn: func(context.Context, *pipeline.JobContext) error {
+			pipelineRan = true
+			return nil
+		}})},
+	}
+	err = runner.Run(ctx, scheduler.Assignment{Job: domain.Job{ID: 99, SourceID: 1, AssetID: 2, LibraryName: "movies", State: domain.JobStateLeased}, WorkerID: "worker-1"})
+	if err == nil || !strings.Contains(err.Error(), "input fingerprint changed") {
+		t.Fatalf("Run() error = %v, want fingerprint rejection", err)
+	}
+	if pipelineRan {
+		t.Fatal("pipeline ran after initial fingerprint rejection")
+	}
+	if got := store.transitions[len(store.transitions)-1]; got != domain.JobStateSkipped {
+		t.Fatalf("last transition = %q, want skipped", got)
+	}
+}
+
+func TestRunnerRechecksFingerprintBeforePublish(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	inputPath := filepath.Join(root, "Movie.mkv")
+	if err := os.WriteFile(inputPath, []byte("original"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(inputPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := workerConfig()
+	library := cfg.Libraries["movies"]
+	library.Path = root
+	cfg.Libraries["movies"] = library
+	cfg.Flows["test-flow"] = config.FlowConfig{Steps: []string{"mutate", "replace"}}
+	fingerprint := domain.FileFingerprint{SizeBytes: info.Size(), ModTime: info.ModTime()}
+	store := newFakeWorkerStore()
+	store.source = domain.MediaSource{ID: 1, LibraryName: "movies", Kind: domain.SourceKindFile, RelativePath: "Movie.mkv", Generation: 1, Current: true, Status: domain.MediaSourceActive, Fingerprint: fingerprint}
+	store.asset = domain.MediaAsset{ID: 2, SourceID: 1, RelativePath: "Movie.mkv", Generation: 1, Current: true, Status: domain.MediaAssetActive, Fingerprint: fingerprint}
+	var publishRan bool
+	runner := Runner{
+		Store: store, ConfigProvider: func() config.Config { return cfg }, MaxAttempts: 1,
+		Pipeline: pipeline.Runner{Registry: pipeline.NewRegistry(
+			pipeline.BlockFunc{BlockName: "mutate", Fn: func(context.Context, *pipeline.JobContext) error {
+				return os.WriteFile(inputPath, []byte("replacement content"), 0o600)
+			}},
+			pipeline.BlockFunc{BlockName: "replace", Fn: func(context.Context, *pipeline.JobContext) error {
+				publishRan = true
+				return nil
+			}},
+		)},
+	}
+	err = runner.Run(ctx, scheduler.Assignment{Job: domain.Job{ID: 99, SourceID: 1, AssetID: 2, LibraryName: "movies", State: domain.JobStateLeased}, WorkerID: "worker-1"})
+	if err == nil || !strings.Contains(err.Error(), "input fingerprint changed") {
+		t.Fatalf("Run() error = %v, want pre-publish fingerprint rejection", err)
+	}
+	if publishRan {
+		t.Fatal("publish block ran after fingerprint changed")
+	}
+	if got := store.transitions[len(store.transitions)-1]; got != domain.JobStateSkipped {
+		t.Fatalf("last transition = %q, want skipped", got)
+	}
+}
+
 func TestRunnerResumesPersistedPipelineContext(t *testing.T) {
 	ctx := context.Background()
 	cfg := workerConfig()
@@ -282,9 +373,10 @@ func TestRunnerResumesPersistedPipelineContext(t *testing.T) {
 	}
 
 	first := Runner{
-		Store:          store,
-		ConfigProvider: func() config.Config { return cfg },
-		MaxAttempts:    2,
+		Store:             store,
+		ConfigProvider:    func() config.Config { return cfg },
+		MaxAttempts:       2,
+		VerifyFingerprint: acceptFingerprint,
 		Pipeline: pipeline.Runner{
 			Registry: pipeline.NewRegistry(
 				pipeline.BlockFunc{BlockName: "probe", Fn: func(_ context.Context, job *pipeline.JobContext) error {
@@ -326,9 +418,10 @@ func TestRunnerResumesPersistedPipelineContext(t *testing.T) {
 	store.attempt = domain.Attempt{ID: 2, JobID: 99, Number: 2, WorkerID: "worker-2", State: domain.AttemptStateRunning}
 	var encoded bool
 	second := Runner{
-		Store:          store,
-		ConfigProvider: func() config.Config { return cfg },
-		MaxAttempts:    2,
+		Store:             store,
+		ConfigProvider:    func() config.Config { return cfg },
+		MaxAttempts:       2,
+		VerifyFingerprint: acceptFingerprint,
 		Pipeline: pipeline.Runner{
 			Registry: pipeline.NewRegistry(
 				pipeline.BlockFunc{BlockName: "probe", Fn: func(context.Context, *pipeline.JobContext) error {
@@ -401,9 +494,10 @@ func TestRunnerRebuildsPipelineContextWhenDolbyVisionToolAvailabilityChanges(t *
 	var searchCodecs []string
 	interruptEncode := true
 	runner := Runner{
-		Store:          store,
-		ConfigProvider: func() config.Config { return cfg },
-		MaxAttempts:    2,
+		Store:             store,
+		ConfigProvider:    func() config.Config { return cfg },
+		MaxAttempts:       2,
+		VerifyFingerprint: acceptFingerprint,
 		Pipeline: pipeline.Runner{
 			Registry: pipeline.NewRegistry(
 				probe.Block{
@@ -559,6 +653,10 @@ func testTime() time.Time {
 	return time.Date(2026, 6, 27, 12, 0, 0, 0, time.UTC)
 }
 
+func acceptFingerprint(string, domain.FileFingerprint) error {
+	return nil
+}
+
 type staticMetadataResolver struct {
 	metadata domain.JobMetadata
 	err      error
@@ -591,14 +689,26 @@ func newFakeWorkerStore() *fakeWorkerStore {
 
 func (f *fakeWorkerStore) GetMediaSource(_ context.Context, id domain.MediaSourceID) (domain.MediaSource, error) {
 	if f.source.ID == id {
-		return f.source, nil
+		source := f.source
+		if source.Generation == 0 {
+			source.Generation = 1
+			source.Current = true
+			source.Status = domain.MediaSourceActive
+		}
+		return source, nil
 	}
 	return domain.MediaSource{}, errors.New("source not found")
 }
 
 func (f *fakeWorkerStore) GetMediaAsset(_ context.Context, id domain.MediaAssetID) (domain.MediaAsset, error) {
 	if f.asset.ID == id {
-		return f.asset, nil
+		asset := f.asset
+		if asset.Generation == 0 {
+			asset.Generation = 1
+			asset.Current = true
+			asset.Status = domain.MediaAssetActive
+		}
+		return asset, nil
 	}
 	return domain.MediaAsset{}, errors.New("asset not found")
 }
@@ -620,10 +730,13 @@ func (f *fakeWorkerStore) TransitionJob(_ context.Context, _ domain.JobID, to do
 	return domain.Job{State: to}, nil
 }
 
-func (f *fakeWorkerStore) RecordJobFileSizes(_ context.Context, _ domain.JobID, inputSizeBytes int64, outputSizeBytes int64, _ time.Time) (domain.Job, error) {
-	f.recordedInputSize = inputSizeBytes
-	f.recordedOutputSize = outputSizeBytes
-	return domain.Job{InputSizeBytes: inputSizeBytes, OutputSizeBytes: outputSizeBytes}, nil
+func (f *fakeWorkerStore) CompleteJobOccurrence(_ context.Context, input store.CompleteJobOccurrenceInput) (domain.Job, error) {
+	f.recordedInputSize = input.InputSizeBytes
+	f.recordedOutputSize = input.OutputSizeBytes
+	f.attempt.State = domain.AttemptStateSucceeded
+	f.attempt.FinishedAt = &input.CompletedAt
+	f.transitions = append(f.transitions, domain.JobStateComplete)
+	return domain.Job{ID: input.JobID, State: domain.JobStateComplete, InputSizeBytes: input.InputSizeBytes, OutputSizeBytes: input.OutputSizeBytes}, nil
 }
 
 func (f *fakeWorkerStore) HeartbeatJob(_ context.Context, _ domain.JobID, _ string, _ time.Time, _ time.Time) (domain.Job, error) {

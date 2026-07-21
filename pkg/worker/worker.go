@@ -2,9 +2,12 @@ package worker
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -24,6 +27,7 @@ import (
 	"github.com/zekurio/anvil/pkg/scheduler"
 	"github.com/zekurio/anvil/pkg/search"
 	"github.com/zekurio/anvil/pkg/staging"
+	"github.com/zekurio/anvil/pkg/store"
 	"github.com/zekurio/anvil/pkg/subtitle"
 	"github.com/zekurio/anvil/pkg/validate"
 )
@@ -34,7 +38,7 @@ type Store interface {
 	StartAttempt(ctx context.Context, jobID domain.JobID, workerID string, resolvedLibrary []byte, resolvedFlow []byte, resolvedProfile []byte, now time.Time) (domain.Attempt, error)
 	FinishAttempt(ctx context.Context, attemptID domain.AttemptID, state domain.AttemptState, message string, finishedAt time.Time) (domain.Attempt, error)
 	TransitionJob(ctx context.Context, jobID domain.JobID, to domain.JobState, now time.Time, lastError string) (domain.Job, error)
-	RecordJobFileSizes(ctx context.Context, jobID domain.JobID, inputSizeBytes int64, outputSizeBytes int64, now time.Time) (domain.Job, error)
+	CompleteJobOccurrence(ctx context.Context, input store.CompleteJobOccurrenceInput) (domain.Job, error)
 	HeartbeatJob(ctx context.Context, jobID domain.JobID, workerID string, leaseDeadline time.Time, now time.Time) (domain.Job, error)
 	RecordAttemptEvent(ctx context.Context, event domain.AttemptEvent) (domain.AttemptEvent, error)
 	GetJobPipelineContext(ctx context.Context, jobID domain.JobID) (domain.JobPipelineContext, bool, error)
@@ -47,10 +51,13 @@ type MetadataResolver interface {
 	ResolveJobMetadata(context.Context, domain.Library, domain.MediaSource, domain.MediaAsset, string) (domain.JobMetadata, error)
 }
 
+var ErrInputOccurrenceChanged = errors.New("input occurrence changed")
+
 type Runner struct {
 	Store             Store
 	ConfigProvider    ConfigProvider
 	MetadataResolver  MetadataResolver
+	VerifyFingerprint func(string, domain.FileFingerprint) error
 	Pipeline          pipeline.Runner
 	TempDir           string
 	MaxAttempts       int
@@ -95,6 +102,9 @@ func (r Runner) Run(ctx context.Context, assignment scheduler.Assignment) error 
 	}
 
 	inputPath := InputPath(library.Path, source, asset)
+	if err := r.verifyOccurrenceInput(inputPath, source, asset); err != nil {
+		return r.fail(ctx, assignment.Job, attempt, cfg, err)
+	}
 	metadata, err := r.resolveMetadata(ctx, library, source, asset, inputPath)
 	if err != nil {
 		metadata.StreamCleanupDisabled = true
@@ -116,6 +126,18 @@ func (r Runner) Run(ctx context.Context, assignment scheduler.Assignment) error 
 		InputPath: inputPath,
 	}
 	pipelineRunner := r.Pipeline
+	beforeStep := pipelineRunner.BeforeStep
+	pipelineRunner.BeforeStep = func(ctx context.Context, step string, job *pipeline.JobContext) error {
+		if beforeStep != nil {
+			if err := beforeStep(ctx, step, job); err != nil {
+				return err
+			}
+		}
+		if step == "replace" || step == "handoff" {
+			return r.verifyCurrentOccurrence(ctx, job)
+		}
+		return nil
+	}
 	contextPersistence := newPipelineContextPersistence(ctx, r.Store, jobContext, resolvedLibrary, resolvedFlow, resolvedProfile, initialMetadata, probeMetadataRefresh(pipelineRunner), r.now)
 	slog.Info("worker pipeline started", "worker", assignment.WorkerID, "job", assignment.Job.Label(), "attempt", attempt.Number, "library", string(library.Name), "flow", string(flow.Name), "profile", string(profile.Name), "input", inputPath)
 
@@ -145,17 +167,29 @@ func (r Runner) Run(ctx context.Context, assignment scheduler.Assignment) error 
 		r.cleanupFailedStaging(ctx, jobContext, cfg)
 		return r.fail(ctx, assignment.Job, attempt, cfg, err)
 	}
-	if err := r.recordJobFileSizes(ctx, jobContext); err != nil {
-		return err
-	}
-	if _, err := r.Store.FinishAttempt(ctx, attempt.ID, domain.AttemptStateSucceeded, "", r.now()); err != nil {
-		return fmt.Errorf("finish successful attempt: %w", err)
-	}
-	if err := r.complete(ctx, assignment.Job.ID, flow); err != nil {
+	if err := r.complete(ctx, jobContext, flow); err != nil {
 		return err
 	}
 	slog.Info("worker job completed", "worker", assignment.WorkerID, "job", assignment.Job.Label(), "attempt", attempt.Number, "library", string(library.Name), "final_path", jobContext.FinalPath)
 	return nil
+}
+
+func (r Runner) verifyCurrentOccurrence(ctx context.Context, job *pipeline.JobContext) error {
+	if job == nil {
+		return errors.New("pipeline job context is required")
+	}
+	source, err := r.Store.GetMediaSource(ctx, job.Source.ID)
+	if err != nil {
+		return fmt.Errorf("refresh source occurrence before publish: %w", err)
+	}
+	asset := job.Asset
+	if asset.ID != 0 {
+		asset, err = r.Store.GetMediaAsset(ctx, asset.ID)
+		if err != nil {
+			return fmt.Errorf("refresh asset occurrence before publish: %w", err)
+		}
+	}
+	return r.verifyOccurrenceInput(job.InputPath, source, asset)
 }
 
 type probeMetadataRefresher interface {
@@ -200,6 +234,69 @@ func InputPath(root string, source domain.MediaSource, asset domain.MediaAsset) 
 	return filepath.Join(root, filepath.FromSlash(source.RelativePath))
 }
 
+func (r Runner) verifyOccurrenceInput(inputPath string, source domain.MediaSource, asset domain.MediaAsset) error {
+	if !source.Current || source.Status != domain.MediaSourceActive {
+		return fmt.Errorf("%w: source occurrence %d generation %d is no longer active", ErrInputOccurrenceChanged, source.ID, source.Generation)
+	}
+	expected := source.Fingerprint
+	if asset.ID != 0 {
+		if !asset.Current || asset.Status != domain.MediaAssetActive {
+			return fmt.Errorf("%w: asset occurrence %d generation %d is no longer active", ErrInputOccurrenceChanged, asset.ID, asset.Generation)
+		}
+		expected = asset.Fingerprint
+	}
+	verify := r.VerifyFingerprint
+	if verify == nil {
+		verify = verifyFileFingerprint
+	}
+	if err := verify(inputPath, expected); err != nil {
+		return fmt.Errorf("%w: input fingerprint changed for occurrence generation %d: %v", ErrInputOccurrenceChanged, occurrenceGeneration(source, asset), err)
+	}
+	return nil
+}
+
+func verifyFileFingerprint(path string, expected domain.FileFingerprint) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		return fmt.Errorf("stat input: %w", err)
+	}
+	if info.Size() != expected.SizeBytes {
+		return fmt.Errorf("size is %d, expected %d", info.Size(), expected.SizeBytes)
+	}
+	if !expected.ModTime.IsZero() && !info.ModTime().Equal(expected.ModTime) {
+		return fmt.Errorf("modification time is %s, expected %s", info.ModTime().UTC().Format(time.RFC3339Nano), expected.ModTime.UTC().Format(time.RFC3339Nano))
+	}
+	if expected.HashAlgorithm == "" && expected.HashValue == "" {
+		return nil
+	}
+	if expected.HashAlgorithm != "sha256" {
+		return fmt.Errorf("unsupported fingerprint hash algorithm %q", expected.HashAlgorithm)
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return fmt.Errorf("open input for fingerprint hash: %w", err)
+	}
+	hash := sha256.New()
+	if _, err := io.Copy(hash, file); err != nil {
+		return fmt.Errorf("hash input: %w", errors.Join(err, file.Close()))
+	}
+	if err := file.Close(); err != nil {
+		return fmt.Errorf("close input after fingerprint hash: %w", err)
+	}
+	actual := hex.EncodeToString(hash.Sum(nil))
+	if actual != expected.HashValue {
+		return fmt.Errorf("sha256 hash is %s, expected %s", actual, expected.HashValue)
+	}
+	return nil
+}
+
+func occurrenceGeneration(source domain.MediaSource, asset domain.MediaAsset) int {
+	if asset.ID != 0 {
+		return asset.Generation
+	}
+	return source.Generation
+}
+
 func (r Runner) resolveMetadata(ctx context.Context, library domain.Library, source domain.MediaSource, asset domain.MediaAsset, inputPath string) (domain.JobMetadata, error) {
 	if r.MetadataResolver == nil {
 		if library.Metadata.Provider != domain.MetadataProviderNone {
@@ -238,21 +335,6 @@ func usesOriginalLanguage(profile domain.Profile) bool {
 	return false
 }
 
-func (r Runner) recordJobFileSizes(ctx context.Context, job *pipeline.JobContext) error {
-	if r.Store == nil || job == nil {
-		return nil
-	}
-	inputSize := jobInputSize(job)
-	outputSize := jobOutputSize(job)
-	if inputSize == 0 && outputSize == 0 {
-		return nil
-	}
-	if _, err := r.Store.RecordJobFileSizes(ctx, job.Job.ID, inputSize, outputSize, r.now()); err != nil {
-		return fmt.Errorf("record job file sizes: %w", err)
-	}
-	return nil
-}
-
 func jobInputSize(job *pipeline.JobContext) int64 {
 	if job.Asset.Fingerprint.SizeBytes > 0 {
 		return job.Asset.Fingerprint.SizeBytes
@@ -282,26 +364,55 @@ func statFileSize(path string) int64 {
 	return info.Size()
 }
 
-func (r Runner) complete(ctx context.Context, jobID domain.JobID, flow domain.Flow) error {
+func (r Runner) complete(ctx context.Context, job *pipeline.JobContext, flow domain.Flow) error {
 	now := r.now()
-	if _, err := r.Store.TransitionJob(ctx, jobID, domain.JobStateValidating, now, ""); err != nil {
+	if _, err := r.Store.TransitionJob(ctx, job.Job.ID, domain.JobStateValidating, now, ""); err != nil {
 		return fmt.Errorf("transition job to validating: %w", err)
 	}
 	if flowNeedsReplacing(flow) {
-		if _, err := r.Store.TransitionJob(ctx, jobID, domain.JobStateReplacing, r.now(), ""); err != nil {
+		if _, err := r.Store.TransitionJob(ctx, job.Job.ID, domain.JobStateReplacing, r.now(), ""); err != nil {
 			return fmt.Errorf("transition job to replacing: %w", err)
 		}
 	}
-	if _, err := r.Store.TransitionJob(ctx, jobID, domain.JobStateComplete, r.now(), ""); err != nil {
-		return fmt.Errorf("transition job to complete: %w", err)
+	if _, err := r.Store.CompleteJobOccurrence(ctx, store.CompleteJobOccurrenceInput{
+		JobID: job.Job.ID, AttemptID: job.Attempt.ID,
+		InputSizeBytes: jobInputSize(job), OutputSizeBytes: jobOutputSize(job),
+		SourceMediaRemoved:    sourceMediaRemovedOnCompletion(job, flow),
+		FinalInputFingerprint: finalInputFingerprint(job),
+		CompletedAt:           r.now(),
+	}); err != nil {
+		return fmt.Errorf("complete job occurrence: %w", err)
 	}
 	return nil
+}
+
+func sourceMediaRemovedOnCompletion(job *pipeline.JobContext, flow domain.Flow) bool {
+	return job != nil && job.Library.Kind == domain.LibraryKindDownload && job.Library.Download.CleanupSourceMedia && flowHasStep(flow, "handoff")
+}
+
+func finalInputFingerprint(job *pipeline.JobContext) *domain.FileFingerprint {
+	if job == nil || strings.TrimSpace(job.FinalPath) == "" || filepath.Clean(job.FinalPath) != filepath.Clean(job.InputPath) {
+		return nil
+	}
+	info, err := os.Stat(job.InputPath)
+	if err != nil {
+		return nil
+	}
+	fingerprint := domain.FileFingerprint{SizeBytes: info.Size(), ModTime: info.ModTime().UTC()}
+	return &fingerprint
 }
 
 func (r Runner) fail(ctx context.Context, job domain.Job, attempt domain.Attempt, cfg config.Config, cause error) error {
 	message := cause.Error()
 	if _, err := r.Store.FinishAttempt(ctx, attempt.ID, domain.AttemptStateFailed, message, r.now()); err != nil {
 		return fmt.Errorf("finish failed attempt: %w", err)
+	}
+	if errors.Is(cause, ErrInputOccurrenceChanged) {
+		slog.Warn("worker input occurrence changed; job skipped", "worker", attempt.WorkerID, "job", job.Label(), "attempt", attempt.Number, "library", string(job.LibraryName), "error", cause)
+		if _, err := r.Store.TransitionJob(ctx, job.ID, domain.JobStateSkipped, r.now(), message); err != nil {
+			return fmt.Errorf("transition changed occurrence job to skipped: %w", err)
+		}
+		return cause
 	}
 	maxAttempts := r.MaxAttempts
 	if maxAttempts <= 0 {
@@ -407,6 +518,15 @@ func flowNeedsReplacing(flow domain.Flow) bool {
 	for _, step := range flow.Steps {
 		name := strings.ToLower(step.Name)
 		if name == "replace" || name == "handoff" {
+			return true
+		}
+	}
+	return false
+}
+
+func flowHasStep(flow domain.Flow, wanted string) bool {
+	for _, step := range flow.Steps {
+		if strings.EqualFold(step.Name, wanted) {
 			return true
 		}
 	}

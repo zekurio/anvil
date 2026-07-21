@@ -12,9 +12,9 @@ const (
 type MediaSourceStatus string
 
 const (
-	MediaSourceActive  MediaSourceStatus = "active"
-	MediaSourceMissing MediaSourceStatus = "missing"
-	MediaSourceIgnored MediaSourceStatus = "ignored"
+	MediaSourceActive    MediaSourceStatus = "active"
+	MediaSourceProcessed MediaSourceStatus = "processed"
+	MediaSourceMissing   MediaSourceStatus = "missing"
 )
 
 type MediaSource struct {
@@ -22,6 +22,8 @@ type MediaSource struct {
 	LibraryName  LibraryName
 	Kind         SourceKind
 	RelativePath string
+	Generation   int
+	Current      bool
 	Status       MediaSourceStatus
 	Fingerprint  FileFingerprint
 	FirstSeenAt  time.Time
@@ -46,13 +48,14 @@ const (
 	MediaAssetActive    MediaAssetStatus = "active"
 	MediaAssetProcessed MediaAssetStatus = "processed"
 	MediaAssetMissing   MediaAssetStatus = "missing"
-	MediaAssetIgnored   MediaAssetStatus = "ignored"
 )
 
 type MediaAsset struct {
 	ID           MediaAssetID
 	SourceID     MediaSourceID
 	RelativePath string
+	Generation   int
+	Current      bool
 	Role         MediaAssetRole
 	Status       MediaAssetStatus
 	Fingerprint  FileFingerprint
