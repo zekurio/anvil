@@ -4,18 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 
 	"github.com/bmatcuk/doublestar/v4"
 	"github.com/zekurio/anvil/pkg/domain"
 	"github.com/zekurio/anvil/pkg/pipeline"
 )
-
-type Manager struct{}
 
 const (
 	replacementActionCopy    = "copy"
@@ -47,22 +43,6 @@ type HandoffPlan struct {
 	PruneStart         string
 }
 
-func (Manager) Replace(_ context.Context, inputPath string, candidatePath string, mode domain.ReplacementMode) (string, error) {
-	plan, err := PlanReplacement(inputPath, candidatePath, mode)
-	if err != nil {
-		return "", err
-	}
-	switch plan.Action {
-	case replacementActionCopy:
-		if err := copyFile(candidatePath, plan.CopyPath); err != nil {
-			return "", err
-		}
-		return plan.CopyPath, nil
-	default:
-		return replaceFile(inputPath, candidatePath, plan.ReplaceTarget)
-	}
-}
-
 func PlanReplacement(inputPath string, candidatePath string, mode domain.ReplacementMode) (ReplacementPlan, error) {
 	if inputPath == "" {
 		return ReplacementPlan{}, errors.New("replace input path is required")
@@ -81,40 +61,6 @@ func PlanReplacement(inputPath string, candidatePath string, mode domain.Replace
 		plan.BackupPath = inputPath + ".anvil.bak"
 	}
 	return plan, nil
-}
-
-func (m Manager) Handoff(_ context.Context, job *pipeline.JobContext) (string, error) {
-	plan, err := PlanHandoff(job)
-	if err != nil {
-		return "", err
-	}
-	if err := prepareHandoffDestination(job.Library.Download.HandoffPath, filepath.Dir(plan.Destination)); err != nil {
-		return "", err
-	}
-	switch plan.Mode {
-	case domain.HandoffModeMove:
-		if err := moveFile(job.OutputPath, plan.Destination); err != nil {
-			return "", err
-		}
-	default:
-		if err := copyFile(job.OutputPath, plan.Destination); err != nil {
-			return "", err
-		}
-	}
-	if err := os.Chmod(plan.Destination, handoffFileMode); err != nil {
-		return "", fmt.Errorf("set handoff destination mode: %w", err)
-	}
-	if plan.CleanupSourceMedia {
-		if err := os.Remove(plan.SourceMediaPath); err != nil && !errors.Is(err, os.ErrNotExist) {
-			return "", fmt.Errorf("remove source media after handoff: %w", err)
-		}
-		if plan.PruneEmptyDirs {
-			if err := PruneEmptyDirs(job.Library.Path, plan.PruneStart, job.Library.Download.IgnorableGlobs); err != nil {
-				return "", err
-			}
-		}
-	}
-	return plan.Destination, nil
 }
 
 func PlanHandoff(job *pipeline.JobContext) (HandoffPlan, error) {
@@ -153,12 +99,16 @@ func (ReplaceBlock) Name() string {
 }
 
 func (b ReplaceBlock) Run(ctx context.Context, job *pipeline.JobContext) error {
-	finalPath, err := b.Manager.Replace(ctx, job.InputPath, job.OutputPath, job.Library.Media.ReplacementMode)
+	finalPath, err := b.Manager.Replace(ctx, job)
 	if err != nil {
 		return err
 	}
 	job.FinalPath = finalPath
 	return nil
+}
+
+func (b ReplaceBlock) Recover(ctx context.Context, job *pipeline.JobContext) (bool, error) {
+	return b.Manager.Recover(ctx, job)
 }
 
 type HandoffBlock struct {
@@ -178,24 +128,8 @@ func (b HandoffBlock) Run(ctx context.Context, job *pipeline.JobContext) error {
 	return nil
 }
 
-func replaceFile(inputPath string, candidatePath string, targetPath string) (string, error) {
-	if targetPath == "" {
-		targetPath = inputPath
-	}
-	backupPath := inputPath + ".anvil.bak"
-	if err := moveFile(inputPath, backupPath); err != nil {
-		return "", fmt.Errorf("backup original before replace: %w", err)
-	}
-	if err := moveFile(candidatePath, targetPath); err != nil {
-		if restoreErr := moveFile(backupPath, inputPath); restoreErr != nil {
-			return "", fmt.Errorf("install replacement: %w; restore backup: %v", err, restoreErr)
-		}
-		return "", fmt.Errorf("install replacement: %w", err)
-	}
-	if err := os.Remove(backupPath); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return "", fmt.Errorf("remove replacement backup: %w", err)
-	}
-	return targetPath, nil
+func (b HandoffBlock) Recover(ctx context.Context, job *pipeline.JobContext) (bool, error) {
+	return b.Manager.Recover(ctx, job)
 }
 
 func handoffDestination(job *pipeline.JobContext, ext string) (string, error) {
@@ -265,74 +199,6 @@ func prepareHandoffDestination(root string, dir string) error {
 			return nil
 		}
 	}
-}
-
-func moveFile(src string, dst string) error {
-	if err := os.MkdirAll(filepath.Dir(dst), 0o750); err != nil {
-		return fmt.Errorf("create destination dir: %w", err)
-	}
-	if err := os.Link(src, dst); err == nil {
-		if err := os.Remove(src); err != nil {
-			return fmt.Errorf("remove moved source %q: %w", src, err)
-		}
-		return nil
-	} else if errors.Is(err, os.ErrExist) {
-		return fmt.Errorf("destination %q already exists", dst)
-	} else if !errors.Is(err, syscall.EXDEV) && !errors.Is(err, syscall.EPERM) && !errors.Is(err, syscall.ENOTSUP) {
-		if _, statErr := os.Stat(dst); statErr == nil {
-			return fmt.Errorf("destination %q already exists", dst)
-		}
-	}
-	if err := copyFile(src, dst); err != nil {
-		return err
-	}
-	if err := os.Remove(src); err != nil {
-		return fmt.Errorf("remove moved source %q: %w", src, err)
-	}
-	return nil
-}
-
-func copyFile(src string, dst string) (err error) {
-	dstDir := filepath.Dir(dst)
-	if err := os.MkdirAll(dstDir, 0o750); err != nil {
-		return fmt.Errorf("create destination dir: %w", err)
-	}
-	info, err := os.Stat(src)
-	if err != nil {
-		return fmt.Errorf("stat source %q: %w", src, err)
-	}
-	in, err := os.Open(src)
-	if err != nil {
-		return fmt.Errorf("open source %q: %w", src, err)
-	}
-	defer closeFile(in, "source", &err)
-
-	tmp, err := os.CreateTemp(dstDir, "."+filepath.Base(dst)+".tmp-*")
-	if err != nil {
-		return fmt.Errorf("create temporary destination for %q: %w", dst, err)
-	}
-	tmpPath := tmp.Name()
-	defer removeTempFile(tmpPath, &err)
-
-	_, copyErr := io.Copy(tmp, in)
-	chmodErr := tmp.Chmod(info.Mode().Perm())
-	closeErr := tmp.Close()
-	if copyErr != nil {
-		return fmt.Errorf("copy %q to temporary destination: %w", src, copyErr)
-	}
-	if chmodErr != nil {
-		return fmt.Errorf("set temporary destination mode: %w", chmodErr)
-	}
-	if closeErr != nil {
-		return fmt.Errorf("close temporary destination for %q: %w", dst, closeErr)
-	}
-	if err := os.Link(tmpPath, dst); err != nil {
-		if errors.Is(err, os.ErrExist) {
-			return fmt.Errorf("destination %q already exists", dst)
-		}
-		return fmt.Errorf("publish temporary destination %q: %w", dst, err)
-	}
-	return nil
 }
 
 func closeFile(file *os.File, description string, err *error) {
