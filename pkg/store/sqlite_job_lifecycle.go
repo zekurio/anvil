@@ -12,38 +12,19 @@ import (
 )
 
 func (s *SQLiteStore) EnqueueJob(ctx context.Context, input EnqueueJobInput) (domain.Job, bool, error) {
-	now := defaultNow(input.Now)
-	assetID := nullableAssetID(input.AssetID)
-
-	for range 100 {
-		slug, err := newJobSlug()
-		if err != nil {
-			return domain.Job{}, false, err
-		}
-		result, err := s.db.ExecContext(ctx, `
-INSERT OR IGNORE INTO jobs (
-	slug, source_id, asset_id, library_name, priority, state, created_at, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-`, slug, int64(input.SourceID), assetID, string(input.LibraryName), input.Priority,
-			string(domain.JobStatePending), encodeTime(now), encodeTime(now))
-		if err != nil {
-			return domain.Job{}, false, fmt.Errorf("enqueue job: %w", err)
-		}
-
-		rows, err := result.RowsAffected()
-		if err != nil {
-			return domain.Job{}, false, fmt.Errorf("enqueue job rows affected: %w", err)
-		}
-		job, getErr := s.GetJobForTarget(ctx, input.SourceID, input.AssetID)
-		if getErr == nil {
-			return job, rows > 0, nil
-		}
-		if !errors.Is(getErr, ErrNotFound) {
-			return domain.Job{}, false, getErr
-		}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return domain.Job{}, false, fmt.Errorf("begin enqueue transaction: %w", err)
 	}
-
-	return domain.Job{}, false, errors.New("could not allocate unique job slug")
+	defer rollback(tx)
+	job, inserted, err := enqueueJobTx(ctx, tx, input)
+	if err != nil {
+		return domain.Job{}, false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return domain.Job{}, false, fmt.Errorf("commit enqueue transaction: %w", err)
+	}
+	return job, inserted, nil
 }
 
 func (s *SQLiteStore) RetryJob(ctx context.Context, id domain.JobID, now time.Time) (domain.Job, error) {
@@ -111,6 +92,104 @@ WHERE id = ?
 	return s.GetJob(ctx, jobID)
 }
 
+func (s *SQLiteStore) CompleteJobOccurrence(ctx context.Context, input CompleteJobOccurrenceInput) (domain.Job, error) {
+	now := defaultNow(input.CompletedAt)
+	if input.InputSizeBytes < 0 {
+		input.InputSizeBytes = 0
+	}
+	if input.OutputSizeBytes < 0 {
+		input.OutputSizeBytes = 0
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return domain.Job{}, fmt.Errorf("begin occurrence completion: %w", err)
+	}
+	defer rollback(tx)
+
+	job, err := getJobTx(ctx, tx, input.JobID)
+	if err != nil {
+		return domain.Job{}, err
+	}
+	if !domain.CanTransitionJob(job.State, domain.JobStateComplete) {
+		return domain.Job{}, fmt.Errorf("cannot complete occurrence job from state %q", job.State)
+	}
+	source, err := getMediaSourceTx(ctx, tx, job.SourceID)
+	if err != nil {
+		return domain.Job{}, err
+	}
+	result, err := tx.ExecContext(ctx, `
+UPDATE attempts
+SET state = ?, finished_at = ?, error = ''
+WHERE id = ? AND job_id = ? AND state = ?
+`, string(domain.AttemptStateSucceeded), encodeTime(now), int64(input.AttemptID), int64(input.JobID), string(domain.AttemptStateRunning))
+	if err != nil {
+		return domain.Job{}, fmt.Errorf("finish successful occurrence attempt: %w", err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return domain.Job{}, fmt.Errorf("finish occurrence attempt rows affected: %w", err)
+	}
+	if rows == 0 {
+		return domain.Job{}, ErrNotFound
+	}
+
+	if _, err := tx.ExecContext(ctx, `
+UPDATE jobs
+SET state = ?, lease_owner = '', lease_deadline = NULL, heartbeat_at = NULL,
+	last_error = '', input_size_bytes = ?, output_size_bytes = ?, updated_at = ?, completed_at = ?
+WHERE id = ?
+`, string(domain.JobStateComplete), input.InputSizeBytes, input.OutputSizeBytes, encodeTime(now), encodeTime(now), int64(input.JobID)); err != nil {
+		return domain.Job{}, fmt.Errorf("complete occurrence job: %w", err)
+	}
+	if input.FinalInputFingerprint != nil {
+		if job.AssetID != 0 {
+			if err := updateAssetFingerprintTx(ctx, tx, job.AssetID, *input.FinalInputFingerprint, now); err != nil {
+				return domain.Job{}, err
+			}
+		}
+		if source.Kind == domain.SourceKindFile {
+			if err := updateSourceFingerprintTx(ctx, tx, job.SourceID, *input.FinalInputFingerprint, now); err != nil {
+				return domain.Job{}, err
+			}
+		}
+	}
+	if input.SourceMediaRemoved {
+		if source.Kind == domain.SourceKindFile {
+			if err := retireSourceTx(ctx, tx, job.SourceID, now); err != nil {
+				return domain.Job{}, err
+			}
+		} else {
+			if job.AssetID != 0 {
+				if err := retireAssetTx(ctx, tx, job.AssetID, now); err != nil {
+					return domain.Job{}, err
+				}
+			}
+			if err := refreshSourceLifecycleTx(ctx, tx, job.SourceID, now); err != nil {
+				return domain.Job{}, err
+			}
+		}
+	} else {
+		if job.AssetID != 0 {
+			if _, err := tx.ExecContext(ctx, `
+UPDATE media_assets SET status = ?, updated_at = ? WHERE id = ? AND is_current = 1
+`, string(domain.MediaAssetProcessed), encodeTime(now), int64(job.AssetID)); err != nil {
+				return domain.Job{}, fmt.Errorf("mark asset occurrence processed: %w", err)
+			}
+		}
+		if err := refreshSourceLifecycleTx(ctx, tx, job.SourceID, now); err != nil {
+			return domain.Job{}, err
+		}
+	}
+	job, err = getJobTx(ctx, tx, input.JobID)
+	if err != nil {
+		return domain.Job{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return domain.Job{}, fmt.Errorf("commit occurrence completion: %w", err)
+	}
+	return job, nil
+}
+
 func (s *SQLiteStore) RetryFailedJobs(ctx context.Context, libraryName domain.LibraryName, now time.Time) (int64, error) {
 	now = defaultNow(now)
 	query := `
@@ -156,19 +235,23 @@ func (s *SQLiteStore) LeaseNextJobForLibraries(ctx context.Context, workerID str
 
 	var id int64
 	query := `
-SELECT id
-FROM jobs
-WHERE state = ?
+SELECT j.id
+FROM jobs j
+JOIN media_sources s ON s.id = j.source_id
+LEFT JOIN media_assets a ON a.id = j.asset_id
+WHERE j.state = ?
+	AND s.is_current = 1 AND s.status = ?
+	AND (j.asset_id IS NULL OR (a.is_current = 1 AND a.status = ?))
 `
-	args := []any{string(domain.JobStatePending)}
+	args := []any{string(domain.JobStatePending), string(domain.MediaSourceActive), string(domain.MediaAssetActive)}
 	if len(allowedLibraries) > 0 {
-		query += " AND library_name IN (" + placeholders(len(allowedLibraries)) + ")\n"
+		query += " AND j.library_name IN (" + placeholders(len(allowedLibraries)) + ")\n"
 		for _, library := range allowedLibraries {
 			args = append(args, string(library))
 		}
 	}
 	query += `
-ORDER BY priority DESC, created_at ASC, id ASC
+ORDER BY j.priority DESC, j.created_at ASC, j.id ASC
 LIMIT 1
 `
 	err = tx.QueryRowContext(ctx, query, args...).Scan(&id)

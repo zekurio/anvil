@@ -132,7 +132,9 @@ Daemon scans emit a structured `WARN` with `event=queue_stall_detected`, `metric
 
 Send `SIGHUP` to reload config without restarting. Reload can update libraries, flows, profiles, Arr settings, worker count, thread count, daemon and library scan intervals, filesystem event debounce, retry policy, shutdown policy, and log level. Changes to `daemon.store_path` or `daemon.temp_dir` are rejected and require a restart.
 
-`preflight` is read-only: it does not migrate or mutate SQLite and does not create, copy, move, delete, or write media, staging, or log files. It reports scan candidates, existing job status, resolved flow/profile steps, staging/output paths with `job-<new>-attempt-<new>` placeholders where needed, planned publish and cleanup actions, and warnings for destructive settings. Search policy output is described as `ab-av1`/CRF-search driven; when search decides AV1 fitting is not worthwhile, the preflight plan shows whether Anvil will continue as video-copy/remux/metadata processing or force an encode with the lowest tested CRF.
+`preflight` is read-only: it does not migrate or mutate SQLite and does not create, copy, move, delete, or write media, staging, or log files. It reports scan candidates, current source and asset generations, whether a scan would retain an occurrence or create the next generation, existing job status, resolved flow/profile steps, staging/output paths with `job-<new>-attempt-<new>` placeholders where needed, planned publish and cleanup actions, and warnings for destructive settings. Search policy output is described as `ab-av1`/CRF-search driven; when search decides AV1 fitting is not worthwhile, the preflight plan shows whether Anvil will continue as video-copy/remux/metadata processing or force an encode with the lowest tested CRF.
+
+The SQLite store is bootstrapped at schema version 5 and fails closed when an existing database has a different schema. Start with a fresh store path when intentionally crossing an incompatible schema boundary.
 
 With Nix:
 
