@@ -1,2 +1,3 @@
-// Package replace owns safe replacement of source media after validation.
+// Package replace owns journaled, no-overwrite publication and cleanup of
+// replacement and download-handoff media after validation.
 package replace

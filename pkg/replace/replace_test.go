@@ -47,7 +47,8 @@ func TestHandoffMoveCleansOnlyProcessedEpisodeFolder(t *testing.T) {
 		OutputPath: candidate,
 	}
 
-	finalPath, err := (Manager{}).Handoff(context.Background(), job)
+	job.Job.ID = 1
+	finalPath, err := testManager().Handoff(context.Background(), job)
 	if err != nil {
 		t.Fatalf("Handoff() error = %v", err)
 	}
@@ -99,7 +100,8 @@ func TestHandoffPublishesImportFriendlyModes(t *testing.T) {
 		OutputPath: candidate,
 	}
 
-	finalPath, err := (Manager{}).Handoff(context.Background(), job)
+	job.Job.ID = 1
+	finalPath, err := testManager().Handoff(context.Background(), job)
 	if err != nil {
 		t.Fatalf("Handoff() error = %v", err)
 	}
@@ -196,7 +198,7 @@ func TestReplaceCopyLeavesInputInPlace(t *testing.T) {
 	writeFile(t, input, "source")
 	writeFile(t, candidate, "encoded")
 
-	finalPath, err := (Manager{}).Replace(context.Background(), input, candidate, domain.ReplacementModeCopy)
+	finalPath, err := testManager().Replace(context.Background(), replacementJob(1, input, candidate, domain.ReplacementModeCopy))
 	if err != nil {
 		t.Fatalf("Replace() error = %v", err)
 	}
@@ -220,7 +222,7 @@ func TestReplaceCopyRefusesExistingDestination(t *testing.T) {
 	writeFile(t, candidate, "encoded")
 	writeFile(t, copyPath, "existing")
 
-	if _, err := (Manager{}).Replace(context.Background(), input, candidate, domain.ReplacementModeCopy); err == nil {
+	if _, err := testManager().Replace(context.Background(), replacementJob(1, input, candidate, domain.ReplacementModeCopy)); err == nil {
 		t.Fatal("Replace() error = nil, want existing copy refusal")
 	}
 	if got := readFile(t, copyPath); got != "existing" {
@@ -237,7 +239,7 @@ func TestReplaceRefusesExistingBackup(t *testing.T) {
 	writeFile(t, candidate, "encoded")
 	writeFile(t, backup, "previous-backup")
 
-	if _, err := (Manager{}).Replace(context.Background(), input, candidate, domain.ReplacementModeReplace); err == nil {
+	if _, err := testManager().Replace(context.Background(), replacementJob(1, input, candidate, domain.ReplacementModeReplace)); err == nil {
 		t.Fatal("Replace() error = nil, want existing backup refusal")
 	}
 	if got := readFile(t, backup); got != "previous-backup" {
@@ -255,7 +257,7 @@ func TestReplaceRenamesNonMKVSourceToMKVTarget(t *testing.T) {
 	writeFile(t, input, "source")
 	writeFile(t, candidate, "encoded")
 
-	finalPath, err := (Manager{}).Replace(context.Background(), input, candidate, domain.ReplacementModeReplace)
+	finalPath, err := testManager().Replace(context.Background(), replacementJob(1, input, candidate, domain.ReplacementModeReplace))
 	if err != nil {
 		t.Fatalf("Replace() error = %v", err)
 	}
@@ -299,7 +301,8 @@ func TestHandoffRefusesExistingDestination(t *testing.T) {
 		OutputPath: candidate,
 	}
 
-	if _, err := (Manager{}).Handoff(context.Background(), job); err == nil {
+	job.Job.ID = 1
+	if _, err := testManager().Handoff(context.Background(), job); err == nil {
 		t.Fatal("Handoff() error = nil, want existing destination refusal")
 	}
 	if got := readFile(t, destination); got != "existing" {
@@ -335,7 +338,8 @@ func TestHandoffMoveRefusesExistingDestination(t *testing.T) {
 		OutputPath: candidate,
 	}
 
-	if _, err := (Manager{}).Handoff(context.Background(), job); err == nil {
+	job.Job.ID = 1
+	if _, err := testManager().Handoff(context.Background(), job); err == nil {
 		t.Fatal("Handoff() error = nil, want existing destination refusal")
 	}
 	if got := readFile(t, destination); got != "existing" {
@@ -405,4 +409,15 @@ func assertHandoffDirMode(t *testing.T, path string) {
 		want |= os.ModeSetgid
 	}
 	assertMode(t, path, want)
+}
+
+func replacementJob(id domain.JobID, input, output string, mode domain.ReplacementMode) *pipeline.JobContext {
+	return &pipeline.JobContext{
+		Job:        domain.Job{ID: id},
+		InputPath:  input,
+		OutputPath: output,
+		Library: domain.Library{Media: domain.MediaLibraryPolicy{
+			ReplacementMode: mode,
+		}},
+	}
 }
