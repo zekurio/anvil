@@ -38,6 +38,9 @@ const (
 	commandRetry       = "retry"
 	commandRecover     = "recover"
 	commandCleanup     = "cleanup-staging"
+	commandBackup      = "backup"
+	commandPruneJobs   = "prune-jobs"
+	commandForce       = "force-occurrence"
 	commandHelp        = "help"
 )
 
@@ -61,6 +64,9 @@ type options struct {
 	jobRefs         []string
 	cleanupOlder    string
 	cleanupDryRun   bool
+	backupPath      string
+	pruneApply      bool
+	forcePath       string
 }
 
 type runtimeConfig struct {
@@ -141,6 +147,12 @@ func dispatchCommand(ctx context.Context, cfg config.Config, opts options) error
 		return runRecoverCommand(ctx, cfg, opts)
 	case commandCleanup:
 		return runCleanupStagingCommand(ctx, cfg, opts)
+	case commandBackup:
+		return runBackupCommand(ctx, cfg, opts)
+	case commandPruneJobs:
+		return runPruneJobsCommand(ctx, cfg, opts)
+	case commandForce:
+		return runForceOccurrenceCommand(ctx, cfg, opts)
 	default:
 		return fmt.Errorf("unknown command %q", opts.command)
 	}
@@ -210,6 +222,13 @@ func parseCommandOptions(opts options, args []string) (options, error) {
 	case commandCleanup:
 		flags.StringVar(&opts.cleanupOlder, "older-than", "", "remove Anvil staging dirs older than this duration; defaults to daemon.staging_cleanup_age")
 		flags.BoolVar(&opts.cleanupDryRun, "dry-run", false, "show cleanup candidates without deleting them")
+	case commandBackup:
+	case commandPruneJobs:
+		flags.StringVar(&opts.libraryName, "library", "", "limit pruning to one library")
+		flags.StringVar(&opts.jobStateFilter, "state", "", "comma-separated terminal job states; defaults to complete,failed,skipped")
+		flags.BoolVar(&opts.pruneApply, "apply", false, "delete matching jobs; without this flag the command is a dry run")
+	case commandForce:
+		flags.StringVar(&opts.libraryName, "library", "", "configured library containing the target")
 	case commandHelp:
 	default:
 		return options{}, fmt.Errorf("unknown command %q", opts.command)
@@ -262,6 +281,33 @@ func parseCommandOptions(opts options, args []string) (options, error) {
 		if opts.libraryName != "" && !opts.retryFailed {
 			return options{}, errors.New("--library can only be used with retry --failed")
 		}
+	case commandBackup:
+		if flags.NArg() != 1 {
+			return options{}, errors.New("backup requires exactly one destination path")
+		}
+		opts.backupPath = flags.Arg(0)
+	case commandPruneJobs:
+		states, err := parseJobStates(opts.jobStateFilter)
+		if err != nil {
+			return options{}, err
+		}
+		for _, state := range states {
+			if !state.Terminal() {
+				return options{}, fmt.Errorf("prune-jobs state %q is not terminal", state)
+			}
+		}
+		opts.jobStates = states
+		if flags.NArg() > 0 {
+			return options{}, fmt.Errorf("prune-jobs does not accept arguments: %v", flags.Args())
+		}
+	case commandForce:
+		if strings.TrimSpace(opts.libraryName) == "" {
+			return options{}, errors.New("force-occurrence requires --library")
+		}
+		if flags.NArg() != 1 {
+			return options{}, errors.New("force-occurrence requires exactly one relative path")
+		}
+		opts.forcePath = flags.Arg(0)
 	default:
 		if flags.NArg() > 0 {
 			return options{}, fmt.Errorf("%s does not accept arguments: %v", opts.command, flags.Args())
@@ -343,9 +389,9 @@ func runDaemon(ctx context.Context, cfg config.Config, opts options) error {
 	var wg sync.WaitGroup
 	startReloadLoop(serviceCtx, &wg, opts, runtimeCfg, reloadSignals)
 	runInitialScan(serviceCtx, runtimeCfg.Get(), state)
-	startScannerLoop(serviceCtx, &wg, runtimeCfg.Get, state)
 	startRecoveryLoop(serviceCtx, &wg, runtimeCfg.Get, state)
 	planner := startSchedulerLoop(serviceCtx, workerCtx, &wg, runtimeCfg.Get, state)
+	startScannerLoop(serviceCtx, &wg, runtimeCfg.Get, state, planner.ActiveCount)
 
 	request := <-shutdown
 	shutdownCfg := runtimeCfg.Get()
@@ -700,7 +746,7 @@ func parseLogLevel(logLevel string) (slog.Level, string, error) {
 	}
 }
 
-func startScannerLoop(ctx context.Context, wg *sync.WaitGroup, cfgProvider func() config.Config, state *store.SQLiteStore) {
+func startScannerLoop(ctx context.Context, wg *sync.WaitGroup, cfgProvider func() config.Config, state *store.SQLiteStore, activeWorkers func() int) {
 	monitor := &scanner.Monitor{
 		Scanner:        scanner.Scanner{Store: state},
 		ConfigProvider: cfgProvider,
@@ -710,6 +756,7 @@ func startScannerLoop(ctx context.Context, wg *sync.WaitGroup, cfgProvider func(
 				return
 			}
 			logScanComplete("scan complete", library.Name, reason, result)
+			observeQueueHealth(ctx, state, library.Name, reason, result, activeWorkers())
 		},
 		OnEventError: func(err error) {
 			if !errors.Is(err, context.Canceled) {
@@ -1003,7 +1050,7 @@ func validJobSlug(value string) bool {
 
 func isCommand(value string) bool {
 	switch value {
-	case commandRun, commandCheckConfig, commandScan, commandPreflight, commandJobs, commandStats, commandInspect, commandRetry, commandRecover, commandCleanup, commandHelp:
+	case commandRun, commandCheckConfig, commandScan, commandPreflight, commandJobs, commandStats, commandInspect, commandRetry, commandRecover, commandCleanup, commandBackup, commandPruneJobs, commandForce, commandHelp:
 		return true
 	default:
 		return false
@@ -1025,6 +1072,9 @@ func writeUsage(out io.Writer) error {
   anvild retry [--config PATH] --failed [--library NAME]
   anvild recover [--config PATH]
   anvild cleanup-staging [--config PATH] [--older-than DURATION] [--dry-run]
+  anvild backup [--config PATH] DESTINATION
+  anvild prune-jobs [--config PATH] [--library NAME] [--state complete,failed,skipped] [--apply]
+  anvild force-occurrence [--config PATH] --library NAME RELATIVE_PATH
 
 Legacy --check-config is still accepted.`)
 	})
