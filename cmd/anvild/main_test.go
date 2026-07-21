@@ -361,7 +361,7 @@ func TestWriteInspectReportShowsProcessOutputAndPayloads(t *testing.T) {
 	}
 }
 
-func TestValidateReloadRejectsStoreAndTempDirChanges(t *testing.T) {
+func TestValidateReloadRejectsStoreTempDirAndControlSocketChanges(t *testing.T) {
 	current := config.Default()
 	next := current
 	next.Daemon.StorePath = "/other/anvil.db"
@@ -373,6 +373,12 @@ func TestValidateReloadRejectsStoreAndTempDirChanges(t *testing.T) {
 	next.Daemon.TempDir = "/other/tmp"
 	if err := validateReload(current, next); err == nil {
 		t.Fatal("validateReload() error = nil, want temp dir rejection")
+	}
+
+	next = current
+	next.Daemon.ControlSocket = "/other/anvild.sock"
+	if err := validateReload(current, next); err == nil {
+		t.Fatal("validateReload() error = nil, want control socket rejection")
 	}
 }
 

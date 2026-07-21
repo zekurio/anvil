@@ -10,6 +10,7 @@ import (
 
 	"github.com/bmatcuk/doublestar/v4"
 	"github.com/zekurio/anvil/pkg/domain"
+	"github.com/zekurio/anvil/pkg/mediapath"
 	"github.com/zekurio/anvil/pkg/pipeline"
 )
 
@@ -135,11 +136,7 @@ func (b HandoffBlock) Recover(ctx context.Context, job *pipeline.JobContext) (bo
 func handoffDestination(job *pipeline.JobContext, ext string) (string, error) {
 	var rel string
 	if job.Library.Download.PreserveRelativePath {
-		if job.Source.Kind == domain.SourceKindPackage && job.Asset.RelativePath != "" {
-			rel = filepath.Join(filepath.FromSlash(job.Source.RelativePath), filepath.FromSlash(job.Asset.RelativePath))
-		} else {
-			rel = filepath.FromSlash(job.Source.RelativePath)
-		}
+		rel = mediapath.Relative(job.Source, job.Asset)
 	} else {
 		rel = filepath.Base(job.InputPath)
 	}

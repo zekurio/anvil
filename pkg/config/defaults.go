@@ -17,6 +17,7 @@ func Default() Config {
 		Daemon: DaemonConfig{
 			TempDir:           tempDir,
 			StorePath:         filepath.Join(tempDir, "anvil.db"),
+			ControlSocket:     filepath.Join(tempDir, "anvild.sock"),
 			WorkerCount:       max(runtime.NumCPU(), 1),
 			TotalThreads:      max(runtime.NumCPU(), 1),
 			MaxAttempts:       DefaultMaxAttempts,
@@ -82,6 +83,9 @@ func applyDefaults(c *Config) {
 	}
 	if strings.TrimSpace(c.Daemon.StorePath) == "" {
 		c.Daemon.StorePath = filepath.Join(c.Daemon.TempDir, "anvil.db")
+	}
+	if strings.TrimSpace(c.Daemon.ControlSocket) == "" {
+		c.Daemon.ControlSocket = filepath.Join(c.Daemon.TempDir, "anvild.sock")
 	}
 	if c.Daemon.WorkerCount == 0 {
 		c.Daemon.WorkerCount = defaults.Daemon.WorkerCount

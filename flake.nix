@@ -57,12 +57,14 @@
 
             subPackages = [
               "cmd/anvild"
+              "cmd/anvilctl"
               "cmd/anvil-mockarr"
             ];
 
             ldflags = [
               "-s"
               "-w"
+              "-X github.com/zekurio/anvil/pkg/controlapi.BuildVersion=0.1.0"
             ];
 
             postInstall = ''
@@ -89,6 +91,10 @@
           anvild = {
             type = "app";
             program = "${self.packages.${system}.default}/bin/anvild";
+          };
+          anvilctl = {
+            type = "app";
+            program = "${self.packages.${system}.default}/bin/anvilctl";
           };
         }
       );

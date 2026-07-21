@@ -14,12 +14,12 @@ import (
 
 	"github.com/zekurio/anvil/pkg/config"
 	"github.com/zekurio/anvil/pkg/domain"
+	"github.com/zekurio/anvil/pkg/mediapath"
 	"github.com/zekurio/anvil/pkg/pipeline"
 	replacepkg "github.com/zekurio/anvil/pkg/replace"
 	"github.com/zekurio/anvil/pkg/scanner"
 	"github.com/zekurio/anvil/pkg/staging"
 	"github.com/zekurio/anvil/pkg/store"
-	"github.com/zekurio/anvil/pkg/worker"
 )
 
 type preflightStore interface {
@@ -378,7 +378,7 @@ func buildPreflightCandidate(ctx context.Context, cfg config.Config, state prefl
 		}
 	}
 
-	inputPath := worker.InputPath(library.Path, source, asset)
+	inputPath := mediapath.Input(library.Path, source, asset)
 	jobLabel := "<new>"
 	if status.AlreadyHasJob {
 		jobLabel = status.ExistingJobSlug

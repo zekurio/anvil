@@ -1,0 +1,98 @@
+package main
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"net"
+	"net/http"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/zekurio/anvil/pkg/controlapi"
+)
+
+func TestRunStatusAndJobListUseControlAPI(t *testing.T) {
+	socketPath := filepath.Join(t.TempDir(), "anvild.sock")
+	listener, cleanup, err := controlapi.ListenUnix(socketPath)
+	if err != nil {
+		t.Fatalf("ListenUnix() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := cleanup(); err != nil {
+			t.Errorf("cleanup() error = %v", err)
+		}
+	})
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/status", func(w http.ResponseWriter, _ *http.Request) {
+		writeTestJSON(t, w, controlapi.StatusResponse{
+			APIVersion: controlapi.Version,
+			Daemon:     controlapi.DaemonStatus{State: "ready", Version: "test"},
+		})
+	})
+	mux.HandleFunc("/v1/jobs", func(w http.ResponseWriter, r *http.Request) {
+		if got := r.URL.Query().Get("absolute_path"); got != "/downloads/Release" {
+			t.Errorf("absolute_path = %q", got)
+		}
+		if got := r.URL.Query().Get("current_only"); got != "true" {
+			t.Errorf("current_only = %q", got)
+		}
+		writeTestJSON(t, w, controlapi.JobListResponse{
+			APIVersion: controlapi.Version, Matched: 1,
+			Jobs: []controlapi.JobResponse{{
+				ID: 9, Slug: "kind-pink-heron", State: "running", Library: "downloads",
+				Source: controlapi.OccurrenceResponse{AbsolutePath: "/downloads/Release"},
+			}},
+		})
+	})
+	server := &http.Server{Handler: mux, ReadHeaderTimeout: time.Second}
+	serverDone := make(chan error, 1)
+	go func() { serverDone <- server.Serve(listener) }()
+	t.Cleanup(func() {
+		if err := server.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+			t.Errorf("server.Close() error = %v", err)
+		}
+		if err := <-serverDone; err != nil && !errors.Is(err, http.ErrServerClosed) && !errors.Is(err, net.ErrClosed) {
+			t.Errorf("server.Serve() error = %v", err)
+		}
+	})
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	if err := run(context.Background(), []string{"--socket", socketPath, "status", "--json"}, &stdout, &stderr); err != nil {
+		t.Fatalf("run(status) error = %v, stderr = %s", err, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), `"state": "ready"`) {
+		t.Fatalf("status output = %s", stdout.String())
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if err := run(context.Background(), []string{
+		"--socket", socketPath, "job", "list", "--absolute-path", "/downloads/Release", "--current-only", "--json",
+	}, &stdout, &stderr); err != nil {
+		t.Fatalf("run(job list) error = %v, stderr = %s", err, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), `"slug": "kind-pink-heron"`) {
+		t.Fatalf("job output = %s", stdout.String())
+	}
+}
+
+func writeTestJSON(t *testing.T, w http.ResponseWriter, value any) {
+	t.Helper()
+	w.Header().Set("Content-Type", "application/json")
+	if err := writeJSON(w, value); err != nil {
+		t.Errorf("writeJSON() error = %v", err)
+	}
+}
+
+func TestRunHelpDoesNotRequireDaemon(t *testing.T) {
+	var stdout bytes.Buffer
+	if err := run(context.Background(), []string{"help"}, &stdout, &bytes.Buffer{}); err != nil {
+		t.Fatalf("run(help) error = %v", err)
+	}
+	if !strings.Contains(stdout.String(), "anvilctl") {
+		t.Fatalf("help output = %q", stdout.String())
+	}
+}

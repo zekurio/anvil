@@ -54,6 +54,7 @@ type Config struct {
 type DaemonConfig struct {
 	TempDir           string `toml:"temp_dir"`
 	StorePath         string `toml:"store_path"`
+	ControlSocket     string `toml:"control_socket"`
 	WorkerCount       int    `toml:"worker_count"`
 	TotalThreads      int    `toml:"total_threads"`
 	MaxAttempts       int    `toml:"max_attempts"`
