@@ -62,51 +62,35 @@ func TestEnqueueJobIsIdempotentForActiveTarget(t *testing.T) {
 	}
 }
 
-func TestSlugMigrationBackfillsExistingJobs(t *testing.T) {
+func TestFreshStoreBootstrapsCurrentSchema(t *testing.T) {
+	store := openTestStore(t)
+	var version int
+	if err := store.db.QueryRow(`SELECT version FROM schema_migrations`).Scan(&version); err != nil {
+		t.Fatalf("read schema version: %v", err)
+	}
+	if version != currentSchemaVersion {
+		t.Fatalf("schema version = %d, want %d", version, currentSchemaVersion)
+	}
+	if err := store.verifyForeignKeys(context.Background()); err != nil {
+		t.Fatalf("verifyForeignKeys() error = %v", err)
+	}
+}
+
+func TestOpenRejectsIncompatibleExistingSchema(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "anvil.db")
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
 		t.Fatalf("sql.Open() error = %v", err)
 	}
-	legacy := &SQLiteStore{db: db}
-	if err := legacy.configure(ctx); err != nil {
-		t.Fatalf("configure legacy store: %v", err)
+	if _, err := db.Exec(`CREATE TABLE old_state (id INTEGER PRIMARY KEY)`); err != nil {
+		t.Fatalf("create incompatible schema: %v", err)
 	}
-	if _, err := db.ExecContext(ctx, `CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)`); err != nil {
-		t.Fatalf("create migrations table: %v", err)
+	if err := db.Close(); err != nil {
+		t.Fatalf("close incompatible schema: %v", err)
 	}
-	for _, migration := range migrations[:3] {
-		if err := legacy.applyMigration(ctx, migration); err != nil {
-			t.Fatalf("apply legacy migration %d: %v", migration.version, err)
-		}
-	}
-	source := upsertTestSource(t, ctx, legacy, "movies", "Legacy.mkv")
-	if _, err := db.ExecContext(ctx, `
-INSERT INTO jobs (source_id, library_name, state, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?)
-`, source.ID, source.LibraryName, domain.JobStatePending, encodeTime(testNow()), encodeTime(testNow())); err != nil {
-		t.Fatalf("insert legacy job: %v", err)
-	}
-	if err := legacy.Close(); err != nil {
-		t.Fatalf("close legacy store: %v", err)
-	}
-
-	upgraded, err := Open(ctx, path)
-	if err != nil {
-		t.Fatalf("Open(upgraded) error = %v", err)
-	}
-	t.Cleanup(func() {
-		if err := upgraded.Close(); err != nil {
-			t.Fatalf("close upgraded store: %v", err)
-		}
-	})
-	job, err := upgraded.GetJob(ctx, 1)
-	if err != nil {
-		t.Fatalf("GetJob() error = %v", err)
-	}
-	if parts := strings.Split(job.Slug, "-"); len(parts) != 3 {
-		t.Fatalf("backfilled slug = %q, want three words", job.Slug)
+	if _, err := Open(ctx, path); !errors.Is(err, ErrIncompatibleSchema) {
+		t.Fatalf("Open() error = %v, want ErrIncompatibleSchema", err)
 	}
 }
 
@@ -506,13 +490,8 @@ func TestOpenReadOnlyRejectsWrites(t *testing.T) {
 			t.Errorf("Close() error = %v", err)
 		}
 	}()
-	if _, err := readonly.UpsertMediaSource(ctx, domain.MediaSource{
-		LibraryName:  "movies",
-		Kind:         domain.SourceKindFile,
-		RelativePath: "Movie.mkv",
-		LastSeenAt:   testNow(),
-	}); err == nil {
-		t.Fatal("UpsertMediaSource() on read-only store error = nil, want write rejection")
+	if _, err := readonly.BeginLibraryScan(ctx, "movies"); err == nil {
+		t.Fatal("BeginLibraryScan() on read-only store error = nil, want write rejection")
 	}
 }
 
@@ -864,7 +843,20 @@ func openTestStore(t *testing.T) *SQLiteStore {
 func upsertTestSource(t *testing.T, ctx context.Context, store *SQLiteStore, libraryName, relativePath string) domain.MediaSource {
 	t.Helper()
 
-	source, err := store.UpsertMediaSource(ctx, domain.MediaSource{
+	tx, err := store.db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("begin source transaction: %v", err)
+	}
+	defer rollback(tx)
+	if existing, ok, err := currentSourceTx(ctx, tx, domain.LibraryName(libraryName), relativePath); err != nil {
+		t.Fatalf("currentSourceTx() error = %v", err)
+	} else if ok {
+		if err := tx.Commit(); err != nil {
+			t.Fatalf("commit source transaction: %v", err)
+		}
+		return existing
+	}
+	source, err := insertSourceOccurrenceTx(ctx, tx, domain.MediaSource{
 		LibraryName:  domain.LibraryName(libraryName),
 		Kind:         domain.SourceKindFile,
 		RelativePath: relativePath,
@@ -873,10 +865,14 @@ func upsertTestSource(t *testing.T, ctx context.Context, store *SQLiteStore, lib
 			SizeBytes: 100,
 			ModTime:   testNow(),
 		},
-		LastSeenAt: testNow(),
+		FirstSeenAt: testNow(),
+		LastSeenAt:  testNow(),
 	})
 	if err != nil {
-		t.Fatalf("UpsertMediaSource() error = %v", err)
+		t.Fatalf("insertSourceOccurrenceTx() error = %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit source transaction: %v", err)
 	}
 	return source
 }
@@ -884,7 +880,20 @@ func upsertTestSource(t *testing.T, ctx context.Context, store *SQLiteStore, lib
 func upsertTestAsset(t *testing.T, ctx context.Context, store *SQLiteStore, sourceID domain.MediaSourceID, relativePath string) domain.MediaAsset {
 	t.Helper()
 
-	asset, err := store.UpsertMediaAsset(ctx, domain.MediaAsset{
+	tx, err := store.db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("begin asset transaction: %v", err)
+	}
+	defer rollback(tx)
+	if existing, ok, err := currentAssetTx(ctx, tx, sourceID, relativePath); err != nil {
+		t.Fatalf("currentAssetTx() error = %v", err)
+	} else if ok {
+		if err := tx.Commit(); err != nil {
+			t.Fatalf("commit asset transaction: %v", err)
+		}
+		return existing
+	}
+	asset, err := insertAssetOccurrenceTx(ctx, tx, domain.MediaAsset{
 		SourceID:     sourceID,
 		RelativePath: relativePath,
 		Role:         domain.MediaAssetRolePrimaryVideo,
@@ -893,10 +902,14 @@ func upsertTestAsset(t *testing.T, ctx context.Context, store *SQLiteStore, sour
 			SizeBytes: 100,
 			ModTime:   testNow(),
 		},
-		LastSeenAt: testNow(),
+		FirstSeenAt: testNow(),
+		LastSeenAt:  testNow(),
 	})
 	if err != nil {
-		t.Fatalf("UpsertMediaAsset() error = %v", err)
+		t.Fatalf("insertAssetOccurrenceTx() error = %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit asset transaction: %v", err)
 	}
 	return asset
 }
