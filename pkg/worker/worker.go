@@ -102,6 +102,23 @@ func (r Runner) Run(ctx context.Context, assignment scheduler.Assignment) error 
 	}
 
 	inputPath := InputPath(library.Path, source, asset)
+	jobContext := &pipeline.JobContext{
+		Job:       assignment.Job,
+		Attempt:   attempt,
+		Source:    source,
+		Asset:     asset,
+		Library:   library,
+		Flow:      flow,
+		Profile:   profile,
+		Resources: assignment.Resources,
+		InputPath: inputPath,
+	}
+	pipelineRunner := r.Pipeline
+	if recovered, recoverErr := recoverPendingPublish(ctx, pipelineRunner, jobContext); recoverErr != nil {
+		return r.fail(ctx, assignment.Job, attempt, cfg, recoverErr)
+	} else if recovered {
+		return r.finishSuccessful(ctx, assignment, flow, library, jobContext)
+	}
 	if err := r.verifyOccurrenceInput(inputPath, source, asset); err != nil {
 		return r.fail(ctx, assignment.Job, attempt, cfg, err)
 	}
@@ -112,20 +129,7 @@ func (r Runner) Run(ctx context.Context, assignment scheduler.Assignment) error 
 	}
 	disableUnsafeStreamCleanup(profile, &metadata)
 	initialMetadata := metadata
-
-	jobContext := &pipeline.JobContext{
-		Job:       assignment.Job,
-		Attempt:   attempt,
-		Source:    source,
-		Asset:     asset,
-		Library:   library,
-		Flow:      flow,
-		Profile:   profile,
-		Resources: assignment.Resources,
-		Metadata:  metadata,
-		InputPath: inputPath,
-	}
-	pipelineRunner := r.Pipeline
+	jobContext.Metadata = metadata
 	beforeStep := pipelineRunner.BeforeStep
 	pipelineRunner.BeforeStep = func(ctx context.Context, step string, job *pipeline.JobContext) error {
 		if beforeStep != nil {
@@ -164,14 +168,51 @@ func (r Runner) Run(ctx context.Context, assignment scheduler.Assignment) error 
 		now:       r.now,
 	})
 	if err := pipelineRunner.Run(pipelineCtx, jobContext); err != nil {
-		r.cleanupFailedStaging(ctx, jobContext, cfg)
+		if !errors.Is(err, replacepkg.ErrPublishPending) {
+			r.cleanupFailedStaging(ctx, jobContext, cfg)
+		}
 		return r.fail(ctx, assignment.Job, attempt, cfg, err)
 	}
+	return r.finishSuccessful(ctx, assignment, flow, library, jobContext)
+}
+
+func (r Runner) finishSuccessful(ctx context.Context, assignment scheduler.Assignment, flow domain.Flow, library domain.Library, jobContext *pipeline.JobContext) error {
 	if err := r.complete(ctx, jobContext, flow); err != nil {
 		return err
 	}
-	slog.Info("worker job completed", "worker", assignment.WorkerID, "job", assignment.Job.Label(), "attempt", attempt.Number, "library", string(library.Name), "final_path", jobContext.FinalPath)
+	slog.Info("worker job completed", "worker", assignment.WorkerID, "job", assignment.Job.Label(), "attempt", jobContext.Attempt.Number, "library", string(library.Name), "final_path", jobContext.FinalPath)
 	return nil
+}
+
+type publishRecoverer interface {
+	Recover(context.Context, *pipeline.JobContext) (bool, error)
+}
+
+func recoverPendingPublish(ctx context.Context, runner pipeline.Runner, job *pipeline.JobContext) (bool, error) {
+	if job == nil {
+		return false, nil
+	}
+	for _, step := range job.Flow.Steps {
+		if step.Name != "replace" && step.Name != "handoff" {
+			continue
+		}
+		block, ok := runner.Registry.Block(step.Name)
+		if !ok {
+			continue
+		}
+		recoverer, ok := block.(publishRecoverer)
+		if !ok {
+			continue
+		}
+		recovered, err := recoverer.Recover(ctx, job)
+		if err != nil {
+			return true, fmt.Errorf("recover publish operation: %w", err)
+		}
+		if recovered {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func (r Runner) verifyCurrentOccurrence(ctx context.Context, job *pipeline.JobContext) error {
@@ -206,9 +247,10 @@ func probeMetadataRefresh(runner pipeline.Runner) resumeProbeMetadataRefresher {
 	return probe.Block{}.RefreshDolbyVision
 }
 
-func DefaultPipeline(tempDir string) pipeline.Runner {
+func DefaultPipeline(tempDir string, journal replacepkg.PublishJournal) pipeline.Runner {
 	stageManager := staging.Manager{Root: filepath.Join(tempDir, "staging")}
 	prober := probe.FFProbe{}
+	publishManager := replacepkg.Manager{Journal: journal}
 	return pipeline.Runner{
 		Registry: pipeline.NewRegistry(
 			probe.Block{Prober: prober},
@@ -220,8 +262,8 @@ func DefaultPipeline(tempDir string) pipeline.Runner {
 			ffmpeg.Block{},
 			ffmpeg.DolbyVisionBlock{},
 			validate.Block{Validator: validate.Validator{Prober: prober}},
-			replacepkg.ReplaceBlock{},
-			replacepkg.HandoffBlock{},
+			replacepkg.ReplaceBlock{Manager: publishManager},
+			replacepkg.HandoffBlock{Manager: publishManager},
 			staging.CleanupBlock{Manager: stageManager},
 		),
 	}
