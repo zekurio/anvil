@@ -16,15 +16,31 @@ import (
 
 	"github.com/zekurio/anvil/pkg/config"
 	"github.com/zekurio/anvil/pkg/domain"
+	replacepkg "github.com/zekurio/anvil/pkg/replace"
 	"github.com/zekurio/anvil/pkg/store"
 )
 
 const processOutputArtifactName = "process-output"
 
 type inspectReport struct {
-	Job             inspectJob              `json:"job"`
-	PipelineContext *inspectPipelineContext `json:"pipeline_context,omitempty"`
-	Attempts        []inspectAttempt        `json:"attempts"`
+	Job              inspectJob               `json:"job"`
+	PipelineContext  *inspectPipelineContext  `json:"pipeline_context,omitempty"`
+	PublishOperation *inspectPublishOperation `json:"publish_operation,omitempty"`
+	Attempts         []inspectAttempt         `json:"attempts"`
+}
+
+type inspectPublishOperation struct {
+	Kind                string    `json:"kind"`
+	Mode                string    `json:"mode"`
+	Stage               string    `json:"stage"`
+	ArtifactPath        string    `json:"artifact_path"`
+	DestinationPath     string    `json:"destination_path"`
+	CleanupSourcePath   string    `json:"cleanup_source_path,omitempty"`
+	BackupPath          string    `json:"backup_path,omitempty"`
+	ArtifactSizeBytes   int64     `json:"artifact_size_bytes"`
+	DigestAlgorithm     string    `json:"digest_algorithm,omitempty"`
+	ConflictDescription string    `json:"conflict_description,omitempty"`
+	UpdatedAt           time.Time `json:"updated_at"`
 }
 
 type inspectJob struct {
@@ -153,6 +169,14 @@ func buildInspectReport(ctx context.Context, state *store.SQLiteStore, jobID dom
 		contextSummary := inspectPipelineContextFromDomain(snapshot)
 		report.PipelineContext = &contextSummary
 	}
+	publishOperation, hasPublishOperation, err := state.GetPublishOperation(ctx, jobID)
+	if err != nil {
+		return inspectReport{}, err
+	}
+	if hasPublishOperation {
+		operationSummary := inspectPublishOperationFromDomain(publishOperation)
+		report.PublishOperation = &operationSummary
+	}
 	for _, attempt := range attempts {
 		events, err := state.ListAttemptEvents(ctx, attempt.ID)
 		if err != nil {
@@ -161,6 +185,22 @@ func buildInspectReport(ctx context.Context, state *store.SQLiteStore, jobID dom
 		report.Attempts = append(report.Attempts, inspectAttemptFromDomain(attempt, events))
 	}
 	return report, nil
+}
+
+func inspectPublishOperationFromDomain(operation replacepkg.PublishOperation) inspectPublishOperation {
+	return inspectPublishOperation{
+		Kind:                operation.Kind,
+		Mode:                operation.Mode,
+		Stage:               string(operation.Stage),
+		ArtifactPath:        operation.ArtifactPath,
+		DestinationPath:     operation.DestinationPath,
+		CleanupSourcePath:   operation.CleanupSourcePath,
+		BackupPath:          operation.BackupPath,
+		ArtifactSizeBytes:   operation.ArtifactIdentity.SizeBytes,
+		DigestAlgorithm:     operation.DigestAlgorithm,
+		ConflictDescription: operation.ConflictDescription,
+		UpdatedAt:           operation.UpdatedAt,
+	}
 }
 
 func inspectJobFromSummary(summary store.JobSummary) inspectJob {
@@ -320,6 +360,21 @@ func writeInspectReport(out io.Writer, report inspectReport) error {
 
 		if report.PipelineContext != nil {
 			writePipelineContext(w, *report.PipelineContext)
+		}
+		if report.PublishOperation != nil {
+			operation := report.PublishOperation
+			w.printf("\nPublish operation:\n")
+			w.printf("  Kind: %s\n", operation.Kind)
+			w.printf("  Mode: %s\n", operation.Mode)
+			w.printf("  Stage: %s\n", operation.Stage)
+			w.printf("  Artifact: %s\n", operation.ArtifactPath)
+			w.printf("  Destination: %s\n", operation.DestinationPath)
+			w.printf("  Cleanup source: %s\n", displayOrNone(operation.CleanupSourcePath))
+			w.printf("  Backup: %s\n", displayOrNone(operation.BackupPath))
+			w.printf("  Artifact size: %d bytes\n", operation.ArtifactSizeBytes)
+			w.printf("  Digest: %s\n", displayOrNone(strings.TrimSpace(operation.DigestAlgorithm)))
+			w.printf("  Conflict: %s\n", displayOrNone(operation.ConflictDescription))
+			w.printf("  Updated: %s\n", formatInspectTime(operation.UpdatedAt))
 		}
 
 		if len(report.Attempts) == 0 {

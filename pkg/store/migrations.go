@@ -131,6 +131,14 @@ CREATE TABLE attempt_events (
 
 CREATE INDEX attempt_events_attempt_idx
 ON attempt_events(attempt_id, id);
+
+CREATE TABLE publish_operations (
+	job_id INTEGER PRIMARY KEY REFERENCES jobs(id) ON DELETE CASCADE,
+	stage TEXT NOT NULL CHECK (stage IN ('prepared', 'published', 'source_cleaned', 'committed', 'conflict')),
+	operation_json BLOB NOT NULL,
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL
+);
 `
 
 func (s *SQLiteStore) configure(ctx context.Context) error {
@@ -138,6 +146,7 @@ func (s *SQLiteStore) configure(ctx context.Context) error {
 		"PRAGMA foreign_keys = ON",
 		"PRAGMA busy_timeout = 5000",
 		"PRAGMA journal_mode = WAL",
+		"PRAGMA synchronous = FULL",
 	}
 	for _, pragma := range pragmas {
 		if _, err := s.db.ExecContext(ctx, pragma); err != nil {
@@ -232,7 +241,16 @@ SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'schema_migra
 	if err := rows.Err(); err != nil {
 		return false, true, fmt.Errorf("iterate schema versions: %w", err)
 	}
-	return len(versions) == 1 && versions[0] == fmt.Sprint(currentSchemaVersion), true, nil
+	if len(versions) != 1 || versions[0] != fmt.Sprint(currentSchemaVersion) {
+		return false, true, nil
+	}
+	var publishOperationsTable int
+	if err := s.db.QueryRowContext(ctx, `
+SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'publish_operations'
+`).Scan(&publishOperationsTable); err != nil {
+		return false, true, fmt.Errorf("inspect publish journal table: %w", err)
+	}
+	return publishOperationsTable == 1, true, nil
 }
 
 func (s *SQLiteStore) verifyForeignKeys(ctx context.Context) error {
