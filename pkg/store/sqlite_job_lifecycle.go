@@ -11,39 +11,33 @@ import (
 	"github.com/zekurio/anvil/pkg/domain"
 )
 
+const activeOccurrenceTargetSQL = `EXISTS (
+	SELECT 1
+	FROM media_sources AS s
+	LEFT JOIN media_assets AS a ON a.id = jobs.asset_id
+	WHERE s.id = jobs.source_id
+		AND s.is_current = 1 AND s.status = 'active'
+		AND (jobs.asset_id IS NULL OR (
+			a.source_id = s.id AND a.is_current = 1 AND a.status = 'active'
+		))
+)`
+
+const inactiveOccurrenceJobError = "input occurrence is no longer current and active"
+
 func (s *SQLiteStore) EnqueueJob(ctx context.Context, input EnqueueJobInput) (domain.Job, bool, error) {
-	now := defaultNow(input.Now)
-	assetID := nullableAssetID(input.AssetID)
-
-	for range 100 {
-		slug, err := newJobSlug()
-		if err != nil {
-			return domain.Job{}, false, err
-		}
-		result, err := s.db.ExecContext(ctx, `
-INSERT OR IGNORE INTO jobs (
-	slug, source_id, asset_id, library_name, priority, state, created_at, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-`, slug, int64(input.SourceID), assetID, string(input.LibraryName), input.Priority,
-			string(domain.JobStatePending), encodeTime(now), encodeTime(now))
-		if err != nil {
-			return domain.Job{}, false, fmt.Errorf("enqueue job: %w", err)
-		}
-
-		rows, err := result.RowsAffected()
-		if err != nil {
-			return domain.Job{}, false, fmt.Errorf("enqueue job rows affected: %w", err)
-		}
-		job, getErr := s.GetJobForTarget(ctx, input.SourceID, input.AssetID)
-		if getErr == nil {
-			return job, rows > 0, nil
-		}
-		if !errors.Is(getErr, ErrNotFound) {
-			return domain.Job{}, false, getErr
-		}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return domain.Job{}, false, fmt.Errorf("begin enqueue transaction: %w", err)
 	}
-
-	return domain.Job{}, false, errors.New("could not allocate unique job slug")
+	defer rollback(tx)
+	job, inserted, err := enqueueJobTx(ctx, tx, input)
+	if err != nil {
+		return domain.Job{}, false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return domain.Job{}, false, fmt.Errorf("commit enqueue transaction: %w", err)
+	}
+	return job, inserted, nil
 }
 
 func (s *SQLiteStore) RetryJob(ctx context.Context, id domain.JobID, now time.Time) (domain.Job, error) {
@@ -63,6 +57,13 @@ func (s *SQLiteStore) RetryJob(ctx context.Context, id domain.JobID, now time.Ti
 	case domain.JobStateFailed, domain.JobStateSkipped, domain.JobStateRetrying:
 	default:
 		return domain.Job{}, fmt.Errorf("cannot retry job %d from state %q", id, job.State)
+	}
+	active, err := jobTargetActiveTx(ctx, tx, id)
+	if err != nil {
+		return domain.Job{}, err
+	}
+	if !active {
+		return domain.Job{}, fmt.Errorf("cannot retry job %d: %s", id, inactiveOccurrenceJobError)
 	}
 
 	_, err = tx.ExecContext(ctx, `
@@ -111,26 +112,134 @@ WHERE id = ?
 	return s.GetJob(ctx, jobID)
 }
 
+func (s *SQLiteStore) CompleteJobOccurrence(ctx context.Context, input CompleteJobOccurrenceInput) (domain.Job, error) {
+	now := defaultNow(input.CompletedAt)
+	if input.InputSizeBytes < 0 {
+		input.InputSizeBytes = 0
+	}
+	if input.OutputSizeBytes < 0 {
+		input.OutputSizeBytes = 0
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return domain.Job{}, fmt.Errorf("begin occurrence completion: %w", err)
+	}
+	defer rollback(tx)
+
+	job, err := getJobTx(ctx, tx, input.JobID)
+	if err != nil {
+		return domain.Job{}, err
+	}
+	if !domain.CanTransitionJob(job.State, domain.JobStateComplete) {
+		return domain.Job{}, fmt.Errorf("cannot complete occurrence job from state %q", job.State)
+	}
+	source, err := getMediaSourceTx(ctx, tx, job.SourceID)
+	if err != nil {
+		return domain.Job{}, err
+	}
+	result, err := tx.ExecContext(ctx, `
+UPDATE attempts
+SET state = ?, finished_at = ?, error = ''
+WHERE id = ? AND job_id = ? AND state = ?
+`, string(domain.AttemptStateSucceeded), encodeTime(now), int64(input.AttemptID), int64(input.JobID), string(domain.AttemptStateRunning))
+	if err != nil {
+		return domain.Job{}, fmt.Errorf("finish successful occurrence attempt: %w", err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return domain.Job{}, fmt.Errorf("finish occurrence attempt rows affected: %w", err)
+	}
+	if rows == 0 {
+		return domain.Job{}, ErrNotFound
+	}
+
+	if _, err := tx.ExecContext(ctx, `
+UPDATE jobs
+SET state = ?, lease_owner = '', lease_deadline = NULL, heartbeat_at = NULL,
+	last_error = '', input_size_bytes = ?, output_size_bytes = ?, updated_at = ?, completed_at = ?
+WHERE id = ?
+`, string(domain.JobStateComplete), input.InputSizeBytes, input.OutputSizeBytes, encodeTime(now), encodeTime(now), int64(input.JobID)); err != nil {
+		return domain.Job{}, fmt.Errorf("complete occurrence job: %w", err)
+	}
+	if input.FinalInputFingerprint != nil {
+		if job.AssetID != 0 {
+			if err := updateAssetFingerprintTx(ctx, tx, job.AssetID, *input.FinalInputFingerprint, now); err != nil {
+				return domain.Job{}, err
+			}
+		}
+		if source.Kind == domain.SourceKindFile {
+			if err := updateSourceFingerprintTx(ctx, tx, job.SourceID, *input.FinalInputFingerprint, now); err != nil {
+				return domain.Job{}, err
+			}
+		}
+	}
+	if input.SourceMediaRemoved {
+		if source.Kind == domain.SourceKindFile {
+			if err := retireSourceTx(ctx, tx, job.SourceID, now); err != nil {
+				return domain.Job{}, err
+			}
+		} else {
+			if job.AssetID != 0 {
+				if err := retireAssetTx(ctx, tx, job.AssetID, now); err != nil {
+					return domain.Job{}, err
+				}
+			}
+			if err := refreshSourceLifecycleTx(ctx, tx, job.SourceID, now); err != nil {
+				return domain.Job{}, err
+			}
+		}
+	} else {
+		if job.AssetID != 0 {
+			if _, err := tx.ExecContext(ctx, `
+UPDATE media_assets SET status = ?, updated_at = ? WHERE id = ? AND is_current = 1
+`, string(domain.MediaAssetProcessed), encodeTime(now), int64(job.AssetID)); err != nil {
+				return domain.Job{}, fmt.Errorf("mark asset occurrence processed: %w", err)
+			}
+		}
+		if err := refreshSourceLifecycleTx(ctx, tx, job.SourceID, now); err != nil {
+			return domain.Job{}, err
+		}
+	}
+	job, err = getJobTx(ctx, tx, input.JobID)
+	if err != nil {
+		return domain.Job{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return domain.Job{}, fmt.Errorf("commit occurrence completion: %w", err)
+	}
+	return job, nil
+}
+
 func (s *SQLiteStore) RetryFailedJobs(ctx context.Context, libraryName domain.LibraryName, now time.Time) (int64, error) {
 	now = defaultNow(now)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("begin bulk retry transaction: %w", err)
+	}
+	defer rollback(tx)
+
 	query := `
 UPDATE jobs
 SET state = ?, lease_owner = '', lease_deadline = NULL, heartbeat_at = NULL,
 	last_error = '', updated_at = ?, completed_at = NULL
 WHERE state = ?
+	AND ` + activeOccurrenceTargetSQL + `
 `
 	args := []any{string(domain.JobStatePending), encodeTime(now), string(domain.JobStateFailed)}
 	if libraryName != "" {
 		query += " AND library_name = ?"
 		args = append(args, string(libraryName))
 	}
-	result, err := s.db.ExecContext(ctx, query, args...)
+	result, err := tx.ExecContext(ctx, query, args...)
 	if err != nil {
 		return 0, fmt.Errorf("retry failed jobs: %w", err)
 	}
 	rows, err := result.RowsAffected()
 	if err != nil {
 		return 0, fmt.Errorf("retry failed rows affected: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("commit bulk retry transaction: %w", err)
 	}
 	return rows, nil
 }
@@ -156,19 +265,20 @@ func (s *SQLiteStore) LeaseNextJobForLibraries(ctx context.Context, workerID str
 
 	var id int64
 	query := `
-SELECT id
+SELECT jobs.id
 FROM jobs
-WHERE state = ?
+WHERE jobs.state = ?
+	AND ` + activeOccurrenceTargetSQL + `
 `
 	args := []any{string(domain.JobStatePending)}
 	if len(allowedLibraries) > 0 {
-		query += " AND library_name IN (" + placeholders(len(allowedLibraries)) + ")\n"
+		query += " AND jobs.library_name IN (" + placeholders(len(allowedLibraries)) + ")\n"
 		for _, library := range allowedLibraries {
 			args = append(args, string(library))
 		}
 	}
 	query += `
-ORDER BY priority DESC, created_at ASC, id ASC
+ORDER BY jobs.priority DESC, jobs.created_at ASC, jobs.id ASC
 LIMIT 1
 `
 	err = tx.QueryRowContext(ctx, query, args...).Scan(&id)
@@ -212,13 +322,39 @@ WHERE id = ? AND state = ?
 
 func (s *SQLiteStore) ReleaseLeasedJob(ctx context.Context, jobID domain.JobID, workerID string, now time.Time) (domain.Job, error) {
 	now = defaultNow(now)
-	result, err := s.db.ExecContext(ctx, `
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return domain.Job{}, fmt.Errorf("begin release transaction: %w", err)
+	}
+	defer rollback(tx)
+
+	job, err := getJobTx(ctx, tx, jobID)
+	if err != nil {
+		return domain.Job{}, err
+	}
+	if job.State != domain.JobStateLeased || job.LeaseOwner != workerID {
+		return domain.Job{}, ErrNotFound
+	}
+	active, err := jobTargetActiveTx(ctx, tx, jobID)
+	if err != nil {
+		return domain.Job{}, err
+	}
+	state := domain.JobStatePending
+	lastError := ""
+	var completedAt any
+	if !active {
+		state = domain.JobStateSkipped
+		lastError = inactiveOccurrenceJobError
+		completedAt = encodeTime(now)
+	}
+	result, err := tx.ExecContext(ctx, `
 UPDATE jobs
-SET state = ?, lease_owner = '', lease_deadline = NULL, heartbeat_at = NULL, updated_at = ?
+SET state = ?, lease_owner = '', lease_deadline = NULL, heartbeat_at = NULL,
+	last_error = ?, updated_at = ?, completed_at = ?
 WHERE id = ?
 	AND lease_owner = ?
 	AND state = ?
-`, string(domain.JobStatePending), encodeTime(now), int64(jobID), workerID, string(domain.JobStateLeased))
+`, string(state), lastError, encodeTime(now), completedAt, int64(jobID), workerID, string(domain.JobStateLeased))
 	if err != nil {
 		return domain.Job{}, fmt.Errorf("release leased job: %w", err)
 	}
@@ -229,7 +365,14 @@ WHERE id = ?
 	if rows == 0 {
 		return domain.Job{}, ErrNotFound
 	}
-	return s.GetJob(ctx, jobID)
+	job, err = getJobTx(ctx, tx, jobID)
+	if err != nil {
+		return domain.Job{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return domain.Job{}, fmt.Errorf("commit release transaction: %w", err)
+	}
+	return job, nil
 }
 
 func (s *SQLiteStore) HeartbeatJob(ctx context.Context, jobID domain.JobID, workerID string, leaseDeadline time.Time, now time.Time) (domain.Job, error) {
@@ -271,6 +414,16 @@ func (s *SQLiteStore) TransitionJob(ctx context.Context, jobID domain.JobID, to 
 	}
 	if !domain.CanTransitionJob(job.State, to) {
 		return domain.Job{}, fmt.Errorf("invalid job transition %q -> %q", job.State, to)
+	}
+	if to == domain.JobStatePending {
+		active, err := jobTargetActiveTx(ctx, tx, jobID)
+		if err != nil {
+			return domain.Job{}, err
+		}
+		if !active {
+			to = domain.JobStateSkipped
+			lastError = inactiveOccurrenceJobError
+		}
 	}
 
 	leaseOwner := job.LeaseOwner
@@ -350,12 +503,29 @@ WHERE state = ?
 		return 0, fmt.Errorf("cancel stale attempts: %w", err)
 	}
 
+	skipped, err := tx.ExecContext(ctx, `
+UPDATE jobs
+SET state = ?, lease_owner = '', lease_deadline = NULL, heartbeat_at = NULL,
+	last_error = ?, updated_at = ?, completed_at = ?
+WHERE `+staleWhere+`
+	AND NOT `+activeOccurrenceTargetSQL+`
+`, append([]any{
+		string(domain.JobStateSkipped),
+		inactiveOccurrenceJobError,
+		encodeTime(now),
+		encodeTime(now),
+	}, args...)...)
+	if err != nil {
+		return 0, fmt.Errorf("skip stale jobs with inactive occurrences: %w", err)
+	}
+
 	failed, err := tx.ExecContext(ctx, `
 UPDATE jobs
 SET state = ?, lease_owner = '', lease_deadline = NULL, heartbeat_at = NULL,
 	last_error = ?, updated_at = ?, completed_at = ?
 WHERE `+staleWhere+`
 	AND attempt_count >= ?
+	AND `+activeOccurrenceTargetSQL+`
 `, append([]any{
 		string(domain.JobStateFailed),
 		"lease expired and retry limit was reached",
@@ -372,6 +542,7 @@ SET state = ?, lease_owner = '', lease_deadline = NULL, heartbeat_at = NULL,
 	last_error = ?, updated_at = ?, completed_at = NULL
 WHERE `+staleWhere+`
 	AND attempt_count < ?
+	AND `+activeOccurrenceTargetSQL+`
 `, append([]any{
 		string(domain.JobStatePending),
 		"lease expired; job returned to pending",
@@ -381,6 +552,10 @@ WHERE `+staleWhere+`
 		return 0, fmt.Errorf("requeue stale jobs: %w", err)
 	}
 
+	skippedRows, err := skipped.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("skipped recovery rows affected: %w", err)
+	}
 	failedRows, err := failed.RowsAffected()
 	if err != nil {
 		return 0, fmt.Errorf("failed recovery rows affected: %w", err)
@@ -393,5 +568,21 @@ WHERE `+staleWhere+`
 		return 0, fmt.Errorf("commit recovery transaction: %w", err)
 	}
 
-	return failedRows + pendingRows, nil
+	return skippedRows + failedRows + pendingRows, nil
+}
+
+func jobTargetActiveTx(ctx context.Context, tx *sql.Tx, jobID domain.JobID) (bool, error) {
+	var active bool
+	err := tx.QueryRowContext(ctx, `
+SELECT `+activeOccurrenceTargetSQL+`
+FROM jobs
+WHERE id = ?
+`, int64(jobID)).Scan(&active)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, ErrNotFound
+	}
+	if err != nil {
+		return false, fmt.Errorf("check job occurrence lifecycle: %w", err)
+	}
+	return active, nil
 }

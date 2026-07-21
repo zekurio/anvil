@@ -211,6 +211,58 @@ func TestScanDownloadLibrarySkipsUnstablePackage(t *testing.T) {
 	}
 }
 
+func TestRealSQLiteScanDoesNotPersistUnstableEntry(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	now := testNow()
+	writeTestFile(t, root, "Movie.mkv", now)
+	state := openScannerTestStore(t, ctx)
+
+	result, err := (Scanner{Store: state, Now: func() time.Time { return now }}).ScanLibrary(ctx, config.LibraryConfig{
+		Name: "downloads", Kind: "download", Path: root,
+		Download: config.DownloadLibraryConfig{StableFor: "1h", PackageMode: "file"},
+	})
+	if err != nil {
+		t.Fatalf("ScanLibrary() error = %v", err)
+	}
+	if result.SkippedUnstable != 1 || result.EnqueuedJobs != 0 {
+		t.Fatalf("unstable scan result = %+v", result)
+	}
+	if _, ok, err := state.FindMediaSourceByPath(ctx, "downloads", "Movie.mkv"); err != nil || ok {
+		t.Fatalf("unstable source exists=%t err=%v, want absent", ok, err)
+	}
+}
+
+func TestFailedDiscoveryDoesNotReconcileMissingEntries(t *testing.T) {
+	ctx := context.Background()
+	parent := t.TempDir()
+	root := filepath.Join(parent, "downloads")
+	if err := os.Mkdir(root, 0o755); err != nil {
+		t.Fatalf("mkdir root: %v", err)
+	}
+	now := testNow()
+	writeTestFile(t, root, "Movie.mkv", now.Add(-time.Hour))
+	state := openScannerTestStore(t, ctx)
+	library := config.LibraryConfig{
+		Name: "downloads", Kind: "download", Path: root,
+		Download: config.DownloadLibraryConfig{StableFor: "1m", PackageMode: "file"},
+	}
+	scanner := Scanner{Store: state, Now: func() time.Time { return now }}
+	if _, err := scanner.ScanLibrary(ctx, library); err != nil {
+		t.Fatalf("initial ScanLibrary() error = %v", err)
+	}
+	if err := os.RemoveAll(root); err != nil {
+		t.Fatalf("remove scan root: %v", err)
+	}
+	if _, err := scanner.ScanLibrary(ctx, library); err == nil {
+		t.Fatal("failed ScanLibrary() error = nil, want discovery failure")
+	}
+	source, ok, err := state.FindMediaSourceByPath(ctx, "downloads", "Movie.mkv")
+	if err != nil || !ok || !source.Current || source.Status != domain.MediaSourceActive {
+		t.Fatalf("source after failed discovery = %+v, ok=%t err=%v", source, ok, err)
+	}
+}
+
 func TestScanDownloadLibraryStabilityIncludesCompanionFiles(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
@@ -404,55 +456,55 @@ func newFakeStore() *fakeStore {
 	}
 }
 
-func (f *fakeStore) UpsertMediaSource(_ context.Context, source domain.MediaSource) (domain.MediaSource, error) {
-	key := string(source.LibraryName) + "\x00" + source.RelativePath
-	if existing, exists := f.sourceByPath[key]; exists {
-		source.ID = existing.ID
-	} else {
-		source.ID = f.nextSourceID
-		f.nextSourceID++
-	}
-	f.sourceByPath[key] = source
-	return source, nil
+func (f *fakeStore) BeginLibraryScan(_ context.Context, libraryName domain.LibraryName) (store.ScanToken, error) {
+	return store.ScanToken{LibraryName: libraryName, Sequence: 1}, nil
 }
 
-func (f *fakeStore) UpsertMediaAsset(_ context.Context, asset domain.MediaAsset) (domain.MediaAsset, error) {
-	key := sourceAssetKey(asset.SourceID, asset.RelativePath)
-	if existing, exists := f.assetByPath[key]; exists {
-		asset.ID = existing.ID
-	} else {
-		asset.ID = f.nextAssetID
-		f.nextAssetID++
-	}
-	f.assetByPath[key] = asset
-	return asset, nil
-}
-
-func (f *fakeStore) EnqueueJob(_ context.Context, input store.EnqueueJobInput) (domain.Job, bool, error) {
-	for _, job := range f.jobs {
-		if job.SourceID == input.SourceID && job.AssetID == input.AssetID {
-			return domain.Job{
-				ID:          domain.JobID(len(f.jobs)),
-				SourceID:    input.SourceID,
-				AssetID:     input.AssetID,
-				LibraryName: input.LibraryName,
-				Priority:    input.Priority,
-				State:       domain.JobStatePending,
-			}, false, nil
+func (f *fakeStore) ApplyLibraryScan(_ context.Context, _ store.ScanToken, input store.ApplyScanInput) (store.ApplyScanResult, error) {
+	result := store.ApplyScanResult{Applied: true}
+	seenSources := make(map[string]struct{})
+	for _, entry := range input.Entries {
+		if !entry.Persist {
+			continue
 		}
+		sourceKey := string(input.LibraryName) + "\x00" + entry.SourceRelativePath
+		if _, seen := seenSources[sourceKey]; !seen {
+			seenSources[sourceKey] = struct{}{}
+			result.Sources++
+		}
+		source, exists := f.sourceByPath[sourceKey]
+		if !exists {
+			source = domain.MediaSource{ID: f.nextSourceID, LibraryName: input.LibraryName, Kind: entry.SourceKind, RelativePath: entry.SourceRelativePath, Generation: 1, Current: true, Status: domain.MediaSourceActive, Fingerprint: entry.SourceFingerprint}
+			f.nextSourceID++
+			f.sourceByPath[sourceKey] = source
+		}
+		result.Assets++
+		assetKey := sourceAssetKey(source.ID, entry.AssetRelativePath)
+		asset, exists := f.assetByPath[assetKey]
+		if !exists {
+			asset = domain.MediaAsset{ID: f.nextAssetID, SourceID: source.ID, RelativePath: entry.AssetRelativePath, Generation: 1, Current: true, Role: entry.AssetRole, Status: domain.MediaAssetActive, Fingerprint: entry.AssetFingerprint}
+			f.nextAssetID++
+			f.assetByPath[assetKey] = asset
+		}
+		if !entry.Enqueue {
+			continue
+		}
+		duplicate := false
+		for _, job := range f.jobs {
+			if job.SourceID == source.ID && job.AssetID == asset.ID {
+				duplicate = true
+				break
+			}
+		}
+		if duplicate {
+			result.ExistingJobs++
+			continue
+		}
+		f.jobs = append(f.jobs, store.EnqueueJobInput{SourceID: source.ID, AssetID: asset.ID, LibraryName: input.LibraryName, Priority: input.Priority, Now: input.CompletedAt})
+		f.nextJobID++
+		result.EnqueuedJobs++
 	}
-
-	id := f.nextJobID
-	f.nextJobID++
-	f.jobs = append(f.jobs, input)
-	return domain.Job{
-		ID:          id,
-		SourceID:    input.SourceID,
-		AssetID:     input.AssetID,
-		LibraryName: input.LibraryName,
-		Priority:    input.Priority,
-		State:       domain.JobStatePending,
-	}, true, nil
+	return result, nil
 }
 
 func writeTestFile(t *testing.T, root, rel string, modTime time.Time) {
@@ -468,6 +520,20 @@ func writeTestFile(t *testing.T, root, rel string, modTime time.Time) {
 	if err := os.Chtimes(path, modTime, modTime); err != nil {
 		t.Fatalf("Chtimes() error = %v", err)
 	}
+}
+
+func openScannerTestStore(t *testing.T, ctx context.Context) *store.SQLiteStore {
+	t.Helper()
+	state, err := store.Open(ctx, filepath.Join(t.TempDir(), "anvil.db"))
+	if err != nil {
+		t.Fatalf("store.Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := state.Close(); err != nil {
+			t.Fatalf("store.Close() error = %v", err)
+		}
+	})
+	return state
 }
 
 func sourceAssetKey(sourceID domain.MediaSourceID, rel string) string {

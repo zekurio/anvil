@@ -73,18 +73,24 @@ type preflightLibrary struct {
 }
 
 type preflightSource struct {
-	RelativePath string            `json:"relative_path"`
-	Kind         domain.SourceKind `json:"kind"`
-	SizeBytes    int64             `json:"size_bytes"`
-	ModTime      time.Time         `json:"mod_time"`
+	RelativePath string                   `json:"relative_path"`
+	Kind         domain.SourceKind        `json:"kind"`
+	Generation   int                      `json:"generation"`
+	Current      bool                     `json:"current"`
+	Status       domain.MediaSourceStatus `json:"status"`
+	SizeBytes    int64                    `json:"size_bytes"`
+	ModTime      time.Time                `json:"mod_time"`
 }
 
 type preflightAsset struct {
-	RelativePath        string                `json:"relative_path"`
-	LibraryRelativePath string                `json:"library_relative_path"`
-	Role                domain.MediaAssetRole `json:"role"`
-	SizeBytes           int64                 `json:"size_bytes"`
-	ModTime             time.Time             `json:"mod_time"`
+	RelativePath        string                  `json:"relative_path"`
+	LibraryRelativePath string                  `json:"library_relative_path"`
+	Role                domain.MediaAssetRole   `json:"role"`
+	Generation          int                     `json:"generation"`
+	Current             bool                    `json:"current"`
+	Status              domain.MediaAssetStatus `json:"status"`
+	SizeBytes           int64                   `json:"size_bytes"`
+	ModTime             time.Time               `json:"mod_time"`
 }
 
 type preflightStatus struct {
@@ -100,6 +106,7 @@ type preflightStatus struct {
 	ExistingJobSlug     string          `json:"existing_job_slug,omitempty"`
 	ExistingJobState    domain.JobState `json:"existing_job_state,omitempty"`
 	ExistingAttemptHint string          `json:"existing_attempt_hint,omitempty"`
+	OccurrenceAction    string          `json:"occurrence_action"`
 }
 
 type preflightFlow struct {
@@ -281,6 +288,9 @@ func buildPreflightCandidate(ctx context.Context, cfg config.Config, state prefl
 		LibraryName:  candidate.LibraryName,
 		Kind:         candidate.SourceKind,
 		RelativePath: candidate.SourceRelativePath,
+		Generation:   1,
+		Current:      true,
+		Status:       domain.MediaSourceActive,
 		Fingerprint: domain.FileFingerprint{
 			SizeBytes: candidate.SourceSizeBytes,
 			ModTime:   candidate.SourceModTime,
@@ -288,7 +298,10 @@ func buildPreflightCandidate(ctx context.Context, cfg config.Config, state prefl
 	}
 	asset := domain.MediaAsset{
 		RelativePath: candidate.AssetRelativePath,
+		Generation:   1,
+		Current:      true,
 		Role:         candidate.Role,
+		Status:       domain.MediaAssetActive,
 		Fingerprint: domain.FileFingerprint{
 			SizeBytes: candidate.SizeBytes,
 			ModTime:   candidate.ModTime,
@@ -300,33 +313,66 @@ func buildPreflightCandidate(ctx context.Context, cfg config.Config, state prefl
 		Unstable:           candidate.Unstable,
 		Enqueueable:        candidate.Enqueueable,
 		WouldEnqueueNewJob: candidate.Enqueueable,
+		OccurrenceAction:   "new_source_generation",
 	}
-	if state != nil {
+	if candidate.Ignored {
+		status.OccurrenceAction = "ignored"
+	} else if candidate.Unstable {
+		status.OccurrenceAction = "deferred_unstable"
+	}
+	if state != nil && !candidate.Ignored && !candidate.Unstable {
 		storedSource, ok, err := state.FindMediaSourceByPath(ctx, candidate.LibraryName, candidate.SourceRelativePath)
 		if err != nil {
 			return preflightCandidate{}, err
 		}
 		if ok {
 			status.ExistingSource = true
-			source.ID = storedSource.ID
-			storedAsset, ok, err := state.FindMediaAssetByPath(ctx, storedSource.ID, candidate.AssetRelativePath)
-			if err != nil {
-				return preflightCandidate{}, err
+			storedGeneration := max(storedSource.Generation, 1)
+			reuseSource := storedSource.Current && (candidate.SourceKind == domain.SourceKindPackage || preflightFingerprintMatches(storedSource.Fingerprint, source.Fingerprint))
+			if reuseSource {
+				source.ID = storedSource.ID
+				source.Generation = storedGeneration
+				source.Status = storedSource.Status
+				status.OccurrenceAction = "retain_occurrence"
+			} else {
+				source.Generation = storedGeneration + 1
 			}
-			if ok {
-				status.ExistingAsset = true
-				asset.ID = storedAsset.ID
-				job, ok, err := state.FindJobForTarget(ctx, storedSource.ID, storedAsset.ID)
+			if reuseSource {
+				storedAsset, ok, err := state.FindMediaAssetByPath(ctx, source.ID, candidate.AssetRelativePath)
 				if err != nil {
 					return preflightCandidate{}, err
 				}
-				if ok {
-					status.AlreadyHasJob = true
-					status.WouldEnqueueNewJob = false
-					status.ExistingJobID = job.ID
-					status.ExistingJobSlug = job.Label()
-					status.ExistingJobState = job.State
-					status.ExistingAttemptHint = "attempt-<new>"
+				if !ok {
+					status.OccurrenceAction = "new_asset_generation"
+					source.Status = domain.MediaSourceActive
+				} else {
+					status.ExistingAsset = true
+					storedGeneration := max(storedAsset.Generation, 1)
+					reuseAsset := storedAsset.Current && preflightFingerprintMatches(storedAsset.Fingerprint, asset.Fingerprint)
+					if !reuseAsset {
+						asset.Generation = storedGeneration + 1
+						status.OccurrenceAction = "new_asset_generation"
+						source.Status = domain.MediaSourceActive
+					} else {
+						asset.ID = storedAsset.ID
+						asset.Generation = storedGeneration
+						asset.Status = storedAsset.Status
+						if storedAsset.Status == domain.MediaAssetProcessed {
+							status.WouldEnqueueNewJob = false
+						}
+						job, ok, err := state.FindJobForTarget(ctx, source.ID, storedAsset.ID)
+						if err != nil {
+							return preflightCandidate{}, err
+						}
+						if ok {
+							status.AlreadyHasJob = true
+							status.WouldEnqueueNewJob = false
+							status.ExistingJobID = job.ID
+							status.ExistingJobSlug = job.Label()
+							status.ExistingJobState = job.State
+							status.ExistingAttemptHint = "attempt-<new>"
+						}
+					}
 				}
 			}
 		}
@@ -361,6 +407,9 @@ func buildPreflightCandidate(ctx context.Context, cfg config.Config, state prefl
 		Source: preflightSource{
 			RelativePath: candidate.SourceRelativePath,
 			Kind:         candidate.SourceKind,
+			Generation:   source.Generation,
+			Current:      source.Current,
+			Status:       source.Status,
 			SizeBytes:    candidate.SourceSizeBytes,
 			ModTime:      candidate.SourceModTime,
 		},
@@ -368,6 +417,9 @@ func buildPreflightCandidate(ctx context.Context, cfg config.Config, state prefl
 			RelativePath:        candidate.AssetRelativePath,
 			LibraryRelativePath: candidate.LibraryRelativePath,
 			Role:                candidate.Role,
+			Generation:          asset.Generation,
+			Current:             asset.Current,
+			Status:              asset.Status,
 			SizeBytes:           candidate.SizeBytes,
 			ModTime:             candidate.ModTime,
 		},
@@ -610,6 +662,11 @@ func flowHasStep(flow domain.Flow, name string) bool {
 	return false
 }
 
+func preflightFingerprintMatches(left, right domain.FileFingerprint) bool {
+	return left.SizeBytes == right.SizeBytes && left.ModTime.Equal(right.ModTime) &&
+		left.HashAlgorithm == right.HashAlgorithm && left.HashValue == right.HashValue
+}
+
 func preflightDescription(status preflightStatus) string {
 	switch {
 	case status.Ignored:
@@ -647,12 +704,14 @@ func writePreflightReport(out io.Writer, report preflightReport) error {
 			w.printf("warning: %s\n", warning)
 		}
 		for _, item := range report.Candidates {
-			w.printf("\n[%s] %s %s role=%s source=%s asset_size=%d asset_mod=%s\n",
+			w.printf("\n[%s] %s %s role=%s source=%s source_generation=%d asset_generation=%d asset_size=%d asset_mod=%s\n",
 				item.Description,
 				item.Library.Name,
 				item.Asset.LibraryRelativePath,
 				item.Asset.Role,
 				item.Source.Kind,
+				item.Source.Generation,
+				item.Asset.Generation,
 				item.Asset.SizeBytes,
 				item.Asset.ModTime.Format(time.RFC3339),
 			)
@@ -664,12 +723,13 @@ func writePreflightReport(out io.Writer, report preflightReport) error {
 				item.Source.ModTime.Format(time.RFC3339),
 				item.Asset.RelativePath,
 			)
-			w.printf("  status: ignored=%t unstable=%t enqueueable=%t existing_job=%t would_enqueue=%t\n",
+			w.printf("  status: ignored=%t unstable=%t enqueueable=%t existing_job=%t would_enqueue=%t occurrence_action=%s\n",
 				item.Status.Ignored,
 				item.Status.Unstable,
 				item.Status.Enqueueable,
 				item.Status.AlreadyHasJob,
 				item.Status.WouldEnqueueNewJob,
+				item.Status.OccurrenceAction,
 			)
 			if item.Status.AlreadyHasJob {
 				w.printf("  job: %s (id=%d) state=%s attempt=%s\n", item.Status.ExistingJobSlug, item.Status.ExistingJobID, item.Status.ExistingJobState, item.Status.ExistingAttemptHint)
