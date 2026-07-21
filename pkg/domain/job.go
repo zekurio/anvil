@@ -91,17 +91,17 @@ func CanTransitionJob(from, to JobState) bool {
 	case JobStatePending:
 		return to == JobStateLeased || to == JobStateSkipped
 	case JobStateLeased:
-		return to == JobStateRunning || to == JobStateFailed || to == JobStateRetrying
+		return to == JobStateRunning || to == JobStateFailed || to == JobStateRetrying || to == JobStateSkipped
 	case JobStateRunning:
-		return to == JobStateValidating || to == JobStateFailed || to == JobStateRetrying
+		return to == JobStateValidating || to == JobStateFailed || to == JobStateRetrying || to == JobStateSkipped
 	case JobStateValidating:
-		return to == JobStateReplacing || to == JobStateComplete || to == JobStateFailed || to == JobStateRetrying
+		return to == JobStateReplacing || to == JobStateComplete || to == JobStateFailed || to == JobStateRetrying || to == JobStateSkipped
 	case JobStateReplacing:
-		return to == JobStateComplete || to == JobStateFailed || to == JobStateRetrying
+		return to == JobStateComplete || to == JobStateFailed || to == JobStateRetrying || to == JobStateSkipped
 	case JobStateFailed:
 		return to == JobStateRetrying
 	case JobStateRetrying:
-		return to == JobStatePending || to == JobStateFailed
+		return to == JobStatePending || to == JobStateFailed || to == JobStateSkipped
 	default:
 		return false
 	}
