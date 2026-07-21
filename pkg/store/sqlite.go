@@ -13,7 +13,10 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-var ErrNotFound = errors.New("store: not found")
+var (
+	ErrNotFound           = errors.New("store: not found")
+	ErrIncompatibleSchema = errors.New("store: incompatible database schema; reset the database before starting Anvil")
+)
 
 type SQLiteStore struct {
 	db *sql.DB
@@ -25,6 +28,65 @@ type EnqueueJobInput struct {
 	LibraryName domain.LibraryName
 	Priority    int
 	Now         time.Time
+}
+
+type ScanToken struct {
+	LibraryName domain.LibraryName
+	Sequence    int64
+}
+
+type ScanEntry struct {
+	SourceKind         domain.SourceKind
+	SourceRelativePath string
+	SourceFingerprint  domain.FileFingerprint
+	AssetRelativePath  string
+	AssetRole          domain.MediaAssetRole
+	AssetFingerprint   domain.FileFingerprint
+	Persist            bool
+	Enqueue            bool
+}
+
+type ApplyScanInput struct {
+	LibraryName domain.LibraryName
+	Priority    int
+	Entries     []ScanEntry
+	CompletedAt time.Time
+}
+
+type ApplyScanResult struct {
+	Applied      bool
+	Sources      int
+	Assets       int
+	EnqueuedJobs int
+	ExistingJobs int
+}
+
+type ForceOccurrenceInput struct {
+	LibraryName        domain.LibraryName
+	SourceKind         domain.SourceKind
+	SourceRelativePath string
+	SourceFingerprint  domain.FileFingerprint
+	AssetRelativePath  string
+	AssetRole          domain.MediaAssetRole
+	AssetFingerprint   domain.FileFingerprint
+	Priority           int
+	Now                time.Time
+}
+
+type ForceOccurrenceResult struct {
+	Source domain.MediaSource
+	Asset  domain.MediaAsset
+	Job    domain.Job
+}
+
+type CompleteJobOccurrenceInput struct {
+	JobID                 domain.JobID
+	AttemptID             domain.AttemptID
+	InputSizeBytes        int64
+	OutputSizeBytes       int64
+	SourceMediaRemoved    bool
+	FinalInputFingerprint *domain.FileFingerprint
+	CompletedAt           time.Time
 }
 
 type JobListFilter struct {
@@ -103,6 +165,13 @@ func OpenReadOnly(ctx context.Context, path string) (*SQLiteStore, error) {
 	store := &SQLiteStore{db: db}
 	if err := store.configureReadOnly(ctx); err != nil {
 		return nil, closeDBOnError(db, err)
+	}
+	compatible, exists, err := store.schemaCompatibility(ctx)
+	if err != nil {
+		return nil, closeDBOnError(db, err)
+	}
+	if !exists || !compatible {
+		return nil, closeDBOnError(db, ErrIncompatibleSchema)
 	}
 	return store, nil
 }
