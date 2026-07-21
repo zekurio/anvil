@@ -78,8 +78,8 @@ func TestCompletedRetainedOccurrenceDoesNotLoop(t *testing.T) {
 
 	retained := occurrenceFileEntry("Movie.mkv", finalFingerprint.SizeBytes, finalFingerprint.ModTime)
 	rescanned := applyOccurrenceScan(t, ctx, state, "downloads", []ScanEntry{retained}, now.Add(time.Minute))
-	if rescanned.EnqueuedJobs != 0 || rescanned.ExistingJobs != 0 || rescanned.Sources != 0 || rescanned.Assets != 0 {
-		t.Fatalf("retained rescan = %+v, want no new work", rescanned)
+	if rescanned.Sources != 1 || rescanned.Assets != 1 || rescanned.EnqueuedJobs != 0 || rescanned.ExistingJobs != 0 {
+		t.Fatalf("retained rescan = %+v, want one observed source and asset with no work", rescanned)
 	}
 	source := mustFindOccurrenceSource(t, ctx, state, "downloads", "Movie.mkv")
 	asset := mustFindOccurrenceAsset(t, ctx, state, source.ID, "Movie.mkv")
@@ -157,8 +157,8 @@ func TestPackageChangesOnlyOneAssetOccurrence(t *testing.T) {
 		occurrencePackageEntry("Release", "B.mkv", 125, 225, now.Add(time.Minute)),
 	}
 	result := applyOccurrenceScan(t, ctx, state, "downloads", changed, now.Add(time.Minute))
-	if result.Sources != 0 || result.Assets != 1 || result.EnqueuedJobs != 1 || result.ExistingJobs != 1 {
-		t.Fatalf("package change result = %+v, want one changed asset and one retained job", result)
+	if result.Sources != 1 || result.Assets != 2 || result.EnqueuedJobs != 1 || result.ExistingJobs != 1 {
+		t.Fatalf("package change result = %+v, want one observed source, two observed assets, one changed asset job, and one retained job", result)
 	}
 	currentSource := mustFindOccurrenceSource(t, ctx, state, "downloads", "Release")
 	currentA := mustFindOccurrenceAsset(t, ctx, state, source.ID, "A.mkv")
@@ -193,7 +193,7 @@ func TestMissingPackageAssetReappearsAsNewGeneration(t *testing.T) {
 	}
 	result := applyOccurrenceScan(t, ctx, state, "downloads", []ScanEntry{a, b}, now.Add(2*time.Minute))
 	currentB := mustFindOccurrenceAsset(t, ctx, state, source.ID, "B.mkv")
-	if result.Assets != 1 || result.EnqueuedJobs != 1 || currentB.ID == originalB.ID || currentB.Generation != 2 {
+	if result.Sources != 1 || result.Assets != 2 || result.EnqueuedJobs != 1 || currentB.ID == originalB.ID || currentB.Generation != 2 {
 		t.Fatalf("reappeared B result=%+v asset=%+v, want generation 2", result, currentB)
 	}
 }
@@ -216,12 +216,164 @@ func TestFailedOccurrenceRequiresExplicitRetry(t *testing.T) {
 	}
 
 	result := applyOccurrenceScan(t, ctx, state, "downloads", []ScanEntry{entry}, now.Add(time.Minute))
-	if result.EnqueuedJobs != 0 || result.ExistingJobs != 1 || result.Sources != 0 || result.Assets != 0 {
-		t.Fatalf("failed occurrence rescan = %+v, want existing failed target only", result)
+	if result.Sources != 1 || result.Assets != 1 || result.EnqueuedJobs != 0 || result.ExistingJobs != 1 {
+		t.Fatalf("failed occurrence rescan = %+v, want one observed source and asset with an existing failed target", result)
 	}
 	stored, err := state.GetJob(ctx, job.ID)
 	if err != nil || stored.State != domain.JobStateFailed {
 		t.Fatalf("stored job = %+v, err %v, want failed", stored, err)
+	}
+	retried, err := state.RetryJob(ctx, job.ID, now.Add(2*time.Minute))
+	if err != nil || retried.State != domain.JobStatePending {
+		t.Fatalf("RetryJob() = %+v, err %v, want pending for active occurrence", retried, err)
+	}
+}
+
+func TestRetryJobRefusesRetiredOccurrence(t *testing.T) {
+	ctx := context.Background()
+	state := openTestStore(t)
+	now := testNow()
+	entry := occurrenceFileEntry("Movie.mkv", 100, now)
+	applyOccurrenceScan(t, ctx, state, "downloads", []ScanEntry{entry}, now)
+	job, err := state.LeaseNextJob(ctx, "worker-retired-retry", now.Add(time.Minute), now)
+	if err != nil || job == nil {
+		t.Fatalf("LeaseNextJob() = %+v, err %v", job, err)
+	}
+	if _, err := state.TransitionJob(ctx, job.ID, domain.JobStateRunning, now, ""); err != nil {
+		t.Fatalf("transition running: %v", err)
+	}
+	if _, err := state.TransitionJob(ctx, job.ID, domain.JobStateFailed, now.Add(time.Second), "encode failed"); err != nil {
+		t.Fatalf("transition failed: %v", err)
+	}
+	applyOccurrenceScan(t, ctx, state, "downloads", nil, now.Add(2*time.Minute))
+
+	if _, err := state.RetryJob(ctx, job.ID, now.Add(3*time.Minute)); err == nil {
+		t.Fatal("RetryJob() error = nil, want retired occurrence refusal")
+	}
+	stored, err := state.GetJob(ctx, job.ID)
+	if err != nil || stored.State != domain.JobStateFailed {
+		t.Fatalf("stored job = %+v, err %v, want failed", stored, err)
+	}
+}
+
+func TestRetryFailedJobsExcludesRetiredOccurrences(t *testing.T) {
+	ctx := context.Background()
+	state := openTestStore(t)
+	now := testNow()
+	a := occurrenceFileEntry("A.mkv", 100, now)
+	b := occurrenceFileEntry("B.mkv", 100, now)
+	applyOccurrenceScan(t, ctx, state, "downloads", []ScanEntry{a, b}, now)
+	sourceA := mustFindOccurrenceSource(t, ctx, state, "downloads", "A.mkv")
+	assetA := mustFindOccurrenceAsset(t, ctx, state, sourceA.ID, "A.mkv")
+	jobA, ok, err := state.FindJobForTarget(ctx, sourceA.ID, assetA.ID)
+	if err != nil || !ok {
+		t.Fatalf("find A job = %+v, ok=%t err=%v", jobA, ok, err)
+	}
+	sourceB := mustFindOccurrenceSource(t, ctx, state, "downloads", "B.mkv")
+	assetB := mustFindOccurrenceAsset(t, ctx, state, sourceB.ID, "B.mkv")
+	jobB, ok, err := state.FindJobForTarget(ctx, sourceB.ID, assetB.ID)
+	if err != nil || !ok {
+		t.Fatalf("find B job = %+v, ok=%t err=%v", jobB, ok, err)
+	}
+	for i := 0; i < 2; i++ {
+		leased, err := state.LeaseNextJob(ctx, "worker-bulk-retry", now.Add(time.Minute), now)
+		if err != nil || leased == nil {
+			t.Fatalf("LeaseNextJob(%d) = %+v, err %v", i, leased, err)
+		}
+		if _, err := state.TransitionJob(ctx, leased.ID, domain.JobStateRunning, now, ""); err != nil {
+			t.Fatalf("transition running %d: %v", leased.ID, err)
+		}
+		if _, err := state.TransitionJob(ctx, leased.ID, domain.JobStateFailed, now.Add(time.Second), "encode failed"); err != nil {
+			t.Fatalf("transition failed %d: %v", leased.ID, err)
+		}
+	}
+	applyOccurrenceScan(t, ctx, state, "downloads", []ScanEntry{b}, now.Add(2*time.Minute))
+
+	retried, err := state.RetryFailedJobs(ctx, "downloads", now.Add(3*time.Minute))
+	if err != nil {
+		t.Fatalf("RetryFailedJobs() error = %v", err)
+	}
+	if retried != 1 {
+		t.Fatalf("retried = %d, want 1 active occurrence", retried)
+	}
+	jobA, err = state.GetJob(ctx, jobA.ID)
+	if err != nil || jobA.State != domain.JobStateFailed {
+		t.Fatalf("retired A job = %+v, err %v, want failed", jobA, err)
+	}
+	jobB, err = state.GetJob(ctx, jobB.ID)
+	if err != nil || jobB.State != domain.JobStatePending {
+		t.Fatalf("active B job = %+v, err %v, want pending", jobB, err)
+	}
+}
+
+func TestReleaseLeasedJobSkipsRetiredOccurrence(t *testing.T) {
+	ctx := context.Background()
+	state := openTestStore(t)
+	now := testNow()
+	applyOccurrenceScan(t, ctx, state, "downloads", []ScanEntry{occurrenceFileEntry("Movie.mkv", 100, now)}, now)
+	job, err := state.LeaseNextJob(ctx, "worker-release", now.Add(time.Minute), now)
+	if err != nil || job == nil {
+		t.Fatalf("LeaseNextJob() = %+v, err %v", job, err)
+	}
+	applyOccurrenceScan(t, ctx, state, "downloads", nil, now.Add(30*time.Second))
+
+	released, err := state.ReleaseLeasedJob(ctx, job.ID, "worker-release", now.Add(45*time.Second))
+	if err != nil {
+		t.Fatalf("ReleaseLeasedJob() error = %v", err)
+	}
+	if released.State != domain.JobStateSkipped || released.LastError != inactiveOccurrenceJobError || released.CompletedAt == nil {
+		t.Fatalf("released job = %+v, want terminal skipped inactive occurrence", released)
+	}
+}
+
+func TestTransitionToPendingSkipsRetiredOccurrence(t *testing.T) {
+	ctx := context.Background()
+	state := openTestStore(t)
+	now := testNow()
+	applyOccurrenceScan(t, ctx, state, "downloads", []ScanEntry{occurrenceFileEntry("Movie.mkv", 100, now)}, now)
+	job, err := state.LeaseNextJob(ctx, "worker-transition", now.Add(time.Minute), now)
+	if err != nil || job == nil {
+		t.Fatalf("LeaseNextJob() = %+v, err %v", job, err)
+	}
+	if _, err := state.TransitionJob(ctx, job.ID, domain.JobStateRunning, now, ""); err != nil {
+		t.Fatalf("transition running: %v", err)
+	}
+	applyOccurrenceScan(t, ctx, state, "downloads", nil, now.Add(30*time.Second))
+	if _, err := state.TransitionJob(ctx, job.ID, domain.JobStateRetrying, now.Add(40*time.Second), "encode failed"); err != nil {
+		t.Fatalf("transition retrying: %v", err)
+	}
+
+	transitioned, err := state.TransitionJob(ctx, job.ID, domain.JobStatePending, now.Add(45*time.Second), "retry pending")
+	if err != nil {
+		t.Fatalf("TransitionJob(pending) error = %v", err)
+	}
+	if transitioned.State != domain.JobStateSkipped || transitioned.LastError != inactiveOccurrenceJobError || transitioned.CompletedAt == nil {
+		t.Fatalf("transitioned job = %+v, want terminal skipped inactive occurrence", transitioned)
+	}
+}
+
+func TestRecoverStaleJobSkipsRetiredOccurrence(t *testing.T) {
+	ctx := context.Background()
+	state := openTestStore(t)
+	now := testNow()
+	applyOccurrenceScan(t, ctx, state, "downloads", []ScanEntry{occurrenceFileEntry("Movie.mkv", 100, now)}, now)
+	job, attempt := leaseAndStartAttempt(t, ctx, state, now, "worker-recovery")
+	applyOccurrenceScan(t, ctx, state, "downloads", nil, now.Add(30*time.Second))
+
+	recovered, err := state.RecoverStaleJobs(ctx, 3, now.Add(2*time.Minute))
+	if err != nil {
+		t.Fatalf("RecoverStaleJobs() error = %v", err)
+	}
+	if recovered != 1 {
+		t.Fatalf("recovered = %d, want 1 skipped job", recovered)
+	}
+	job, err = state.GetJob(ctx, job.ID)
+	if err != nil || job.State != domain.JobStateSkipped || job.LastError != inactiveOccurrenceJobError || job.CompletedAt == nil {
+		t.Fatalf("recovered job = %+v, err %v, want terminal skipped inactive occurrence", job, err)
+	}
+	attempt, err = state.GetAttempt(ctx, attempt.ID)
+	if err != nil || attempt.State != domain.AttemptStateCanceled {
+		t.Fatalf("recovered attempt = %+v, err %v, want canceled", attempt, err)
 	}
 }
 
@@ -242,7 +394,10 @@ func TestUnstableEntryIsSeenWithoutPersistence(t *testing.T) {
 
 	stable := occurrenceFileEntry("Movie.mkv", 100, now)
 	applyOccurrenceScan(t, ctx, state, "downloads", []ScanEntry{stable}, now.Add(time.Minute))
-	applyOccurrenceScan(t, ctx, state, "downloads", []ScanEntry{unstable}, now.Add(2*time.Minute))
+	unstableResult := applyOccurrenceScan(t, ctx, state, "downloads", []ScanEntry{unstable}, now.Add(2*time.Minute))
+	if unstableResult.Sources != 0 || unstableResult.Assets != 0 || unstableResult.EnqueuedJobs != 0 || unstableResult.ExistingJobs != 0 {
+		t.Fatalf("existing unstable result = %+v, want zero persisted counts and work", unstableResult)
+	}
 	source, ok, err := state.FindMediaSourceByPath(ctx, "downloads", "Movie.mkv")
 	if err != nil || !ok || !source.Current || source.Status != domain.MediaSourceActive {
 		t.Fatalf("existing source after unstable scan = %+v, ok=%t err=%v", source, ok, err)

@@ -462,25 +462,29 @@ func (f *fakeStore) BeginLibraryScan(_ context.Context, libraryName domain.Libra
 
 func (f *fakeStore) ApplyLibraryScan(_ context.Context, _ store.ScanToken, input store.ApplyScanInput) (store.ApplyScanResult, error) {
 	result := store.ApplyScanResult{Applied: true}
+	seenSources := make(map[string]struct{})
 	for _, entry := range input.Entries {
 		if !entry.Persist {
 			continue
 		}
 		sourceKey := string(input.LibraryName) + "\x00" + entry.SourceRelativePath
+		if _, seen := seenSources[sourceKey]; !seen {
+			seenSources[sourceKey] = struct{}{}
+			result.Sources++
+		}
 		source, exists := f.sourceByPath[sourceKey]
 		if !exists {
 			source = domain.MediaSource{ID: f.nextSourceID, LibraryName: input.LibraryName, Kind: entry.SourceKind, RelativePath: entry.SourceRelativePath, Generation: 1, Current: true, Status: domain.MediaSourceActive, Fingerprint: entry.SourceFingerprint}
 			f.nextSourceID++
 			f.sourceByPath[sourceKey] = source
-			result.Sources++
 		}
+		result.Assets++
 		assetKey := sourceAssetKey(source.ID, entry.AssetRelativePath)
 		asset, exists := f.assetByPath[assetKey]
 		if !exists {
 			asset = domain.MediaAsset{ID: f.nextAssetID, SourceID: source.ID, RelativePath: entry.AssetRelativePath, Generation: 1, Current: true, Role: entry.AssetRole, Status: domain.MediaAssetActive, Fingerprint: entry.AssetFingerprint}
 			f.nextAssetID++
 			f.assetByPath[assetKey] = asset
-			result.Assets++
 		}
 		if !entry.Enqueue {
 			continue

@@ -98,6 +98,7 @@ SELECT next_token, applied_token FROM library_scans WHERE library_name = ?
 		if !group.persist {
 			continue
 		}
+		result.Sources++
 
 		if found && (source.Kind != group.kind || source.Kind == domain.SourceKindFile && !fingerprintsEqual(source.Fingerprint, group.fingerprint)) {
 			if err := retireSourceTx(ctx, tx, source.ID, now); err != nil {
@@ -118,7 +119,6 @@ SELECT next_token, applied_token FROM library_scans WHERE library_name = ?
 			if err != nil {
 				return ApplyScanResult{}, err
 			}
-			result.Sources++
 		} else {
 			if _, err := tx.ExecContext(ctx, `
 UPDATE media_sources
@@ -143,6 +143,7 @@ WHERE id = ?
 			if !entry.Persist {
 				continue
 			}
+			result.Assets++
 			asset, assetFound, err := currentAssetTx(ctx, tx, source.ID, assetPath)
 			if err != nil {
 				return ApplyScanResult{}, err
@@ -166,7 +167,6 @@ WHERE id = ?
 				if err != nil {
 					return ApplyScanResult{}, err
 				}
-				result.Assets++
 			} else {
 				if _, err := tx.ExecContext(ctx, `
 UPDATE media_assets
