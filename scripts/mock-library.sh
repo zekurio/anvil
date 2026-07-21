@@ -157,6 +157,7 @@ write_config() {
 [daemon]
 temp_dir = "$root/tmp"
 store_path = "$root/state/anvil.db"
+control_socket = "$root/state/anvild.sock"
 worker_count = 1
 total_threads = 2
 max_attempts = 1
@@ -316,9 +317,19 @@ run_smoke() {
     > "$root/logs/anvild.log" 2>&1 &
   daemon_pid="$!"
 
+  wait_for_control_api "$root/state/anvild.sock"
+  go run ./cmd/anvilctl --socket "$root/state/anvild.sock" status --json \
+    | grep -q '"state": "ready"'
+
   wait_for_jobs "$root" "$timeout_seconds"
 
+  go run ./cmd/anvilctl --socket "$root/state/anvild.sock" job list \
+    --absolute-path "$root/imports/tv/Mock.Download.S01/Mock.Download.S01E01/Mock Download S01E01.mkv" \
+    --current-only --json \
+    | grep -q '"matched": 1'
+
   cleanup_processes
+  rm -f "$root/state/anvild.sock"
   trap - EXIT INT TERM
 
   echo "Mock smoke completed."
@@ -332,6 +343,7 @@ clean_run_outputs() {
     "$root/state/anvil.db" \
     "$root/state/anvil.db-shm" \
     "$root/state/anvil.db-wal" \
+    "$root/state/anvild.sock" \
     "$root/media/movies/Mock Movie (2026)/Mock Movie (2026).anvil.mkv" \
     "$root/media/tv/Mock Anime/Season 01/Mock Anime S01E01.anvil.mkv"
   rm -rf \
@@ -347,6 +359,18 @@ wait_for_arr() {
   until curl -fsS "http://$addr/healthz" >/dev/null 2>&1; do
     if [ "$SECONDS" -ge "$deadline" ]; then
       echo "Mock Arr server did not become ready." >&2
+      exit 1
+    fi
+    sleep 0.25
+  done
+}
+
+wait_for_control_api() {
+  local socket_path="$1"
+  local deadline=$((SECONDS + 15))
+  until [ -S "$socket_path" ]; do
+    if [ "$SECONDS" -ge "$deadline" ]; then
+      echo "Anvil control API did not create $socket_path." >&2
       exit 1
     fi
     sleep 0.25

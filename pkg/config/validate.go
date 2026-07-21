@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -20,6 +21,11 @@ func (c Config) Validate() error {
 	}
 	if strings.TrimSpace(c.Daemon.StorePath) == "" {
 		problems = append(problems, "daemon.store_path is required")
+	}
+	if strings.TrimSpace(c.Daemon.ControlSocket) == "" {
+		problems = append(problems, "daemon.control_socket is required")
+	} else if !filepath.IsAbs(c.Daemon.ControlSocket) {
+		problems = append(problems, "daemon.control_socket must be an absolute path")
 	}
 	if c.Daemon.WorkerCount < 1 {
 		problems = append(problems, "daemon.worker_count must be at least 1")

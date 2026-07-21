@@ -26,6 +26,9 @@ path = "/srv/media/movies"
 	if cfg.Daemon.StorePath == "" {
 		t.Fatal("expected daemon store_path default")
 	}
+	if cfg.Daemon.ControlSocket == "" || !filepath.IsAbs(cfg.Daemon.ControlSocket) {
+		t.Fatalf("daemon control_socket default = %q, want absolute path", cfg.Daemon.ControlSocket)
+	}
 	if cfg.Daemon.WorkerCount < 1 {
 		t.Fatalf("expected worker_count default, got %d", cfg.Daemon.WorkerCount)
 	}
