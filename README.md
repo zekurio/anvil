@@ -106,7 +106,17 @@ Profiles strip per-stream `title` tags by default with `profiles.<name>.metadata
 
 Before replace or handoff, Anvil probes the staged output and records diagnostics against the resolved job context: probe success, duration tolerance, video codec/pixel-format intent, Anvil encoded or processed markers, audio/subtitle stream counts, HDR color metadata preservation, Dolby Vision preservation when enabled, and observed size savings. These observations are useful for inspection, but ab-av1 search is the video-encode acceptance authority; Anvil does not reject an encode because its own diagnostic checks disagree. `profiles.<name>.validation.duration_tolerance_seconds` can override the default two-second duration tolerance.
 
-Useful operator commands:
+`anvild` exposes a versioned JSON control API on `daemon.control_socket`; the NixOS module uses `/run/anvil/anvild.sock`. `anvilctl` is a pure client of that socket and never opens SQLite directly:
+
+```sh
+anvilctl status --json
+anvilctl job list --library sonarr-anime-downloads --path 'Release/Episode.mkv' --current-only --json
+anvilctl job list --absolute-path '/mnt/downloads/complete/Release/Episode.mkv' --current-only --json
+```
+
+Job path filters are exact. `--path` is library-relative and requires `--library`; `--absolute-path` resolves exact source, asset, planned handoff, journaled destination, and package destination-directory paths across configured libraries without requiring the path to still exist. Zero, one, or multiple jobs are returned without fuzzy selection. The API reports factual daemon, occurrence, job, heartbeat, lease, and publication state only; it does not emit workflow policy such as `wait_recommended`.
+
+Other operator commands:
 
 ```sh
 go run ./cmd/anvild scan --config examples/anvil.toml
@@ -137,7 +147,7 @@ go run ./cmd/anvild force-occurrence --config examples/anvil.toml --library usen
 
 Daemon scans emit a structured `WARN` with `event=queue_stall_detected`, `metric=anvil_queue_stalled`, and `value=1` when a scan finds sources and existing jobs but enqueues nothing while no workers are active. The warning is suppressed while work is active and while downloads are still waiting for their stability window.
 
-Send `SIGHUP` to reload config without restarting. Reload can update libraries, flows, profiles, Arr settings, worker count, thread count, daemon and library scan intervals, filesystem event debounce, retry policy, shutdown policy, and log level. Changes to `daemon.store_path` or `daemon.temp_dir` are rejected and require a restart.
+Send `SIGHUP` to reload config without restarting. Reload can update libraries, flows, profiles, Arr settings, worker count, thread count, daemon and library scan intervals, filesystem event debounce, retry policy, shutdown policy, and log level. Changes to `daemon.store_path`, `daemon.temp_dir`, or `daemon.control_socket` are rejected and require a restart.
 
 `preflight` is read-only: it does not migrate or mutate SQLite and does not create, copy, move, delete, or write media, staging, or log files. It reports scan candidates, current source and asset generations, whether a scan would retain an occurrence or create the next generation, existing job status, resolved flow/profile steps, staging/output paths with `job-<new>-attempt-<new>` placeholders where needed, planned publish and cleanup actions, and warnings for destructive settings. Search policy output is described as `ab-av1`/CRF-search driven; when search decides AV1 fitting is not worthwhile, the preflight plan shows whether Anvil will continue as video-copy/remux/metadata processing or force an encode with the lowest tested CRF.
 
@@ -149,9 +159,10 @@ With Nix:
 nix develop --no-pure-eval
 nix build .#default
 nix run .#anvild -- --help
+nix run .#anvilctl -- status --json
 ```
 
-The flake exposes `packages.default`, `apps.default`, `apps.anvild`, and `nixosModules.anvil`. The package and dev shell prefer `jellyfin-ffmpeg` on Linux when nixpkgs provides it, and fall back to stock ffmpeg elsewhere. The NixOS module adds Jellyfin ffmpeg, `ab-av1`, `dovi-tool`, and MKVToolNix to the service PATH by default, writes the generated TOML to `/etc/anvil/anvil.toml`, creates `/var/lib/anvil/tmp` with `StateDirectory`, hardens the systemd service with a writable path allowlist, and exposes `services.anvil.service.*` knobs for nice/IO/CPU weighting and extra writable paths.
+The flake exposes `packages.default`, `apps.default`, `apps.anvild`, `apps.anvilctl`, and `nixosModules.anvil`. The package and dev shell prefer `jellyfin-ffmpeg` on Linux when nixpkgs provides it, and fall back to stock ffmpeg elsewhere. The NixOS module adds Jellyfin ffmpeg, `ab-av1`, `dovi-tool`, and MKVToolNix to the service PATH by default, writes the generated TOML to `/etc/anvil/anvil.toml`, creates `/var/lib/anvil/tmp` with `StateDirectory`, exposes the control socket from `RuntimeDirectory`, hardens the systemd service with a writable path allowlist, and exposes `services.anvil.service.*` knobs for nice/IO/CPU weighting and extra writable paths.
 
 With direnv:
 

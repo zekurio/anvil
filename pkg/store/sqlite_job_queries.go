@@ -110,6 +110,33 @@ SELECT EXISTS (
 	return exists, nil
 }
 
+func (s *SQLiteStore) CountJobsByState(ctx context.Context) (counts map[domain.JobState]int64, err error) {
+	rows, err := s.db.QueryContext(ctx, `
+SELECT state, COUNT(*)
+FROM jobs
+GROUP BY state
+ORDER BY state
+`)
+	if err != nil {
+		return nil, fmt.Errorf("count jobs by state: %w", err)
+	}
+	defer closeRows(rows, &err, "close job state counts")
+
+	counts = make(map[domain.JobState]int64)
+	for rows.Next() {
+		var state domain.JobState
+		var count int64
+		if err := rows.Scan(&state, &count); err != nil {
+			return nil, fmt.Errorf("scan job state count: %w", err)
+		}
+		counts[state] = count
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate job state counts: %w", err)
+	}
+	return counts, nil
+}
+
 func (s *SQLiteStore) ListJobs(ctx context.Context, filter JobListFilter) (jobs []JobSummary, err error) {
 	query := `
 SELECT j.id, j.slug, j.source_id, j.asset_id, j.library_name, j.priority, j.state,

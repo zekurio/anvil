@@ -10,6 +10,7 @@ test:
 
 build:
 	go build -o bin/anvild ./cmd/anvild
+	go build -o bin/anvilctl ./cmd/anvilctl
 
 lint:
 	$(NIX_DEVELOP) golangci-lint run ./...

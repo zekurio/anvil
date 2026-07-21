@@ -20,6 +20,7 @@ import (
 	"github.com/zekurio/anvil/pkg/crop"
 	"github.com/zekurio/anvil/pkg/domain"
 	"github.com/zekurio/anvil/pkg/ffmpeg"
+	"github.com/zekurio/anvil/pkg/mediapath"
 	"github.com/zekurio/anvil/pkg/pipeline"
 	"github.com/zekurio/anvil/pkg/probe"
 	"github.com/zekurio/anvil/pkg/process"
@@ -101,7 +102,7 @@ func (r Runner) Run(ctx context.Context, assignment scheduler.Assignment) error 
 		}
 	}
 
-	inputPath := InputPath(library.Path, source, asset)
+	inputPath := mediapath.Input(library.Path, source, asset)
 	jobContext := &pipeline.JobContext{
 		Job:       assignment.Job,
 		Attempt:   attempt,
@@ -267,13 +268,6 @@ func DefaultPipeline(tempDir string, journal replacepkg.PublishJournal) pipeline
 			staging.CleanupBlock{Manager: stageManager},
 		),
 	}
-}
-
-func InputPath(root string, source domain.MediaSource, asset domain.MediaAsset) string {
-	if source.Kind == domain.SourceKindPackage && asset.RelativePath != "" {
-		return filepath.Join(root, filepath.FromSlash(source.RelativePath), filepath.FromSlash(asset.RelativePath))
-	}
-	return filepath.Join(root, filepath.FromSlash(source.RelativePath))
 }
 
 func (r Runner) verifyOccurrenceInput(inputPath string, source domain.MediaSource, asset domain.MediaAsset) error {
