@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -337,6 +338,7 @@ type shutdownRequest struct {
 }
 
 func runDaemon(ctx context.Context, cfg config.Config, opts options) error {
+	startedAt := time.Now().UTC()
 	runtimeCfg := newRuntimeConfig(cfg)
 	serviceCtx, stopServices, workerCtx, stopWorkers := daemonContexts(ctx)
 	defer stopServices()
@@ -383,17 +385,40 @@ func runDaemon(ctx context.Context, cfg config.Config, opts options) error {
 
 	runConfiguredStagingCleanup(cfg)
 
-	slog.Info("starting anvild", "mode", mode, "config", configPathLabel(opts.configPath), "temp_dir", cfg.Daemon.TempDir, "store", cfg.Daemon.StorePath, "workers", cfg.Daemon.WorkerCount, "threads", cfg.Daemon.TotalThreads, "filesystem_event_debounce", cfg.FilesystemEventDebounce(), "shutdown_policy", cfg.Daemon.ShutdownPolicy, "shutdown_timeout", cfg.Daemon.ShutdownTimeout, "log_level", cfg.Daemon.LogLevel, "recovered_jobs", recovered)
+	slog.Info("starting anvild", "mode", mode, "config", configPathLabel(opts.configPath), "temp_dir", cfg.Daemon.TempDir, "store", cfg.Daemon.StorePath, "control_socket", cfg.Daemon.ControlSocket, "workers", cfg.Daemon.WorkerCount, "threads", cfg.Daemon.TotalThreads, "filesystem_event_debounce", cfg.FilesystemEventDebounce(), "shutdown_policy", cfg.Daemon.ShutdownPolicy, "shutdown_timeout", cfg.Daemon.ShutdownTimeout, "log_level", cfg.Daemon.LogLevel, "recovered_jobs", recovered)
 	logConfiguredWork(cfg)
 
 	var wg sync.WaitGroup
+	var plannerRef atomic.Pointer[scheduler.Scheduler]
+	control, err := startControlAPI(serviceCtx, &wg, runtimeCfg.Get, state, func() int {
+		planner := plannerRef.Load()
+		if planner == nil {
+			return 0
+		}
+		return planner.ActiveCount()
+	}, startedAt)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err := control.cleanup(); err != nil {
+			slog.Error("clean up control API", "error", err)
+		}
+	}()
 	startReloadLoop(serviceCtx, &wg, opts, runtimeCfg, reloadSignals)
 	runInitialScan(serviceCtx, runtimeCfg.Get(), state)
 	startRecoveryLoop(serviceCtx, &wg, runtimeCfg.Get, state)
 	planner := startSchedulerLoop(serviceCtx, workerCtx, &wg, runtimeCfg.Get, state)
+	plannerRef.Store(planner)
 	startScannerLoop(serviceCtx, &wg, runtimeCfg.Get, state, planner.ActiveCount)
 
-	request := <-shutdown
+	var request shutdownRequest
+	select {
+	case request = <-shutdown:
+	case err := <-control.errors:
+		request.err = fmt.Errorf("control API stopped: %w", err)
+		stopServices()
+	}
 	shutdownCfg := runtimeCfg.Get()
 	if request.err != nil {
 		slog.Info("stopping anvild", "reason", request.err, "policy", shutdownCfg.Daemon.ShutdownPolicy)
@@ -456,7 +481,7 @@ func waitForShutdown(done <-chan struct{}, signals <-chan os.Signal, timeout tim
 }
 
 func runCheckConfig(cfg config.Config, opts options) error {
-	slog.Info("config ok", "config", configPathLabel(opts.configPath), "libraries", len(cfg.Libraries), "flows", len(cfg.Flows), "profiles", len(cfg.Profiles), "log_level", cfg.Daemon.LogLevel)
+	slog.Info("config ok", "config", configPathLabel(opts.configPath), "libraries", len(cfg.Libraries), "flows", len(cfg.Flows), "profiles", len(cfg.Profiles), "control_socket", cfg.Daemon.ControlSocket, "log_level", cfg.Daemon.LogLevel)
 	return nil
 }
 
@@ -848,6 +873,9 @@ func validateReload(current config.Config, next config.Config) error {
 	}
 	if current.Daemon.TempDir != next.Daemon.TempDir {
 		return fmt.Errorf("daemon.temp_dir changes require restart: %q -> %q", current.Daemon.TempDir, next.Daemon.TempDir)
+	}
+	if current.Daemon.ControlSocket != next.Daemon.ControlSocket {
+		return fmt.Errorf("daemon.control_socket changes require restart: %q -> %q", current.Daemon.ControlSocket, next.Daemon.ControlSocket)
 	}
 	return nil
 }

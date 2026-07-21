@@ -137,6 +137,7 @@ let
     daemon = {
       temp_dir = cfg.daemon.tempDir;
       store_path = cfg.daemon.storePath;
+      control_socket = cfg.daemon.controlSocket;
       worker_count = cfg.daemon.workerCount;
       total_threads = cfg.daemon.totalThreads;
       max_attempts = cfg.daemon.maxAttempts;
@@ -163,9 +164,11 @@ let
     else
       pkgs.ffmpeg;
   storeDirectory = builtins.dirOf cfg.daemon.storePath;
+  controlSocketDirectory = builtins.dirOf cfg.daemon.controlSocket;
   daemonDirectoryPaths = lib.unique [
     cfg.daemon.tempDir
     storeDirectory
+    controlSocketDirectory
   ];
   tmpfilesUser = if cfg.user == null then "root" else cfg.user;
   tmpfilesGroup = if cfg.group == null then "root" else cfg.group;
@@ -180,6 +183,7 @@ let
     [
       cfg.daemon.tempDir
       storeDirectory
+      controlSocketDirectory
     ]
     ++ libraryWritePaths
     ++ handoffWritePaths
@@ -712,6 +716,11 @@ in
         default = "/var/lib/anvil/anvil.db";
         description = "SQLite store path.";
       };
+      controlSocket = mkOption {
+        type = types.str;
+        default = "/run/anvil/anvild.sock";
+        description = "Unix socket used by anvilctl and other control API clients.";
+      };
       workerCount = mkOption {
         type = types.int;
         default = 1;
@@ -901,6 +910,7 @@ in
           Restart = "on-failure";
           StateDirectory = [ "anvil" "anvil/tmp" ];
           RuntimeDirectory = "anvil";
+          RuntimeDirectoryMode = "0750";
           UMask = "0027";
           ReadWritePaths = readWritePaths;
           NoNewPrivileges = true;
