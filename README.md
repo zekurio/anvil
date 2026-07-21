@@ -123,7 +123,19 @@ go run ./cmd/anvild retry --config examples/anvil.toml 42
 go run ./cmd/anvild retry --config examples/anvil.toml --failed --library movies
 go run ./cmd/anvild recover --config examples/anvil.toml
 go run ./cmd/anvild cleanup-staging --config examples/anvil.toml --older-than 24h --dry-run
+go run ./cmd/anvild backup --config examples/anvil.toml /srv/backups/anvil-$(date +%F).db
+go run ./cmd/anvild prune-jobs --config examples/anvil.toml --library movies --state complete,failed
+go run ./cmd/anvild prune-jobs --config examples/anvil.toml --library movies --state complete,failed --apply
+go run ./cmd/anvild force-occurrence --config examples/anvil.toml --library usenet-tv 'Release/Episode.mkv'
 ```
+
+`backup` creates a consistent SQLite snapshot with `VACUUM INTO`, so committed data still present in the live WAL is included. The destination directory must already exist. Anvil writes a private sibling temporary database, verifies it with `PRAGMA integrity_check`, and installs it without replacement; it refuses URI destinations, the live database path, and every destination that already exists.
+
+`prune-jobs` only considers terminal jobs (`complete`, `failed`, or `skipped`) whose source occurrence is already marked `missing`. It preserves active jobs, jobs for present sources, and the source records themselves. The command is a dry run unless `--apply` is given, and reports matched jobs, affected sources, deletions, and per-state counts. Use `--library` and `--state` to narrow the transaction before applying it.
+
+`force-occurrence` resolves one exact library-relative media path through the configured scan rules, then explicitly creates and enqueues the next occurrence. It refuses absolute or escaping paths, missing or ambiguous targets, ignored media, unstable downloads, non-enqueueable assets, and any target with active work. File targets advance the source generation; package targets advance only the selected asset generation. Use this only when cleanup is disabled and an unchanged retained path intentionally represents new content that automatic discovery cannot distinguish.
+
+Daemon scans emit a structured `WARN` with `event=queue_stall_detected`, `metric=anvil_queue_stalled`, and `value=1` when a scan finds sources and existing jobs but enqueues nothing while no workers are active. The warning is suppressed while work is active and while downloads are still waiting for their stability window.
 
 Send `SIGHUP` to reload config without restarting. Reload can update libraries, flows, profiles, Arr settings, worker count, thread count, daemon and library scan intervals, filesystem event debounce, retry policy, shutdown policy, and log level. Changes to `daemon.store_path` or `daemon.temp_dir` are rejected and require a restart.
 

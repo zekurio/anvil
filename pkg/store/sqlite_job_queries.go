@@ -83,6 +83,33 @@ LIMIT 1
 	return scanJob(row)
 }
 
+func (s *SQLiteStore) HasViableQueueWorkForLibrary(ctx context.Context, libraryName domain.LibraryName) (bool, error) {
+	if strings.TrimSpace(string(libraryName)) == "" {
+		return false, errors.New("library name is required")
+	}
+	var exists bool
+	if err := s.db.QueryRowContext(ctx, `
+SELECT EXISTS (
+	SELECT 1
+	FROM jobs j
+	JOIN media_sources s ON s.id = j.source_id
+	LEFT JOIN media_assets a ON a.id = j.asset_id
+	WHERE j.library_name = ?
+		AND j.state IN (?, ?, ?)
+		AND s.is_current = 1 AND s.status = ?
+		AND (j.asset_id IS NULL OR (
+			a.source_id = s.id AND a.is_current = 1 AND a.status = ?
+		))
+	LIMIT 1
+)
+`, string(libraryName),
+		string(domain.JobStatePending), string(domain.JobStateLeased), string(domain.JobStateRetrying),
+		string(domain.MediaSourceActive), string(domain.MediaAssetActive)).Scan(&exists); err != nil {
+		return false, fmt.Errorf("check viable queue work for library %q: %w", libraryName, err)
+	}
+	return exists, nil
+}
+
 func (s *SQLiteStore) ListJobs(ctx context.Context, filter JobListFilter) (jobs []JobSummary, err error) {
 	query := `
 SELECT j.id, j.slug, j.source_id, j.asset_id, j.library_name, j.priority, j.state,
