@@ -26,6 +26,7 @@ type Store interface {
 	GetPublishOperation(context.Context, domain.JobID) (replacepkg.PublishOperation, bool, error)
 	CountJobsByState(context.Context) (map[domain.JobState]int64, error)
 	CancelJobs(context.Context, store.CancelJobsInput) ([]store.CancelJobResult, error)
+	LatestAttemptArtifacts(context.Context, string, []domain.JobID) (map[domain.JobID][]domain.AttemptEvent, error)
 }
 
 type Service struct {
@@ -107,8 +108,12 @@ func (s Service) ListJobs(ctx context.Context, query JobQuery) (JobListResponse,
 		if relativePath != "" && !keys.matchesRelative(relativePath) {
 			continue
 		}
-		if absolutePath != "" && !keys.matchesAbsolute(absolutePath) {
-			continue
+		if absolutePath != "" {
+			sides, ok := keys.matchesAbsolute(absolutePath)
+			if !ok {
+				continue
+			}
+			item.MatchedOn = sides
 		}
 		response.Matched++
 		if query.Limit > 0 && len(response.Jobs) >= query.Limit {
@@ -117,7 +122,102 @@ func (s Service) ListJobs(ctx context.Context, query JobQuery) (JobListResponse,
 		}
 		response.Jobs = append(response.Jobs, item)
 	}
+	if absolutePath != "" && response.Matched == 0 {
+		response.PathOutsideLibraries = !pathUnderAnyLibrary(cfg, absolutePath)
+	}
+	if query.WithSelection {
+		if err := s.attachStreamSelections(ctx, response.Jobs); err != nil {
+			return JobListResponse{}, err
+		}
+	}
 	return response, nil
+}
+
+// pathUnderAnyLibrary reports whether an absolute path lies under a configured
+// library root or one of its handoff destinations. A path under none of them
+// almost certainly cannot match a job, which is a different answer from "no job
+// matched" and has to stay distinguishable from it.
+//
+// Containment is lexical, matching how paths are compared everywhere else here,
+// so the flag can never contradict matched_on.
+func pathUnderAnyLibrary(cfg config.Config, absolutePath string) bool {
+	for name := range cfg.Libraries {
+		library, ok := cfg.FindLibrary(domain.LibraryName(name))
+		if !ok {
+			continue
+		}
+		if pathUnderRoot(library.Path, absolutePath) {
+			return true
+		}
+		if pathUnderRoot(library.Download.HandoffPath, absolutePath) {
+			return true
+		}
+	}
+	return false
+}
+
+// assetKeyPath drops the asset key for a job that has no asset, so a match can
+// never report an "asset" side the response itself omits.
+func assetKeyPath(asset domain.MediaAsset, assetAbsolute string) string {
+	if asset.ID == 0 {
+		return ""
+	}
+	return assetAbsolute
+}
+
+func pathUnderRoot(root, absolutePath string) bool {
+	root = strings.TrimSpace(root)
+	if root == "" {
+		return false
+	}
+	root = filepath.Clean(root)
+	if absolutePath == root {
+		return true
+	}
+	relative, err := filepath.Rel(root, absolutePath)
+	if err != nil {
+		return false
+	}
+	return relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator))
+}
+
+// attachStreamSelections fills in the recorded stream selection decisions for
+// the listed jobs. A job that recorded none keeps a nil slice, so an absent
+// decision stays distinguishable from one that kept every stream.
+func (s Service) attachStreamSelections(ctx context.Context, jobs []JobResponse) error {
+	if len(jobs) == 0 {
+		return nil
+	}
+	ids := make([]domain.JobID, 0, len(jobs))
+	for _, job := range jobs {
+		ids = append(ids, domain.JobID(job.ID))
+	}
+	events, err := s.Store.LatestAttemptArtifacts(ctx, pipeline.StreamSelectionArtifact, ids)
+	if err != nil {
+		return fmt.Errorf("load stream selections: %w", err)
+	}
+	for i, job := range jobs {
+		recorded := events[domain.JobID(job.ID)]
+		if len(recorded) == 0 {
+			continue
+		}
+		selections := make([]StreamSelectionResponse, 0, len(recorded))
+		for _, event := range recorded {
+			selection := StreamSelectionResponse{AttemptID: int64(event.AttemptID), RecordedAt: event.CreatedAt}
+			decision, err := pipeline.DecodeStreamSelection(event.Payload)
+			if err != nil {
+				// A decision Anvil cannot read is reported as unreadable rather
+				// than omitted, so a consumer never reads it as "nothing here".
+				// The decision itself stays absent for the same reason.
+				selection.DecisionError = err.Error()
+			} else {
+				selection.Decision = &decision
+			}
+			selections = append(selections, selection)
+		}
+		jobs[i].StreamSelection = selections
+	}
+	return nil
 }
 
 // CancelJobs cancels every job the equivalent job list would return. It
@@ -202,9 +302,16 @@ func missingJobIDs(requested []int64, matched map[domain.JobID]struct{}) string 
 	return strings.Join(missing, ", ")
 }
 
+// absolutePathKey is one absolute path a job answers to, tagged with which of
+// the job's paths it is so a match can report the side it hit.
+type absolutePathKey struct {
+	path string
+	side PathMatchSide
+}
+
 type jobPathKeys struct {
 	relative []string
-	absolute []string
+	absolute []absolutePathKey
 }
 
 func (k jobPathKeys) matchesRelative(target string) bool {
@@ -216,13 +323,39 @@ func (k jobPathKeys) matchesRelative(target string) bool {
 	return false
 }
 
-func (k jobPathKeys) matchesAbsolute(target string) bool {
+// matchesAbsolute reports every side that matched, in the order the keys were
+// built. One path is legitimately several sides at once: an in-place
+// replacement writes the converted file back over its own source, so returning
+// a single side would report that output as "not a destination".
+func (k jobPathKeys) matchesAbsolute(target string) ([]PathMatchSide, bool) {
+	var sides []PathMatchSide
 	for _, candidate := range k.absolute {
-		if candidate == target {
-			return true
+		if candidate.path == target {
+			sides = append(sides, candidate.side)
 		}
 	}
-	return false
+	return sides, len(sides) > 0
+}
+
+// uniqueAbsoluteKeys normalizes paths and drops empty ones and exact repeats of
+// the same path and side. A path repeated under a different side is kept, so a
+// match can report all of them.
+func uniqueAbsoluteKeys(keys ...absolutePathKey) []absolutePathKey {
+	result := make([]absolutePathKey, 0, len(keys))
+	seen := make(map[absolutePathKey]struct{}, len(keys))
+	for _, key := range keys {
+		key.path = strings.TrimSpace(key.path)
+		if key.path == "" {
+			continue
+		}
+		key.path = filepath.Clean(key.path)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		result = append(result, key)
+	}
+	return result
 }
 
 func (s Service) jobResponse(ctx context.Context, cfg config.Config, summary store.JobSummary) (JobResponse, jobPathKeys, bool, error) {
@@ -276,20 +409,28 @@ func (s Service) jobResponse(ctx context.Context, cfg config.Config, summary sto
 			cleanStoredRelative(source.RelativePath),
 			cleanStoredRelative(filepath.ToSlash(mediapath.Relative(source, asset))),
 		),
-		absolute: uniquePaths(sourceAbsolute, assetAbsolute, item.DestinationPath),
+		absolute: uniqueAbsoluteKeys(
+			absolutePathKey{path: sourceAbsolute, side: PathMatchSource},
+			absolutePathKey{path: assetKeyPath(asset, assetAbsolute), side: PathMatchAsset},
+			absolutePathKey{path: item.DestinationPath, side: PathMatchDestination},
+		),
 	}
 	if source.Kind == domain.SourceKindPackage && item.DestinationPath != "" {
-		packageDestinations := append(keys.absolute, filepath.Dir(item.DestinationPath))
+		packageDestinations := append(keys.absolute,
+			absolutePathKey{path: filepath.Dir(item.DestinationPath), side: PathMatchDestinationDirectory},
+		)
 		if hasOperation && strings.TrimSpace(operation.HandoffRoot) != "" {
-			packageDestinations = append(packageDestinations,
-				filepath.Join(operation.HandoffRoot, filepath.FromSlash(source.RelativePath)),
-			)
+			packageDestinations = append(packageDestinations, absolutePathKey{
+				path: filepath.Join(operation.HandoffRoot, filepath.FromSlash(source.RelativePath)),
+				side: PathMatchDestinationDirectory,
+			})
 		} else if !hasOperation && libraryOK && library.Download.PreserveRelativePath && strings.TrimSpace(library.Download.HandoffPath) != "" {
-			packageDestinations = append(packageDestinations,
-				filepath.Join(library.Download.HandoffPath, filepath.FromSlash(source.RelativePath)),
-			)
+			packageDestinations = append(packageDestinations, absolutePathKey{
+				path: filepath.Join(library.Download.HandoffPath, filepath.FromSlash(source.RelativePath)),
+				side: PathMatchDestinationDirectory,
+			})
 		}
-		keys.absolute = uniquePaths(packageDestinations...)
+		keys.absolute = uniqueAbsoluteKeys(packageDestinations...)
 	}
 	current := source.Current && (asset.ID == 0 || asset.Current)
 	return item, keys, current, nil

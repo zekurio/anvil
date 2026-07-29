@@ -193,3 +193,91 @@ WHERE id = ?
 `, int64(id))
 	return scanAttempt(row)
 }
+
+// maxArtifactJobIDsPerQuery bounds how many job ids are bound in one statement.
+// SQLite caps bound parameters, and exceeding that cap fails the whole listing
+// rather than degrading, so the query is chunked well below the limit.
+const maxArtifactJobIDsPerQuery = 500
+
+// LatestAttemptArtifacts returns the named artifact events belonging to the most
+// recent attempt of each job that recorded any. Jobs without a matching event
+// are absent from the result, which is what lets a caller tell "nothing was
+// recorded" apart from "recorded, and it kept everything".
+//
+// It reads by name rather than by meaning so the store keeps no knowledge of
+// what any particular artifact payload contains.
+func (s *SQLiteStore) LatestAttemptArtifacts(ctx context.Context, name string, jobIDs []domain.JobID) (map[domain.JobID][]domain.AttemptEvent, error) {
+	// A single IN list is set membership, but chunking is not: a repeated id
+	// split across two chunks would append its events twice. Deduplicate so the
+	// result never depends on the caller's ordering.
+	unique := make([]domain.JobID, 0, len(jobIDs))
+	seen := make(map[domain.JobID]struct{}, len(jobIDs))
+	for _, jobID := range jobIDs {
+		if _, ok := seen[jobID]; ok {
+			continue
+		}
+		seen[jobID] = struct{}{}
+		unique = append(unique, jobID)
+	}
+	result := make(map[domain.JobID][]domain.AttemptEvent, len(unique))
+	for start := 0; start < len(unique); start += maxArtifactJobIDsPerQuery {
+		end := min(start+maxArtifactJobIDsPerQuery, len(unique))
+		if err := s.appendLatestAttemptArtifacts(ctx, name, unique[start:end], result); err != nil {
+			return nil, err
+		}
+	}
+	return result, nil
+}
+
+// appendLatestAttemptArtifacts collects one chunk of job ids into result.
+//
+// Ordering by attempts.id is ordering by recency: the column is INTEGER PRIMARY
+// KEY AUTOINCREMENT, so ids strictly increase and are never reused, and RetryJob
+// preserves attempt_count so attempt numbers cannot diverge from it.
+func (s *SQLiteStore) appendLatestAttemptArtifacts(ctx context.Context, name string, jobIDs []domain.JobID, result map[domain.JobID][]domain.AttemptEvent) (err error) {
+	if len(jobIDs) == 0 {
+		return nil
+	}
+	args := make([]any, 0, len(jobIDs)+2)
+	args = append(args, string(domain.AttemptEventArtifact), name)
+	for _, jobID := range jobIDs {
+		args = append(args, int64(jobID))
+	}
+	rows, err := s.db.QueryContext(ctx, `
+SELECT e.id, e.attempt_id, e.type, e.name, e.message, e.payload, e.created_at, a.job_id
+FROM attempt_events e
+JOIN attempts a ON a.id = e.attempt_id
+WHERE e.type = ? AND e.name = ? AND a.job_id IN (`+placeholders(len(jobIDs))+`)
+	AND e.attempt_id = (
+		SELECT MAX(inner_events.attempt_id)
+		FROM attempt_events inner_events
+		JOIN attempts inner_attempts ON inner_attempts.id = inner_events.attempt_id
+		WHERE inner_attempts.job_id = a.job_id
+			AND inner_events.type = e.type
+			AND inner_events.name = e.name
+	)
+ORDER BY a.job_id ASC, e.id ASC
+`, args...)
+	if err != nil {
+		return fmt.Errorf("list latest attempt artifacts: %w", err)
+	}
+	defer closeRows(rows, &err, "close latest attempt artifacts")
+
+	for rows.Next() {
+		var (
+			event   domain.AttemptEvent
+			created string
+			jobID   int64
+		)
+		if err := rows.Scan(&event.ID, &event.AttemptID, &event.Type, &event.Name,
+			&event.Message, &event.Payload, &created, &jobID); err != nil {
+			return fmt.Errorf("scan latest attempt artifact: %w", err)
+		}
+		event.CreatedAt = parseTime(created)
+		result[domain.JobID(jobID)] = append(result[domain.JobID(jobID)], event)
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate latest attempt artifacts: %w", err)
+	}
+	return nil
+}
