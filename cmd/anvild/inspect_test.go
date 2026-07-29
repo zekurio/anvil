@@ -119,3 +119,70 @@ func TestInspectReportSurfacesLatestAttemptStreamSelection(t *testing.T) {
 		t.Fatalf("json kept reason = %q, want %q", got, want)
 	}
 }
+
+// TestInspectReportSurfacesAnUnreadableLatestSelection pins that a corrupt
+// newest record is reported as unreadable rather than skipped. Skipping it made
+// latestStreamSelection walk back to an older attempt and present a superseded
+// decision as the current state of the file, which is the exact trap the
+// stream-selection record exists to remove.
+func TestInspectReportSurfacesAnUnreadableLatestSelection(t *testing.T) {
+	corrupt := domain.AttemptEvent{
+		ID: 2, AttemptID: 2, Type: domain.AttemptEventArtifact,
+		Name: pipeline.StreamSelectionArtifact, Payload: []byte("{not json"),
+	}
+	report := inspectReport{
+		Job: inspectJob{ID: 3, Slug: "show-s01e01"},
+		Attempts: []inspectAttempt{
+			{ID: 1, Number: 1, Events: []inspectEvent{inspectEventFromDomain(streamSelectionEvent(t, 1, 1, audioDecision()))}},
+			{ID: 2, Number: 2, Events: []inspectEvent{inspectEventFromDomain(corrupt)}},
+		},
+	}
+	report.StreamSelection = latestStreamSelection(report.Attempts)
+
+	if got := len(report.StreamSelection); got != 1 {
+		t.Fatalf("stream selections = %d, want the unreadable record", got)
+	}
+	selection := report.StreamSelection[0]
+	if selection.AttemptNumber != 2 {
+		t.Fatalf("attempt number = %d, want 2 rather than a fallback to the stale attempt", selection.AttemptNumber)
+	}
+	if selection.Decision != nil {
+		t.Fatalf("decision = %+v, want none so it cannot read as \"nothing dropped\"", selection.Decision)
+	}
+	if selection.DecisionError == "" {
+		t.Fatal("decision error = \"\", want the decode failure reported")
+	}
+
+	var text bytes.Buffer
+	if err := writeInspectReport(&text, report); err != nil {
+		t.Fatalf("writeInspectReport() error = %v", err)
+	}
+	if !strings.Contains(text.String(), "unreadable:") {
+		t.Fatalf("inspect text output missing the unreadable record:\n%s", text.String())
+	}
+}
+
+// TestInspectReportIgnoresUnreadableUnrelatedArtifacts keeps a corrupt payload
+// of some other artifact from being reported as a stream selection, and from
+// hiding the real decision recorded on the same attempt.
+func TestInspectReportIgnoresUnreadableUnrelatedArtifacts(t *testing.T) {
+	corrupt := domain.AttemptEvent{
+		ID: 3, AttemptID: 2, Type: domain.AttemptEventArtifact,
+		Name: processOutputArtifactName, Payload: []byte("{not json"),
+	}
+	report := inspectReport{
+		Job: inspectJob{ID: 3, Slug: "show-s01e01"},
+		Attempts: []inspectAttempt{{ID: 2, Number: 2, Events: []inspectEvent{
+			inspectEventFromDomain(corrupt),
+			inspectEventFromDomain(streamSelectionEvent(t, 2, 4, audioDecision())),
+		}}},
+	}
+	report.StreamSelection = latestStreamSelection(report.Attempts)
+
+	if got := len(report.StreamSelection); got != 1 {
+		t.Fatalf("stream selections = %d, want only the real decision", got)
+	}
+	if report.StreamSelection[0].Decision == nil {
+		t.Fatal("decision = nil, want the readable stream selection")
+	}
+}
