@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/zekurio/anvil/pkg/config"
+	"github.com/zekurio/anvil/pkg/control"
 	"github.com/zekurio/anvil/pkg/controlapi"
 	"github.com/zekurio/anvil/pkg/domain"
 	"github.com/zekurio/anvil/pkg/scanner"
@@ -165,7 +166,7 @@ func TestLegacyCommandNamesStillWork(t *testing.T) {
 		{"recover"},
 		{"prune-jobs"},
 		{"scan", "--library", "movies"},
-		{"cleanup-staging", "--dry-run"},
+		{"cleanup-staging", "--dry-run", "--older-than", "24h"},
 	} {
 		t.Run(args[0], func(t *testing.T) {
 			if _, stderr, err := daemon.run(t, args...); err != nil {
@@ -293,8 +294,8 @@ func TestUnreachableDaemonExitsWithTheUnavailableCode(t *testing.T) {
 	if got := exitCode(err); got != exitUnavailable {
 		t.Fatalf("exit code = %d, want %d", got, exitUnavailable)
 	}
-	var controlErr *controlapi.Error
-	if !errors.As(err, &controlErr) || controlErr.Code != controlapi.CodeUnavailable {
+	var controlErr *control.Error
+	if !errors.As(err, &controlErr) || controlErr.Code != control.CodeUnavailable {
 		t.Fatalf("error = %v, want a structured unavailable error", err)
 	}
 }
@@ -319,6 +320,41 @@ func TestUnknownCommandsAreUsageErrors(t *testing.T) {
 	}
 	if got := exitCode(err); got != exitUsage {
 		t.Fatalf("exit code = %d, want %d", got, exitUsage)
+	}
+}
+
+// TestArgumentTerminatorEndsFlagParsing covers the escape an operator needs for
+// names Anvil legitimately carries. Job slugs, library names, and above all
+// file paths can start with a dash, and without "--" the only way to name one
+// would be to rename the file.
+func TestArgumentTerminatorEndsFlagParsing(t *testing.T) {
+	daemon := startTestDaemon(t)
+
+	// Everything after -- is a positional argument, even when it looks exactly
+	// like a flag this command defines.
+	_, _, err := daemon.run(t, "job", "show", "--", "--json")
+	var controlErr *control.Error
+	if !errors.As(err, &controlErr) || controlErr.Code != control.CodeNotFound {
+		t.Fatalf("run(job show -- --json) error = %v, want the daemon looking up a job literally named \"--json\"", err)
+	}
+
+	// A terminator after a positional argument is honored too, which the
+	// interleaved parse below would otherwise undo.
+	_, _, err = daemon.run(t, "job", "show", daemon.job.Label(), "--", "--json")
+	if err == nil {
+		t.Fatal("run(job show SLUG -- --json) error = nil, want two positional arguments refused")
+	}
+	if got := exitCode(err); got != exitUsage {
+		t.Fatalf("exit code = %d, want %d", got, exitUsage)
+	}
+
+	// And the flag still works when it is not terminated.
+	stdout, stderr, err := daemon.run(t, "job", "show", daemon.job.Label(), "--json")
+	if err != nil {
+		t.Fatalf("run(job show SLUG --json) error = %v, stderr = %s", err, stderr)
+	}
+	if !strings.Contains(stdout, `"api_version"`) {
+		t.Fatalf("run(job show SLUG --json) did not produce JSON:\n%s", stdout)
 	}
 }
 

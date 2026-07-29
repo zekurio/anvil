@@ -662,33 +662,21 @@ func validateReload(current config.Config, next config.Config) error {
 }
 
 // runConfiguredStagingCleanup sweeps leftovers from a previous run at start-up.
-// It protects jobs that are still active or still own an unresolved publish
-// journal, because a crash can leave both the directory and the work that owns
-// it behind, and recovery needs the staged artifact the journal names.
+// It goes through the same protected sweep the control command uses, so the two
+// can never disagree about which staging directories belong to work that is
+// still alive: a crash can leave both the directory and the job that owns it
+// behind, and recovery needs the staged artifact the publish journal names.
 func runConfiguredStagingCleanup(ctx context.Context, cfg config.Config, state *store.SQLiteStore) {
 	age := cfg.StagingCleanupAge()
 	if age <= 0 {
 		return
 	}
-	protected, err := state.ProtectedJobs(ctx)
-	if err != nil {
-		slog.Error("staging cleanup skipped; protected jobs are unknown", "error", err)
-		return
-	}
-	held := make(map[int64]struct{}, len(protected))
-	for _, job := range protected {
-		held[int64(job.JobID)] = struct{}{}
-	}
-	result, err := staging.Manager{Root: staging.Root(cfg.Daemon.TempDir)}.CleanupStale(staging.CleanupStaleOptions{
+	result, err := controlapi.SweepStaging(ctx, state, staging.Root(cfg.Daemon.TempDir), controlapi.StagingSweep{
 		OlderThan: age,
 		Now:       time.Now().UTC(),
-		Protected: func(jobID int64, _ int64) bool {
-			_, ok := held[jobID]
-			return ok
-		},
 	})
 	if err != nil {
-		slog.Error("staging cleanup failed", "error", err)
+		slog.Error("staging cleanup skipped", "error", err)
 		return
 	}
 	slog.Info("staging cleanup complete", "candidates", result.Candidates, "removed", result.Removed, "skipped", result.Skipped, "protected", result.Protected, "errors", len(result.Errors))

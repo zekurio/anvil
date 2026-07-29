@@ -5,13 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"path"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/zekurio/anvil/pkg/config"
+	"github.com/zekurio/anvil/pkg/control"
 	"github.com/zekurio/anvil/pkg/domain"
 	"github.com/zekurio/anvil/pkg/mediapath"
 	"github.com/zekurio/anvil/pkg/pipeline"
@@ -37,8 +37,7 @@ type Store interface {
 	ListAttemptsForJob(context.Context, domain.JobID) ([]domain.Attempt, error)
 	ListAttemptEvents(context.Context, domain.AttemptID) ([]domain.AttemptEvent, error)
 	GetJobPipelineContext(context.Context, domain.JobID) (domain.JobPipelineContext, bool, error)
-	RetryJob(context.Context, domain.JobID, time.Time) (domain.Job, error)
-	RetryFailedJobs(context.Context, domain.LibraryName, time.Time) (int64, error)
+	RetryJobs(context.Context, store.RetryJobsInput) (store.RetryJobsResult, error)
 	RecoverStaleJobs(context.Context, int, time.Time) (int64, error)
 	ListLibraryStats(context.Context, store.LibraryStatsFilter) ([]store.LibraryStats, error)
 	PruneMissingSourceJobs(context.Context, store.PruneMissingSourceJobsOptions) (store.PruneMissingSourceJobsResult, error)
@@ -70,13 +69,13 @@ type Service struct {
 	CancelRunningJob func(domain.JobID) bool
 }
 
-func (s Service) Status(ctx context.Context) (StatusResponse, error) {
+func (s Service) Status(ctx context.Context) (control.StatusResponse, error) {
 	if err := s.requireStore(); err != nil {
-		return StatusResponse{}, err
+		return control.StatusResponse{}, err
 	}
 	counts, err := s.Store.CountJobsByState(ctx)
 	if err != nil {
-		return StatusResponse{}, err
+		return control.StatusResponse{}, err
 	}
 	queue := make(map[string]int64, len(allJobStates))
 	for _, state := range allJobStates {
@@ -95,61 +94,82 @@ func (s Service) Status(ctx context.Context) (StatusResponse, error) {
 	if version == "" {
 		version = "dev"
 	}
-	return StatusResponse{
-		APIVersion: Version,
+	return control.StatusResponse{
+		APIVersion: control.Version,
 		ServerTime: s.now(),
-		Daemon:     DaemonStatus{State: "ready", StartedAt: startedAt, Version: version},
-		Workers:    WorkerStatus{Configured: configured, Active: active},
+		Daemon:     control.DaemonStatus{State: "ready", StartedAt: startedAt, Version: version},
+		Workers:    control.WorkerStatus{Configured: configured, Active: active},
 		Queue:      queue,
 	}, nil
 }
 
-func (s Service) ListJobs(ctx context.Context, query JobQuery) (JobListResponse, error) {
+func (s Service) ListJobs(ctx context.Context, query control.JobQuery) (control.JobListResponse, error) {
 	if err := s.requireStore(); err != nil {
-		return JobListResponse{}, err
+		return control.JobListResponse{}, err
 	}
-	relativePath, absolutePath, states, err := normalizeJobQuery(query)
+	selector, err := query.Normalize()
 	if err != nil {
-		return JobListResponse{}, err
-	}
-	filter := store.JobListFilter{LibraryName: domain.LibraryName(strings.TrimSpace(query.Library)), States: states}
-	summaries, err := s.Store.ListJobs(ctx, filter)
-	if err != nil {
-		return JobListResponse{}, err
+		return control.JobListResponse{}, err
 	}
 	cfg := s.runtimeConfig()
-	response := JobListResponse{APIVersion: Version, ServerTime: s.now(), Jobs: make([]JobResponse, 0)}
+	if err := requireConfiguredLibrary(cfg, selector.Library); err != nil {
+		return control.JobListResponse{}, err
+	}
+	summaries, err := s.Store.ListJobs(ctx, store.JobListFilter{
+		LibraryName: domain.LibraryName(selector.Library),
+		States:      selector.States,
+	})
+	if err != nil {
+		return control.JobListResponse{}, err
+	}
+	// Loading each job's occurrences and publish journal is what makes a
+	// listing expensive. A query with no path selector and no currentness
+	// filter was answered in full by the store query, so only the jobs that
+	// will actually be shown are hydrated; the rest are counted from the rows
+	// already in hand. Anything else has to look at every job before it can
+	// decide whether that job matched.
+	postFiltered := selector.RelativePath != "" || selector.AbsolutePath != "" || selector.CurrentOnly
+	response := control.JobListResponse{APIVersion: control.Version, ServerTime: s.now(), Jobs: make([]control.JobResponse, 0)}
+	if !postFiltered {
+		response.Matched = len(summaries)
+		if selector.Limit > 0 && len(summaries) > selector.Limit {
+			response.Truncated = true
+			summaries = summaries[:selector.Limit]
+		}
+	}
 	for _, summary := range summaries {
 		item, keys, current, err := s.jobResponse(ctx, cfg, summary)
 		if err != nil {
-			return JobListResponse{}, err
+			return control.JobListResponse{}, err
 		}
-		if query.CurrentOnly && !current {
-			continue
-		}
-		if relativePath != "" && !keys.matchesRelative(relativePath) {
-			continue
-		}
-		if absolutePath != "" {
-			sides, ok := keys.matchesAbsolute(absolutePath)
-			if !ok {
+		if postFiltered {
+			if selector.CurrentOnly && !current {
 				continue
 			}
-			item.MatchedOn = sides
-		}
-		response.Matched++
-		if query.Limit > 0 && len(response.Jobs) >= query.Limit {
-			response.Truncated = true
-			continue
+			if selector.RelativePath != "" && !keys.matchesRelative(selector.RelativePath) {
+				continue
+			}
+			if selector.AbsolutePath != "" {
+				sides, ok := keys.matchesAbsolute(selector.AbsolutePath)
+				if !ok {
+					continue
+				}
+				item.MatchedOn = sides
+			}
+			response.Matched++
+			if selector.Limit > 0 && len(response.Jobs) >= selector.Limit {
+				response.Truncated = true
+				continue
+			}
 		}
 		response.Jobs = append(response.Jobs, item)
 	}
-	if absolutePath != "" && response.Matched == 0 {
-		response.PathOutsideLibraries = !pathUnderAnyLibrary(cfg, absolutePath)
+	if selector.AbsolutePath != "" && response.Matched == 0 {
+		response.PathOutsideLibraries = !pathUnderAnyLibrary(cfg, selector.AbsolutePath)
 	}
 	if query.WithSelection {
 		if err := s.attachStreamSelections(ctx, response.Jobs); err != nil {
-			return JobListResponse{}, err
+			return control.JobListResponse{}, err
 		}
 	}
 	return response, nil
@@ -206,7 +226,7 @@ func pathUnderRoot(root, absolutePath string) bool {
 // attachStreamSelections fills in the recorded stream selection decisions for
 // the listed jobs. A job that recorded none keeps a nil slice, so an absent
 // decision stays distinguishable from one that kept every stream.
-func (s Service) attachStreamSelections(ctx context.Context, jobs []JobResponse) error {
+func (s Service) attachStreamSelections(ctx context.Context, jobs []control.JobResponse) error {
 	if len(jobs) == 0 {
 		return nil
 	}
@@ -223,9 +243,9 @@ func (s Service) attachStreamSelections(ctx context.Context, jobs []JobResponse)
 		if len(recorded) == 0 {
 			continue
 		}
-		selections := make([]StreamSelectionResponse, 0, len(recorded))
+		selections := make([]control.StreamSelectionResponse, 0, len(recorded))
 		for _, event := range recorded {
-			selection := StreamSelectionResponse{AttemptID: int64(event.AttemptID), RecordedAt: event.CreatedAt}
+			selection := control.StreamSelectionResponse{AttemptID: int64(event.AttemptID), RecordedAt: event.CreatedAt}
 			decision, err := pipeline.DecodeStreamSelection(event.Payload)
 			if err != nil {
 				// A decision Anvil cannot read is reported as unreadable rather
@@ -244,28 +264,33 @@ func (s Service) attachStreamSelections(ctx context.Context, jobs []JobResponse)
 
 // CancelJobs cancels every job the equivalent job list would return. It
 // requires an explicit selector, and is idempotent for already terminal jobs.
-func (s Service) CancelJobs(ctx context.Context, request JobCancelRequest) (JobCancelResponse, error) {
+func (s Service) CancelJobs(ctx context.Context, request control.JobCancelRequest) (control.JobCancelResponse, error) {
 	if err := s.requireStore(); err != nil {
-		return JobCancelResponse{}, err
+		return control.JobCancelResponse{}, err
 	}
-	if !request.hasSelector() {
-		return JobCancelResponse{}, invalidArgumentf("cancel requires at least one selector")
+	if !request.HasSelector() {
+		return control.JobCancelResponse{}, invalidArgumentf("cancel requires at least one selector")
 	}
 	requestedIDs, err := s.resolveJobReferences(ctx, request.IDs, request.References)
 	if err != nil {
-		return JobCancelResponse{}, err
+		return control.JobCancelResponse{}, err
 	}
 	ids := make(map[domain.JobID]struct{}, len(requestedIDs))
 	for _, id := range requestedIDs {
 		ids[domain.JobID(id)] = struct{}{}
 	}
-	_, _, states, err := normalizeJobQuery(request.query())
+	// Query carries no limit, so a cancel always acts on everything its
+	// selector matched rather than on the first page of it.
+	selector, err := request.Query().Normalize()
 	if err != nil {
-		return JobCancelResponse{}, err
+		return control.JobCancelResponse{}, err
 	}
-	listed, err := s.ListJobs(ctx, request.query())
+	listed, err := s.ListJobs(ctx, request.Query())
 	if err != nil {
-		return JobCancelResponse{}, err
+		return control.JobCancelResponse{}, err
+	}
+	if listed.Truncated {
+		return control.JobCancelResponse{}, newError(control.CodeInternal, "the cancel selector matched %d jobs but the listing was truncated; refusing to cancel a subset", listed.Matched)
 	}
 	targets := make([]domain.JobID, 0, len(listed.Jobs))
 	matchedIDs := make(map[domain.JobID]struct{}, len(listed.Jobs))
@@ -283,19 +308,19 @@ func (s Service) CancelJobs(ctx context.Context, request JobCancelRequest) (JobC
 	// two disagree about what the operator meant, and guessing either way can
 	// cancel work nobody asked about.
 	if missing := missingJobIDs(requestedIDs, matchedIDs); missing != "" {
-		return JobCancelResponse{}, invalidArgumentf("no job matched the selector for job ids %s", missing)
+		return control.JobCancelResponse{}, invalidArgumentf("no job matched the selector for job ids %s", missing)
 	}
-	response := JobCancelResponse{APIVersion: Version, ServerTime: s.now(), Jobs: make([]JobCancelResult, 0, len(targets))}
+	response := control.JobCancelResponse{APIVersion: control.Version, ServerTime: s.now(), Jobs: make([]control.JobCancelResult, 0, len(targets))}
 	if len(targets) == 0 {
 		return response, nil
 	}
 	reason := strings.TrimSpace(request.Reason)
-	results, err := s.Store.CancelJobs(ctx, store.CancelJobsInput{IDs: targets, States: states, Reason: reason, Now: s.now()})
+	results, err := s.Store.CancelJobs(ctx, store.CancelJobsInput{IDs: targets, States: selector.States, Reason: reason, Now: s.now()})
 	if err != nil {
-		return JobCancelResponse{}, err
+		return control.JobCancelResponse{}, err
 	}
 	for _, result := range results {
-		item := JobCancelResult{
+		item := control.JobCancelResult{
 			ID: int64(result.JobID), Slug: result.Slug, Library: string(result.LibraryName),
 			PreviousState: string(result.PreviousState), State: string(result.State),
 			Canceled: result.Canceled, SkipReason: string(result.SkipReason),
@@ -361,7 +386,7 @@ func missingJobIDs(requested []int64, matched map[domain.JobID]struct{}) string 
 // the job's paths it is so a match can report the side it hit.
 type absolutePathKey struct {
 	path string
-	side PathMatchSide
+	side control.PathMatchSide
 }
 
 type jobPathKeys struct {
@@ -382,8 +407,8 @@ func (k jobPathKeys) matchesRelative(target string) bool {
 // built. One path is legitimately several sides at once: an in-place
 // replacement writes the converted file back over its own source, so returning
 // a single side would report that output as "not a destination".
-func (k jobPathKeys) matchesAbsolute(target string) ([]PathMatchSide, bool) {
-	var sides []PathMatchSide
+func (k jobPathKeys) matchesAbsolute(target string) ([]control.PathMatchSide, bool) {
+	var sides []control.PathMatchSide
 	for _, candidate := range k.absolute {
 		if candidate.path == target {
 			sides = append(sides, candidate.side)
@@ -413,16 +438,16 @@ func uniqueAbsoluteKeys(keys ...absolutePathKey) []absolutePathKey {
 	return result
 }
 
-func (s Service) jobResponse(ctx context.Context, cfg config.Config, summary store.JobSummary) (JobResponse, jobPathKeys, bool, error) {
+func (s Service) jobResponse(ctx context.Context, cfg config.Config, summary store.JobSummary) (control.JobResponse, jobPathKeys, bool, error) {
 	source, err := s.Store.GetMediaSource(ctx, summary.Job.SourceID)
 	if err != nil {
-		return JobResponse{}, jobPathKeys{}, false, fmt.Errorf("get source for job %d: %w", summary.Job.ID, err)
+		return control.JobResponse{}, jobPathKeys{}, false, fmt.Errorf("get source for job %d: %w", summary.Job.ID, err)
 	}
 	var asset domain.MediaAsset
 	if summary.Job.AssetID != 0 {
 		asset, err = s.Store.GetMediaAsset(ctx, summary.Job.AssetID)
 		if err != nil {
-			return JobResponse{}, jobPathKeys{}, false, fmt.Errorf("get asset for job %d: %w", summary.Job.ID, err)
+			return control.JobResponse{}, jobPathKeys{}, false, fmt.Errorf("get asset for job %d: %w", summary.Job.ID, err)
 		}
 	}
 	library, libraryOK := cfg.FindLibrary(summary.Job.LibraryName)
@@ -432,26 +457,26 @@ func (s Service) jobResponse(ctx context.Context, cfg config.Config, summary sto
 		sourceAbsolute = filepath.Clean(filepath.Join(library.Path, filepath.FromSlash(source.RelativePath)))
 		assetAbsolute = filepath.Clean(mediapath.Input(library.Path, source, asset))
 	}
-	item := JobResponse{
+	item := control.JobResponse{
 		ID: int64(summary.Job.ID), Slug: summary.Job.Label(), Library: string(summary.Job.LibraryName),
 		State: string(summary.Job.State), AttemptCount: summary.Job.AttemptCount,
 		CreatedAt: summary.Job.CreatedAt, UpdatedAt: summary.Job.UpdatedAt, CompletedAt: summary.Job.CompletedAt,
 		LeaseOwner: summary.Job.LeaseOwner, LeaseDeadline: summary.Job.LeaseDeadline,
 		HeartbeatAt: summary.Job.HeartbeatAt, LastError: summary.Job.LastError,
-		Source: OccurrenceResponse{
+		Source: control.OccurrenceResponse{
 			Path: source.RelativePath, AbsolutePath: sourceAbsolute, Generation: source.Generation,
 			Current: source.Current, Status: string(source.Status),
 		},
 	}
 	if asset.ID != 0 {
-		item.Asset = &OccurrenceResponse{
+		item.Asset = &control.OccurrenceResponse{
 			Path: asset.RelativePath, AbsolutePath: assetAbsolute, Generation: asset.Generation,
 			Current: asset.Current, Status: string(asset.Status),
 		}
 	}
 	operation, hasOperation, err := s.Store.GetPublishOperation(ctx, summary.Job.ID)
 	if err != nil {
-		return JobResponse{}, jobPathKeys{}, false, err
+		return control.JobResponse{}, jobPathKeys{}, false, err
 	}
 	if hasOperation {
 		item.DestinationPath = filepath.Clean(operation.DestinationPath)
@@ -465,24 +490,24 @@ func (s Service) jobResponse(ctx context.Context, cfg config.Config, summary sto
 			cleanStoredRelative(filepath.ToSlash(mediapath.Relative(source, asset))),
 		),
 		absolute: uniqueAbsoluteKeys(
-			absolutePathKey{path: sourceAbsolute, side: PathMatchSource},
-			absolutePathKey{path: assetKeyPath(asset, assetAbsolute), side: PathMatchAsset},
-			absolutePathKey{path: item.DestinationPath, side: PathMatchDestination},
+			absolutePathKey{path: sourceAbsolute, side: control.PathMatchSource},
+			absolutePathKey{path: assetKeyPath(asset, assetAbsolute), side: control.PathMatchAsset},
+			absolutePathKey{path: item.DestinationPath, side: control.PathMatchDestination},
 		),
 	}
 	if source.Kind == domain.SourceKindPackage && item.DestinationPath != "" {
 		packageDestinations := append(keys.absolute,
-			absolutePathKey{path: filepath.Dir(item.DestinationPath), side: PathMatchDestinationDirectory},
+			absolutePathKey{path: filepath.Dir(item.DestinationPath), side: control.PathMatchDestinationDirectory},
 		)
 		if hasOperation && strings.TrimSpace(operation.HandoffRoot) != "" {
 			packageDestinations = append(packageDestinations, absolutePathKey{
 				path: filepath.Join(operation.HandoffRoot, filepath.FromSlash(source.RelativePath)),
-				side: PathMatchDestinationDirectory,
+				side: control.PathMatchDestinationDirectory,
 			})
 		} else if !hasOperation && libraryOK && library.Download.PreserveRelativePath && strings.TrimSpace(library.Download.HandoffPath) != "" {
 			packageDestinations = append(packageDestinations, absolutePathKey{
 				path: filepath.Join(library.Download.HandoffPath, filepath.FromSlash(source.RelativePath)),
-				side: PathMatchDestinationDirectory,
+				side: control.PathMatchDestinationDirectory,
 			})
 		}
 		keys.absolute = uniqueAbsoluteKeys(packageDestinations...)
@@ -531,77 +556,40 @@ func plannedDestination(cfg config.Config, job domain.Job, source domain.MediaSo
 	return ""
 }
 
+// newError builds a structured control error with the daemon's own wording.
+func newError(code control.ErrorCode, format string, args ...any) error {
+	return control.NewError(code, format, args...)
+}
+
 // invalidArgumentf marks a caller-fixable request problem. It produces the same
 // structured error the transport returns, so the code an operator sees is
 // decided once, here, rather than by string matching at the edge.
 func invalidArgumentf(format string, args ...any) error {
-	return newError(CodeInvalidArgument, format, args...)
+	return control.NewError(control.CodeInvalidArgument, format, args...)
 }
 
 func notFoundf(format string, args ...any) error {
-	return newError(CodeNotFound, format, args...)
+	return control.NewError(control.CodeNotFound, format, args...)
 }
 
-func normalizeJobQuery(query JobQuery) (string, string, []domain.JobState, error) {
-	if query.Limit < 0 {
-		return "", "", nil, invalidArgumentf("limit must be non-negative")
+// requireConfiguredLibrary rejects a library selector this daemon does not
+// know. Every command that takes one goes through it, so a typo is reported
+// instead of being answered with an empty result that reads like "there is
+// nothing there". A library that was removed from the config is still reachable
+// without the selector, so this never blocks maintenance of its leftovers.
+func requireConfiguredLibrary(cfg config.Config, name string) error {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return nil
 	}
-	if strings.TrimSpace(query.Path) != "" && strings.TrimSpace(query.AbsolutePath) != "" {
-		return "", "", nil, invalidArgumentf("path and absolute_path are mutually exclusive")
+	if _, ok := cfg.FindLibrary(domain.LibraryName(name)); !ok {
+		return notFoundf("library %q is not configured", name)
 	}
-	relativePath := ""
-	if strings.TrimSpace(query.Path) != "" {
-		if strings.TrimSpace(query.Library) == "" {
-			return "", "", nil, invalidArgumentf("library is required with path")
-		}
-		cleaned, err := cleanRelativePath(query.Path)
-		if err != nil {
-			return "", "", nil, err
-		}
-		relativePath = cleaned
-	}
-	absolutePath := ""
-	if strings.TrimSpace(query.AbsolutePath) != "" {
-		if strings.ContainsRune(query.AbsolutePath, '\x00') || !filepath.IsAbs(query.AbsolutePath) {
-			return "", "", nil, invalidArgumentf("absolute_path must be absolute")
-		}
-		absolutePath = filepath.Clean(query.AbsolutePath)
-	}
-	states := make([]domain.JobState, 0, len(query.States))
-	seen := make(map[domain.JobState]struct{}, len(query.States))
-	for _, value := range query.States {
-		for _, part := range strings.Split(value, ",") {
-			state := domain.JobState(strings.TrimSpace(part))
-			if state == "" {
-				continue
-			}
-			if !domain.ValidJobState(state) {
-				return "", "", nil, invalidArgumentf("unknown job state %q", state)
-			}
-			if _, ok := seen[state]; ok {
-				continue
-			}
-			seen[state] = struct{}{}
-			states = append(states, state)
-		}
-	}
-	return relativePath, absolutePath, states, nil
-}
-
-func cleanRelativePath(value string) (string, error) {
-	value = strings.TrimSpace(value)
-	if value == "" || strings.ContainsRune(value, '\x00') || filepath.IsAbs(value) {
-		return "", invalidArgumentf("path must be relative to the library root")
-	}
-	cleaned := path.Clean(filepath.ToSlash(value))
-	if cleaned == "." || cleaned == ".." || path.IsAbs(cleaned) || strings.HasPrefix(cleaned, "../") {
-		return "", invalidArgumentf("path must stay within the library root")
-	}
-	return cleaned, nil
+	return nil
 }
 
 func cleanStoredRelative(value string) string {
-	cleaned, err := cleanRelativePath(value)
+	cleaned, err := control.CleanRelativePath(value)
 	if err != nil {
 		return ""
 	}
@@ -651,7 +639,7 @@ func (s Service) runtimeConfig() config.Config {
 // one inventing its own wording for a service that was never wired up.
 func (s Service) requireStore() error {
 	if s.Store == nil {
-		return newError(CodeInternal, "control service store is required")
+		return newError(control.CodeInternal, "control service store is required")
 	}
 	return nil
 }

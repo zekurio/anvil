@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/zekurio/anvil/internal/textout"
-	"github.com/zekurio/anvil/pkg/controlapi"
+	"github.com/zekurio/anvil/pkg/control"
 )
 
 const timeFormat = "2006-01-02T15:04:05Z07:00"
@@ -17,7 +17,7 @@ func writeJSON(out io.Writer, value any) error {
 	return textout.WriteJSON(out, value)
 }
 
-func writeStatus(out io.Writer, response controlapi.StatusResponse) error {
+func writeStatus(out io.Writer, response control.StatusResponse) error {
 	return textout.WriteTable(out, func(w *textout.Writer) {
 		w.Printf("DAEMON\t%s\n", response.Daemon.State)
 		w.Printf("STARTED\t%s\n", response.Daemon.StartedAt.Format(timeFormat))
@@ -60,7 +60,7 @@ func writeVersion(out io.Writer, report versionReport) error {
 	})
 }
 
-func writeJobs(out io.Writer, response controlapi.JobListResponse) error {
+func writeJobs(out io.Writer, response control.JobListResponse) error {
 	// The MATCHED column only carries meaning for an absolute-path query, so it
 	// is omitted rather than rendered permanently blank.
 	matched := false
@@ -102,7 +102,7 @@ func writeJobs(out io.Writer, response controlapi.JobListResponse) error {
 	})
 }
 
-func formatMatchedOn(sides []controlapi.PathMatchSide) string {
+func formatMatchedOn(sides []control.PathMatchSide) string {
 	parts := make([]string, 0, len(sides))
 	for _, side := range sides {
 		parts = append(parts, string(side))
@@ -113,7 +113,7 @@ func formatMatchedOn(sides []controlapi.PathMatchSide) string {
 // writeJobStreamSelections renders the recorded decisions below the listing.
 // They are far too wide for a table column, and they are only present when the
 // caller asked for them.
-func writeJobStreamSelections(w *textout.Writer, jobs []controlapi.JobResponse) {
+func writeJobStreamSelections(w *textout.Writer, jobs []control.JobResponse) {
 	for _, job := range jobs {
 		for _, selection := range job.StreamSelection {
 			if selection.DecisionError != "" {
@@ -144,7 +144,7 @@ func writeJobStreamSelections(w *textout.Writer, jobs []controlapi.JobResponse) 
 	}
 }
 
-func writeCanceledJobs(out io.Writer, response controlapi.JobCancelResponse) error {
+func writeCanceledJobs(out io.Writer, response control.JobCancelResponse) error {
 	if err := textout.WriteTable(out, func(w *textout.Writer) {
 		w.Println("JOB\tID\tLIBRARY\tPREVIOUS\tSTATE\tCANCELED\tWORKER SIGNALED\tSKIPPED")
 		for _, job := range response.Jobs {
@@ -160,7 +160,7 @@ func writeCanceledJobs(out io.Writer, response controlapi.JobCancelResponse) err
 	})
 }
 
-func writeRetriedJobs(out io.Writer, response controlapi.JobRetryResponse) error {
+func writeRetriedJobs(out io.Writer, response control.JobRetryResponse) error {
 	if len(response.Jobs) > 0 {
 		if err := textout.WriteTable(out, func(w *textout.Writer) {
 			w.Println("JOB\tID\tLIBRARY\tSTATE")
@@ -176,7 +176,7 @@ func writeRetriedJobs(out io.Writer, response controlapi.JobRetryResponse) error
 	})
 }
 
-func writePrunedJobs(out io.Writer, response controlapi.JobPruneResponse) error {
+func writePrunedJobs(out io.Writer, response control.JobPruneResponse) error {
 	return textout.Write(out, func(w *textout.Writer) {
 		w.Printf("dry_run=%t matched_jobs=%d affected_sources=%d deleted_jobs=%d",
 			response.DryRun, response.MatchedJobs, response.AffectedSources, response.DeletedJobs)
@@ -195,19 +195,19 @@ func writePrunedJobs(out io.Writer, response controlapi.JobPruneResponse) error 
 
 // writeProtectedJobs names the work maintenance refused to touch. An operator
 // who is told "0 deleted" without being told why cannot act on it.
-func writeProtectedJobs(w *textout.Writer, jobs []controlapi.ProtectedJob) {
+func writeProtectedJobs(w *textout.Writer, jobs []control.ProtectedJob) {
 	for _, job := range jobs {
 		w.Printf("protected job=%s id=%d reason=%s\n", textout.OrNone(job.Slug), job.ID, job.Reason)
 	}
 }
 
-func writeRecoveredJobs(out io.Writer, response controlapi.JobRecoverResponse) error {
+func writeRecoveredJobs(out io.Writer, response control.JobRecoverResponse) error {
 	return textout.Write(out, func(w *textout.Writer) {
 		w.Printf("recovered_jobs=%d\n", response.RecoveredJobs)
 	})
 }
 
-func writeScanResult(out io.Writer, response controlapi.LibraryScanResponse) error {
+func writeScanResult(out io.Writer, response control.LibraryScanResponse) error {
 	return textout.Write(out, func(w *textout.Writer) {
 		w.Printf("libraries=%d sources=%d assets=%d enqueued_jobs=%d existing_jobs=%d skipped_ignored=%d skipped_unstable=%d",
 			response.Libraries, response.Sources, response.Assets, response.EnqueuedJobs,
@@ -219,7 +219,7 @@ func writeScanResult(out io.Writer, response controlapi.LibraryScanResponse) err
 	})
 }
 
-func writeLibraryStats(out io.Writer, response controlapi.LibraryStatsResponse) error {
+func writeLibraryStats(out io.Writer, response control.LibraryStatsResponse) error {
 	return textout.WriteTable(out, func(w *textout.Writer) {
 		w.Println("LIBRARY\tJOBS\tBEFORE\tAFTER\tSAVED\tSAVED%")
 		for _, stat := range response.Libraries {
@@ -231,7 +231,7 @@ func writeLibraryStats(out io.Writer, response controlapi.LibraryStatsResponse) 
 	})
 }
 
-func writeForcedOccurrence(out io.Writer, response controlapi.ForceOccurrenceResponse) error {
+func writeForcedOccurrence(out io.Writer, response control.ForceOccurrenceResponse) error {
 	return textout.Write(out, func(w *textout.Writer) {
 		w.Printf("library=%s path=%s source_id=%d source_generation=%d asset_id=%d asset_generation=%d job=%s id=%d state=%s\n",
 			response.Library, response.Path,
@@ -241,7 +241,7 @@ func writeForcedOccurrence(out io.Writer, response controlapi.ForceOccurrenceRes
 	})
 }
 
-func writeStagingCleanup(out io.Writer, errOut io.Writer, response controlapi.StagingCleanupResponse) error {
+func writeStagingCleanup(out io.Writer, errOut io.Writer, response control.StagingCleanupResponse) error {
 	if err := textout.Write(out, func(w *textout.Writer) {
 		w.Printf("dry_run=%t root=%s older_than=%s candidates=%d removed=%d skipped=%d protected=%d errors=%d\n",
 			response.DryRun, response.Root, response.OlderThan,
@@ -263,7 +263,7 @@ func writeStagingCleanup(out io.Writer, errOut io.Writer, response controlapi.St
 	return nil
 }
 
-func writeBackup(out io.Writer, response controlapi.StoreBackupResponse) error {
+func writeBackup(out io.Writer, response control.StoreBackupResponse) error {
 	return textout.Write(out, func(w *textout.Writer) {
 		w.Printf("backup=%s size_bytes=%d integrity=%s\n", response.Path, response.SizeBytes, response.Integrity)
 	})

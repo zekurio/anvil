@@ -6,11 +6,11 @@ import (
 	"fmt"
 	"log/slog"
 	"path/filepath"
-	"sort"
 	"strings"
 	"time"
 
 	"github.com/zekurio/anvil/pkg/config"
+	"github.com/zekurio/anvil/pkg/control"
 	"github.com/zekurio/anvil/pkg/domain"
 	"github.com/zekurio/anvil/pkg/scanner"
 	"github.com/zekurio/anvil/pkg/staging"
@@ -20,45 +20,51 @@ import (
 // RetryJobs requeues jobs by reference, in bulk over failed jobs, or both. The
 // bulk form is a separate flag rather than "no references", so an empty
 // reference list can never turn into a queue-wide retry.
-func (s Service) RetryJobs(ctx context.Context, request JobRetryRequest) (JobRetryResponse, error) {
+//
+// Every reference is resolved before anything is written, and the writes then
+// happen in one store transaction. A retry that fails halfway used to leave a
+// committed bulk retry behind while reporting an error, so the operator's only
+// record of the command disagreed with the queue.
+func (s Service) RetryJobs(ctx context.Context, request control.JobRetryRequest) (control.JobRetryResponse, error) {
 	if err := s.requireStore(); err != nil {
-		return JobRetryResponse{}, err
+		return control.JobRetryResponse{}, err
 	}
 	library := strings.TrimSpace(request.Library)
 	if !request.Failed && len(request.References) == 0 {
-		return JobRetryResponse{}, invalidArgumentf("retry requires job references or the failed selector")
+		return control.JobRetryResponse{}, invalidArgumentf("retry requires job references or the failed selector")
 	}
 	if library != "" && !request.Failed {
-		return JobRetryResponse{}, invalidArgumentf("library only narrows a failed-job retry")
+		return control.JobRetryResponse{}, invalidArgumentf("library only narrows a failed-job retry")
 	}
-	if library != "" {
-		if _, ok := s.runtimeConfig().FindLibrary(domain.LibraryName(library)); !ok {
-			return JobRetryResponse{}, notFoundf("library %q is not configured", library)
-		}
-	}
-
-	now := s.now()
-	response := JobRetryResponse{APIVersion: Version, ServerTime: now, Jobs: make([]JobRetryResult, 0, len(request.References))}
-	if request.Failed {
-		count, err := s.Store.RetryFailedJobs(ctx, domain.LibraryName(library), now)
-		if err != nil {
-			return JobRetryResponse{}, err
-		}
-		response.RetriedFailed = count
+	if err := requireConfiguredLibrary(s.runtimeConfig(), library); err != nil {
+		return control.JobRetryResponse{}, err
 	}
 	ids, err := s.resolveJobReferences(ctx, nil, request.References)
 	if err != nil {
-		return JobRetryResponse{}, err
+		return control.JobRetryResponse{}, err
 	}
+	jobIDs := make([]domain.JobID, 0, len(ids))
 	for _, id := range ids {
-		job, err := s.Store.RetryJob(ctx, domain.JobID(id), now)
-		if errors.Is(err, store.ErrNotFound) {
-			return JobRetryResponse{}, notFoundf("job %d no longer exists", id)
-		}
-		if err != nil {
-			return JobRetryResponse{}, err
-		}
-		response.Jobs = append(response.Jobs, JobRetryResult{
+		jobIDs = append(jobIDs, domain.JobID(id))
+	}
+
+	now := s.now()
+	result, err := s.Store.RetryJobs(ctx, store.RetryJobsInput{
+		IDs: jobIDs, Failed: request.Failed, LibraryName: domain.LibraryName(library), Now: now,
+	})
+	if errors.Is(err, store.ErrNotFound) {
+		return control.JobRetryResponse{}, notFoundf("%s", err.Error())
+	}
+	if err != nil {
+		return control.JobRetryResponse{}, err
+	}
+	response := control.JobRetryResponse{
+		APIVersion: control.Version, ServerTime: now,
+		RetriedFailed: result.RetriedFailed,
+		Jobs:          make([]control.JobRetryResult, 0, len(result.Jobs)),
+	}
+	for _, job := range result.Jobs {
+		response.Jobs = append(response.Jobs, control.JobRetryResult{
 			ID: int64(job.ID), Slug: job.Label(), Library: string(job.LibraryName), State: string(job.State),
 		})
 	}
@@ -68,43 +74,47 @@ func (s Service) RetryJobs(ctx context.Context, request JobRetryRequest) (JobRet
 
 // RecoverJobs releases stale leases the same way the daemon's own recovery loop
 // does, using the daemon's live max-attempts policy.
-func (s Service) RecoverJobs(ctx context.Context) (JobRecoverResponse, error) {
+func (s Service) RecoverJobs(ctx context.Context) (control.JobRecoverResponse, error) {
 	if err := s.requireStore(); err != nil {
-		return JobRecoverResponse{}, err
+		return control.JobRecoverResponse{}, err
 	}
 	recovered, err := s.Store.RecoverStaleJobs(ctx, s.runtimeConfig().Daemon.MaxAttempts, s.now())
 	if err != nil {
-		return JobRecoverResponse{}, err
+		return control.JobRecoverResponse{}, err
 	}
-	return JobRecoverResponse{APIVersion: Version, ServerTime: s.now(), RecoveredJobs: recovered}, nil
+	return control.JobRecoverResponse{APIVersion: control.Version, ServerTime: s.now(), RecoveredJobs: recovered}, nil
 }
 
 // PruneJobs deletes terminal jobs whose source occurrence is already missing.
 // It is a dry run unless Apply is set, and it never deletes a job that still
 // owns an unresolved publish journal.
-func (s Service) PruneJobs(ctx context.Context, request JobPruneRequest) (JobPruneResponse, error) {
+func (s Service) PruneJobs(ctx context.Context, request control.JobPruneRequest) (control.JobPruneResponse, error) {
 	if err := s.requireStore(); err != nil {
-		return JobPruneResponse{}, err
+		return control.JobPruneResponse{}, err
 	}
-	states, err := parseJobStates(request.States)
+	library := strings.TrimSpace(request.Library)
+	if err := requireConfiguredLibrary(s.runtimeConfig(), library); err != nil {
+		return control.JobPruneResponse{}, err
+	}
+	states, err := control.ParseJobStates(request.States)
 	if err != nil {
-		return JobPruneResponse{}, err
+		return control.JobPruneResponse{}, err
 	}
 	for _, state := range states {
 		if !state.Terminal() {
-			return JobPruneResponse{}, invalidArgumentf("job state %q is not terminal and cannot be pruned", state)
+			return control.JobPruneResponse{}, invalidArgumentf("job state %q is not terminal and cannot be pruned", state)
 		}
 	}
 	result, err := s.Store.PruneMissingSourceJobs(ctx, store.PruneMissingSourceJobsOptions{
-		LibraryName: domain.LibraryName(strings.TrimSpace(request.Library)),
+		LibraryName: domain.LibraryName(library),
 		States:      states,
 		Apply:       request.Apply,
 	})
 	if err != nil {
-		return JobPruneResponse{}, err
+		return control.JobPruneResponse{}, err
 	}
-	response := JobPruneResponse{
-		APIVersion: Version, ServerTime: s.now(),
+	response := control.JobPruneResponse{
+		APIVersion: control.Version, ServerTime: s.now(),
 		DryRun: result.DryRun, MatchedJobs: result.MatchedJobs,
 		AffectedSources: result.AffectedSources, DeletedJobs: result.DeletedJobs,
 		ByState:       make(map[string]int64, len(result.ByState)),
@@ -121,27 +131,31 @@ func (s Service) PruneJobs(ctx context.Context, request JobPruneRequest) (JobPru
 
 // ScanLibraries runs a scan inside the daemon, so it shares the daemon's store
 // handle and occurrence bookkeeping instead of racing a second process.
-func (s Service) ScanLibraries(ctx context.Context, request LibraryScanRequest) (LibraryScanResponse, error) {
+func (s Service) ScanLibraries(ctx context.Context, request control.LibraryScanRequest) (control.LibraryScanResponse, error) {
 	if s.Scanner == nil {
-		return LibraryScanResponse{}, newError(CodeInternal, "control service scanner is required")
+		return control.LibraryScanResponse{}, newError(control.CodeInternal, "control service scanner is required")
 	}
 	cfg := s.runtimeConfig()
+	name := strings.TrimSpace(request.Library)
+	if err := requireConfiguredLibrary(cfg, name); err != nil {
+		return control.LibraryScanResponse{}, err
+	}
 	var result scanner.ScanResult
 	var err error
-	if name := strings.TrimSpace(request.Library); name != "" {
+	if name != "" {
 		library, ok := cfg.FindLibrary(domain.LibraryName(name))
 		if !ok {
-			return LibraryScanResponse{}, notFoundf("library %q is not configured", name)
+			return control.LibraryScanResponse{}, notFoundf("library %q is not configured", name)
 		}
 		result, err = s.Scanner.ScanLibrary(ctx, library)
 	} else {
 		result, err = s.Scanner.Scan(ctx, cfg)
 	}
 	if err != nil {
-		return LibraryScanResponse{}, err
+		return control.LibraryScanResponse{}, err
 	}
-	response := LibraryScanResponse{
-		APIVersion: Version, ServerTime: s.now(),
+	response := control.LibraryScanResponse{
+		APIVersion: control.Version, ServerTime: s.now(),
 		Libraries: result.Libraries, Sources: result.Sources, Assets: result.Assets,
 		EnqueuedJobs: result.EnqueuedJobs, ExistingJobs: result.ExistingJobs,
 		SkippedIgnored: result.SkippedIgnored, SkippedUnstable: result.SkippedUnstable,
@@ -153,19 +167,21 @@ func (s Service) ScanLibraries(ctx context.Context, request LibraryScanRequest) 
 	return response, nil
 }
 
-func (s Service) LibraryStats(ctx context.Context, request LibraryStatsRequest) (LibraryStatsResponse, error) {
+func (s Service) LibraryStats(ctx context.Context, request control.LibraryStatsRequest) (control.LibraryStatsResponse, error) {
 	if err := s.requireStore(); err != nil {
-		return LibraryStatsResponse{}, err
+		return control.LibraryStatsResponse{}, err
 	}
-	stats, err := s.Store.ListLibraryStats(ctx, store.LibraryStatsFilter{
-		LibraryName: domain.LibraryName(strings.TrimSpace(request.Library)),
-	})
+	library := strings.TrimSpace(request.Library)
+	if err := requireConfiguredLibrary(s.runtimeConfig(), library); err != nil {
+		return control.LibraryStatsResponse{}, err
+	}
+	stats, err := s.Store.ListLibraryStats(ctx, store.LibraryStatsFilter{LibraryName: domain.LibraryName(library)})
 	if err != nil {
-		return LibraryStatsResponse{}, err
+		return control.LibraryStatsResponse{}, err
 	}
-	response := LibraryStatsResponse{APIVersion: Version, ServerTime: s.now(), Libraries: make([]LibraryStatsEntry, 0, len(stats))}
+	response := control.LibraryStatsResponse{APIVersion: control.Version, ServerTime: s.now(), Libraries: make([]control.LibraryStatsEntry, 0, len(stats))}
 	for _, stat := range stats {
-		response.Libraries = append(response.Libraries, LibraryStatsEntry{
+		response.Libraries = append(response.Libraries, control.LibraryStatsEntry{
 			Library: string(stat.LibraryName), Jobs: stat.Jobs,
 			InputSizeBytes: stat.InputSizeBytes, OutputSizeBytes: stat.OutputSizeBytes,
 			SavedBytes: stat.SavedBytes, SavedPercent: stat.SavedPercent,
@@ -176,28 +192,28 @@ func (s Service) LibraryStats(ctx context.Context, request LibraryStatsRequest) 
 
 // ForceOccurrence resolves one exact library-relative media path through the
 // configured scan rules and explicitly creates the next occurrence for it.
-func (s Service) ForceOccurrence(ctx context.Context, request ForceOccurrenceRequest) (ForceOccurrenceResponse, error) {
+func (s Service) ForceOccurrence(ctx context.Context, request control.ForceOccurrenceRequest) (control.ForceOccurrenceResponse, error) {
 	if err := s.requireStore(); err != nil {
-		return ForceOccurrenceResponse{}, err
+		return control.ForceOccurrenceResponse{}, err
 	}
 	if s.Scanner == nil {
-		return ForceOccurrenceResponse{}, newError(CodeInternal, "control service scanner is required")
+		return control.ForceOccurrenceResponse{}, newError(control.CodeInternal, "control service scanner is required")
 	}
 	name := strings.TrimSpace(request.Library)
 	if name == "" {
-		return ForceOccurrenceResponse{}, invalidArgumentf("a library is required")
+		return control.ForceOccurrenceResponse{}, invalidArgumentf("a library is required")
 	}
 	library, ok := s.runtimeConfig().FindLibrary(domain.LibraryName(name))
 	if !ok {
-		return ForceOccurrenceResponse{}, notFoundf("library %q is not configured", name)
+		return control.ForceOccurrenceResponse{}, notFoundf("library %q is not configured", name)
 	}
-	relativePath, err := cleanRelativePath(request.Path)
+	relativePath, err := control.CleanRelativePath(request.Path)
 	if err != nil {
-		return ForceOccurrenceResponse{}, err
+		return control.ForceOccurrenceResponse{}, err
 	}
 	candidate, err := s.forceOccurrenceCandidate(ctx, library, relativePath)
 	if err != nil {
-		return ForceOccurrenceResponse{}, err
+		return control.ForceOccurrenceResponse{}, err
 	}
 	result, err := s.Store.ForceOccurrence(ctx, store.ForceOccurrenceInput{
 		LibraryName:        domain.LibraryName(library.Name),
@@ -219,14 +235,14 @@ func (s Service) ForceOccurrence(ctx context.Context, request ForceOccurrenceReq
 	if errors.Is(err, store.ErrActiveWork) {
 		// Active work is an operator-fixable state, not a daemon failure: the
 		// answer is to wait for or cancel the running job.
-		return ForceOccurrenceResponse{}, invalidArgumentf("library %q path %q still has active work; wait for it or cancel it first", library.Name, relativePath)
+		return control.ForceOccurrenceResponse{}, invalidArgumentf("library %q path %q still has active work; wait for it or cancel it first", library.Name, relativePath)
 	}
 	if err != nil {
-		return ForceOccurrenceResponse{}, fmt.Errorf("force occurrence for library %q path %q: %w", library.Name, relativePath, err)
+		return control.ForceOccurrenceResponse{}, fmt.Errorf("force occurrence for library %q path %q: %w", library.Name, relativePath, err)
 	}
 	slog.Info("control forced an occurrence", "library", library.Name, "path", relativePath, "job", result.Job.Label())
-	return ForceOccurrenceResponse{
-		APIVersion: Version, ServerTime: s.now(),
+	return control.ForceOccurrenceResponse{
+		APIVersion: control.Version, ServerTime: s.now(),
 		Library: library.Name, Path: relativePath,
 		SourceID: int64(result.Source.ID), SourceGeneration: result.Source.Generation,
 		AssetID: int64(result.Asset.ID), AssetGeneration: result.Asset.Generation,
@@ -273,54 +289,47 @@ func (s Service) forceOccurrenceCandidate(ctx context.Context, library config.Li
 // directory belonging to a job that is still active or still owns an unresolved
 // publish journal, because directory age cannot distinguish an abandoned
 // staging directory from the working directory of a long encode.
-func (s Service) CleanupStaging(ctx context.Context, request StagingCleanupRequest) (StagingCleanupResponse, error) {
+func (s Service) CleanupStaging(ctx context.Context, request control.StagingCleanupRequest) (control.StagingCleanupResponse, error) {
 	if err := s.requireStore(); err != nil {
-		return StagingCleanupResponse{}, err
+		return control.StagingCleanupResponse{}, err
 	}
 	cfg := s.runtimeConfig()
 	age := cfg.StagingCleanupAge()
-	if requested := strings.TrimSpace(request.OlderThan); requested != "" {
+	requested := strings.TrimSpace(request.OlderThan)
+	if requested != "" {
 		parsed, err := time.ParseDuration(requested)
 		if err != nil {
-			return StagingCleanupResponse{}, invalidArgumentf("parse older_than: %v", err)
+			return control.StagingCleanupResponse{}, invalidArgumentf("parse older_than: %v", err)
 		}
 		age = parsed
 	}
-	if age < 0 {
-		return StagingCleanupResponse{}, invalidArgumentf("staging cleanup age must be non-negative")
+	// An age of zero removes nothing: pkg/staging refuses to sweep without a
+	// cutoff, because "everything older than now" is every directory including
+	// the one an encode created a second ago. Reporting that as a completed
+	// cleanup of zero candidates is how an operator concludes staging is clean
+	// when it was never looked at, so it is refused instead — differently
+	// depending on whether they chose the zero or inherited it.
+	switch {
+	case age < 0:
+		return control.StagingCleanupResponse{}, invalidArgumentf("staging cleanup age must be non-negative")
+	case age == 0 && requested == "":
+		return control.StagingCleanupResponse{}, invalidArgumentf(
+			"daemon.staging_cleanup_age is 0s, which disables age-based cleanup; pass an explicit older_than such as 24h")
+	case age == 0:
+		return control.StagingCleanupResponse{}, invalidArgumentf(
+			"older_than must be greater than zero; an age of 0s would name every staging directory, including one a running encode just created")
 	}
-	protected, err := s.Store.ProtectedJobs(ctx)
-	if err != nil {
-		return StagingCleanupResponse{}, err
-	}
-	held := make(map[int64]store.ProtectedJob, len(protected))
-	for _, job := range protected {
-		held[int64(job.JobID)] = job
-	}
-	root := staging.Root(cfg.Daemon.TempDir)
-	result, err := staging.Manager{Root: root}.CleanupStale(staging.CleanupStaleOptions{
-		OlderThan: age,
-		Now:       s.now(),
-		DryRun:    request.DryRun,
-		Protected: func(jobID int64, _ int64) bool {
-			_, ok := held[jobID]
-			return ok
-		},
+	result, err := SweepStaging(ctx, s.Store, staging.Root(cfg.Daemon.TempDir), StagingSweep{
+		OlderThan: age, Now: s.now(), DryRun: request.DryRun,
 	})
 	if err != nil {
-		return StagingCleanupResponse{}, err
+		return control.StagingCleanupResponse{}, err
 	}
-	response := StagingCleanupResponse{
-		APIVersion: Version, ServerTime: s.now(), DryRun: request.DryRun,
-		Root: root, OlderThan: age.String(),
+	response := control.StagingCleanupResponse{
+		APIVersion: control.Version, ServerTime: s.now(), DryRun: request.DryRun,
+		Root: result.Root, OlderThan: age.String(),
 		Candidates: result.Candidates, Removed: result.Removed, Skipped: result.Skipped,
-		Protected: result.Protected, Errors: result.Errors,
-	}
-	for _, jobID := range uniqueJobIDs(result.ProtectedJobs) {
-		job := held[jobID]
-		response.ProtectedJobs = append(response.ProtectedJobs, ProtectedJob{
-			ID: jobID, Slug: job.Slug, Reason: string(job.Reason),
-		})
+		Protected: result.Protected, Errors: result.Errors, ProtectedJobs: result.ProtectedJobs,
 	}
 	if !request.DryRun && (result.Removed > 0 || len(result.Errors) > 0) {
 		slog.Info("control cleaned staging", "removed", result.Removed, "protected", result.Protected, "errors", len(result.Errors))
@@ -331,75 +340,37 @@ func (s Service) CleanupStaging(ctx context.Context, request StagingCleanupReque
 // BackupStore writes a consistent snapshot of the live SQLite store. The
 // destination is resolved by the daemon, which refuses URI destinations, the
 // live database, and any path that already exists.
-func (s Service) BackupStore(ctx context.Context, request StoreBackupRequest) (StoreBackupResponse, error) {
+func (s Service) BackupStore(ctx context.Context, request control.StoreBackupRequest) (control.StoreBackupResponse, error) {
 	if err := s.requireStore(); err != nil {
-		return StoreBackupResponse{}, err
+		return control.StoreBackupResponse{}, err
 	}
 	destination := strings.TrimSpace(request.Destination)
 	if destination == "" {
-		return StoreBackupResponse{}, invalidArgumentf("a backup destination path is required")
+		return control.StoreBackupResponse{}, invalidArgumentf("a backup destination path is required")
 	}
 	if !filepath.IsAbs(destination) {
 		// The daemon's working directory is not the operator's, so a relative
 		// destination would land somewhere neither of them predicted.
-		return StoreBackupResponse{}, invalidArgumentf("backup destination %q must be absolute, because the daemon resolves it", destination)
+		return control.StoreBackupResponse{}, invalidArgumentf("backup destination %q must be absolute, because the daemon resolves it", destination)
 	}
 	result, err := s.Store.Backup(ctx, destination)
 	if err != nil {
-		return StoreBackupResponse{}, err
+		return control.StoreBackupResponse{}, err
 	}
 	slog.Info("control backed up the store", "path", result.Path, "size_bytes", result.SizeBytes)
-	return StoreBackupResponse{
-		APIVersion: Version, ServerTime: s.now(),
+	return control.StoreBackupResponse{
+		APIVersion: control.Version, ServerTime: s.now(),
 		Path: result.Path, SizeBytes: result.SizeBytes, Integrity: result.Integrity,
 	}, nil
 }
 
-func protectedJobs(jobs []store.ProtectedJob) []ProtectedJob {
+func protectedJobs(jobs []store.ProtectedJob) []control.ProtectedJob {
 	if len(jobs) == 0 {
 		return nil
 	}
-	result := make([]ProtectedJob, 0, len(jobs))
+	result := make([]control.ProtectedJob, 0, len(jobs))
 	for _, job := range jobs {
-		result = append(result, ProtectedJob{ID: int64(job.JobID), Slug: job.Slug, Reason: string(job.Reason)})
+		result = append(result, control.ProtectedJob{ID: int64(job.JobID), Slug: job.Slug, Reason: string(job.Reason)})
 	}
 	return result
-}
-
-func uniqueJobIDs(ids []int64) []int64 {
-	seen := make(map[int64]struct{}, len(ids))
-	result := make([]int64, 0, len(ids))
-	for _, id := range ids {
-		if _, ok := seen[id]; ok {
-			continue
-		}
-		seen[id] = struct{}{}
-		result = append(result, id)
-	}
-	sort.Slice(result, func(i, j int) bool { return result[i] < result[j] })
-	return result
-}
-
-// parseJobStates accepts repeated and comma-separated state selectors so the
-// same wording works in a flag, a request field, and a config value.
-func parseJobStates(values []string) ([]domain.JobState, error) {
-	states := make([]domain.JobState, 0, len(values))
-	seen := make(map[domain.JobState]struct{}, len(values))
-	for _, value := range values {
-		for _, part := range strings.Split(value, ",") {
-			state := domain.JobState(strings.TrimSpace(part))
-			if state == "" {
-				continue
-			}
-			if !domain.ValidJobState(state) {
-				return nil, invalidArgumentf("unknown job state %q", state)
-			}
-			if _, ok := seen[state]; ok {
-				continue
-			}
-			seen[state] = struct{}{}
-			states = append(states, state)
-		}
-	}
-	return states, nil
 }
