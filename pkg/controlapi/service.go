@@ -109,11 +109,11 @@ func (s Service) ListJobs(ctx context.Context, query JobQuery) (JobListResponse,
 			continue
 		}
 		if absolutePath != "" {
-			side, ok := keys.matchesAbsolute(absolutePath)
+			sides, ok := keys.matchesAbsolute(absolutePath)
 			if !ok {
 				continue
 			}
-			item.MatchedOn = side
+			item.MatchedOn = sides
 		}
 		response.Matched++
 		if query.Limit > 0 && len(response.Jobs) >= query.Limit {
@@ -122,12 +122,51 @@ func (s Service) ListJobs(ctx context.Context, query JobQuery) (JobListResponse,
 		}
 		response.Jobs = append(response.Jobs, item)
 	}
+	if absolutePath != "" && response.Matched == 0 {
+		response.PathOutsideLibraries = !pathUnderAnyLibrary(cfg, absolutePath)
+	}
 	if query.WithSelection {
 		if err := s.attachStreamSelections(ctx, response.Jobs); err != nil {
 			return JobListResponse{}, err
 		}
 	}
 	return response, nil
+}
+
+// pathUnderAnyLibrary reports whether an absolute path lies under a configured
+// library root or one of its handoff destinations. A path that lies under none
+// of them can never match a job, which is a different answer from "no job
+// matched" and has to stay distinguishable from it.
+func pathUnderAnyLibrary(cfg config.Config, absolutePath string) bool {
+	for name := range cfg.Libraries {
+		library, ok := cfg.FindLibrary(domain.LibraryName(name))
+		if !ok {
+			continue
+		}
+		if pathUnderRoot(library.Path, absolutePath) {
+			return true
+		}
+		if pathUnderRoot(library.Download.HandoffPath, absolutePath) {
+			return true
+		}
+	}
+	return false
+}
+
+func pathUnderRoot(root, absolutePath string) bool {
+	root = strings.TrimSpace(root)
+	if root == "" {
+		return false
+	}
+	root = filepath.Clean(root)
+	if absolutePath == root {
+		return true
+	}
+	relative, err := filepath.Rel(root, absolutePath)
+	if err != nil {
+		return false
+	}
+	return relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator))
 }
 
 // attachStreamSelections fills in the recorded stream selection decisions for
@@ -157,9 +196,10 @@ func (s Service) attachStreamSelections(ctx context.Context, jobs []JobResponse)
 			if err != nil {
 				// A decision Anvil cannot read is reported as unreadable rather
 				// than omitted, so a consumer never reads it as "nothing here".
+				// The decision itself stays absent for the same reason.
 				selection.DecisionError = err.Error()
 			} else {
-				selection.Decision = decision
+				selection.Decision = &decision
 			}
 			selections = append(selections, selection)
 		}
@@ -271,31 +311,36 @@ func (k jobPathKeys) matchesRelative(target string) bool {
 	return false
 }
 
-// matchesAbsolute reports the side that matched. Keys are built in priority
-// order and deduplicated keeping the first, so a path that is both a source and
-// a destination reports the source.
-func (k jobPathKeys) matchesAbsolute(target string) (PathMatchSide, bool) {
+// matchesAbsolute reports every side that matched, in the order the keys were
+// built. One path is legitimately several sides at once: an in-place
+// replacement writes the converted file back over its own source, so returning
+// a single side would report that output as "not a destination".
+func (k jobPathKeys) matchesAbsolute(target string) ([]PathMatchSide, bool) {
+	var sides []PathMatchSide
 	for _, candidate := range k.absolute {
 		if candidate.path == target {
-			return candidate.side, true
+			sides = append(sides, candidate.side)
 		}
 	}
-	return "", false
+	return sides, len(sides) > 0
 }
 
-// uniqueAbsoluteKeys drops empty and repeated paths, keeping the first side
-// recorded for each path.
+// uniqueAbsoluteKeys normalizes paths and drops empty ones and exact repeats of
+// the same path and side. A path repeated under a different side is kept, so a
+// match can report all of them.
 func uniqueAbsoluteKeys(keys ...absolutePathKey) []absolutePathKey {
 	result := make([]absolutePathKey, 0, len(keys))
-	seen := make(map[string]struct{}, len(keys))
+	seen := make(map[absolutePathKey]struct{}, len(keys))
 	for _, key := range keys {
-		if strings.TrimSpace(key.path) == "" {
+		key.path = strings.TrimSpace(key.path)
+		if key.path == "" {
 			continue
 		}
-		if _, ok := seen[key.path]; ok {
+		key.path = filepath.Clean(key.path)
+		if _, ok := seen[key]; ok {
 			continue
 		}
-		seen[key.path] = struct{}{}
+		seen[key] = struct{}{}
 		result = append(result, key)
 	}
 	return result
