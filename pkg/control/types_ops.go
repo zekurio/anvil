@@ -1,4 +1,4 @@
-package controlapi
+package control
 
 import "time"
 

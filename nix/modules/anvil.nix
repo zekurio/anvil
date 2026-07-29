@@ -160,8 +160,12 @@ let
   packageExe = if cfg.package == null then "${pkgs.coreutils}/bin/false" else lib.getExe cfg.package;
   # The control client is a separate package on purpose: it speaks to the daemon
   # over the control socket and needs none of the media toolchain, so installing
-  # it system-wide must not drag ffmpeg into every user's profile.
-  controlClientPackage = if cfg.controlClient.package != null then cfg.controlClient.package else cfg.package;
+  # it system-wide must not drag ffmpeg into every user's profile. There is
+  # deliberately no fallback to services.anvil.package: that package wraps
+  # anvild with ffmpeg, ab-av1, dovi_tool, and MKVToolNix, and installing it as
+  # "the lightweight client" is exactly the mistake this option exists to avoid.
+  # The assertion below asks for the choice rather than guessing at it.
+  controlClientPackage = cfg.controlClient.package;
   ffmpegPackage =
     if pkgs.stdenv.isLinux then
       (pkgs.jellyfin-ffmpeg or pkgs.ffmpeg)
@@ -682,7 +686,7 @@ in
     controlClient = {
       install = mkOption {
         type = types.bool;
-        default = true;
+        default = false;
         description = ''
           Install the anvilctl control client into environment.systemPackages.
 
@@ -691,6 +695,10 @@ in
           ffmpeg. Access is granted by socket permissions, not by installing
           the binary, so installing it is safe and being able to run it is not
           the same as being allowed to use it.
+
+          It is off by default because installing it requires naming a package,
+          and the only right answer is the standalone anvilctl build. Enable it
+          together with services.anvil.controlClient.package.
         '';
       };
 
@@ -699,11 +707,13 @@ in
         default = null;
         example = literalExpression "inputs.anvil.packages.\${pkgs.system}.anvilctl";
         description = ''
-          Package providing anvilctl. Null uses services.anvil.package.
+          Package providing anvilctl. Required when controlClient.install is
+          true; there is no fallback to services.anvil.package.
 
-          Prefer the standalone anvilctl package: the full Anvil package wraps
-          anvild with ffmpeg, ab-av1, dovi_tool, and MKVToolNix, which an
-          operator's shell has no use for.
+          Use the standalone anvilctl package. services.anvil.package wraps
+          anvild with ffmpeg, ab-av1, dovi_tool, and MKVToolNix, none of which
+          an operator's shell has any use for, and installing it system-wide
+          puts that entire toolchain in every user's PATH.
         '';
       };
 
@@ -737,7 +747,27 @@ in
     group = mkOption {
       type = types.nullOr types.str;
       default = null;
-      description = "Group to run the daemon as. Null leaves systemd's default group.";
+      example = "anvil";
+      description = ''
+        Group to run the daemon as. Null leaves systemd's default group.
+
+        This group is the operator access boundary: the control socket is
+        created 0660 inside a 0750 runtime directory, both owned by it, so its
+        members are exactly the users who can run anvilctl.
+      '';
+    };
+
+    createGroup = mkOption {
+      type = types.bool;
+      default = false;
+      description = ''
+        Create services.anvil.group as a system group.
+
+        Leave this off when the group is defined elsewhere, which is the usual
+        case: the group only matters because operators are added to it, and
+        whoever adds them normally declares it. Turning it on is the shortcut
+        for a host where Anvil is the only reason the group exists.
+      '';
     };
 
     configFile = mkOption {
@@ -931,7 +961,16 @@ in
       }
       {
         assertion = !cfg.controlClient.install || controlClientPackage != null;
-        message = "services.anvil.controlClient.package or services.anvil.package must provide anvilctl when controlClient.install is true.";
+        message = ''
+          services.anvil.controlClient.package must be set when controlClient.install is true.
+          Use the standalone anvilctl package, for example
+          inputs.anvil.packages.''${pkgs.system}.anvilctl. services.anvil.package is not used as a
+          fallback because it wraps anvild with the whole media toolchain.
+        '';
+      }
+      {
+        assertion = !cfg.createGroup || cfg.group != null;
+        message = "services.anvil.createGroup requires services.anvil.group to name the group to create.";
       }
     ] ++ arrAssertions ++ libraryAssertions;
 
@@ -939,6 +978,12 @@ in
     environment.systemPackages = optional cfg.controlClient.install controlClientPackage;
     environment.variables = optionalAttrs (cfg.controlClient.install && cfg.controlClient.setEnvironment) {
       ANVIL_CONTROL_SOCKET = cfg.daemon.controlSocket;
+    };
+    # Only when asked for. A group systemd is told to run as has to exist, and
+    # silently creating one that the administrator also declares elsewhere
+    # would make two definitions of the same access boundary.
+    users.groups = optionalAttrs (cfg.createGroup && cfg.group != null) {
+      ${cfg.group} = { };
     };
     # The control socket directory keeps mode 0750: the socket itself is 0660,
     # so its directory group is the access boundary for anvilctl. Widening
@@ -952,8 +997,9 @@ in
     warnings = optional (cfg.controlClient.install && cfg.group == null) ''
       services.anvil.controlClient.install is enabled but services.anvil.group is null,
       so the control socket ${cfg.daemon.controlSocket} is owned by the service's default
-      group. Set services.anvil.group and add operators to it, or anvilctl will be
-      refused with a permission error.
+      group. Set services.anvil.group, make sure that group exists (declare it yourself or
+      set services.anvil.createGroup), and add operators to it. Otherwise anvilctl is
+      installed but every non-root operator is refused with a permission error.
     '';
 
     systemd.services.anvil = {

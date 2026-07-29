@@ -5,7 +5,7 @@ import (
 	"flag"
 	"strings"
 
-	"github.com/zekurio/anvil/pkg/controlapi"
+	"github.com/zekurio/anvil/pkg/control"
 )
 
 func runJob(ctx context.Context, e *env, args []string) error {
@@ -82,7 +82,7 @@ func runJobList(ctx context.Context, e *env, args []string) error {
 	if !limitSet && strings.TrimSpace(path) == "" && strings.TrimSpace(absolutePath) == "" {
 		limit = 20
 	}
-	response, err := e.client.ListJobs(ctx, controlapi.JobQuery{
+	response, err := e.client.ListJobs(ctx, control.JobQuery{
 		Library: library, Path: path, AbsolutePath: absolutePath,
 		States: splitStates(states), CurrentOnly: currentOnly, Limit: limit,
 		WithSelection: withSelection,
@@ -104,7 +104,7 @@ func runJobShow(ctx context.Context, e *env, args []string) error {
 	if len(positional) != 1 {
 		return usagef("job show requires exactly one job id or slug")
 	}
-	response, err := e.client.ShowJob(ctx, controlapi.JobShowRequest{Reference: positional[0]})
+	response, err := e.client.ShowJob(ctx, control.JobShowRequest{Reference: positional[0]})
 	if err != nil {
 		return err
 	}
@@ -128,7 +128,7 @@ func runJobCancel(ctx context.Context, e *env, args []string) error {
 	if flags == nil {
 		return err
 	}
-	response, err := e.client.CancelJobs(ctx, controlapi.JobCancelRequest{
+	response, err := e.client.CancelJobs(ctx, control.JobCancelRequest{
 		Library: library, Path: path, AbsolutePath: absolutePath,
 		States: splitStates(states), CurrentOnly: currentOnly,
 		References: positional, Reason: reason,
@@ -155,7 +155,7 @@ func runJobRetry(ctx context.Context, e *env, args []string) error {
 	if !failed && len(positional) == 0 {
 		return usagef("job retry requires job ids or slugs, or --failed")
 	}
-	response, err := e.client.RetryJobs(ctx, controlapi.JobRetryRequest{
+	response, err := e.client.RetryJobs(ctx, control.JobRetryRequest{
 		References: positional, Failed: failed, Library: library,
 	})
 	if err != nil {
@@ -181,7 +181,7 @@ func runJobPrune(ctx context.Context, e *env, args []string) error {
 	if err := noArguments("job prune", positional); err != nil {
 		return err
 	}
-	response, err := e.client.PruneJobs(ctx, controlapi.JobPruneRequest{
+	response, err := e.client.PruneJobs(ctx, control.JobPruneRequest{
 		Library: library, States: splitStates(states), Apply: apply,
 	})
 	if err != nil {

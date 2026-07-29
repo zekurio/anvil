@@ -56,8 +56,35 @@ func TestDaemonOwnershipIsReleasedForARestart(t *testing.T) {
 	}
 }
 
-// TestDaemonOwnershipSkipsStoresWithoutAFilesystemIdentity keeps in-memory and
-// URI stores usable, since no lock file could describe them.
+// TestDaemonOwnershipGuardsAFileURIStore is the hole the guard used to have:
+// "file:" is how an operator sets SQLite pragmas, and skipping it let a second
+// daemon run recovery and staging cleanup against a live database.
+func TestDaemonOwnershipGuardsAFileURIStore(t *testing.T) {
+	storePath := filepath.Join(t.TempDir(), "anvil.db")
+	first, err := acquireDaemonOwnership("file:" + storePath + "?_pragma=journal_mode(WAL)")
+	if err != nil {
+		t.Fatalf("acquireDaemonOwnership(uri) error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := first.release(); err != nil {
+			t.Errorf("release() error = %v", err)
+		}
+	})
+	// The plain path names the same database, so it must be refused too.
+	second, err := acquireDaemonOwnership(storePath)
+	if err == nil {
+		if releaseErr := second.release(); releaseErr != nil {
+			t.Errorf("release() error = %v", releaseErr)
+		}
+		t.Fatal("a plain path started beside the same database opened through a file: URI")
+	}
+	if !strings.Contains(err.Error(), "already owns the store") {
+		t.Fatalf("acquireDaemonOwnership() error = %v", err)
+	}
+}
+
+// TestDaemonOwnershipSkipsStoresWithoutAFilesystemIdentity keeps in-memory
+// stores usable, since no lock file could describe them.
 func TestDaemonOwnershipSkipsStoresWithoutAFilesystemIdentity(t *testing.T) {
 	for _, path := range []string{"", ":memory:", "file:anvil.db?mode=memory"} {
 		ownership, err := acquireDaemonOwnership(path)
