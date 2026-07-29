@@ -279,7 +279,7 @@ func writeJobs(out io.Writer, response controlapi.JobListResponse) error {
 		return err
 	}
 	if response.PathOutsideLibraries {
-		if _, err := fmt.Fprintln(out, "path resolves under no configured library, so no job could match it"); err != nil {
+		if _, err := fmt.Fprintln(out, "path resolves under no configured library root, so it is unlikely any job owns it"); err != nil {
 			return err
 		}
 	}

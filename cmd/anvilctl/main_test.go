@@ -228,7 +228,7 @@ func TestWriteJobsRendersSelectionsAndMatchSides(t *testing.T) {
 		{
 			name:     "path outside every library",
 			response: controlapi.JobListResponse{PathOutsideLibraries: true, Jobs: []controlapi.JobResponse{}},
-			want:     []string{"path resolves under no configured library"},
+			want:     []string{"path resolves under no configured library root"},
 		},
 	}
 	for _, tt := range tests {

@@ -207,10 +207,22 @@ const maxArtifactJobIDsPerQuery = 500
 // It reads by name rather than by meaning so the store keeps no knowledge of
 // what any particular artifact payload contains.
 func (s *SQLiteStore) LatestAttemptArtifacts(ctx context.Context, name string, jobIDs []domain.JobID) (map[domain.JobID][]domain.AttemptEvent, error) {
-	result := make(map[domain.JobID][]domain.AttemptEvent, len(jobIDs))
-	for start := 0; start < len(jobIDs); start += maxArtifactJobIDsPerQuery {
-		end := min(start+maxArtifactJobIDsPerQuery, len(jobIDs))
-		if err := s.appendLatestAttemptArtifacts(ctx, name, jobIDs[start:end], result); err != nil {
+	// A single IN list is set membership, but chunking is not: a repeated id
+	// split across two chunks would append its events twice. Deduplicate so the
+	// result never depends on the caller's ordering.
+	unique := make([]domain.JobID, 0, len(jobIDs))
+	seen := make(map[domain.JobID]struct{}, len(jobIDs))
+	for _, jobID := range jobIDs {
+		if _, ok := seen[jobID]; ok {
+			continue
+		}
+		seen[jobID] = struct{}{}
+		unique = append(unique, jobID)
+	}
+	result := make(map[domain.JobID][]domain.AttemptEvent, len(unique))
+	for start := 0; start < len(unique); start += maxArtifactJobIDsPerQuery {
+		end := min(start+maxArtifactJobIDsPerQuery, len(unique))
+		if err := s.appendLatestAttemptArtifacts(ctx, name, unique[start:end], result); err != nil {
 			return nil, err
 		}
 	}

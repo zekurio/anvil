@@ -46,9 +46,13 @@ type JobListResponse struct {
 	Truncated  bool          `json:"truncated"`
 	Jobs       []JobResponse `json:"jobs"`
 	// PathOutsideLibraries reports that the absolute_path selector resolved
-	// under no configured library root, so no job could ever have matched it.
-	// Without this, zero results are indistinguishable from a question Anvil
-	// was structurally unable to answer, and a caller reports absence as fact.
+	// under no configured library root or handoff destination. Without this,
+	// zero results are indistinguishable from a question Anvil was structurally
+	// unable to answer, and a caller reports absence as fact.
+	//
+	// It describes the path against the current configuration, not the whole
+	// job history: a job journaled against a library that has since been
+	// reconfigured can still own a path reported as outside.
 	PathOutsideLibraries bool `json:"path_outside_libraries,omitempty"`
 }
 

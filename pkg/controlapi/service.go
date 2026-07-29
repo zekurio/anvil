@@ -134,9 +134,12 @@ func (s Service) ListJobs(ctx context.Context, query JobQuery) (JobListResponse,
 }
 
 // pathUnderAnyLibrary reports whether an absolute path lies under a configured
-// library root or one of its handoff destinations. A path that lies under none
-// of them can never match a job, which is a different answer from "no job
+// library root or one of its handoff destinations. A path under none of them
+// almost certainly cannot match a job, which is a different answer from "no job
 // matched" and has to stay distinguishable from it.
+//
+// Containment is lexical, matching how paths are compared everywhere else here,
+// so the flag can never contradict matched_on.
 func pathUnderAnyLibrary(cfg config.Config, absolutePath string) bool {
 	for name := range cfg.Libraries {
 		library, ok := cfg.FindLibrary(domain.LibraryName(name))
@@ -151,6 +154,15 @@ func pathUnderAnyLibrary(cfg config.Config, absolutePath string) bool {
 		}
 	}
 	return false
+}
+
+// assetKeyPath drops the asset key for a job that has no asset, so a match can
+// never report an "asset" side the response itself omits.
+func assetKeyPath(asset domain.MediaAsset, assetAbsolute string) string {
+	if asset.ID == 0 {
+		return ""
+	}
+	return assetAbsolute
 }
 
 func pathUnderRoot(root, absolutePath string) bool {
@@ -399,7 +411,7 @@ func (s Service) jobResponse(ctx context.Context, cfg config.Config, summary sto
 		),
 		absolute: uniqueAbsoluteKeys(
 			absolutePathKey{path: sourceAbsolute, side: PathMatchSource},
-			absolutePathKey{path: assetAbsolute, side: PathMatchAsset},
+			absolutePathKey{path: assetKeyPath(asset, assetAbsolute), side: PathMatchAsset},
 			absolutePathKey{path: item.DestinationPath, side: PathMatchDestination},
 		),
 	}

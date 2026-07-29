@@ -793,3 +793,54 @@ func TestListJobsReportsEverySideAPathMatched(t *testing.T) {
 		t.Fatalf("MatchedOn = %v, want %v so the output is not reported as merely a source", response.Jobs[0].MatchedOn, want)
 	}
 }
+
+// TestHTTPForwardsWithSelection covers the server half of the wire hop. The
+// client half is pinned in client_test.go; without both, --with-selection can
+// be broken end to end with the whole suite green.
+func TestHTTPForwardsWithSelection(t *testing.T) {
+	ctx := context.Background()
+	service, state, _, job := testService(t, ctx)
+	recordStreamSelection(t, ctx, state, job.ID, germanMissingDecision())
+
+	tests := []struct {
+		name   string
+		target string
+		want   bool
+	}{
+		{name: "requested", target: "/v1/jobs?library=downloads&with_selection=true", want: true},
+		{name: "not requested", target: "/v1/jobs?library=downloads"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			request := httptest.NewRequest(http.MethodGet, tt.target, nil)
+			response := httptest.NewRecorder()
+			service.Handler().ServeHTTP(response, request)
+			if response.Code != http.StatusOK {
+				t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+			}
+			if got := strings.Contains(response.Body.String(), `"stream_selection"`); got != tt.want {
+				t.Fatalf("stream_selection present = %t, want %t, body = %s", got, tt.want, response.Body.String())
+			}
+		})
+	}
+}
+
+// TestUniqueAbsoluteKeysNormalizesAndDeduplicates pins the normalization that
+// keeps a traversal-equivalent path from being treated as a different key.
+func TestUniqueAbsoluteKeysNormalizesAndDeduplicates(t *testing.T) {
+	keys := uniqueAbsoluteKeys(
+		absolutePathKey{path: "/media/Movie.mkv", side: PathMatchSource},
+		absolutePathKey{path: "/media/Season/../Movie.mkv", side: PathMatchAsset},
+		absolutePathKey{path: "  ", side: PathMatchDestination},
+		absolutePathKey{path: "/media/Movie.mkv", side: PathMatchSource},
+		absolutePathKey{path: "/media/Movie.mkv/", side: PathMatchDestination},
+	)
+	want := []absolutePathKey{
+		{path: "/media/Movie.mkv", side: PathMatchSource},
+		{path: "/media/Movie.mkv", side: PathMatchAsset},
+		{path: "/media/Movie.mkv", side: PathMatchDestination},
+	}
+	if !slices.Equal(keys, want) {
+		t.Fatalf("uniqueAbsoluteKeys() = %+v, want %+v", keys, want)
+	}
+}
