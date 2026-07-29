@@ -3,12 +3,14 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 )
 
-const currentSchemaVersion = 5
+const currentSchemaVersion = 6
 
 const currentSchema = `
 CREATE TABLE schema_migrations (
@@ -80,7 +82,7 @@ CREATE TABLE jobs (
 	asset_id INTEGER REFERENCES media_assets(id) ON DELETE CASCADE,
 	library_name TEXT NOT NULL,
 	priority INTEGER NOT NULL DEFAULT 0,
-	state TEXT NOT NULL CHECK (state IN ('pending', 'leased', 'running', 'validating', 'replacing', 'complete', 'failed', 'retrying', 'skipped')),
+	state TEXT NOT NULL CHECK (state IN ('pending', 'leased', 'running', 'validating', 'replacing', 'complete', 'failed', 'retrying', 'skipped', 'canceled')),
 	lease_owner TEXT NOT NULL DEFAULT '',
 	lease_deadline TEXT,
 	heartbeat_at TEXT,
@@ -169,18 +171,51 @@ func (s *SQLiteStore) configureReadOnly(ctx context.Context) error {
 	return nil
 }
 
+// coreSchemaTables must all exist before an existing database is treated as an
+// Anvil schema that can be migrated forward instead of reset.
+var coreSchemaTables = []string{
+	"library_scans", "media_sources", "media_assets", "jobs",
+	"attempts", "attempt_events", "publish_operations",
+}
+
+type schemaMigration struct {
+	version int
+	apply   func(context.Context, *sql.Tx) error
+}
+
+// schemaMigrations upgrades an existing database one version at a time. Each
+// entry is frozen once released: it must keep working against the schema its
+// predecessor produced, so it never references the evolving currentSchema.
+var schemaMigrations = []schemaMigration{
+	{version: 6, apply: addCanceledJobState},
+}
+
 func (s *SQLiteStore) migrate(ctx context.Context) error {
-	compatible, exists, err := s.schemaCompatibility(ctx)
+	version, exists, err := s.schemaVersion(ctx)
 	if err != nil {
 		return err
 	}
-	if exists {
-		if !compatible {
-			return ErrIncompatibleSchema
+	if !exists {
+		if err := s.bootstrapSchema(ctx); err != nil {
+			return err
 		}
 		return s.verifyForeignKeys(ctx)
 	}
+	if version <= 0 || version > currentSchemaVersion {
+		return ErrIncompatibleSchema
+	}
+	if err := s.requireCoreTables(ctx); err != nil {
+		return err
+	}
+	if version < currentSchemaVersion {
+		if err := s.upgradeSchema(ctx, version); err != nil {
+			return err
+		}
+	}
+	return s.verifyForeignKeys(ctx)
+}
 
+func (s *SQLiteStore) bootstrapSchema(ctx context.Context) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin schema bootstrap: %w", err)
@@ -198,67 +233,187 @@ INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit schema bootstrap: %w", err)
 	}
-	return s.verifyForeignKeys(ctx)
+	return nil
 }
 
-func (s *SQLiteStore) schemaCompatibility(ctx context.Context) (compatible bool, exists bool, err error) {
+// upgradeSchema applies every pending migration on a single reserved
+// connection so the foreign-key pragma it toggles cannot leak to other work.
+func (s *SQLiteStore) upgradeSchema(ctx context.Context, from int) (err error) {
+	conn, err := s.db.Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("reserve schema migration connection: %w", err)
+	}
+	defer func() {
+		if closeErr := conn.Close(); closeErr != nil {
+			err = errors.Join(err, fmt.Errorf("release schema migration connection: %w", closeErr))
+		}
+	}()
+	for _, migration := range schemaMigrations {
+		if migration.version <= from {
+			continue
+		}
+		if err := applySchemaMigration(ctx, conn, migration); err != nil {
+			return fmt.Errorf("apply schema migration %d: %w", migration.version, err)
+		}
+		slog.Info("store schema migrated", "from_version", from, "version", migration.version)
+		from = migration.version
+	}
+	if from != currentSchemaVersion {
+		return ErrIncompatibleSchema
+	}
+	return nil
+}
+
+func applySchemaMigration(ctx context.Context, conn *sql.Conn, migration schemaMigration) (err error) {
+	if _, err := conn.ExecContext(ctx, `PRAGMA foreign_keys = OFF`); err != nil {
+		return fmt.Errorf("disable foreign keys: %w", err)
+	}
+	defer func() {
+		if _, restoreErr := conn.ExecContext(ctx, `PRAGMA foreign_keys = ON`); restoreErr != nil {
+			err = errors.Join(err, fmt.Errorf("restore foreign keys: %w", restoreErr))
+		}
+	}()
+
+	tx, err := conn.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin migration transaction: %w", err)
+	}
+	defer rollback(tx)
+
+	if err := migration.apply(ctx, tx); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `
+INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)
+`, migration.version, encodeTime(time.Now())); err != nil {
+		return fmt.Errorf("record schema version %d: %w", migration.version, err)
+	}
+	if err := verifyForeignKeysTx(ctx, tx); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit migration transaction: %w", err)
+	}
+	return nil
+}
+
+// addCanceledJobState rebuilds the jobs table so the state CHECK constraint
+// accepts operator cancellation. SQLite cannot alter a CHECK in place, so this
+// follows the documented table-rebuild procedure with foreign keys disabled.
+func addCanceledJobState(ctx context.Context, tx *sql.Tx) error {
+	statements := []string{`
+CREATE TABLE jobs_migration_6 (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	slug TEXT NOT NULL UNIQUE,
+	source_id INTEGER NOT NULL REFERENCES media_sources(id) ON DELETE CASCADE,
+	asset_id INTEGER REFERENCES media_assets(id) ON DELETE CASCADE,
+	library_name TEXT NOT NULL,
+	priority INTEGER NOT NULL DEFAULT 0,
+	state TEXT NOT NULL CHECK (state IN ('pending', 'leased', 'running', 'validating', 'replacing', 'complete', 'failed', 'retrying', 'skipped', 'canceled')),
+	lease_owner TEXT NOT NULL DEFAULT '',
+	lease_deadline TEXT,
+	heartbeat_at TEXT,
+	attempt_count INTEGER NOT NULL DEFAULT 0,
+	last_error TEXT NOT NULL DEFAULT '',
+	input_size_bytes INTEGER NOT NULL DEFAULT 0,
+	output_size_bytes INTEGER NOT NULL DEFAULT 0,
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL,
+	completed_at TEXT,
+	pipeline_context_json BLOB NOT NULL DEFAULT x''
+)`, `
+INSERT INTO jobs_migration_6 (
+	id, slug, source_id, asset_id, library_name, priority, state, lease_owner,
+	lease_deadline, heartbeat_at, attempt_count, last_error, input_size_bytes,
+	output_size_bytes, created_at, updated_at, completed_at, pipeline_context_json
+)
+SELECT id, slug, source_id, asset_id, library_name, priority, state, lease_owner,
+	lease_deadline, heartbeat_at, attempt_count, last_error, input_size_bytes,
+	output_size_bytes, created_at, updated_at, completed_at, pipeline_context_json
+FROM jobs`, `
+DROP TABLE jobs`, `
+ALTER TABLE jobs_migration_6 RENAME TO jobs`, `
+CREATE UNIQUE INDEX jobs_target_idx ON jobs(source_id, ifnull(asset_id, 0))`, `
+CREATE INDEX jobs_state_priority_idx ON jobs(state, priority DESC, created_at ASC, id ASC)`, `
+CREATE INDEX jobs_lease_deadline_idx ON jobs(lease_deadline) WHERE lease_deadline IS NOT NULL`,
+	}
+	for _, statement := range statements {
+		if _, err := tx.ExecContext(ctx, statement); err != nil {
+			return fmt.Errorf("rebuild jobs table for canceled state: %w", err)
+		}
+	}
+	return nil
+}
+
+// schemaVersion reports the highest recorded schema version. A version of 0 on
+// an existing database means the schema is not a recognizable Anvil schema.
+func (s *SQLiteStore) schemaVersion(ctx context.Context) (version int, exists bool, err error) {
 	var tableCount int
 	if err := s.db.QueryRowContext(ctx, `
 SELECT count(*)
 FROM sqlite_master
 WHERE type = 'table' AND name NOT LIKE 'sqlite_%'
 `).Scan(&tableCount); err != nil {
-		return false, false, fmt.Errorf("inspect sqlite schema: %w", err)
+		return 0, false, fmt.Errorf("inspect sqlite schema: %w", err)
 	}
 	if tableCount == 0 {
-		return false, false, nil
+		return 0, false, nil
 	}
 
 	var migrationsTable int
 	if err := s.db.QueryRowContext(ctx, `
 SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'schema_migrations'
 `).Scan(&migrationsTable); err != nil {
-		return false, true, fmt.Errorf("inspect schema version table: %w", err)
+		return 0, true, fmt.Errorf("inspect schema version table: %w", err)
 	}
 	if migrationsTable == 0 {
-		return false, true, nil
+		return 0, true, nil
 	}
 
-	rows, err := s.db.QueryContext(ctx, `SELECT version FROM schema_migrations ORDER BY version`)
-	if err != nil {
-		return false, true, fmt.Errorf("read schema versions: %w", err)
+	var highest sql.NullInt64
+	if err := s.db.QueryRowContext(ctx, `SELECT MAX(version) FROM schema_migrations`).Scan(&highest); err != nil {
+		return 0, true, fmt.Errorf("read schema versions: %w", err)
 	}
-	defer closeRows(rows, &err, "close schema versions")
-
-	var versions []string
-	for rows.Next() {
-		var version int
-		if err := rows.Scan(&version); err != nil {
-			return false, true, fmt.Errorf("scan schema version: %w", err)
-		}
-		versions = append(versions, fmt.Sprint(version))
+	if !highest.Valid {
+		return 0, true, nil
 	}
-	if err := rows.Err(); err != nil {
-		return false, true, fmt.Errorf("iterate schema versions: %w", err)
-	}
-	if len(versions) != 1 || versions[0] != fmt.Sprint(currentSchemaVersion) {
-		return false, true, nil
-	}
-	var publishOperationsTable int
-	if err := s.db.QueryRowContext(ctx, `
-SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'publish_operations'
-`).Scan(&publishOperationsTable); err != nil {
-		return false, true, fmt.Errorf("inspect publish journal table: %w", err)
-	}
-	return publishOperationsTable == 1, true, nil
+	return int(highest.Int64), true, nil
 }
 
-func (s *SQLiteStore) verifyForeignKeys(ctx context.Context) error {
+func (s *SQLiteStore) requireCoreTables(ctx context.Context) error {
+	for _, table := range coreSchemaTables {
+		var count int
+		if err := s.db.QueryRowContext(ctx, `
+SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = ?
+`, table).Scan(&count); err != nil {
+			return fmt.Errorf("inspect table %q: %w", table, err)
+		}
+		if count == 0 {
+			return ErrIncompatibleSchema
+		}
+	}
+	return nil
+}
+
+func (s *SQLiteStore) verifyForeignKeys(ctx context.Context) (err error) {
 	rows, err := s.db.QueryContext(ctx, `PRAGMA foreign_key_check`)
 	if err != nil {
 		return fmt.Errorf("verify foreign keys: %w", err)
 	}
 	defer closeRows(rows, &err, "close foreign key check")
+	return foreignKeyViolation(rows)
+}
+
+func verifyForeignKeysTx(ctx context.Context, tx *sql.Tx) (err error) {
+	rows, err := tx.QueryContext(ctx, `PRAGMA foreign_key_check`)
+	if err != nil {
+		return fmt.Errorf("verify foreign keys: %w", err)
+	}
+	defer closeRows(rows, &err, "close foreign key check")
+	return foreignKeyViolation(rows)
+}
+
+func foreignKeyViolation(rows *sql.Rows) error {
 	if !rows.Next() {
 		return rows.Err()
 	}

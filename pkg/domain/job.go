@@ -17,7 +17,26 @@ const (
 	JobStateFailed     JobState = "failed"
 	JobStateRetrying   JobState = "retrying"
 	JobStateSkipped    JobState = "skipped"
+	JobStateCanceled   JobState = "canceled"
 )
+
+// JobStates lists every persisted job state in lifecycle order.
+func JobStates() []JobState {
+	return []JobState{
+		JobStatePending, JobStateLeased, JobStateRunning, JobStateValidating,
+		JobStateReplacing, JobStateComplete, JobStateFailed, JobStateRetrying,
+		JobStateSkipped, JobStateCanceled,
+	}
+}
+
+func ValidJobState(state JobState) bool {
+	for _, candidate := range JobStates() {
+		if state == candidate {
+			return true
+		}
+	}
+	return false
+}
 
 type Job struct {
 	ID              JobID
@@ -75,11 +94,17 @@ type JobPipelineStep struct {
 
 func (s JobState) Terminal() bool {
 	switch s {
-	case JobStateComplete, JobStateFailed, JobStateSkipped:
+	case JobStateComplete, JobStateFailed, JobStateSkipped, JobStateCanceled:
 		return true
 	default:
 		return false
 	}
+}
+
+// Cancelable reports whether an operator cancel request still has work to do.
+// Terminal states are not cancelable so that cancellation stays idempotent.
+func (s JobState) Cancelable() bool {
+	return ValidJobState(s) && !s.Terminal()
 }
 
 func CanTransitionJob(from, to JobState) bool {
@@ -89,19 +114,19 @@ func CanTransitionJob(from, to JobState) bool {
 
 	switch from {
 	case JobStatePending:
-		return to == JobStateLeased || to == JobStateSkipped
+		return to == JobStateLeased || to == JobStateSkipped || to == JobStateCanceled
 	case JobStateLeased:
-		return to == JobStateRunning || to == JobStateFailed || to == JobStateRetrying || to == JobStateSkipped
+		return to == JobStateRunning || to == JobStateFailed || to == JobStateRetrying || to == JobStateSkipped || to == JobStateCanceled
 	case JobStateRunning:
-		return to == JobStateValidating || to == JobStateFailed || to == JobStateRetrying || to == JobStateSkipped
+		return to == JobStateValidating || to == JobStateFailed || to == JobStateRetrying || to == JobStateSkipped || to == JobStateCanceled
 	case JobStateValidating:
-		return to == JobStateReplacing || to == JobStateComplete || to == JobStateFailed || to == JobStateRetrying || to == JobStateSkipped
+		return to == JobStateReplacing || to == JobStateComplete || to == JobStateFailed || to == JobStateRetrying || to == JobStateSkipped || to == JobStateCanceled
 	case JobStateReplacing:
-		return to == JobStateComplete || to == JobStateFailed || to == JobStateRetrying || to == JobStateSkipped
+		return to == JobStateComplete || to == JobStateFailed || to == JobStateRetrying || to == JobStateSkipped || to == JobStateCanceled
 	case JobStateFailed:
 		return to == JobStateRetrying
 	case JobStateRetrying:
-		return to == JobStatePending || to == JobStateFailed || to == JobStateSkipped
+		return to == JobStatePending || to == JobStateFailed || to == JobStateSkipped || to == JobStateCanceled
 	default:
 		return false
 	}

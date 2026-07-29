@@ -170,7 +170,9 @@ func (r Runner) Run(ctx context.Context, assignment scheduler.Assignment) error 
 	})
 	if err := pipelineRunner.Run(pipelineCtx, jobContext); err != nil {
 		if !errors.Is(err, replacepkg.ErrPublishPending) {
-			r.cleanupFailedStaging(ctx, jobContext, cfg)
+			// Staging cleanup has to outlive cancellation so a canceled encode
+			// never leaves a partial output behind.
+			r.cleanupFailedStaging(context.WithoutCancel(ctx), jobContext, cfg)
 		}
 		return r.fail(ctx, assignment.Job, attempt, cfg, err)
 	}
@@ -438,7 +440,37 @@ func finalInputFingerprint(job *pipeline.JobContext) *domain.FileFingerprint {
 	return &fingerprint
 }
 
+// jobCancellationCause reports the operator cancellation that ended ctx, or
+// nil when ctx ended for any other reason such as daemon shutdown.
+func jobCancellationCause(ctx context.Context) error {
+	if ctx.Err() == nil {
+		return nil
+	}
+	cause := context.Cause(ctx)
+	if errors.Is(cause, scheduler.ErrJobCanceled) {
+		return cause
+	}
+	return nil
+}
+
+// cancel records an operator cancellation. It runs on a context detached from
+// the cancellation so the terminal state is always persisted.
+func (r Runner) cancel(ctx context.Context, job domain.Job, attempt domain.Attempt, cause error) error {
+	message := cause.Error()
+	if _, err := r.Store.FinishAttempt(ctx, attempt.ID, domain.AttemptStateCanceled, message, r.now()); err != nil && !errors.Is(err, store.ErrNotFound) {
+		return fmt.Errorf("finish canceled attempt: %w", err)
+	}
+	if _, err := r.Store.TransitionJob(ctx, job.ID, domain.JobStateCanceled, r.now(), message); err != nil {
+		return fmt.Errorf("transition job to canceled: %w", err)
+	}
+	slog.Warn("worker job canceled", "worker", attempt.WorkerID, "job", job.Label(), "attempt", attempt.Number, "library", string(job.LibraryName), "reason", message)
+	return nil
+}
+
 func (r Runner) fail(ctx context.Context, job domain.Job, attempt domain.Attempt, cfg config.Config, cause error) error {
+	if canceled := jobCancellationCause(ctx); canceled != nil {
+		return r.cancel(context.WithoutCancel(ctx), job, attempt, canceled)
+	}
 	message := cause.Error()
 	if _, err := r.Store.FinishAttempt(ctx, attempt.ID, domain.AttemptStateFailed, message, r.now()); err != nil {
 		return fmt.Errorf("finish failed attempt: %w", err)

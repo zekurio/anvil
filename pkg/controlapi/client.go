@@ -1,10 +1,12 @@
 package controlapi
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -73,14 +75,45 @@ func (c *Client) ListJobs(ctx context.Context, query JobQuery) (JobListResponse,
 	return response, nil
 }
 
-func (c *Client) get(ctx context.Context, requestPath string, query url.Values, target any) (err error) {
+// CancelJobs requires an explicit selector; the daemon rejects an empty one so
+// a mistyped command can never cancel the whole queue.
+func (c *Client) CancelJobs(ctx context.Context, request JobCancelRequest) (JobCancelResponse, error) {
+	if !request.hasSelector() {
+		return JobCancelResponse{}, errors.New("cancel requires at least one selector")
+	}
+	if _, _, _, err := normalizeJobQuery(request.query()); err != nil {
+		return JobCancelResponse{}, err
+	}
+	body, err := json.Marshal(request)
+	if err != nil {
+		return JobCancelResponse{}, fmt.Errorf("encode cancel request: %w", err)
+	}
+	var response JobCancelResponse
+	if err := c.do(ctx, http.MethodPost, "/v1/jobs/cancel", nil, body, &response); err != nil {
+		return JobCancelResponse{}, err
+	}
+	return response, nil
+}
+
+func (c *Client) get(ctx context.Context, requestPath string, query url.Values, target any) error {
+	return c.do(ctx, http.MethodGet, requestPath, query, nil, target)
+}
+
+func (c *Client) do(ctx context.Context, method string, requestPath string, query url.Values, body []byte, target any) (err error) {
 	if c == nil || c.httpClient == nil {
 		return errors.New("control API client is required")
 	}
 	u := url.URL{Scheme: "http", Host: "anvild", Path: requestPath, RawQuery: query.Encode()}
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	var payload io.Reader
+	if body != nil {
+		payload = bytes.NewReader(body)
+	}
+	request, err := http.NewRequestWithContext(ctx, method, u.String(), payload)
 	if err != nil {
 		return fmt.Errorf("build control API request: %w", err)
+	}
+	if body != nil {
+		request.Header.Set("Content-Type", "application/json")
 	}
 	response, err := c.httpClient.Do(request)
 	if err != nil {

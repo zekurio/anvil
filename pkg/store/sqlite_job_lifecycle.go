@@ -24,6 +24,8 @@ const activeOccurrenceTargetSQL = `EXISTS (
 
 const inactiveOccurrenceJobError = "input occurrence is no longer current and active"
 
+const defaultCancelReason = "canceled by operator"
+
 func (s *SQLiteStore) EnqueueJob(ctx context.Context, input EnqueueJobInput) (domain.Job, bool, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -54,7 +56,7 @@ func (s *SQLiteStore) RetryJob(ctx context.Context, id domain.JobID, now time.Ti
 		return domain.Job{}, err
 	}
 	switch job.State {
-	case domain.JobStateFailed, domain.JobStateSkipped, domain.JobStateRetrying:
+	case domain.JobStateFailed, domain.JobStateSkipped, domain.JobStateCanceled, domain.JobStateRetrying:
 	default:
 		return domain.Job{}, fmt.Errorf("cannot retry job %d from state %q", id, job.State)
 	}
@@ -84,6 +86,71 @@ WHERE id = ?
 		return domain.Job{}, fmt.Errorf("commit retry transaction: %w", err)
 	}
 	return job, nil
+}
+
+// CancelJobs terminally cancels every requested job that is not already
+// terminal. It is idempotent: an already terminal job is reported with
+// Canceled=false instead of failing the whole request. Attempts still marked
+// running are canceled in the same transaction, because a canceled job clears
+// its lease and would otherwise never be visited by stale-job recovery.
+func (s *SQLiteStore) CancelJobs(ctx context.Context, input CancelJobsInput) ([]CancelJobResult, error) {
+	now := defaultNow(input.Now)
+	reason := strings.TrimSpace(input.Reason)
+	if reason == "" {
+		reason = defaultCancelReason
+	}
+	if len(input.IDs) == 0 {
+		return nil, errors.New("at least one job id is required")
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("begin cancel transaction: %w", err)
+	}
+	defer rollback(tx)
+
+	seen := make(map[domain.JobID]struct{}, len(input.IDs))
+	results := make([]CancelJobResult, 0, len(input.IDs))
+	for _, id := range input.IDs {
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		job, err := getJobTx(ctx, tx, id)
+		if err != nil {
+			return nil, fmt.Errorf("load job %d for cancel: %w", id, err)
+		}
+		result := CancelJobResult{
+			JobID: job.ID, Slug: job.Slug, LibraryName: job.LibraryName,
+			PreviousState: job.State, State: job.State,
+		}
+		if !job.State.Cancelable() {
+			results = append(results, result)
+			continue
+		}
+		if _, err := tx.ExecContext(ctx, `
+UPDATE attempts
+SET state = ?, finished_at = ?, error = ?
+WHERE job_id = ? AND state = ?
+`, string(domain.AttemptStateCanceled), encodeTime(now), reason, int64(job.ID), string(domain.AttemptStateRunning)); err != nil {
+			return nil, fmt.Errorf("cancel attempts for job %d: %w", job.ID, err)
+		}
+		if _, err := tx.ExecContext(ctx, `
+UPDATE jobs
+SET state = ?, lease_owner = '', lease_deadline = NULL, heartbeat_at = NULL,
+	last_error = ?, updated_at = ?, completed_at = ?
+WHERE id = ? AND state = ?
+`, string(domain.JobStateCanceled), reason, encodeTime(now), encodeTime(now), int64(job.ID), string(job.State)); err != nil {
+			return nil, fmt.Errorf("cancel job %d: %w", job.ID, err)
+		}
+		result.State = domain.JobStateCanceled
+		result.Canceled = true
+		results = append(results, result)
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit cancel transaction: %w", err)
+	}
+	return results, nil
 }
 
 func (s *SQLiteStore) RecordJobFileSizes(ctx context.Context, jobID domain.JobID, inputSizeBytes int64, outputSizeBytes int64, now time.Time) (domain.Job, error) {
@@ -414,6 +481,14 @@ func (s *SQLiteStore) TransitionJob(ctx context.Context, jobID domain.JobID, to 
 	}
 	if !domain.CanTransitionJob(job.State, to) {
 		return domain.Job{}, fmt.Errorf("invalid job transition %q -> %q", job.State, to)
+	}
+	if job.State == to && to.Terminal() {
+		// A terminal state is already final. Re-recording it keeps repeated
+		// cancellations idempotent without rewriting the original outcome.
+		if err := tx.Commit(); err != nil {
+			return domain.Job{}, fmt.Errorf("commit transition transaction: %w", err)
+		}
+		return job, nil
 	}
 	if to == domain.JobStatePending {
 		active, err := jobTargetActiveTx(ctx, tx, jobID)

@@ -18,6 +18,23 @@ var (
 	ErrIncompatibleSchema = errors.New("store: incompatible database schema; reset the database before starting Anvil")
 )
 
+type CancelJobsInput struct {
+	IDs    []domain.JobID
+	Reason string
+	Now    time.Time
+}
+
+// CancelJobResult reports one requested cancellation. Canceled is false when
+// the job was already terminal, which keeps cancellation idempotent.
+type CancelJobResult struct {
+	JobID         domain.JobID
+	Slug          string
+	LibraryName   domain.LibraryName
+	PreviousState domain.JobState
+	State         domain.JobState
+	Canceled      bool
+}
+
 type SQLiteStore struct {
 	db *sql.DB
 }
@@ -166,12 +183,17 @@ func OpenReadOnly(ctx context.Context, path string) (*SQLiteStore, error) {
 	if err := store.configureReadOnly(ctx); err != nil {
 		return nil, closeDBOnError(db, err)
 	}
-	compatible, exists, err := store.schemaCompatibility(ctx)
+	// A read-only handle cannot migrate, so it accepts any released schema
+	// version: reads never depend on the newest CHECK constraints.
+	version, exists, err := store.schemaVersion(ctx)
 	if err != nil {
 		return nil, closeDBOnError(db, err)
 	}
-	if !exists || !compatible {
+	if !exists || version <= 0 || version > currentSchemaVersion {
 		return nil, closeDBOnError(db, ErrIncompatibleSchema)
+	}
+	if err := store.requireCoreTables(ctx); err != nil {
+		return nil, closeDBOnError(db, err)
 	}
 	return store, nil
 }

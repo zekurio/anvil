@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"strings"
 	"text/tabwriter"
 
@@ -25,6 +26,7 @@ type options struct {
 	states       string
 	currentOnly  bool
 	limit        int
+	reason       string
 }
 
 func main() {
@@ -101,9 +103,17 @@ func runJob(ctx context.Context, client *controlapi.Client, opts options, args [
 	if len(args) == 0 || args[0] == "help" || args[0] == "-h" || args[0] == "--help" {
 		return writeJobUsage(stdout)
 	}
-	if args[0] != "list" {
+	switch args[0] {
+	case "list":
+		return runJobList(ctx, client, opts, args[1:], stdout, stderr)
+	case "cancel":
+		return runJobCancel(ctx, client, opts, args[1:], stdout, stderr)
+	default:
 		return fmt.Errorf("unknown job command %q", args[0])
 	}
+}
+
+func runJobList(ctx context.Context, client *controlapi.Client, opts options, args []string, stdout io.Writer, stderr io.Writer) error {
 	flags := flag.NewFlagSet("anvilctl job list", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	flags.StringVar(&opts.library, "library", "", "filter by configured library")
@@ -113,7 +123,7 @@ func runJob(ctx context.Context, client *controlapi.Client, opts options, args [
 	flags.BoolVar(&opts.currentOnly, "current-only", false, "restrict to current source and asset occurrences")
 	flags.IntVar(&opts.limit, "limit", 0, "maximum jobs to return; 0 means no limit")
 	flags.BoolVar(&opts.jsonOutput, "json", false, "write JSON output")
-	if err := flags.Parse(args[1:]); err != nil {
+	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return writeJobListUsage(stdout)
 		}
@@ -143,6 +153,53 @@ func runJob(ctx context.Context, client *controlapi.Client, opts options, args [
 		return writeJSON(stdout, response)
 	}
 	return writeJobs(stdout, response)
+}
+
+func runJobCancel(ctx context.Context, client *controlapi.Client, opts options, args []string, stdout io.Writer, stderr io.Writer) error {
+	flags := flag.NewFlagSet("anvilctl job cancel", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	flags.StringVar(&opts.library, "library", "", "filter by configured library")
+	flags.StringVar(&opts.path, "path", "", "exact library-relative source or media path")
+	flags.StringVar(&opts.absolutePath, "absolute-path", "", "exact absolute source, asset, or destination path")
+	flags.StringVar(&opts.states, "state", "", "comma-separated job states")
+	flags.BoolVar(&opts.currentOnly, "current-only", false, "restrict to current source and asset occurrences")
+	flags.StringVar(&opts.reason, "reason", "", "reason recorded on the canceled jobs")
+	flags.BoolVar(&opts.jsonOutput, "json", false, "write JSON output")
+	if err := flags.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return writeJobCancelUsage(stdout)
+		}
+		return err
+	}
+	ids, err := parseJobIDs(flags.Args())
+	if err != nil {
+		return err
+	}
+	request := controlapi.JobCancelRequest{
+		Library: opts.library, Path: opts.path, AbsolutePath: opts.absolutePath,
+		States: splitStates(opts.states), CurrentOnly: opts.currentOnly,
+		IDs: ids, Reason: opts.reason,
+	}
+	response, err := client.CancelJobs(ctx, request)
+	if err != nil {
+		return err
+	}
+	if opts.jsonOutput {
+		return writeJSON(stdout, response)
+	}
+	return writeCanceledJobs(stdout, response)
+}
+
+func parseJobIDs(args []string) ([]int64, error) {
+	ids := make([]int64, 0, len(args))
+	for _, arg := range args {
+		id, err := strconv.ParseInt(strings.TrimSpace(arg), 10, 64)
+		if err != nil || id <= 0 {
+			return nil, fmt.Errorf("invalid job id %q", arg)
+		}
+		ids = append(ids, id)
+	}
+	return ids, nil
 }
 
 func splitStates(value string) []string {
@@ -206,11 +263,34 @@ func writeJobs(out io.Writer, response controlapi.JobListResponse) error {
 	return nil
 }
 
+func writeCanceledJobs(out io.Writer, response controlapi.JobCancelResponse) error {
+	w := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
+	if _, err := fmt.Fprintln(w, "JOB\tID\tLIBRARY\tPREVIOUS\tSTATE\tCANCELED\tWORKER SIGNALED"); err != nil {
+		return err
+	}
+	for _, job := range response.Jobs {
+		if _, err := fmt.Fprintf(w, "%s\t%d\t%s\t%s\t%s\t%t\t%t\n",
+			job.Slug, job.ID, job.Library, job.PreviousState, job.State, job.Canceled, job.WorkerSignaled,
+		); err != nil {
+			return err
+		}
+	}
+	if err := w.Flush(); err != nil {
+		return err
+	}
+	_, err := fmt.Fprintf(out, "canceled %d of %d matching jobs\n", response.Canceled, response.Matched)
+	return err
+}
+
 func writeUsage(out io.Writer) error {
 	_, err := fmt.Fprintln(out, `Usage:
   anvilctl [--socket PATH] status [--json]
   anvilctl [--socket PATH] job list [--library NAME] [--path PATH | --absolute-path PATH]
-           [--state STATE,...] [--current-only] [--limit N] [--json]`)
+           [--state STATE,...] [--current-only] [--limit N] [--json]
+  anvilctl [--socket PATH] job cancel [--library NAME] [--path PATH | --absolute-path PATH]
+           [--state STATE,...] [--current-only] [--reason TEXT] [--json] [JOB_ID...]
+
+Job cancellation requires at least one selector; a bare "job cancel" is rejected.`)
 	return err
 }
 
@@ -220,10 +300,14 @@ func writeStatusUsage(out io.Writer) error {
 }
 
 func writeJobUsage(out io.Writer) error {
-	_, err := fmt.Fprintln(out, "Usage: anvilctl [--socket PATH] job list [OPTIONS]")
+	_, err := fmt.Fprintln(out, "Usage: anvilctl [--socket PATH] job list|cancel [OPTIONS]")
 	return err
 }
 
 func writeJobListUsage(out io.Writer) error {
+	return writeUsage(out)
+}
+
+func writeJobCancelUsage(out io.Writer) error {
 	return writeUsage(out)
 }
