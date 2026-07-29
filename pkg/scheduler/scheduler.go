@@ -56,6 +56,7 @@ type Scheduler struct {
 
 type activeAssignment struct {
 	jobID   domain.JobID
+	label   string
 	library domain.LibraryName
 	threads int
 	cancel  context.CancelCauseFunc
@@ -163,19 +164,24 @@ func (s *Scheduler) ActiveCount() int {
 // any worker was signaled. It is safe to call for unknown or already finished
 // jobs, which makes operator cancellation idempotent.
 func (s *Scheduler) CancelJob(jobID domain.JobID) bool {
+	label := domain.Job{ID: jobID}.Label()
 	s.mu.Lock()
 	cancels := make([]context.CancelCauseFunc, 0, 1)
 	for _, assignment := range s.active {
-		if assignment.jobID == jobID && assignment.cancel != nil {
-			cancels = append(cancels, assignment.cancel)
+		if assignment.jobID != jobID || assignment.cancel == nil {
+			continue
 		}
+		if assignment.label != "" {
+			label = assignment.label
+		}
+		cancels = append(cancels, assignment.cancel)
 	}
 	s.mu.Unlock()
 	for _, cancel := range cancels {
 		cancel(ErrJobCanceled)
 	}
 	if len(cancels) > 0 {
-		slog.Info("worker cancellation requested", "job", int64(jobID), "workers", len(cancels))
+		slog.Info("worker cancellation requested", "job", label, "workers", len(cancels))
 	}
 	return len(cancels) > 0
 }
@@ -357,6 +363,7 @@ func (s *Scheduler) register(assignment Assignment, cancel context.CancelCauseFu
 	}
 	s.active[assignment.WorkerID] = activeAssignment{
 		jobID:   assignment.Job.ID,
+		label:   assignment.Job.Label(),
 		library: assignment.Job.LibraryName,
 		threads: assignment.Resources.Threads,
 		cancel:  cancel,
