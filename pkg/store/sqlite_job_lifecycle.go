@@ -45,14 +45,14 @@ func (s *SQLiteStore) EnqueueJob(ctx context.Context, input EnqueueJobInput) (do
 }
 
 func (s *SQLiteStore) RetryJob(ctx context.Context, id domain.JobID, now time.Time) (domain.Job, error) {
-	now = defaultNow(now)
-
-	tx, err := s.db.BeginTx(ctx, nil)
+	result, err := s.RetryJobs(ctx, RetryJobsInput{IDs: []domain.JobID{id}, Now: now})
 	if err != nil {
-		return domain.Job{}, fmt.Errorf("begin retry transaction: %w", err)
+		return domain.Job{}, err
 	}
-	defer rollback(tx)
+	return result.Jobs[0], nil
+}
 
+func retryJobTx(ctx context.Context, tx *sql.Tx, id domain.JobID, now time.Time) (domain.Job, error) {
 	job, err := getJobTx(ctx, tx, id)
 	if err != nil {
 		return domain.Job{}, err
@@ -79,15 +79,7 @@ WHERE id = ?
 	if err != nil {
 		return domain.Job{}, fmt.Errorf("retry job: %w", err)
 	}
-
-	job, err = getJobTx(ctx, tx, id)
-	if err != nil {
-		return domain.Job{}, err
-	}
-	if err := tx.Commit(); err != nil {
-		return domain.Job{}, fmt.Errorf("commit retry transaction: %w", err)
-	}
-	return job, nil
+	return getJobTx(ctx, tx, id)
 }
 
 // CancelJobs terminally cancels every requested job that is still cancelable.
@@ -330,13 +322,66 @@ UPDATE media_assets SET status = ?, updated_at = ? WHERE id = ? AND is_current =
 }
 
 func (s *SQLiteStore) RetryFailedJobs(ctx context.Context, libraryName domain.LibraryName, now time.Time) (int64, error) {
-	now = defaultNow(now)
+	result, err := s.RetryJobs(ctx, RetryJobsInput{Failed: true, LibraryName: libraryName, Now: now})
+	if err != nil {
+		return 0, err
+	}
+	return result.RetriedFailed, nil
+}
+
+// RetryJobsInput requeues jobs by id, in bulk over failed jobs, or both. Failed
+// is a separate field rather than "no ids" so an empty id list can never turn
+// into a queue-wide retry.
+type RetryJobsInput struct {
+	IDs         []domain.JobID
+	Failed      bool
+	LibraryName domain.LibraryName
+	Now         time.Time
+}
+
+type RetryJobsResult struct {
+	// RetriedFailed counts jobs requeued by the bulk form only, so an operator
+	// can tell a broad retry from a targeted one in the same answer.
+	RetriedFailed int64
+	Jobs          []domain.Job
+}
+
+// RetryJobs applies every requested retry in one transaction. Doing the bulk
+// form and the individual ids together is the point: an id that turns out to be
+// unretryable must not leave a committed bulk retry behind while the operator
+// is told the command failed, because that response is the only record they get
+// of what the daemon actually did.
+func (s *SQLiteStore) RetryJobs(ctx context.Context, input RetryJobsInput) (RetryJobsResult, error) {
+	now := defaultNow(input.Now)
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return 0, fmt.Errorf("begin bulk retry transaction: %w", err)
+		return RetryJobsResult{}, fmt.Errorf("begin retry transaction: %w", err)
 	}
 	defer rollback(tx)
 
+	var result RetryJobsResult
+	if input.Failed {
+		retried, err := retryFailedJobsTx(ctx, tx, input.LibraryName, now)
+		if err != nil {
+			return RetryJobsResult{}, err
+		}
+		result.RetriedFailed = retried
+	}
+	result.Jobs = make([]domain.Job, 0, len(input.IDs))
+	for _, id := range input.IDs {
+		job, err := retryJobTx(ctx, tx, id, now)
+		if err != nil {
+			return RetryJobsResult{}, err
+		}
+		result.Jobs = append(result.Jobs, job)
+	}
+	if err := tx.Commit(); err != nil {
+		return RetryJobsResult{}, fmt.Errorf("commit retry transaction: %w", err)
+	}
+	return result, nil
+}
+
+func retryFailedJobsTx(ctx context.Context, tx *sql.Tx, libraryName domain.LibraryName, now time.Time) (int64, error) {
 	query := `
 UPDATE jobs
 SET state = ?, lease_owner = '', lease_deadline = NULL, heartbeat_at = NULL,
@@ -356,9 +401,6 @@ WHERE state = ?
 	rows, err := result.RowsAffected()
 	if err != nil {
 		return 0, fmt.Errorf("retry failed rows affected: %w", err)
-	}
-	if err := tx.Commit(); err != nil {
-		return 0, fmt.Errorf("commit bulk retry transaction: %w", err)
 	}
 	return rows, nil
 }

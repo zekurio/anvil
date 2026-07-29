@@ -9,7 +9,7 @@ import (
 )
 
 func TestListenUnixRefusesActiveAndNonSocketPaths(t *testing.T) {
-	socketPath := filepath.Join(t.TempDir(), "anvild.sock")
+	socketPath := testSocketPath(t)
 	_, cleanup, err := ListenUnix(socketPath)
 	if err != nil {
 		t.Fatalf("ListenUnix() error = %v", err)
@@ -44,7 +44,7 @@ func TestListenUnixRefusesActiveAndNonSocketPaths(t *testing.T) {
 }
 
 func TestListenUnixReplacesStaleSocket(t *testing.T) {
-	socketPath := filepath.Join(t.TempDir(), "anvild.sock")
+	socketPath := testSocketPath(t)
 	stale, err := net.Listen("unix", socketPath)
 	if err != nil {
 		t.Fatalf("net.Listen() error = %v", err)
@@ -62,4 +62,22 @@ func TestListenUnixReplacesStaleSocket(t *testing.T) {
 	if err := cleanup(); err != nil {
 		t.Fatalf("cleanup() error = %v", err)
 	}
+}
+
+// testSocketPath returns a socket path short enough for the platform's
+// sockaddr_un limit. t.TempDir() embeds the test name, which routinely pushes a
+// macOS temp path past the 104-byte limit and fails the bind before the code
+// under test runs at all.
+func testSocketPath(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "anvil")
+	if err != nil {
+		t.Fatalf("MkdirTemp() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := os.RemoveAll(dir); err != nil {
+			t.Errorf("remove socket dir: %v", err)
+		}
+	})
+	return filepath.Join(dir, "c.sock")
 }

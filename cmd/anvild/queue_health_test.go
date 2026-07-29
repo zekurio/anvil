@@ -5,11 +5,13 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/zekurio/anvil/pkg/config"
 	"github.com/zekurio/anvil/pkg/domain"
 	"github.com/zekurio/anvil/pkg/scanner"
 	"github.com/zekurio/anvil/pkg/store"
@@ -159,4 +161,21 @@ type fakeQueueHealthStore struct {
 func (f *fakeQueueHealthStore) HasViableQueueWorkForLibrary(_ context.Context, _ domain.LibraryName) (bool, error) {
 	f.calls++
 	return f.viable, f.err
+}
+
+func forceTestLibrary(root string) config.LibraryConfig {
+	return config.LibraryConfig{
+		Name:    "movies",
+		Kind:    "media",
+		Path:    root,
+		Flow:    config.DefaultFlowName,
+		Profile: config.DefaultProfileName,
+	}
+}
+
+func writeForceTestFile(t *testing.T, path string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte("media"), 0o600); err != nil {
+		t.Fatalf("write queue health test file: %v", err)
+	}
 }

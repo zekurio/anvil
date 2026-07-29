@@ -1,215 +1,232 @@
+// Command anvilctl is the operator client for a running anvild. It never opens
+// the SQLite store and never runs ffmpeg, ab-av1, dovi_tool, or mkvtoolnix: it
+// asks the daemon that owns them over daemon.control_socket, the way systemctl
+// asks systemd. That boundary is the point — two processes writing Anvil's
+// database while jobs are running is how half-published files happen.
 package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"os"
-	"strconv"
 	"strings"
-	"text/tabwriter"
+	"time"
 
-	"github.com/zekurio/anvil/pkg/controlapi"
+	"github.com/zekurio/anvil/pkg/control"
 )
 
 const defaultControlSocket = "/run/anvil/anvild.sock"
 
+// Exit codes are part of the contract, so scripts can branch without parsing
+// messages.
+const (
+	exitOK          = 0
+	exitFailed      = 1
+	exitUsage       = 2
+	exitUnavailable = 3
+	exitNotFound    = 4
+)
+
+// env carries everything a command needs that is not its own arguments.
+type env struct {
+	client *control.Client
+	out    io.Writer
+	errOut io.Writer
+	json   bool
+}
+
 type options struct {
-	socketPath    string
-	jsonOutput    bool
-	library       string
-	path          string
-	absolutePath  string
-	states        string
-	currentOnly   bool
-	limit         int
-	reason        string
-	withSelection bool
+	socketPath string
+	timeout    time.Duration
+	json       bool
+}
+
+// aliases keep the command forms operators already type working after the noun
+// and verb tree landed. The left side is what anvild's old subcommands were
+// called; the right side is where that work lives now.
+var aliases = map[string][]string{
+	"jobs":             {"job", "list"},
+	"inspect":          {"job", "show"},
+	"cancel":           {"job", "cancel"},
+	"retry":            {"job", "retry"},
+	"recover":          {"job", "recover"},
+	"prune-jobs":       {"job", "prune"},
+	"scan":             {"library", "scan"},
+	"stats":            {"library", "stats"},
+	"force-occurrence": {"occurrence", "force"},
+	"cleanup-staging":  {"staging", "cleanup"},
+	"backup":           {"store", "backup"},
 }
 
 func main() {
-	if err := run(context.Background(), os.Args[1:], os.Stdout, os.Stderr); err != nil {
-		fmt.Fprintf(os.Stderr, "anvilctl: %v\n", err)
-		os.Exit(1)
+	err := run(context.Background(), os.Args[1:], os.Stdout, os.Stderr)
+	if err == nil {
+		os.Exit(exitOK)
+	}
+	fmt.Fprintf(os.Stderr, "anvilctl: %v\n", err)
+	os.Exit(exitCode(err))
+}
+
+// exitCode maps the daemon's stable error codes onto exit status. Anything the
+// daemon did not classify is a plain failure.
+func exitCode(err error) int {
+	var usage usageError
+	if errors.As(err, &usage) {
+		return exitUsage
+	}
+	var controlErr *control.Error
+	if !errors.As(err, &controlErr) {
+		return exitFailed
+	}
+	switch controlErr.Code {
+	case control.CodeInvalidArgument, control.CodeUnsupported:
+		return exitUsage
+	case control.CodeUnavailable, control.CodeVersionMismatch:
+		return exitUnavailable
+	case control.CodeNotFound:
+		return exitNotFound
+	default:
+		return exitFailed
 	}
 }
 
+// usageError marks a mistake in the command line itself, so it exits with the
+// same status as an argument the daemon rejects.
+type usageError struct {
+	err error
+}
+
+func (e usageError) Error() string {
+	return e.err.Error()
+}
+
+func (e usageError) Unwrap() error {
+	return e.err
+}
+
+func usagef(format string, args ...any) error {
+	return usageError{err: fmt.Errorf(format, args...)}
+}
+
 func run(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer) error {
-	opts, command, remaining, err := parseGlobal(args, stderr)
+	opts, remaining, err := parseGlobal(args, stderr)
 	if errors.Is(err, flag.ErrHelp) {
 		return writeUsage(stdout)
 	}
 	if err != nil {
-		return err
+		return usageError{err: err}
 	}
-	if command == "" || command == "help" {
+	if len(remaining) == 0 || remaining[0] == "help" {
 		return writeUsage(stdout)
 	}
-	client, err := controlapi.NewClient(opts.socketPath)
-	if err != nil {
-		return err
+	if expanded, ok := aliases[remaining[0]]; ok {
+		remaining = append(append([]string(nil), expanded...), remaining[1:]...)
 	}
+
+	client, err := control.NewClient(opts.socketPath)
+	if err != nil {
+		return usageError{err: err}
+	}
+	client.Timeout = opts.timeout
+	environment := &env{client: client, out: stdout, errOut: stderr, json: opts.json}
+
+	command, rest := remaining[0], remaining[1:]
 	switch command {
 	case "status":
-		return runStatus(ctx, client, opts, remaining, stdout, stderr)
+		return runStatus(ctx, environment, rest)
+	case "version":
+		return runVersion(ctx, environment, rest)
 	case "job":
-		return runJob(ctx, client, opts, remaining, stdout, stderr)
+		return runJob(ctx, environment, rest)
+	case "library":
+		return runLibrary(ctx, environment, rest)
+	case "occurrence":
+		return runOccurrence(ctx, environment, rest)
+	case "staging":
+		return runStaging(ctx, environment, rest)
+	case "store":
+		return runStore(ctx, environment, rest)
 	default:
-		return fmt.Errorf("unknown command %q", command)
+		return usagef("unknown command %q; run \"anvilctl help\"", command)
 	}
 }
 
-func parseGlobal(args []string, stderr io.Writer) (options, string, []string, error) {
+func parseGlobal(args []string, stderr io.Writer) (options, []string, error) {
 	opts := options{socketPath: defaultSocketPath()}
 	flags := flag.NewFlagSet("anvilctl", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	flags.StringVar(&opts.socketPath, "socket", opts.socketPath, "path to the anvild control socket")
+	flags.DurationVar(&opts.timeout, "timeout", 0, "override the per-command deadline; 0 uses the command's own default")
+	flags.BoolVar(&opts.json, "json", false, "write JSON output")
 	if err := flags.Parse(args); err != nil {
-		return options{}, "", nil, err
+		return options{}, nil, err
 	}
-	remaining := flags.Args()
-	if len(remaining) == 0 {
-		return opts, "", nil, nil
+	if opts.timeout < 0 {
+		return options{}, nil, errors.New("--timeout must not be negative")
 	}
-	return opts, remaining[0], remaining[1:], nil
+	return opts, flags.Args(), nil
 }
 
-func runStatus(ctx context.Context, client *controlapi.Client, opts options, args []string, stdout io.Writer, stderr io.Writer) error {
-	flags := flag.NewFlagSet("anvilctl status", flag.ContinueOnError)
-	flags.SetOutput(stderr)
-	flags.BoolVar(&opts.jsonOutput, "json", false, "write JSON output")
-	if err := flags.Parse(args); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
-			return writeStatusUsage(stdout)
+// subcommand parses one leaf command's flags and returns its positional
+// arguments. Every leaf gets --json from the same place, so the flag exists
+// everywhere and means the same thing.
+//
+// Flags may follow positional arguments: "job show 42 --json" is what an
+// operator types, and stdlib flag parsing would otherwise stop at 42 and report
+// the flag as a stray argument.
+//
+// A bare "--" still ends flag parsing for good. Anvil's arguments are file
+// paths, job slugs, and library names, and any of them can legitimately begin
+// with a dash; without an escape, such a name could only be passed by renaming
+// the file.
+func (e *env) subcommand(name string, args []string, register func(*flag.FlagSet)) (*flag.FlagSet, []string, error) {
+	flags := flag.NewFlagSet("anvilctl "+name, flag.ContinueOnError)
+	flags.SetOutput(e.errOut)
+	flags.BoolVar(&e.json, "json", e.json, "write JSON output")
+	if register != nil {
+		register(flags)
+	}
+	flagArgs, literal := splitAtTerminator(args)
+	var positional []string
+	for {
+		if err := flags.Parse(flagArgs); err != nil {
+			if errors.Is(err, flag.ErrHelp) {
+				return nil, nil, writeUsage(e.out)
+			}
+			return nil, nil, usageError{err: err}
 		}
-		return err
-	}
-	if flags.NArg() != 0 {
-		return fmt.Errorf("status does not accept arguments: %v", flags.Args())
-	}
-	response, err := client.Status(ctx)
-	if err != nil {
-		return err
-	}
-	if opts.jsonOutput {
-		return writeJSON(stdout, response)
-	}
-	return writeStatus(stdout, response)
-}
-
-func runJob(ctx context.Context, client *controlapi.Client, opts options, args []string, stdout io.Writer, stderr io.Writer) error {
-	if len(args) == 0 || args[0] == "help" || args[0] == "-h" || args[0] == "--help" {
-		return writeJobUsage(stdout)
-	}
-	switch args[0] {
-	case "list":
-		return runJobList(ctx, client, opts, args[1:], stdout, stderr)
-	case "cancel":
-		return runJobCancel(ctx, client, opts, args[1:], stdout, stderr)
-	default:
-		return fmt.Errorf("unknown job command %q", args[0])
-	}
-}
-
-func runJobList(ctx context.Context, client *controlapi.Client, opts options, args []string, stdout io.Writer, stderr io.Writer) error {
-	flags := flag.NewFlagSet("anvilctl job list", flag.ContinueOnError)
-	flags.SetOutput(stderr)
-	flags.StringVar(&opts.library, "library", "", "filter by configured library")
-	flags.StringVar(&opts.path, "path", "", "exact library-relative source or media path")
-	flags.StringVar(&opts.absolutePath, "absolute-path", "", "exact absolute source, asset, or destination path")
-	flags.StringVar(&opts.states, "state", "", "comma-separated job states")
-	flags.BoolVar(&opts.currentOnly, "current-only", false, "restrict to current source and asset occurrences")
-	flags.IntVar(&opts.limit, "limit", 0, "maximum jobs to return; 0 means no limit")
-	flags.BoolVar(&opts.withSelection, "with-selection", false, "include the recorded audio and subtitle stream selection")
-	flags.BoolVar(&opts.jsonOutput, "json", false, "write JSON output")
-	if err := flags.Parse(args); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
-			return writeJobListUsage(stdout)
+		rest := flags.Args()
+		if len(rest) == 0 {
+			return flags, append(positional, literal...), nil
 		}
-		return err
+		positional = append(positional, rest[0])
+		flagArgs = rest[1:]
 	}
-	if flags.NArg() != 0 {
-		return fmt.Errorf("job list does not accept arguments: %v", flags.Args())
-	}
-	limitSet := false
-	flags.Visit(func(f *flag.Flag) {
-		if f.Name == "limit" {
-			limitSet = true
-		}
-	})
-	if !limitSet && strings.TrimSpace(opts.path) == "" && strings.TrimSpace(opts.absolutePath) == "" {
-		opts.limit = 20
-	}
-	query := controlapi.JobQuery{
-		Library: opts.library, Path: opts.path, AbsolutePath: opts.absolutePath,
-		States: splitStates(opts.states), CurrentOnly: opts.currentOnly, Limit: opts.limit,
-		WithSelection: opts.withSelection,
-	}
-	response, err := client.ListJobs(ctx, query)
-	if err != nil {
-		return err
-	}
-	if opts.jsonOutput {
-		return writeJSON(stdout, response)
-	}
-	return writeJobs(stdout, response)
 }
 
-func runJobCancel(ctx context.Context, client *controlapi.Client, opts options, args []string, stdout io.Writer, stderr io.Writer) error {
-	flags := flag.NewFlagSet("anvilctl job cancel", flag.ContinueOnError)
-	flags.SetOutput(stderr)
-	flags.StringVar(&opts.library, "library", "", "filter by configured library")
-	flags.StringVar(&opts.path, "path", "", "exact library-relative source or media path")
-	flags.StringVar(&opts.absolutePath, "absolute-path", "", "exact absolute source, asset, or destination path")
-	flags.StringVar(&opts.states, "state", "", "comma-separated job states")
-	flags.BoolVar(&opts.currentOnly, "current-only", false, "restrict to current source and asset occurrences")
-	flags.StringVar(&opts.reason, "reason", "", "reason recorded on the canceled jobs")
-	flags.BoolVar(&opts.jsonOutput, "json", false, "write JSON output")
-	if err := flags.Parse(args); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
-			return writeJobCancelUsage(stdout)
+// splitAtTerminator returns the arguments before the first bare "--" and the
+// ones after it. The interleaved parse above re-parses what follows each
+// positional argument, which would otherwise resurrect flag parsing for
+// arguments the operator already terminated.
+func splitAtTerminator(args []string) ([]string, []string) {
+	for i, arg := range args {
+		if arg == "--" {
+			return args[:i], args[i+1:]
 		}
-		return err
 	}
-	ids, err := parseJobIDs(flags.Args())
-	if err != nil {
-		return err
-	}
-	request := controlapi.JobCancelRequest{
-		Library: opts.library, Path: opts.path, AbsolutePath: opts.absolutePath,
-		States: splitStates(opts.states), CurrentOnly: opts.currentOnly,
-		IDs: ids, Reason: opts.reason,
-	}
-	response, err := client.CancelJobs(ctx, request)
-	if err != nil {
-		return err
-	}
-	if opts.jsonOutput {
-		return writeJSON(stdout, response)
-	}
-	return writeCanceledJobs(stdout, response)
+	return args, nil
 }
 
-func parseJobIDs(args []string) ([]int64, error) {
-	ids := make([]int64, 0, len(args))
-	for _, arg := range args {
-		id, err := strconv.ParseInt(strings.TrimSpace(arg), 10, 64)
-		if err != nil || id <= 0 {
-			return nil, fmt.Errorf("invalid job id %q", arg)
-		}
-		ids = append(ids, id)
+// noArguments rejects stray positional arguments, so a mistyped flag is not
+// silently swallowed as an argument the command ignores.
+func noArguments(name string, positional []string) error {
+	if len(positional) > 0 {
+		return usagef("%s does not accept arguments: %v", name, positional)
 	}
-	return ids, nil
-}
-
-func splitStates(value string) []string {
-	if strings.TrimSpace(value) == "" {
-		return nil
-	}
-	return []string{value}
+	return nil
 }
 
 func defaultSocketPath() string {
@@ -219,190 +236,40 @@ func defaultSocketPath() string {
 	return defaultControlSocket
 }
 
-func writeJSON(out io.Writer, value any) error {
-	encoder := json.NewEncoder(out)
-	encoder.SetIndent("", "  ")
-	if err := encoder.Encode(value); err != nil {
-		return fmt.Errorf("write JSON: %w", err)
-	}
-	return nil
-}
-
-func writeStatus(out io.Writer, response controlapi.StatusResponse) error {
-	w := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
-	if _, err := fmt.Fprintf(w, "DAEMON\t%s\nSTARTED\t%s\nVERSION\t%s\nWORKERS\t%d/%d active\n",
-		response.Daemon.State,
-		response.Daemon.StartedAt.Format("2006-01-02T15:04:05Z07:00"),
-		response.Daemon.Version,
-		response.Workers.Active,
-		response.Workers.Configured,
-	); err != nil {
+func runVersion(ctx context.Context, e *env, args []string) error {
+	flags, positional, err := e.subcommand("version", args, nil)
+	if flags == nil {
 		return err
 	}
-	return w.Flush()
-}
-
-func writeJobs(out io.Writer, response controlapi.JobListResponse) error {
-	// The MATCHED column only carries meaning for an absolute-path query, so it
-	// is omitted rather than rendered permanently blank.
-	matched := false
-	for _, job := range response.Jobs {
-		if len(job.MatchedOn) > 0 {
-			matched = true
-			break
-		}
-	}
-	w := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
-	header := "JOB\tID\tSTATE\tLIBRARY\tUPDATED\tSOURCE\tDESTINATION\tERROR"
-	if matched {
-		header = "JOB\tID\tSTATE\tLIBRARY\tUPDATED\tMATCHED\tSOURCE\tDESTINATION\tERROR"
-	}
-	if _, err := fmt.Fprintln(w, header); err != nil {
+	if err := noArguments("version", positional); err != nil {
 		return err
 	}
-	for _, job := range response.Jobs {
-		columns := []any{
-			job.Slug, job.ID, job.State, job.Library,
-			job.UpdatedAt.Format("2006-01-02T15:04:05Z07:00"),
-		}
-		format := "%s\t%d\t%s\t%s\t%s\t%s\t%s\t%s\n"
-		if matched {
-			format = "%s\t%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n"
-			columns = append(columns, formatMatchedOn(job.MatchedOn))
-		}
-		columns = append(columns, job.Source.AbsolutePath, job.DestinationPath, job.LastError)
-		if _, err := fmt.Fprintf(w, format, columns...); err != nil {
-			return err
-		}
+	// The daemon is contacted but a failure is reported inline rather than
+	// returned: "which client am I running" has to be answerable while the
+	// daemon is down, which is exactly when someone asks.
+	response := versionReport{
+		Client:          control.BuildVersion,
+		ProtocolVersion: uint64(control.ProtocolVersion),
+		APIVersion:      control.Version,
+		Socket:          e.client.SocketPath(),
 	}
-	if err := w.Flush(); err != nil {
-		return err
+	status, statusErr := e.client.Status(ctx)
+	if statusErr != nil {
+		response.DaemonError = statusErr.Error()
+	} else {
+		response.Daemon = status.Daemon.Version
 	}
-	if response.PathOutsideLibraries {
-		if _, err := fmt.Fprintln(out, "path resolves under no configured library root, so it is unlikely any job owns it"); err != nil {
-			return err
-		}
+	if e.json {
+		return writeJSON(e.out, response)
 	}
-	if err := writeJobStreamSelections(out, response.Jobs); err != nil {
-		return err
-	}
-	if response.Truncated {
-		_, err := fmt.Fprintf(out, "showing %d of %d matching jobs\n", len(response.Jobs), response.Matched)
-		return err
-	}
-	return nil
+	return writeVersion(e.out, response)
 }
 
-func formatMatchedOn(sides []controlapi.PathMatchSide) string {
-	parts := make([]string, 0, len(sides))
-	for _, side := range sides {
-		parts = append(parts, string(side))
-	}
-	return strings.Join(parts, "+")
-}
-
-// writeJobStreamSelections renders the recorded decisions below the listing.
-// They are far too wide for a table column, and they are only present when the
-// caller asked for them.
-func writeJobStreamSelections(out io.Writer, jobs []controlapi.JobResponse) error {
-	for _, job := range jobs {
-		for _, selection := range job.StreamSelection {
-			if selection.DecisionError != "" {
-				if _, err := fmt.Fprintf(out, "\n%s stream selection (attempt %d): unreadable: %s\n",
-					job.Slug, selection.AttemptID, selection.DecisionError); err != nil {
-					return err
-				}
-				continue
-			}
-			if selection.Decision == nil {
-				continue
-			}
-			decision := selection.Decision
-			if _, err := fmt.Fprintf(out, "\n%s %s selection (attempt %d): rule %s\n",
-				job.Slug, decision.Kind, selection.AttemptID, decision.Rule); err != nil {
-				return err
-			}
-			if len(decision.RequestedLanguages) > 0 {
-				if _, err := fmt.Fprintf(out, "  requested: %s\n", strings.Join(decision.RequestedLanguages, ", ")); err != nil {
-					return err
-				}
-			}
-			if len(decision.MissingLanguages) > 0 {
-				if _, err := fmt.Fprintf(out, "  missing from source: %s\n", strings.Join(decision.MissingLanguages, ", ")); err != nil {
-					return err
-				}
-			}
-			for _, stream := range decision.Streams {
-				status := "dropped"
-				if stream.Kept {
-					status = "kept"
-				}
-				if _, err := fmt.Fprintf(out, "  #%d %s %s %s (%s)\n",
-					stream.Index, stream.Codec, stream.Language, status, stream.Reason); err != nil {
-					return err
-				}
-			}
-		}
-	}
-	return nil
-}
-
-func writeCanceledJobs(out io.Writer, response controlapi.JobCancelResponse) error {
-	w := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
-	if _, err := fmt.Fprintln(w, "JOB\tID\tLIBRARY\tPREVIOUS\tSTATE\tCANCELED\tWORKER SIGNALED\tSKIPPED"); err != nil {
-		return err
-	}
-	for _, job := range response.Jobs {
-		if _, err := fmt.Fprintf(w, "%s\t%d\t%s\t%s\t%s\t%t\t%t\t%s\n",
-			job.Slug, job.ID, job.Library, job.PreviousState, job.State, job.Canceled, job.WorkerSignaled, job.SkipReason,
-		); err != nil {
-			return err
-		}
-	}
-	if err := w.Flush(); err != nil {
-		return err
-	}
-	_, err := fmt.Fprintf(out, "canceled %d of %d matching jobs\n", response.Canceled, response.Matched)
-	return err
-}
-
-func writeUsage(out io.Writer) error {
-	_, err := fmt.Fprintln(out, `Usage:
-  anvilctl [--socket PATH] status [--json]
-  anvilctl [--socket PATH] job list [--library NAME] [--path PATH | --absolute-path PATH]
-           [--state STATE,...] [--current-only] [--limit N] [--with-selection] [--json]
-  anvilctl [--socket PATH] job cancel [--library NAME] [--path PATH | --absolute-path PATH]
-           [--state STATE,...] [--current-only] [--reason TEXT] [--json] [JOB_ID...]
-
---absolute-path matches a job's source, asset, and destination paths, so a
-converted file resolves back to the job that produced it. The MATCHED column
-reports which side matched.
-
---with-selection adds the audio and subtitle streams Anvil kept and dropped,
-with the reason for each, recorded per attempt and readable after the source
-file is gone.
-
-Job cancellation requires at least one narrowing selector, so a bare "job cancel"
-is rejected; --current-only only refines another selector and is not one itself.
-A matched job that was not canceled is reported with a SKIPPED reason such as
-publish_in_progress.`)
-	return err
-}
-
-func writeStatusUsage(out io.Writer) error {
-	_, err := fmt.Fprintln(out, "Usage: anvilctl [--socket PATH] status [--json]")
-	return err
-}
-
-func writeJobUsage(out io.Writer) error {
-	_, err := fmt.Fprintln(out, "Usage: anvilctl [--socket PATH] job list|cancel [OPTIONS]")
-	return err
-}
-
-func writeJobListUsage(out io.Writer) error {
-	return writeUsage(out)
-}
-
-func writeJobCancelUsage(out io.Writer) error {
-	return writeUsage(out)
+type versionReport struct {
+	Client          string `json:"client"`
+	Daemon          string `json:"daemon,omitempty"`
+	DaemonError     string `json:"daemon_error,omitempty"`
+	ProtocolVersion uint64 `json:"protocol_version"`
+	APIVersion      string `json:"api_version"`
+	Socket          string `json:"socket"`
 }

@@ -33,6 +33,13 @@
       packages = forEachSystem (
         { pkgs, ... }:
         let
+          version = "0.1.0";
+          vendorHash = "sha256-0j1IhNahvM035aJzfog14r2RVWS7i1LQb/1MQ9/tIog=";
+          ldflags = [
+            "-s"
+            "-w"
+            "-X github.com/zekurio/anvil/pkg/control.BuildVersion=${version}"
+          ];
           ffmpegPackage =
             if pkgs.stdenv.isLinux then
               (pkgs.jellyfin-ffmpeg or pkgs.ffmpeg)
@@ -45,12 +52,15 @@
             pkgs.mkvtoolnix
           ];
         in
-        {
-          default = pkgs.buildGoModule {
+        rec {
+          default = anvil;
+
+          # anvil is the full build: the daemon wrapped with its runtime tools,
+          # the control client, and the smoke-test Arr stub.
+          anvil = pkgs.buildGoModule {
             pname = "anvil";
-            version = "0.1.0";
+            inherit version vendorHash ldflags;
             src = ./.;
-            vendorHash = "sha256-0j1IhNahvM035aJzfog14r2RVWS7i1LQb/1MQ9/tIog=";
             nativeBuildInputs = [
               pkgs.makeWrapper
             ];
@@ -59,12 +69,6 @@
               "cmd/anvild"
               "cmd/anvilctl"
               "cmd/anvil-mockarr"
-            ];
-
-            ldflags = [
-              "-s"
-              "-w"
-              "-X github.com/zekurio/anvil/pkg/controlapi.BuildVersion=0.1.0"
             ];
 
             postInstall = ''
@@ -78,6 +82,56 @@
               platforms = pkgs.lib.platforms.unix;
             };
           };
+
+          # anvild is the service binary on its own, still wrapped with the
+          # media tools it actually runs.
+          anvild = pkgs.buildGoModule {
+            pname = "anvild";
+            inherit version vendorHash ldflags;
+            src = ./.;
+            nativeBuildInputs = [ pkgs.makeWrapper ];
+            subPackages = [ "cmd/anvild" ];
+
+            postInstall = ''
+              wrapProgram "$out/bin/anvild" \
+                --prefix PATH : "${pkgs.lib.makeBinPath runtimePackages}"
+            '';
+
+            meta = {
+              description = "Anvil AV1 encoding daemon";
+              mainProgram = "anvild";
+              platforms = pkgs.lib.platforms.unix;
+            };
+          };
+
+          # anvilctl is deliberately standalone: it talks to the daemon over a
+          # Unix socket and never opens SQLite or runs ffmpeg, so wrapping it
+          # with the media toolchain would pull hundreds of megabytes into every
+          # operator's profile for nothing.
+          anvilctl = pkgs.buildGoModule {
+            pname = "anvilctl";
+            inherit version vendorHash ldflags;
+            src = ./.;
+            subPackages = [ "cmd/anvilctl" ];
+
+            meta = {
+              description = "Operator control client for the Anvil daemon";
+              mainProgram = "anvilctl";
+              platforms = pkgs.lib.platforms.unix;
+            };
+          };
+        }
+      );
+
+      # The module check is evaluation-only, so it runs anywhere even though it
+      # describes a NixOS system.
+      checks = forEachSystem (
+        { pkgs, ... }:
+        {
+          nixos-module-boundaries = import ./nix/checks/module-boundaries.nix {
+            inherit pkgs;
+            module = ./nix/modules/anvil.nix;
+          };
         }
       );
 
@@ -86,15 +140,15 @@
         {
           default = {
             type = "app";
-            program = "${self.packages.${system}.default}/bin/anvild";
+            program = "${self.packages.${system}.anvild}/bin/anvild";
           };
           anvild = {
             type = "app";
-            program = "${self.packages.${system}.default}/bin/anvild";
+            program = "${self.packages.${system}.anvild}/bin/anvild";
           };
           anvilctl = {
             type = "app";
-            program = "${self.packages.${system}.default}/bin/anvilctl";
+            program = "${self.packages.${system}.anvilctl}/bin/anvilctl";
           };
         }
       );
