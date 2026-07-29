@@ -478,6 +478,11 @@ func (r Runner) fail(ctx context.Context, job domain.Job, attempt domain.Attempt
 	// A pending publish is never made terminal, whatever ended the attempt: the
 	// journaled operation has to stay resumable, and only a job that can be
 	// re-leased ever reaches recoverPendingPublish.
+	//
+	// ConflictError.Is reports ErrPublishPending too, so a conflicted publish
+	// takes this branch as well. That is deliberate: a conflict also needs the
+	// journal kept, and the store leaves conflicted jobs cancelable so the
+	// attempt may already have been canceled underneath us.
 	pendingPublish := errors.Is(cause, replacepkg.ErrPublishPending)
 	if canceled := jobCancellationCause(ctx, cause); canceled != nil && !pendingPublish {
 		return r.cancel(context.WithoutCancel(ctx), job, attempt, canceled)
@@ -486,7 +491,9 @@ func (r Runner) fail(ctx context.Context, job domain.Job, attempt domain.Attempt
 	// job keeps a lease nobody owns until stale-job recovery expires it.
 	ctx = context.WithoutCancel(ctx)
 	message := cause.Error()
-	if _, err := r.Store.FinishAttempt(ctx, attempt.ID, domain.AttemptStateFailed, message, r.now()); err != nil {
+	// A cancel that raced this attempt already finished it, so a missing running
+	// attempt is the store having recorded the outcome first, not an error.
+	if _, err := r.Store.FinishAttempt(ctx, attempt.ID, domain.AttemptStateFailed, message, r.now()); err != nil && !errors.Is(err, store.ErrNotFound) {
 		return fmt.Errorf("finish failed attempt: %w", err)
 	}
 	if errors.Is(cause, ErrInputOccurrenceChanged) {

@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -446,5 +447,57 @@ func TestCancelJobsReportsASignaledWorker(t *testing.T) {
 	}
 	if len(signaled) != 1 || signaled[0] != job.ID {
 		t.Fatalf("signaled workers = %v, want job %d", signaled, job.ID)
+	}
+}
+
+// recordingCancelStore captures the input the service builds for the store so a
+// test can assert the selector survives the hop, then delegates to the real one.
+type recordingCancelStore struct {
+	Store
+	input store.CancelJobsInput
+}
+
+func (r *recordingCancelStore) CancelJobs(ctx context.Context, input store.CancelJobsInput) ([]store.CancelJobResult, error) {
+	r.input = input
+	return r.Store.CancelJobs(ctx, input)
+}
+
+// TestCancelJobsForwardsTheSelectorStatesToTheStore pins the control-API half of
+// the state guard. The store re-checks the state inside the cancel transaction,
+// but only if the service actually hands the selector's states over: without
+// that, a job that changed state between the listing and the cancel is canceled
+// anyway, which is how `--state pending` could kill a running encode.
+func TestCancelJobsForwardsTheSelectorStatesToTheStore(t *testing.T) {
+	ctx := context.Background()
+	service, _, _, job := testService(t, ctx)
+	recorder := &recordingCancelStore{Store: service.Store}
+	service.Store = recorder
+
+	response, err := service.CancelJobs(ctx, JobCancelRequest{Library: "downloads", States: []string{"pending", "retrying"}})
+	if err != nil {
+		t.Fatalf("CancelJobs() error = %v", err)
+	}
+	if len(response.Jobs) != 1 || !response.Jobs[0].Canceled {
+		t.Fatalf("cancel results = %+v, want job %d canceled", response.Jobs, job.ID)
+	}
+	want := []domain.JobState{domain.JobStatePending, domain.JobStateRetrying}
+	if !slices.Equal(recorder.input.States, want) {
+		t.Fatalf("CancelJobsInput.States = %v, want %v", recorder.input.States, want)
+	}
+}
+
+// TestCancelJobsWithoutAStateSelectorForwardsNoStates keeps the guard from
+// silently narrowing a cancel that never asked for a state.
+func TestCancelJobsWithoutAStateSelectorForwardsNoStates(t *testing.T) {
+	ctx := context.Background()
+	service, _, _, _ := testService(t, ctx)
+	recorder := &recordingCancelStore{Store: service.Store}
+	service.Store = recorder
+
+	if _, err := service.CancelJobs(ctx, JobCancelRequest{Library: "downloads"}); err != nil {
+		t.Fatalf("CancelJobs() error = %v", err)
+	}
+	if len(recorder.input.States) != 0 {
+		t.Fatalf("CancelJobsInput.States = %v, want none", recorder.input.States)
 	}
 }
