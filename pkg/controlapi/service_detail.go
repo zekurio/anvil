@@ -10,6 +10,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/zekurio/anvil/pkg/control"
 	"github.com/zekurio/anvil/pkg/domain"
 	"github.com/zekurio/anvil/pkg/pipeline"
 	replacepkg "github.com/zekurio/anvil/pkg/replace"
@@ -24,39 +25,39 @@ const processOutputArtifactName = "process-output"
 // paths, the resumable pipeline context, the publish journal, the stream
 // selection decisions, and every attempt event. It is the post-mortem view, so
 // it never hides a record it cannot decode.
-func (s Service) ShowJob(ctx context.Context, request JobShowRequest) (JobShowResponse, error) {
+func (s Service) ShowJob(ctx context.Context, request control.JobShowRequest) (control.JobShowResponse, error) {
 	if err := s.requireStore(); err != nil {
-		return JobShowResponse{}, err
+		return control.JobShowResponse{}, err
 	}
 	reference := strings.TrimSpace(request.Reference)
 	if reference == "" {
-		return JobShowResponse{}, invalidArgumentf("a job id or slug is required")
+		return control.JobShowResponse{}, invalidArgumentf("a job id or slug is required")
 	}
 	job, err := s.Store.ResolveJobReference(ctx, reference)
 	if errors.Is(err, store.ErrNotFound) {
-		return JobShowResponse{}, notFoundf("no job matches reference %q", reference)
+		return control.JobShowResponse{}, notFoundf("no job matches reference %q", reference)
 	}
 	if err != nil {
-		return JobShowResponse{}, err
+		return control.JobShowResponse{}, err
 	}
 
 	summary, err := s.Store.GetJobSummary(ctx, job.ID)
 	if err != nil {
-		return JobShowResponse{}, err
+		return control.JobShowResponse{}, err
 	}
 	attempts, err := s.Store.ListAttemptsForJob(ctx, job.ID)
 	if err != nil {
-		return JobShowResponse{}, err
+		return control.JobShowResponse{}, err
 	}
 	snapshot, hasSnapshot, err := s.Store.GetJobPipelineContext(ctx, job.ID)
 	if err != nil {
-		return JobShowResponse{}, err
+		return control.JobShowResponse{}, err
 	}
-	response := JobShowResponse{
-		APIVersion: Version,
+	response := control.JobShowResponse{
+		APIVersion: control.Version,
 		ServerTime: s.now(),
 		Job:        jobDetailFromSummary(summary),
-		Attempts:   make([]AttemptDetail, 0, len(attempts)),
+		Attempts:   make([]control.AttemptDetail, 0, len(attempts)),
 	}
 	if hasSnapshot {
 		context := pipelineContextDetail(snapshot)
@@ -64,7 +65,7 @@ func (s Service) ShowJob(ctx context.Context, request JobShowRequest) (JobShowRe
 	}
 	operation, hasOperation, err := s.Store.GetPublishOperation(ctx, job.ID)
 	if err != nil {
-		return JobShowResponse{}, err
+		return control.JobShowResponse{}, err
 	}
 	if hasOperation {
 		detail := publishOperationDetail(operation)
@@ -73,7 +74,7 @@ func (s Service) ShowJob(ctx context.Context, request JobShowRequest) (JobShowRe
 	for _, attempt := range attempts {
 		events, err := s.Store.ListAttemptEvents(ctx, attempt.ID)
 		if err != nil {
-			return JobShowResponse{}, err
+			return control.JobShowResponse{}, err
 		}
 		response.Attempts = append(response.Attempts, attemptDetail(attempt, events))
 	}
@@ -84,9 +85,9 @@ func (s Service) ShowJob(ctx context.Context, request JobShowRequest) (JobShowRe
 // latestStreamSelection returns the stream-selection decisions of the most
 // recent attempt that recorded any, because that is the state of the file on
 // disk right now.
-func latestStreamSelection(attempts []AttemptDetail) []AttemptStreamSelection {
+func latestStreamSelection(attempts []control.AttemptDetail) []control.AttemptStreamSelection {
 	for i := len(attempts) - 1; i >= 0; i-- {
-		if selections := attempts[i].streamSelections(); len(selections) > 0 {
+		if selections := streamSelections(attempts[i]); len(selections) > 0 {
 			return selections
 		}
 	}
@@ -97,8 +98,8 @@ func latestStreamSelection(attempts []AttemptDetail) []AttemptStreamSelection {
 // that failed to decode. An unreadable record still counts as recorded: hiding
 // it would let latestStreamSelection fall back to an older attempt and present
 // a stale decision as the current one.
-func (a AttemptDetail) streamSelections() []AttemptStreamSelection {
-	var result []AttemptStreamSelection
+func streamSelections(a control.AttemptDetail) []control.AttemptStreamSelection {
+	var result []control.AttemptStreamSelection
 	for _, event := range a.Events {
 		// A payload error on some other artifact is not a stream selection, and
 		// treating it as one would both invent a decision and stop the scan from
@@ -106,7 +107,7 @@ func (a AttemptDetail) streamSelections() []AttemptStreamSelection {
 		if event.StreamSelection == nil && (event.PayloadError == "" || event.Name != pipeline.StreamSelectionArtifact) {
 			continue
 		}
-		result = append(result, AttemptStreamSelection{
+		result = append(result, control.AttemptStreamSelection{
 			AttemptID:     a.ID,
 			AttemptNumber: a.Number,
 			RecordedAt:    event.CreatedAt,
@@ -117,8 +118,8 @@ func (a AttemptDetail) streamSelections() []AttemptStreamSelection {
 	return result
 }
 
-func publishOperationDetail(operation replacepkg.PublishOperation) PublishOperationDetail {
-	return PublishOperationDetail{
+func publishOperationDetail(operation replacepkg.PublishOperation) control.PublishOperationDetail {
+	return control.PublishOperationDetail{
 		Kind:                operation.Kind,
 		Mode:                operation.Mode,
 		Stage:               string(operation.Stage),
@@ -133,8 +134,8 @@ func publishOperationDetail(operation replacepkg.PublishOperation) PublishOperat
 	}
 }
 
-func jobDetailFromSummary(summary store.JobSummary) JobDetail {
-	return JobDetail{
+func jobDetailFromSummary(summary store.JobSummary) control.JobDetail {
+	return control.JobDetail{
 		ID:           int64(summary.Job.ID),
 		Slug:         summary.Job.Label(),
 		State:        string(summary.Job.State),
@@ -147,15 +148,15 @@ func jobDetailFromSummary(summary store.JobSummary) JobDetail {
 		SourcePath:   summary.SourcePath,
 		AssetPath:    summary.AssetPath,
 		AssetRole:    string(summary.AssetRole),
-		Path:         JobPath(summary),
+		Path:         jobPath(summary),
 		LastError:    summary.Job.LastError,
 	}
 }
 
-// JobPath joins a job's source and asset paths into the single path an operator
+// jobPath joins a job's source and asset paths into the single path an operator
 // recognizes. A package job's asset lives under its source, so reporting only
 // one of them would name a directory or a file with no context.
-func JobPath(summary store.JobSummary) string {
+func jobPath(summary store.JobSummary) string {
 	if summary.AssetPath == "" || summary.AssetPath == summary.SourcePath {
 		return summary.SourcePath
 	}
@@ -170,8 +171,8 @@ func JobPath(summary store.JobSummary) string {
 	return source + "/" + asset
 }
 
-func attemptDetail(attempt domain.Attempt, events []domain.AttemptEvent) AttemptDetail {
-	result := AttemptDetail{
+func attemptDetail(attempt domain.Attempt, events []domain.AttemptEvent) control.AttemptDetail {
+	result := control.AttemptDetail{
 		ID:         int64(attempt.ID),
 		Number:     attempt.Number,
 		State:      string(attempt.State),
@@ -179,7 +180,7 @@ func attemptDetail(attempt domain.Attempt, events []domain.AttemptEvent) Attempt
 		StartedAt:  attempt.StartedAt,
 		FinishedAt: attempt.FinishedAt,
 		Error:      attempt.Error,
-		Events:     make([]AttemptEventDetail, 0, len(events)),
+		Events:     make([]control.AttemptEventDetail, 0, len(events)),
 	}
 	for _, event := range events {
 		result.Events = append(result.Events, attemptEventDetail(event))
@@ -187,8 +188,8 @@ func attemptDetail(attempt domain.Attempt, events []domain.AttemptEvent) Attempt
 	return result
 }
 
-func attemptEventDetail(event domain.AttemptEvent) AttemptEventDetail {
-	result := AttemptEventDetail{
+func attemptEventDetail(event domain.AttemptEvent) control.AttemptEventDetail {
+	result := control.AttemptEventDetail{
 		ID:        int64(event.ID),
 		AttemptID: int64(event.AttemptID),
 		CreatedAt: event.CreatedAt,
@@ -224,8 +225,8 @@ func isProcessOutputEvent(event domain.AttemptEvent) bool {
 	return event.Type == domain.AttemptEventArtifact && event.Name == processOutputArtifactName
 }
 
-func decodeProcessOutput(payload []byte) (*ProcessOutputDetail, error) {
-	var output ProcessOutputDetail
+func decodeProcessOutput(payload []byte) (*control.ProcessOutputDetail, error) {
+	var output control.ProcessOutputDetail
 	if err := json.Unmarshal(payload, &output); err != nil {
 		return nil, err
 	}
@@ -235,11 +236,11 @@ func decodeProcessOutput(payload []byte) (*ProcessOutputDetail, error) {
 	return &output, nil
 }
 
-func decodeEventPayload(payload []byte) *EventPayload {
+func decodeEventPayload(payload []byte) *control.EventPayload {
 	if len(payload) == 0 {
 		return nil
 	}
-	result := &EventPayload{SizeBytes: len(payload)}
+	result := &control.EventPayload{SizeBytes: len(payload)}
 
 	var compact bytes.Buffer
 	if err := json.Compact(&compact, payload); err == nil {
@@ -257,8 +258,8 @@ func decodeEventPayload(payload []byte) *EventPayload {
 	return result
 }
 
-func pipelineContextDetail(snapshot domain.JobPipelineContext) PipelineContextDetail {
-	result := PipelineContextDetail{
+func pipelineContextDetail(snapshot domain.JobPipelineContext) control.PipelineContextDetail {
+	result := control.PipelineContextDetail{
 		Version: snapshot.Version,
 		Steps:   pipelineStepDetails(snapshot.Steps),
 	}
@@ -282,16 +283,16 @@ func pipelineContextDetail(snapshot domain.JobPipelineContext) PipelineContextDe
 	return result
 }
 
-func pipelineStepDetails(steps map[string]domain.JobPipelineStep) []PipelineStepDetail {
+func pipelineStepDetails(steps map[string]domain.JobPipelineStep) []control.PipelineStepDetail {
 	names := make([]string, 0, len(steps))
 	for name := range steps {
 		names = append(names, name)
 	}
 	sort.Strings(names)
-	result := make([]PipelineStepDetail, 0, len(names))
+	result := make([]control.PipelineStepDetail, 0, len(names))
 	for _, name := range names {
 		step := steps[name]
-		result = append(result, PipelineStepDetail{
+		result = append(result, control.PipelineStepDetail{
 			Name:       name,
 			AttemptID:  int64(step.AttemptID),
 			FinishedAt: step.FinishedAt,

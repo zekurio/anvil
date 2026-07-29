@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/zekurio/anvil/internal/textout"
-	"github.com/zekurio/anvil/pkg/controlapi"
+	"github.com/zekurio/anvil/pkg/control"
 	"github.com/zekurio/anvil/pkg/domain"
 )
 
@@ -17,7 +17,7 @@ import (
 // post-mortem view, so it prints unreadable records as unreadable instead of
 // dropping them: an omitted decision reads as "nothing was dropped", which is a
 // different and much worse answer.
-func writeJobShow(out io.Writer, report controlapi.JobShowResponse) error {
+func writeJobShow(out io.Writer, report control.JobShowResponse) error {
 	return textout.Write(out, func(w *textout.Writer) {
 		job := report.Job
 		w.Printf("Job %s (id=%d)\n", job.Slug, job.ID)
@@ -97,7 +97,7 @@ func writeJobShow(out io.Writer, report controlapi.JobShowResponse) error {
 	})
 }
 
-func writePipelineContext(w *textout.Writer, context controlapi.PipelineContextDetail) {
+func writePipelineContext(w *textout.Writer, context control.PipelineContextDetail) {
 	w.Printf("\nSaved context:\n")
 	w.Printf("  Version: %d\n", context.Version)
 	w.Printf("  Steps: %s\n", formatPipelineSteps(context.Steps))
@@ -127,7 +127,7 @@ func writePipelineContext(w *textout.Writer, context controlapi.PipelineContextD
 	}
 }
 
-func formatPipelineSteps(steps []controlapi.PipelineStepDetail) string {
+func formatPipelineSteps(steps []control.PipelineStepDetail) string {
 	if len(steps) == 0 {
 		return "<none>"
 	}
@@ -184,7 +184,7 @@ func formatIndexes(values []int) string {
 	return strings.Join(formatted, ", ")
 }
 
-func writeProcessOutput(w *textout.Writer, indent string, output controlapi.ProcessOutputDetail) {
+func writeProcessOutput(w *textout.Writer, indent string, output control.ProcessOutputDetail) {
 	w.Printf("%sprocess output:\n", indent)
 	w.Printf("%s  step: %s\n", indent, textout.OrNone(output.Step))
 	w.Printf("%s  command: %s\n", indent, formatCommand(output.Command))
@@ -197,7 +197,7 @@ func writeProcessOutput(w *textout.Writer, indent string, output controlapi.Proc
 	}
 }
 
-func payloadDisplay(payload *controlapi.EventPayload) string {
+func payloadDisplay(payload *control.EventPayload) string {
 	if payload == nil {
 		return "<none>"
 	}

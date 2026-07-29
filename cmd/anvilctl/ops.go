@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/zekurio/anvil/pkg/controlapi"
+	"github.com/zekurio/anvil/pkg/control"
 )
 
 func runLibrary(ctx context.Context, e *env, args []string) error {
@@ -38,7 +38,7 @@ func runLibraryScan(ctx context.Context, e *env, args []string) error {
 	if err != nil {
 		return err
 	}
-	response, err := e.client.ScanLibraries(ctx, controlapi.LibraryScanRequest{Library: name})
+	response, err := e.client.ScanLibraries(ctx, control.LibraryScanRequest{Library: name})
 	if err != nil {
 		return err
 	}
@@ -60,7 +60,7 @@ func runLibraryStats(ctx context.Context, e *env, args []string) error {
 	if err != nil {
 		return err
 	}
-	response, err := e.client.LibraryStats(ctx, controlapi.LibraryStatsRequest{Library: name})
+	response, err := e.client.LibraryStats(ctx, control.LibraryStatsRequest{Library: name})
 	if err != nil {
 		return err
 	}
@@ -115,7 +115,7 @@ func runOccurrenceForce(ctx context.Context, e *env, args []string) error {
 	if len(positional) != 1 {
 		return usagef("occurrence force requires exactly one library-relative path")
 	}
-	response, err := e.client.ForceOccurrence(ctx, controlapi.ForceOccurrenceRequest{
+	response, err := e.client.ForceOccurrence(ctx, control.ForceOccurrenceRequest{
 		Library: library, Path: positional[0],
 	})
 	if err != nil {
@@ -155,7 +155,7 @@ func runStagingCleanup(ctx context.Context, e *env, args []string) error {
 	if err := noArguments("staging cleanup", positional); err != nil {
 		return err
 	}
-	response, err := e.client.CleanupStaging(ctx, controlapi.StagingCleanupRequest{
+	response, err := e.client.CleanupStaging(ctx, control.StagingCleanupRequest{
 		OlderThan: olderThan, DryRun: dryRun,
 	})
 	if err != nil {
@@ -197,7 +197,7 @@ func runStoreBackup(ctx context.Context, e *env, args []string) error {
 	if err != nil {
 		return usagef("resolve backup destination %q: %v", positional[0], err)
 	}
-	response, err := e.client.BackupStore(ctx, controlapi.StoreBackupRequest{Destination: destination})
+	response, err := e.client.BackupStore(ctx, control.StoreBackupRequest{Destination: destination})
 	if err != nil {
 		return err
 	}

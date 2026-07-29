@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/zekurio/anvil/pkg/control"
 	"github.com/zekurio/anvil/pkg/domain"
 	"github.com/zekurio/anvil/pkg/store"
 )
@@ -17,7 +18,7 @@ import (
 // serveTestControl starts a real server on a real Unix socket and returns a
 // client for it. Every transport test goes through the socket, because the
 // framing, deadlines, and one-command-per-connection rule only exist there.
-func serveTestControl(t *testing.T, service Service) (*Client, string) {
+func serveTestControl(t *testing.T, service Service) (*control.Client, string) {
 	t.Helper()
 	socketPath := testSocketPath(t)
 	listener, cleanup, err := ListenUnix(socketPath)
@@ -38,9 +39,9 @@ func serveTestControl(t *testing.T, service Service) (*Client, string) {
 			t.Errorf("cleanup() error = %v", err)
 		}
 	})
-	client, err := NewClient(socketPath)
+	client, err := control.NewClient(socketPath)
 	if err != nil {
-		t.Fatalf("NewClient() error = %v", err)
+		t.Fatalf("control.NewClient() error = %v", err)
 	}
 	return client, socketPath
 }
@@ -55,12 +56,12 @@ func TestClientAndServerRoundTripAJobQuery(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Status() error = %v", err)
 	}
-	if status.Daemon.State != "ready" || status.APIVersion != Version {
+	if status.Daemon.State != "ready" || status.APIVersion != control.Version {
 		t.Fatalf("Status() = %+v", status)
 	}
 
 	absolutePath := cfg.Libraries["downloads"].Path + "/Release/Season/Episode.mkv"
-	response, err := client.ListJobs(ctx, JobQuery{
+	response, err := client.ListJobs(ctx, control.JobQuery{
 		AbsolutePath: absolutePath, CurrentOnly: true, States: []string{"pending,running,failed"},
 		WithSelection: true,
 	})
@@ -72,7 +73,7 @@ func TestClientAndServerRoundTripAJobQuery(t *testing.T) {
 	}
 	// Every selector has to survive the hop; a dropped one silently widens or
 	// narrows what the operator asked about.
-	if !containsSide(response.Jobs[0].MatchedOn, PathMatchAsset) {
+	if !containsSide(response.Jobs[0].MatchedOn, control.PathMatchAsset) {
 		t.Fatalf("MatchedOn = %v, want the asset side", response.Jobs[0].MatchedOn)
 	}
 	if len(response.Jobs[0].StreamSelection) != 1 {
@@ -80,7 +81,37 @@ func TestClientAndServerRoundTripAJobQuery(t *testing.T) {
 	}
 }
 
-func containsSide(sides []PathMatchSide, want PathMatchSide) bool {
+// rawFrame builds a frame byte for byte, with a deliberately chosen version and
+// length. The literal magic pins the wire format from the outside instead of
+// asking the code under test what it thinks the format is, and only a
+// hand-built frame can claim a version this build does not speak or a length it
+// does not carry.
+func rawFrame(version uint16, length uint32, payload []byte) []byte {
+	frame := make([]byte, control.FrameHeaderSize, control.FrameHeaderSize+len(payload))
+	copy(frame, []byte{'A', 'N', 'V', 'L'})
+	binary.BigEndian.PutUint16(frame[4:6], version)
+	binary.BigEndian.PutUint32(frame[6:control.FrameHeaderSize], length)
+	return append(frame, payload...)
+}
+
+// readAnswer reads the daemon's single response frame.
+func readAnswer(t *testing.T, connection net.Conn) control.Response {
+	t.Helper()
+	if err := connection.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatalf("SetReadDeadline() error = %v", err)
+	}
+	frame, err := control.ReadFrame(connection, control.MaxResponseBytes)
+	if err != nil {
+		t.Fatalf("control.ReadFrame() error = %v", err)
+	}
+	var answer control.Response
+	if err := json.Unmarshal(frame.Payload, &answer); err != nil {
+		t.Fatalf("decode response error = %v", err)
+	}
+	return answer
+}
+
+func containsSide(sides []control.PathMatchSide, want control.PathMatchSide) bool {
 	for _, side := range sides {
 		if side == want {
 			return true
@@ -97,45 +128,45 @@ func TestServerReturnsStructuredErrors(t *testing.T) {
 	tests := []struct {
 		name string
 		call func() error
-		want ErrorCode
+		want control.ErrorCode
 	}{
 		{
 			name: "invalid argument",
 			call: func() error {
-				_, err := client.ListJobs(ctx, JobQuery{AbsolutePath: "relative/path"})
+				_, err := client.ListJobs(ctx, control.JobQuery{AbsolutePath: "relative/path"})
 				return err
 			},
-			want: CodeInvalidArgument,
+			want: control.CodeInvalidArgument,
 		},
 		{
 			name: "not found",
 			call: func() error {
-				_, err := client.ShowJob(ctx, JobShowRequest{Reference: "no-such-job"})
+				_, err := client.ShowJob(ctx, control.JobShowRequest{Reference: "no-such-job"})
 				return err
 			},
-			want: CodeNotFound,
+			want: control.CodeNotFound,
 		},
 		{
 			name: "unknown library",
 			call: func() error {
-				_, err := client.ScanLibraries(ctx, LibraryScanRequest{Library: "missing"})
+				_, err := client.ScanLibraries(ctx, control.LibraryScanRequest{Library: "missing"})
 				return err
 			},
-			want: CodeNotFound,
+			want: control.CodeNotFound,
 		},
 		{
 			name: "cancel without a selector",
 			call: func() error {
-				_, err := client.CancelJobs(ctx, JobCancelRequest{})
+				_, err := client.CancelJobs(ctx, control.JobCancelRequest{})
 				return err
 			},
-			want: CodeInvalidArgument,
+			want: control.CodeInvalidArgument,
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			err := tt.call()
-			var controlErr *Error
+			var controlErr *control.Error
 			if !errors.As(err, &controlErr) {
 				t.Fatalf("error = %v, want a structured control error", err)
 			}
@@ -161,25 +192,11 @@ func TestServerAnswersAProtocolVersionMismatch(t *testing.T) {
 	defer connection.Close() //nolint:errcheck // the test only reads the answer
 
 	payload := []byte(`{"command":"status"}`)
-	frame := make([]byte, frameHeaderSize, frameHeaderSize+len(payload))
-	copy(frame, frameMagic[:])
-	binary.BigEndian.PutUint16(frame[4:6], ProtocolVersion+1)
-	binary.BigEndian.PutUint32(frame[6:frameHeaderSize], uint32(len(payload)))
-	if _, err := connection.Write(append(frame, payload...)); err != nil {
+	if _, err := connection.Write(rawFrame(control.ProtocolVersion+1, uint32(len(payload)), payload)); err != nil {
 		t.Fatalf("write frame error = %v", err)
 	}
-	if err := connection.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
-		t.Fatalf("SetReadDeadline() error = %v", err)
-	}
-	_, body, err := readFrame(connection, maxResponseBytes)
-	if err != nil {
-		t.Fatalf("readFrame() error = %v", err)
-	}
-	var answer response
-	if err := json.Unmarshal(body, &answer); err != nil {
-		t.Fatalf("decode response error = %v", err)
-	}
-	if answer.Error == nil || answer.Error.Code != CodeVersionMismatch {
+	answer := readAnswer(t, connection)
+	if answer.Error == nil || answer.Error.Code != control.CodeVersionMismatch {
 		t.Fatalf("response = %+v, want a version mismatch", answer)
 	}
 	if !strings.Contains(answer.Error.Message, "upgraded together") {
@@ -196,11 +213,11 @@ func TestServerRejectsUnsupportedCommandsAndOversizedRequests(t *testing.T) {
 		name    string
 		payload []byte
 		length  uint32
-		want    ErrorCode
+		want    control.ErrorCode
 	}{
-		{name: "unsupported command", payload: []byte(`{"command":"drop.everything"}`), want: CodeUnsupported},
-		{name: "unknown envelope field", payload: []byte(`{"command":"status","extra":1}`), want: CodeInvalidArgument},
-		{name: "oversized frame", payload: []byte(`{"command":"status"}`), length: maxRequestBytes + 1, want: CodeInvalidArgument},
+		{name: "unsupported command", payload: []byte(`{"command":"drop.everything"}`), want: control.CodeUnsupported},
+		{name: "unknown envelope field", payload: []byte(`{"command":"status","extra":1}`), want: control.CodeInvalidArgument},
+		{name: "oversized frame", payload: []byte(`{"command":"status"}`), length: control.MaxRequestBytes + 1, want: control.CodeInvalidArgument},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -213,24 +230,10 @@ func TestServerRejectsUnsupportedCommandsAndOversizedRequests(t *testing.T) {
 			if length == 0 {
 				length = uint32(len(tt.payload))
 			}
-			frame := make([]byte, frameHeaderSize, frameHeaderSize+len(tt.payload))
-			copy(frame, frameMagic[:])
-			binary.BigEndian.PutUint16(frame[4:6], ProtocolVersion)
-			binary.BigEndian.PutUint32(frame[6:frameHeaderSize], length)
-			if _, err := connection.Write(append(frame, tt.payload...)); err != nil {
+			if _, err := connection.Write(rawFrame(control.ProtocolVersion, length, tt.payload)); err != nil {
 				t.Fatalf("write frame error = %v", err)
 			}
-			if err := connection.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
-				t.Fatalf("SetReadDeadline() error = %v", err)
-			}
-			_, body, err := readFrame(connection, maxResponseBytes)
-			if err != nil {
-				t.Fatalf("readFrame() error = %v", err)
-			}
-			var answer response
-			if err := json.Unmarshal(body, &answer); err != nil {
-				t.Fatalf("decode response error = %v", err)
-			}
+			answer := readAnswer(t, connection)
 			if answer.Error == nil || answer.Error.Code != tt.want {
 				t.Fatalf("response = %+v, want %q", answer, tt.want)
 			}
@@ -258,13 +261,13 @@ func TestServerIgnoresAConnectionThatSendsNothing(t *testing.T) {
 }
 
 func TestClientReportsAnUnreachableDaemon(t *testing.T) {
-	client, err := NewClient(testSocketPath(t))
+	client, err := control.NewClient(testSocketPath(t))
 	if err != nil {
-		t.Fatalf("NewClient() error = %v", err)
+		t.Fatalf("control.NewClient() error = %v", err)
 	}
 	_, err = client.Status(context.Background())
-	var controlErr *Error
-	if !errors.As(err, &controlErr) || controlErr.Code != CodeUnavailable {
+	var controlErr *control.Error
+	if !errors.As(err, &controlErr) || controlErr.Code != control.CodeUnavailable {
 		t.Fatalf("Status() error = %v, want unavailable", err)
 	}
 	if !strings.Contains(controlErr.Message, "is anvild running?") {
@@ -273,23 +276,23 @@ func TestClientReportsAnUnreachableDaemon(t *testing.T) {
 }
 
 func TestClientRejectsARelativeSocketPath(t *testing.T) {
-	if _, err := NewClient("anvild.sock"); err == nil {
-		t.Fatal("NewClient() error = nil, want an absolute-path requirement")
+	if _, err := control.NewClient("anvild.sock"); err == nil {
+		t.Fatal("control.NewClient() error = nil, want an absolute-path requirement")
 	}
 }
 
 // TestClientValidatesLocallyBeforeDialing keeps an obviously wrong request from
 // being answered differently depending on whether the daemon happens to be up.
 func TestClientValidatesLocallyBeforeDialing(t *testing.T) {
-	client, err := NewClient(testSocketPath(t))
+	client, err := control.NewClient(testSocketPath(t))
 	if err != nil {
-		t.Fatalf("NewClient() error = %v", err)
+		t.Fatalf("control.NewClient() error = %v", err)
 	}
-	if _, err := client.ListJobs(context.Background(), JobQuery{Limit: -1}); err == nil ||
+	if _, err := client.ListJobs(context.Background(), control.JobQuery{Limit: -1}); err == nil ||
 		!strings.Contains(err.Error(), "limit must be non-negative") {
 		t.Fatalf("ListJobs() error = %v", err)
 	}
-	if _, err := client.CancelJobs(context.Background(), JobCancelRequest{}); err == nil ||
+	if _, err := client.CancelJobs(context.Background(), control.JobCancelRequest{}); err == nil ||
 		!strings.Contains(err.Error(), "at least one selector") {
 		t.Fatalf("CancelJobs() error = %v", err)
 	}
@@ -308,7 +311,7 @@ func TestCancelOverTheSocketSignalsTheWorker(t *testing.T) {
 	}
 	client, _ := serveTestControl(t, service)
 
-	response, err := client.CancelJobs(ctx, JobCancelRequest{
+	response, err := client.CancelJobs(ctx, control.JobCancelRequest{
 		Library: "downloads", References: []string{job.Label()}, Reason: "queued by mistake",
 	})
 	if err != nil {
@@ -338,15 +341,23 @@ func TestCancelBySlugNarrowsTheSameWayAnIDDoes(t *testing.T) {
 	service, _, _, job := testService(t, ctx)
 	client, _ := serveTestControl(t, service)
 
-	_, err := client.CancelJobs(ctx, JobCancelRequest{Library: "other", References: []string{job.Label()}})
-	var controlErr *Error
-	if !errors.As(err, &controlErr) || controlErr.Code != CodeInvalidArgument {
+	// "archive" is configured but owns no jobs, so the named job is outside the
+	// selector rather than in a library nobody configured.
+	_, err := client.CancelJobs(ctx, control.JobCancelRequest{Library: "archive", References: []string{job.Label()}})
+	var controlErr *control.Error
+	if !errors.As(err, &controlErr) || controlErr.Code != control.CodeInvalidArgument {
 		t.Fatalf("CancelJobs() error = %v, want invalid_argument", err)
 	}
-	if _, err := client.CancelJobs(ctx, JobCancelRequest{References: []string{"missing-job-slug"}}); err == nil {
+	// A library that is not configured at all is a different mistake, and is
+	// reported as one instead of as an empty selection.
+	_, err = client.CancelJobs(ctx, control.JobCancelRequest{Library: "nope", References: []string{job.Label()}})
+	if !errors.As(err, &controlErr) || controlErr.Code != control.CodeNotFound {
+		t.Fatalf("CancelJobs(unconfigured library) error = %v, want not_found", err)
+	}
+	if _, err := client.CancelJobs(ctx, control.JobCancelRequest{References: []string{"missing-job-slug"}}); err == nil {
 		t.Fatal("CancelJobs() for an unknown slug error = nil, want not found")
 	}
-	listed, err := client.ListJobs(ctx, JobQuery{Library: "downloads"})
+	listed, err := client.ListJobs(ctx, control.JobQuery{Library: "downloads"})
 	if err != nil {
 		t.Fatalf("ListJobs() error = %v", err)
 	}
@@ -371,7 +382,7 @@ func TestStagingCleanupFailsWhenProtectionIsUnknown(t *testing.T) {
 	service.Store = storeWithoutProtection{Store: service.Store}
 	client, _ := serveTestControl(t, service)
 
-	if _, err := client.CleanupStaging(ctx, StagingCleanupRequest{OlderThan: "1h"}); err == nil {
+	if _, err := client.CleanupStaging(ctx, control.StagingCleanupRequest{OlderThan: "1h"}); err == nil {
 		t.Fatal("CleanupStaging() error = nil, want a refusal while protection is unknown")
 	}
 }

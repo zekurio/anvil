@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/zekurio/anvil/pkg/controlapi"
+	"github.com/zekurio/anvil/pkg/control"
 	"github.com/zekurio/anvil/pkg/domain"
 )
 
@@ -17,17 +17,17 @@ import (
 func TestWriteJobsRendersSelectionsAndMatchSides(t *testing.T) {
 	tests := []struct {
 		name     string
-		response controlapi.JobListResponse
+		response control.JobListResponse
 		want     []string
 		absent   []string
 	}{
 		{
 			name: "match sides and a decision",
-			response: controlapi.JobListResponse{
-				Jobs: []controlapi.JobResponse{{
+			response: control.JobListResponse{
+				Jobs: []control.JobResponse{{
 					Slug: "kind-pink-heron", ID: 7, State: "complete", Library: "anime",
-					MatchedOn: []controlapi.PathMatchSide{controlapi.PathMatchAsset, controlapi.PathMatchDestination},
-					StreamSelection: []controlapi.StreamSelectionResponse{{
+					MatchedOn: []control.PathMatchSide{control.PathMatchAsset, control.PathMatchDestination},
+					StreamSelection: []control.StreamSelectionResponse{{
 						AttemptID: 41,
 						Decision: &domain.StreamSelectionDecision{
 							Kind: domain.StreamKindAudio, Rule: domain.StreamSelectionRuleLanguageFilter,
@@ -50,24 +50,24 @@ func TestWriteJobsRendersSelectionsAndMatchSides(t *testing.T) {
 		},
 		{
 			name: "no match side means no column",
-			response: controlapi.JobListResponse{
-				Jobs: []controlapi.JobResponse{{Slug: "kind-pink-heron", ID: 7, State: "pending"}},
+			response: control.JobListResponse{
+				Jobs: []control.JobResponse{{Slug: "kind-pink-heron", ID: 7, State: "pending"}},
 			},
 			absent: []string{"MATCHED"},
 		},
 		{
 			name: "unreadable decision is reported",
-			response: controlapi.JobListResponse{
-				Jobs: []controlapi.JobResponse{{
+			response: control.JobListResponse{
+				Jobs: []control.JobResponse{{
 					Slug: "kind-pink-heron", ID: 7,
-					StreamSelection: []controlapi.StreamSelectionResponse{{AttemptID: 41, DecisionError: "decode stream selection: boom"}},
+					StreamSelection: []control.StreamSelectionResponse{{AttemptID: 41, DecisionError: "decode stream selection: boom"}},
 				}},
 			},
 			want: []string{"unreadable: decode stream selection: boom"},
 		},
 		{
 			name:     "path outside every library",
-			response: controlapi.JobListResponse{PathOutsideLibraries: true, Jobs: []controlapi.JobResponse{}},
+			response: control.JobListResponse{PathOutsideLibraries: true, Jobs: []control.JobResponse{}},
 			want:     []string{"path resolves under no configured library root"},
 		},
 	}
@@ -97,15 +97,15 @@ func TestWriteJobsRendersSelectionsAndMatchSides(t *testing.T) {
 func TestWriteJobShowRendersProcessOutputAndPayloads(t *testing.T) {
 	now := time.Date(2026, 6, 27, 12, 0, 0, 0, time.UTC)
 	finished := now.Add(2 * time.Minute)
-	report := controlapi.JobShowResponse{
-		Job: controlapi.JobDetail{
+	report := control.JobShowResponse{
+		Job: control.JobDetail{
 			ID: 42, Slug: "pretty-pink-panther", State: "failed", Library: "movies",
 			AttemptCount: 1, UpdatedAt: now, SourcePath: "Movie.mkv", AssetPath: "Movie.mkv",
 			Path: "Movie.mkv", LastError: "encode failed",
 		},
-		PipelineContext: &controlapi.PipelineContextDetail{
+		PipelineContext: &control.PipelineContextDetail{
 			Version: 1,
-			Steps: []controlapi.PipelineStepDetail{
+			Steps: []control.PipelineStepDetail{
 				{Name: "crop-detect", AttemptID: 7, FinishedAt: now, Resumable: true},
 				{Name: "crf-search", AttemptID: 7, FinishedAt: now.Add(time.Second), Resumable: true},
 				{Name: "encode", AttemptID: 7, FinishedAt: now.Add(2 * time.Second)},
@@ -113,24 +113,24 @@ func TestWriteJobShowRendersProcessOutputAndPayloads(t *testing.T) {
 			CropFilter: "crop=1920:800:0:140", SearchCRF: 24, SearchVMAF: 96.25,
 			EncodeVideoCodec: "libsvtav1", EncodeCRF: 24,
 		},
-		PublishOperation: &controlapi.PublishOperationDetail{
+		PublishOperation: &control.PublishOperationDetail{
 			Kind: "handoff", Mode: "move", Stage: "conflict",
 			ArtifactPath: "/tmp/output.mkv", DestinationPath: "/imports/Movie.mkv",
 			CleanupSourcePath: "/downloads/Movie.mkv", ArtifactSizeBytes: 1234,
 			DigestAlgorithm: "sha256", ConflictDescription: "destination differs", UpdatedAt: now,
 		},
-		Attempts: []controlapi.AttemptDetail{{
+		Attempts: []control.AttemptDetail{{
 			ID: 7, Number: 1, State: "failed", WorkerID: "worker-1",
 			StartedAt: now, FinishedAt: &finished, Error: "exit status 1",
-			Events: []controlapi.AttemptEventDetail{
+			Events: []control.AttemptEventDetail{
 				{
 					ID: 10, AttemptID: 7, CreatedAt: now, Type: "block_started", Name: "probe",
-					Payload: &controlapi.EventPayload{Kind: "json", SizeBytes: 16, JSON: []byte(`{"step_index":0}`)},
+					Payload: &control.EventPayload{Kind: "json", SizeBytes: 16, JSON: []byte(`{"step_index":0}`)},
 				},
 				{
 					ID: 11, AttemptID: 7, CreatedAt: now.Add(time.Second), Type: "artifact",
 					Name: "process-output", Message: "captured process output for ffmpeg",
-					ProcessOutput: &controlapi.ProcessOutputDetail{
+					ProcessOutput: &control.ProcessOutputDetail{
 						Step: "encode", Command: []string{"ffmpeg", "-i", "Movie.mkv"},
 						ExitCode: 1, DurationMillis: 1534,
 						StdoutPath: "/tmp/stdout.log", StderrPath: "/tmp/stderr.log",
@@ -139,7 +139,7 @@ func TestWriteJobShowRendersProcessOutputAndPayloads(t *testing.T) {
 				},
 				{
 					ID: 12, AttemptID: 7, CreatedAt: now.Add(2 * time.Second), Type: "artifact",
-					Name: "raw-output", Payload: &controlapi.EventPayload{Kind: "bytes", SizeBytes: 2, BytesBase64: "/wA="},
+					Name: "raw-output", Payload: &control.EventPayload{Kind: "bytes", SizeBytes: 2, BytesBase64: "/wA="},
 				},
 			},
 		}},
@@ -181,10 +181,10 @@ func TestWriteJobShowRendersProcessOutputAndPayloads(t *testing.T) {
 // with no explanation is indistinguishable from "nothing to do".
 func TestWriteProtectedJobsExplainsRefusals(t *testing.T) {
 	var out bytes.Buffer
-	err := writePrunedJobs(&out, controlapi.JobPruneResponse{
+	err := writePrunedJobs(&out, control.JobPruneResponse{
 		DryRun: true, MatchedJobs: 0,
 		ByState:       map[string]int64{"complete": 2},
-		ProtectedJobs: []controlapi.ProtectedJob{{ID: 9, Slug: "kind-pink-heron", Reason: "unresolved_publish_journal"}},
+		ProtectedJobs: []control.ProtectedJob{{ID: 9, Slug: "kind-pink-heron", Reason: "unresolved_publish_journal"}},
 	})
 	if err != nil {
 		t.Fatalf("writePrunedJobs() error = %v", err)
@@ -200,7 +200,7 @@ func TestWriteProtectedJobsExplainsRefusals(t *testing.T) {
 // from exiting zero, which would let a scheduled cleanup hide a real problem.
 func TestWriteStagingCleanupReportsErrorsAsFailure(t *testing.T) {
 	var out, errOut bytes.Buffer
-	err := writeStagingCleanup(&out, &errOut, controlapi.StagingCleanupResponse{
+	err := writeStagingCleanup(&out, &errOut, control.StagingCleanupResponse{
 		Root: "/var/lib/anvil/tmp/staging", OlderThan: "24h0m0s",
 		Candidates: 2, Removed: 1, Errors: []string{"/var/lib/anvil/tmp/staging/job-1-attempt-1: permission denied"},
 	})

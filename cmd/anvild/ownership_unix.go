@@ -27,12 +27,15 @@ type daemonOwnership struct {
 
 func acquireDaemonOwnership(storePath string) (*daemonOwnership, error) {
 	storePath = strings.TrimSpace(storePath)
-	if storePath == "" || storePath == ":memory:" || strings.HasPrefix(storePath, "file:") {
+	lockPath, lockable, err := storeLockPath(storePath)
+	if err != nil {
+		return nil, err
+	}
+	if !lockable {
 		// A store with no filesystem identity cannot be shared with another
 		// daemon in a way this lock could describe.
 		return &daemonOwnership{}, nil
 	}
-	lockPath := storePath + ".lock"
 	file, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o640)
 	if err != nil {
 		return nil, fmt.Errorf("open daemon ownership lock %q: %w", lockPath, err)

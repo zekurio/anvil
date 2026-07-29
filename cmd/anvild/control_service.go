@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/zekurio/anvil/pkg/config"
+	"github.com/zekurio/anvil/pkg/control"
 	"github.com/zekurio/anvil/pkg/controlapi"
 	"github.com/zekurio/anvil/pkg/domain"
 	"github.com/zekurio/anvil/pkg/scanner"
@@ -37,7 +38,7 @@ func startControlService(ctx context.Context, wg *sync.WaitGroup, listener net.L
 		ActiveWorkers:    deps.activeWorkers,
 		CancelRunningJob: deps.cancelJob,
 		StartedAt:        deps.startedAt,
-		DaemonVersion:    controlapi.BuildVersion,
+		DaemonVersion:    control.BuildVersion,
 	}}
 	failures := make(chan error, 1)
 	wg.Add(1)
@@ -50,8 +51,8 @@ func startControlService(ctx context.Context, wg *sync.WaitGroup, listener net.L
 	}()
 	slog.Info("control service listening",
 		"socket", listener.Addr().String(),
-		"api_version", controlapi.Version,
-		"protocol_version", controlapi.ProtocolVersion,
+		"api_version", control.Version,
+		"protocol_version", control.ProtocolVersion,
 	)
 	return failures
 }

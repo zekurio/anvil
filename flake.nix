@@ -38,7 +38,7 @@
           ldflags = [
             "-s"
             "-w"
-            "-X github.com/zekurio/anvil/pkg/controlapi.BuildVersion=${version}"
+            "-X github.com/zekurio/anvil/pkg/control.BuildVersion=${version}"
           ];
           ffmpegPackage =
             if pkgs.stdenv.isLinux then
@@ -119,6 +119,18 @@
               mainProgram = "anvilctl";
               platforms = pkgs.lib.platforms.unix;
             };
+          };
+        }
+      );
+
+      # The module check is evaluation-only, so it runs anywhere even though it
+      # describes a NixOS system.
+      checks = forEachSystem (
+        { pkgs, ... }:
+        {
+          nixos-module-boundaries = import ./nix/checks/module-boundaries.nix {
+            inherit pkgs;
+            module = ./nix/modules/anvil.nix;
           };
         }
       );

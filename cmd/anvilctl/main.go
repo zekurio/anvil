@@ -15,7 +15,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/zekurio/anvil/pkg/controlapi"
+	"github.com/zekurio/anvil/pkg/control"
 )
 
 const defaultControlSocket = "/run/anvil/anvild.sock"
@@ -32,7 +32,7 @@ const (
 
 // env carries everything a command needs that is not its own arguments.
 type env struct {
-	client *controlapi.Client
+	client *control.Client
 	out    io.Writer
 	errOut io.Writer
 	json   bool
@@ -77,16 +77,16 @@ func exitCode(err error) int {
 	if errors.As(err, &usage) {
 		return exitUsage
 	}
-	var controlErr *controlapi.Error
+	var controlErr *control.Error
 	if !errors.As(err, &controlErr) {
 		return exitFailed
 	}
 	switch controlErr.Code {
-	case controlapi.CodeInvalidArgument, controlapi.CodeUnsupported:
+	case control.CodeInvalidArgument, control.CodeUnsupported:
 		return exitUsage
-	case controlapi.CodeUnavailable, controlapi.CodeVersionMismatch:
+	case control.CodeUnavailable, control.CodeVersionMismatch:
 		return exitUnavailable
-	case controlapi.CodeNotFound:
+	case control.CodeNotFound:
 		return exitNotFound
 	default:
 		return exitFailed
@@ -126,7 +126,7 @@ func run(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer)
 		remaining = append(append([]string(nil), expanded...), remaining[1:]...)
 	}
 
-	client, err := controlapi.NewClient(opts.socketPath)
+	client, err := control.NewClient(opts.socketPath)
 	if err != nil {
 		return usageError{err: err}
 	}
@@ -177,6 +177,11 @@ func parseGlobal(args []string, stderr io.Writer) (options, []string, error) {
 // Flags may follow positional arguments: "job show 42 --json" is what an
 // operator types, and stdlib flag parsing would otherwise stop at 42 and report
 // the flag as a stray argument.
+//
+// A bare "--" still ends flag parsing for good. Anvil's arguments are file
+// paths, job slugs, and library names, and any of them can legitimately begin
+// with a dash; without an escape, such a name could only be passed by renaming
+// the file.
 func (e *env) subcommand(name string, args []string, register func(*flag.FlagSet)) (*flag.FlagSet, []string, error) {
 	flags := flag.NewFlagSet("anvilctl "+name, flag.ContinueOnError)
 	flags.SetOutput(e.errOut)
@@ -184,9 +189,10 @@ func (e *env) subcommand(name string, args []string, register func(*flag.FlagSet
 	if register != nil {
 		register(flags)
 	}
+	flagArgs, literal := splitAtTerminator(args)
 	var positional []string
 	for {
-		if err := flags.Parse(args); err != nil {
+		if err := flags.Parse(flagArgs); err != nil {
 			if errors.Is(err, flag.ErrHelp) {
 				return nil, nil, writeUsage(e.out)
 			}
@@ -194,11 +200,24 @@ func (e *env) subcommand(name string, args []string, register func(*flag.FlagSet
 		}
 		rest := flags.Args()
 		if len(rest) == 0 {
-			return flags, positional, nil
+			return flags, append(positional, literal...), nil
 		}
 		positional = append(positional, rest[0])
-		args = rest[1:]
+		flagArgs = rest[1:]
 	}
+}
+
+// splitAtTerminator returns the arguments before the first bare "--" and the
+// ones after it. The interleaved parse above re-parses what follows each
+// positional argument, which would otherwise resurrect flag parsing for
+// arguments the operator already terminated.
+func splitAtTerminator(args []string) ([]string, []string) {
+	for i, arg := range args {
+		if arg == "--" {
+			return args[:i], args[i+1:]
+		}
+	}
+	return args, nil
 }
 
 // noArguments rejects stray positional arguments, so a mistyped flag is not
@@ -229,9 +248,9 @@ func runVersion(ctx context.Context, e *env, args []string) error {
 	// returned: "which client am I running" has to be answerable while the
 	// daemon is down, which is exactly when someone asks.
 	response := versionReport{
-		Client:          controlapi.BuildVersion,
-		ProtocolVersion: uint64(controlapi.ProtocolVersion),
-		APIVersion:      controlapi.Version,
+		Client:          control.BuildVersion,
+		ProtocolVersion: uint64(control.ProtocolVersion),
+		APIVersion:      control.Version,
 		Socket:          e.client.SocketPath(),
 	}
 	status, statusErr := e.client.Status(ctx)

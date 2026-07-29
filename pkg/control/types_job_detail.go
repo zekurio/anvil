@@ -1,4 +1,4 @@
-package controlapi
+package control
 
 import (
 	"encoding/json"

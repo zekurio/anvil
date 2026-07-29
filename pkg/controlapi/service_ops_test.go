@@ -5,10 +5,12 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/zekurio/anvil/pkg/config"
+	"github.com/zekurio/anvil/pkg/control"
 	"github.com/zekurio/anvil/pkg/domain"
 	replacepkg "github.com/zekurio/anvil/pkg/replace"
 	"github.com/zekurio/anvil/pkg/scanner"
@@ -21,7 +23,7 @@ func TestRetryJobsAcceptsIDsAndSlugs(t *testing.T) {
 	service, state, _, job := testService(t, ctx)
 	failJob(t, ctx, state, job.ID)
 
-	response, err := service.RetryJobs(ctx, JobRetryRequest{References: []string{job.Label()}})
+	response, err := service.RetryJobs(ctx, control.JobRetryRequest{References: []string{job.Label()}})
 	if err != nil {
 		t.Fatalf("RetryJobs(slug) error = %v", err)
 	}
@@ -31,7 +33,7 @@ func TestRetryJobsAcceptsIDsAndSlugs(t *testing.T) {
 
 	// The same job by numeric id, which is the form that shows up in logs.
 	failJob(t, ctx, state, job.ID)
-	response, err = service.RetryJobs(ctx, JobRetryRequest{References: []string{itoa(int64(job.ID))}})
+	response, err = service.RetryJobs(ctx, control.JobRetryRequest{References: []string{itoa(int64(job.ID))}})
 	if err != nil {
 		t.Fatalf("RetryJobs(id) error = %v", err)
 	}
@@ -42,7 +44,7 @@ func TestRetryJobsAcceptsIDsAndSlugs(t *testing.T) {
 	// The bulk form counts separately, so an operator can tell a broad retry
 	// from a targeted one in the same response.
 	failJob(t, ctx, state, job.ID)
-	bulk, err := service.RetryJobs(ctx, JobRetryRequest{Failed: true, Library: "downloads"})
+	bulk, err := service.RetryJobs(ctx, control.JobRetryRequest{Failed: true, Library: "downloads"})
 	if err != nil {
 		t.Fatalf("RetryJobs(failed) error = %v", err)
 	}
@@ -73,21 +75,81 @@ func failJob(t *testing.T, ctx context.Context, state *store.SQLiteStore, jobID 
 	}
 }
 
+// TestRetryJobsAppliesNothingWhenAnyPartFails is the data-safety rule the bulk
+// form used to break: --failed was committed before the explicit references
+// were even resolved, so a typo'd job name reported a failed command while the
+// queue had already been requeued behind the operator's back. The response is
+// the only record they get of what the daemon did, so it has to be true.
+func TestRetryJobsAppliesNothingWhenAnyPartFails(t *testing.T) {
+	ctx := context.Background()
+	service, state, _, job := testService(t, ctx)
+	// The job is failed exactly once. Every case below must leave it that way,
+	// which is the whole assertion: a refused retry changes nothing.
+	failJob(t, ctx, state, job.ID)
+
+	tests := []struct {
+		name    string
+		request control.JobRetryRequest
+		want    control.ErrorCode
+	}{
+		{
+			name:    "bulk retry with an unresolvable reference",
+			request: control.JobRetryRequest{Failed: true, References: []string{"no-such-job"}},
+			want:    control.CodeNotFound,
+		},
+		{
+			name:    "bulk retry narrowed to a library that is not configured",
+			request: control.JobRetryRequest{Failed: true, Library: "nope"},
+			want:    control.CodeNotFound,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := service.RetryJobs(ctx, tt.request)
+			var controlErr *control.Error
+			if !errors.As(err, &controlErr) || controlErr.Code != tt.want {
+				t.Fatalf("RetryJobs() error = %v, want %q", err, tt.want)
+			}
+			current, err := state.GetJob(ctx, job.ID)
+			if err != nil {
+				t.Fatalf("GetJob() error = %v", err)
+			}
+			if current.State != domain.JobStateFailed {
+				t.Fatalf("job state = %q, want the failed job untouched by a refused retry", current.State)
+			}
+		})
+	}
+
+	// The same rule inside one request: the first reference is retryable and the
+	// second is not, because the first already moved it to pending. Neither may
+	// survive, or the operator is told the command failed while half of it ran.
+	if _, err := service.RetryJobs(ctx, control.JobRetryRequest{References: []string{job.Label(), job.Label()}}); err == nil {
+		t.Fatal("RetryJobs() error = nil, want the second retry of an already pending job refused")
+	}
+	current, err := state.GetJob(ctx, job.ID)
+	if err != nil {
+		t.Fatalf("GetJob() error = %v", err)
+	}
+	if current.State != domain.JobStateFailed {
+		t.Fatalf("job state = %q, want the first retry rolled back with the second", current.State)
+	}
+}
+
 // TestRetryJobsRefusesAnEmptyBulkRequest keeps a mistyped retry from being read
 // as "retry nothing" or, worse, as a queue-wide action.
 func TestRetryJobsRefusesAnEmptyBulkRequest(t *testing.T) {
 	ctx := context.Background()
 	service, _, _, _ := testService(t, ctx)
 
-	_, err := service.RetryJobs(ctx, JobRetryRequest{})
-	var controlErr *Error
-	if !errors.As(err, &controlErr) || controlErr.Code != CodeInvalidArgument {
+	_, err := service.RetryJobs(ctx, control.JobRetryRequest{})
+	var controlErr *control.Error
+	if !errors.As(err, &controlErr) || controlErr.Code != control.CodeInvalidArgument {
 		t.Fatalf("RetryJobs() error = %v, want invalid_argument", err)
 	}
-	if _, err := service.RetryJobs(ctx, JobRetryRequest{Library: "downloads"}); err == nil {
+	if _, err := service.RetryJobs(ctx, control.JobRetryRequest{Library: "downloads"}); err == nil {
 		t.Fatal("RetryJobs(library only) error = nil, want a refusal")
 	}
-	if _, err := service.RetryJobs(ctx, JobRetryRequest{Failed: true, Library: "nope"}); err == nil {
+	if _, err := service.RetryJobs(ctx, control.JobRetryRequest{Failed: true, Library: "nope"}); err == nil {
 		t.Fatal("RetryJobs(unknown library) error = nil, want not found")
 	}
 }
@@ -97,7 +159,7 @@ func TestShowJobReportsAttemptHistory(t *testing.T) {
 	service, state, _, job := testService(t, ctx)
 	attempt := recordStreamSelection(t, ctx, state, job.ID, germanMissingDecision())
 
-	response, err := service.ShowJob(ctx, JobShowRequest{Reference: job.Label()})
+	response, err := service.ShowJob(ctx, control.JobShowRequest{Reference: job.Label()})
 	if err != nil {
 		t.Fatalf("ShowJob() error = %v", err)
 	}
@@ -110,7 +172,7 @@ func TestShowJobReportsAttemptHistory(t *testing.T) {
 	if len(response.StreamSelection) != 1 || response.StreamSelection[0].Decision == nil {
 		t.Fatalf("ShowJob() stream selection = %+v", response.StreamSelection)
 	}
-	if _, err := service.ShowJob(ctx, JobShowRequest{Reference: "  "}); err == nil {
+	if _, err := service.ShowJob(ctx, control.JobShowRequest{Reference: "  "}); err == nil {
 		t.Fatal("ShowJob(blank) error = nil, want a rejection")
 	}
 }
@@ -136,7 +198,7 @@ func TestPruneJobsRefusesJobsHoldingAPublishJournal(t *testing.T) {
 	}
 	markSourceMissing(t, ctx, state)
 
-	response, err := service.PruneJobs(ctx, JobPruneRequest{Apply: true})
+	response, err := service.PruneJobs(ctx, control.JobPruneRequest{Apply: true})
 	if err != nil {
 		t.Fatalf("PruneJobs() error = %v", err)
 	}
@@ -178,14 +240,14 @@ func TestPruneJobsDeletesResolvedJobs(t *testing.T) {
 	}
 	markSourceMissing(t, ctx, state)
 
-	dryRun, err := service.PruneJobs(ctx, JobPruneRequest{})
+	dryRun, err := service.PruneJobs(ctx, control.JobPruneRequest{})
 	if err != nil {
 		t.Fatalf("PruneJobs(dry run) error = %v", err)
 	}
 	if !dryRun.DryRun || dryRun.MatchedJobs != 1 || dryRun.DeletedJobs != 0 {
 		t.Fatalf("PruneJobs(dry run) = %+v, want a preview", dryRun)
 	}
-	applied, err := service.PruneJobs(ctx, JobPruneRequest{Apply: true})
+	applied, err := service.PruneJobs(ctx, control.JobPruneRequest{Apply: true})
 	if err != nil {
 		t.Fatalf("PruneJobs(apply) error = %v", err)
 	}
@@ -197,9 +259,9 @@ func TestPruneJobsDeletesResolvedJobs(t *testing.T) {
 func TestPruneJobsRejectsNonTerminalStates(t *testing.T) {
 	ctx := context.Background()
 	service, _, _, _ := testService(t, ctx)
-	_, err := service.PruneJobs(ctx, JobPruneRequest{States: []string{"running"}})
-	var controlErr *Error
-	if !errors.As(err, &controlErr) || controlErr.Code != CodeInvalidArgument {
+	_, err := service.PruneJobs(ctx, control.JobPruneRequest{States: []string{"running"}})
+	var controlErr *control.Error
+	if !errors.As(err, &controlErr) || controlErr.Code != control.CodeInvalidArgument {
 		t.Fatalf("PruneJobs() error = %v, want invalid_argument", err)
 	}
 }
@@ -234,7 +296,7 @@ func TestCleanupStagingProtectsLiveWork(t *testing.T) {
 		t.Fatalf("GetJob() error = %v", err)
 	}
 
-	response, err := service.CleanupStaging(ctx, StagingCleanupRequest{OlderThan: "24h"})
+	response, err := service.CleanupStaging(ctx, control.StagingCleanupRequest{OlderThan: "24h"})
 	if err != nil {
 		t.Fatalf("CleanupStaging() error = %v", err)
 	}
@@ -255,10 +317,66 @@ func TestCleanupStagingProtectsLiveWork(t *testing.T) {
 func TestCleanupStagingRejectsAnUnparsableAge(t *testing.T) {
 	ctx := context.Background()
 	service, _, _, _ := testService(t, ctx)
-	_, err := service.CleanupStaging(ctx, StagingCleanupRequest{OlderThan: "sometimes"})
-	var controlErr *Error
-	if !errors.As(err, &controlErr) || controlErr.Code != CodeInvalidArgument {
+	_, err := service.CleanupStaging(ctx, control.StagingCleanupRequest{OlderThan: "sometimes"})
+	var controlErr *control.Error
+	if !errors.As(err, &controlErr) || controlErr.Code != control.CodeInvalidArgument {
 		t.Fatalf("CleanupStaging() error = %v, want invalid_argument", err)
+	}
+	if _, err := service.CleanupStaging(ctx, control.StagingCleanupRequest{OlderThan: "-1h"}); err == nil {
+		t.Fatal("CleanupStaging(negative) error = nil, want a refusal")
+	}
+}
+
+// TestCleanupStagingRefusesAZeroAge closes a gap between the daemon and the
+// control command: daemon.staging_cleanup_age of 0s disables the daemon's own
+// sweep, and pkg/staging refuses to sweep without a cutoff, so inheriting it
+// here produced a successful-looking report of zero candidates for a directory
+// that was never examined. Both spellings of zero are refused, with different
+// wording, because "you inherited this" and "you asked for this" are different
+// mistakes.
+func TestCleanupStagingRefusesAZeroAge(t *testing.T) {
+	ctx := context.Background()
+	service, _, cfg, _ := testService(t, ctx)
+	tempDir := t.TempDir()
+	cfg.Daemon.TempDir = tempDir
+	cfg.Daemon.StagingCleanupAge = "0s"
+	service.Config = func() config.Config { return cfg }
+	now := time.Now().UTC()
+	service.Now = func() time.Time { return now }
+
+	abandoned := filepath.Join(staging.Root(tempDir), "job-9999-attempt-1")
+	if err := os.MkdirAll(abandoned, 0o750); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	old := now.Add(-48 * time.Hour)
+	if err := os.Chtimes(abandoned, old, old); err != nil {
+		t.Fatalf("Chtimes() error = %v", err)
+	}
+
+	_, err := service.CleanupStaging(ctx, control.StagingCleanupRequest{})
+	var controlErr *control.Error
+	if !errors.As(err, &controlErr) || controlErr.Code != control.CodeInvalidArgument {
+		t.Fatalf("CleanupStaging() error = %v, want invalid_argument", err)
+	}
+	if _, err := os.Stat(abandoned); err != nil {
+		t.Fatalf("a refused cleanup removed %s: %v", abandoned, err)
+	}
+
+	_, err = service.CleanupStaging(ctx, control.StagingCleanupRequest{OlderThan: "0s"})
+	if !errors.As(err, &controlErr) || controlErr.Code != control.CodeInvalidArgument {
+		t.Fatalf("CleanupStaging(explicit 0s) error = %v, want invalid_argument", err)
+	}
+	if !strings.Contains(controlErr.Message, "greater than zero") {
+		t.Fatalf("message = %q, want the explicit-zero wording", controlErr.Message)
+	}
+
+	// A real age still works, and still protects live work.
+	response, err := service.CleanupStaging(ctx, control.StagingCleanupRequest{OlderThan: "24h"})
+	if err != nil {
+		t.Fatalf("CleanupStaging(24h) error = %v", err)
+	}
+	if response.Removed != 1 {
+		t.Fatalf("CleanupStaging(24h) removed = %d, want the abandoned directory", response.Removed)
 	}
 }
 
@@ -276,7 +394,7 @@ func TestScanAndStatsUseTheDaemonConfig(t *testing.T) {
 	// The fixture library is a download library, so the scanner clock is moved
 	// past the stability window instead of sleeping through it.
 	service.Scanner = scanner.Scanner{Store: service.Store.(*store.SQLiteStore), Now: func() time.Time { return time.Now().Add(time.Hour) }}
-	scan, err := service.ScanLibraries(ctx, LibraryScanRequest{Library: "downloads"})
+	scan, err := service.ScanLibraries(ctx, control.LibraryScanRequest{Library: "downloads"})
 	if err != nil {
 		t.Fatalf("ScanLibraries() error = %v", err)
 	}
@@ -286,7 +404,7 @@ func TestScanAndStatsUseTheDaemonConfig(t *testing.T) {
 	// Stats only describe finished work, so a job has to complete with recorded
 	// sizes before it can appear.
 	completeJobWithSizes(t, ctx, service.Store.(*store.SQLiteStore))
-	stats, err := service.LibraryStats(ctx, LibraryStatsRequest{})
+	stats, err := service.LibraryStats(ctx, control.LibraryStatsRequest{})
 	if err != nil {
 		t.Fatalf("LibraryStats() error = %v", err)
 	}
@@ -333,19 +451,19 @@ func TestForceOccurrenceRefusesUnsafeTargets(t *testing.T) {
 
 	tests := []struct {
 		name    string
-		request ForceOccurrenceRequest
-		want    ErrorCode
+		request control.ForceOccurrenceRequest
+		want    control.ErrorCode
 	}{
-		{name: "no library", request: ForceOccurrenceRequest{Path: "Release"}, want: CodeInvalidArgument},
-		{name: "unknown library", request: ForceOccurrenceRequest{Library: "nope", Path: "Release"}, want: CodeNotFound},
-		{name: "absolute path", request: ForceOccurrenceRequest{Library: "downloads", Path: "/etc/passwd"}, want: CodeInvalidArgument},
-		{name: "escaping path", request: ForceOccurrenceRequest{Library: "downloads", Path: "../outside"}, want: CodeInvalidArgument},
-		{name: "missing target", request: ForceOccurrenceRequest{Library: "downloads", Path: "Nothing/Here.mkv"}, want: CodeNotFound},
+		{name: "no library", request: control.ForceOccurrenceRequest{Path: "Release"}, want: control.CodeInvalidArgument},
+		{name: "unknown library", request: control.ForceOccurrenceRequest{Library: "nope", Path: "Release"}, want: control.CodeNotFound},
+		{name: "absolute path", request: control.ForceOccurrenceRequest{Library: "downloads", Path: "/etc/passwd"}, want: control.CodeInvalidArgument},
+		{name: "escaping path", request: control.ForceOccurrenceRequest{Library: "downloads", Path: "../outside"}, want: control.CodeInvalidArgument},
+		{name: "missing target", request: control.ForceOccurrenceRequest{Library: "downloads", Path: "Nothing/Here.mkv"}, want: control.CodeNotFound},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			_, err := service.ForceOccurrence(ctx, tt.request)
-			var controlErr *Error
+			var controlErr *control.Error
 			if !errors.As(err, &controlErr) || controlErr.Code != tt.want {
 				t.Fatalf("ForceOccurrence() error = %v, want %q", err, tt.want)
 			}
@@ -357,9 +475,9 @@ func TestBackupStoreRequiresAnAbsoluteDestination(t *testing.T) {
 	ctx := context.Background()
 	service, _, _, _ := testService(t, ctx)
 	for _, destination := range []string{"", "  ", "relative/anvil.db"} {
-		_, err := service.BackupStore(ctx, StoreBackupRequest{Destination: destination})
-		var controlErr *Error
-		if !errors.As(err, &controlErr) || controlErr.Code != CodeInvalidArgument {
+		_, err := service.BackupStore(ctx, control.StoreBackupRequest{Destination: destination})
+		var controlErr *control.Error
+		if !errors.As(err, &controlErr) || controlErr.Code != control.CodeInvalidArgument {
 			t.Fatalf("BackupStore(%q) error = %v, want invalid_argument", destination, err)
 		}
 	}
@@ -370,7 +488,7 @@ func TestBackupStoreWritesAVerifiedSnapshot(t *testing.T) {
 	service, _, _, _ := testService(t, ctx)
 	destination := filepath.Join(t.TempDir(), "anvil-backup.db")
 
-	response, err := service.BackupStore(ctx, StoreBackupRequest{Destination: destination})
+	response, err := service.BackupStore(ctx, control.StoreBackupRequest{Destination: destination})
 	if err != nil {
 		t.Fatalf("BackupStore() error = %v", err)
 	}
@@ -380,7 +498,7 @@ func TestBackupStoreWritesAVerifiedSnapshot(t *testing.T) {
 	if _, err := os.Stat(destination); err != nil {
 		t.Fatalf("backup file stat error = %v", err)
 	}
-	if _, err := service.BackupStore(ctx, StoreBackupRequest{Destination: destination}); err == nil {
+	if _, err := service.BackupStore(ctx, control.StoreBackupRequest{Destination: destination}); err == nil {
 		t.Fatal("BackupStore() over an existing file error = nil, want a refusal")
 	}
 }
