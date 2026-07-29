@@ -300,14 +300,14 @@ func inspectEventFromDomain(event domain.AttemptEvent) inspectEvent {
 		result.ProcessOutput = output
 		return result
 	}
-	if isStreamSelectionEvent(event) {
-		decision, err := decodeStreamSelection(event.Payload)
+	if pipeline.IsStreamSelectionEvent(event) {
+		decision, err := pipeline.DecodeStreamSelection(event.Payload)
 		if err != nil {
 			result.Payload = decodeInspectPayload(event.Payload)
 			result.PayloadError = err.Error()
 			return result
 		}
-		result.StreamSelection = decision
+		result.StreamSelection = &decision
 		return result
 	}
 	result.Payload = decodeInspectPayload(event.Payload)
@@ -316,18 +316,6 @@ func inspectEventFromDomain(event domain.AttemptEvent) inspectEvent {
 
 func isProcessOutputEvent(event domain.AttemptEvent) bool {
 	return event.Type == domain.AttemptEventArtifact && event.Name == processOutputArtifactName
-}
-
-func isStreamSelectionEvent(event domain.AttemptEvent) bool {
-	return event.Type == domain.AttemptEventArtifact && event.Name == pipeline.StreamSelectionArtifact
-}
-
-func decodeStreamSelection(payload []byte) (*domain.StreamSelectionDecision, error) {
-	var decision domain.StreamSelectionDecision
-	if err := json.Unmarshal(payload, &decision); err != nil {
-		return nil, err
-	}
-	return &decision, nil
 }
 
 func decodeProcessOutput(payload []byte) (*inspectProcessOutput, error) {

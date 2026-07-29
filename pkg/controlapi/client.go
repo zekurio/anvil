@@ -65,6 +65,9 @@ func (c *Client) ListJobs(ctx context.Context, query JobQuery) (JobListResponse,
 	if query.CurrentOnly {
 		values.Set("current_only", "true")
 	}
+	if query.WithSelection {
+		values.Set("with_selection", "true")
+	}
 	if query.Limit > 0 {
 		values.Set("limit", strconv.Itoa(query.Limit))
 	}

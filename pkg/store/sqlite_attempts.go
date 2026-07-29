@@ -193,3 +193,61 @@ WHERE id = ?
 `, int64(id))
 	return scanAttempt(row)
 }
+
+// LatestAttemptArtifacts returns the named artifact events belonging to the most
+// recent attempt of each job that recorded any. Jobs without a matching event
+// are absent from the result, which is what lets a caller tell "nothing was
+// recorded" apart from "recorded, and it kept everything".
+//
+// It reads by name rather than by meaning so the store keeps no knowledge of
+// what any particular artifact payload contains.
+func (s *SQLiteStore) LatestAttemptArtifacts(ctx context.Context, name string, jobIDs []domain.JobID) (result map[domain.JobID][]domain.AttemptEvent, err error) {
+	if len(jobIDs) == 0 {
+		return map[domain.JobID][]domain.AttemptEvent{}, nil
+	}
+	args := make([]any, 0, len(jobIDs)+2)
+	args = append(args, string(domain.AttemptEventArtifact), name)
+	placeholders := make([]string, 0, len(jobIDs))
+	for _, jobID := range jobIDs {
+		placeholders = append(placeholders, "?")
+		args = append(args, int64(jobID))
+	}
+	rows, err := s.db.QueryContext(ctx, `
+SELECT e.id, e.attempt_id, e.type, e.name, e.message, e.payload, e.created_at, a.job_id
+FROM attempt_events e
+JOIN attempts a ON a.id = e.attempt_id
+WHERE e.type = ? AND e.name = ? AND a.job_id IN (`+strings.Join(placeholders, ",")+`)
+	AND e.attempt_id = (
+		SELECT MAX(inner_events.attempt_id)
+		FROM attempt_events inner_events
+		JOIN attempts inner_attempts ON inner_attempts.id = inner_events.attempt_id
+		WHERE inner_attempts.job_id = a.job_id
+			AND inner_events.type = e.type
+			AND inner_events.name = e.name
+	)
+ORDER BY a.job_id ASC, e.id ASC
+`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list latest attempt artifacts: %w", err)
+	}
+	defer closeRows(rows, &err, "close latest attempt artifacts")
+
+	result = make(map[domain.JobID][]domain.AttemptEvent, len(jobIDs))
+	for rows.Next() {
+		var (
+			event   domain.AttemptEvent
+			created string
+			jobID   int64
+		)
+		if err := rows.Scan(&event.ID, &event.AttemptID, &event.Type, &event.Name,
+			&event.Message, &event.Payload, &created, &jobID); err != nil {
+			return nil, fmt.Errorf("scan latest attempt artifact: %w", err)
+		}
+		event.CreatedAt = parseTime(created)
+		result[domain.JobID(jobID)] = append(result[domain.JobID(jobID)], event)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate latest attempt artifacts: %w", err)
+	}
+	return result, nil
+}
