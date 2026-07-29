@@ -791,3 +791,60 @@ func TestCompleteJobOccurrenceRefusesACanceledJob(t *testing.T) {
 		t.Fatalf("job state = %q, want canceled", job.State)
 	}
 }
+
+// TestReadOnlySchemaVersionBelowTheSupportedFloorIsRejected pins the read-only
+// floor. OpenReadOnly deliberately accepts an older release than the writer so
+// preflight keeps working mid-upgrade, but it must still fail closed rather
+// than let a query fail with a raw "no such column" from deep inside preflight.
+func TestReadOnlySchemaVersionBelowTheSupportedFloorIsRejected(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "anvil.db")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("sql.Open() error = %v", err)
+	}
+	if _, err := db.ExecContext(ctx, legacySchemaVersion5); err != nil {
+		t.Fatalf("create version 5 schema: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `
+INSERT INTO schema_migrations (version, applied_at) VALUES (3, '2026-07-21T00:00:00Z')
+`); err != nil {
+		t.Fatalf("stamp pre-floor version: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close database: %v", err)
+	}
+	if _, err := OpenReadOnly(ctx, path); !errors.Is(err, ErrIncompatibleSchema) {
+		t.Fatalf("OpenReadOnly() error = %v, want ErrIncompatibleSchema below v%d", err, minReadOnlySchemaVersion)
+	}
+}
+
+// TestReadOnlyAcceptsThePreviousSchemaVersion is the other half of the floor: a
+// v5 database still opens read-only, so preflight keeps working against a store
+// the running daemon has not migrated yet.
+func TestReadOnlyAcceptsThePreviousSchemaVersion(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "anvil.db")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("sql.Open() error = %v", err)
+	}
+	if _, err := db.ExecContext(ctx, legacySchemaVersion5); err != nil {
+		t.Fatalf("create version 5 schema: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `
+INSERT INTO schema_migrations (version, applied_at) VALUES (5, '2026-07-21T00:00:00Z')
+`); err != nil {
+		t.Fatalf("stamp version 5: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close database: %v", err)
+	}
+	readOnly, err := OpenReadOnly(ctx, path)
+	if err != nil {
+		t.Fatalf("OpenReadOnly() error = %v, want a v5 database to open", err)
+	}
+	if err := readOnly.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+}

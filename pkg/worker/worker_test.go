@@ -1140,3 +1140,68 @@ func TestRunnerCancelRacingASuccessfulPipelineStillCompletesTheJob(t *testing.T)
 		t.Fatalf("recorded sizes = %d/%d, want the completion bookkeeping to run", fakeStore.recordedInputSize, fakeStore.recordedOutputSize)
 	}
 }
+
+// recoveringPublishBlock stands in for the replace/handoff block on the crash
+// recovery path: it reports the journaled publish as finished without running
+// the rest of the pipeline.
+type recoveringPublishBlock struct {
+	finalPath string
+}
+
+func (recoveringPublishBlock) Name() string { return "replace" }
+
+func (recoveringPublishBlock) Run(context.Context, *pipeline.JobContext) error { return nil }
+
+func (b recoveringPublishBlock) Recover(_ context.Context, job *pipeline.JobContext) (bool, error) {
+	job.FinalPath = b.finalPath
+	return true, nil
+}
+
+// TestRunnerCancelRacingPublishRecoveryStillCompletesTheJob is the recovery-path
+// twin of the successful-pipeline race. A recovered publish means the artifact
+// is already on disk, so a cancel arriving while the worker records completion
+// must not skip the bookkeeping and strand the journal.
+func TestRunnerCancelRacingPublishRecoveryStillCompletesTheJob(t *testing.T) {
+	ctx, cancel := context.WithCancelCause(context.Background())
+	defer cancel(context.Canceled)
+
+	outputPath := filepath.Join(t.TempDir(), "output.mkv")
+	if err := os.WriteFile(outputPath, make([]byte, 650), 0o600); err != nil {
+		t.Fatalf("write recovered artifact: %v", err)
+	}
+	fakeStore := newFakeWorkerStore()
+	fakeStore.source = domain.MediaSource{
+		ID: 1, LibraryName: "movies", Kind: domain.SourceKindFile, RelativePath: "Movie.mkv",
+		Fingerprint: domain.FileFingerprint{SizeBytes: 1000},
+	}
+	runner := Runner{
+		Store:             fakeStore,
+		VerifyFingerprint: acceptFingerprint,
+		MaxAttempts:       2,
+		ConfigProvider: func() config.Config {
+			cfg := workerConfig()
+			cfg.Flows = map[string]config.FlowConfig{"test-flow": {Steps: []string{"replace"}}}
+			return cfg
+		},
+		Pipeline: pipeline.Runner{
+			Registry: pipeline.NewRegistry(recoveringPublishBlock{finalPath: outputPath}),
+		},
+	}
+
+	// The cancel lands before the worker records completion, exactly as an
+	// operator cancel racing the recovery would.
+	cancel(scheduler.ErrJobCanceled)
+
+	if err := runner.Run(ctx, scheduler.Assignment{
+		Job:      domain.Job{ID: 99, SourceID: 1, LibraryName: "movies", State: domain.JobStateLeased},
+		WorkerID: "worker-1",
+	}); err != nil {
+		t.Fatalf("Run() error = %v, want the recovered publish to complete", err)
+	}
+	if got := fakeStore.transitions[len(fakeStore.transitions)-1]; got != domain.JobStateComplete {
+		t.Fatalf("last transition = %q, want complete", got)
+	}
+	if fakeStore.recordedInputSize != 1000 || fakeStore.recordedOutputSize != 650 {
+		t.Fatalf("recorded sizes = %d/%d, want the completion bookkeeping to run", fakeStore.recordedInputSize, fakeStore.recordedOutputSize)
+	}
+}

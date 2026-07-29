@@ -189,9 +189,16 @@ SELECT stage FROM publish_operations WHERE job_id = ?
 	if err != nil {
 		return "", fmt.Errorf("check publish operation for job %d: %w", job.ID, err)
 	}
-	// A conflicted publish wrote nothing and needs operator attention, so it
-	// stays cancelable. Every other stage means the destination is already
-	// being written or has been written, and only the job itself can finish it.
+	// A conflicted publish has already stopped making progress and needs an
+	// operator, so refusing the cancel would only trap the job. Note the
+	// destination may already be published and the original may already be a
+	// .anvil-backup: a conflict can be raised from the published stage during
+	// cleanup. Canceling leaves that residue in place, exactly as the conflict
+	// did; `anvild retry` re-queues the job and re-runs publish recovery.
+	//
+	// Every other stage means the destination is being written or has been
+	// written and the job still owes its completion bookkeeping, so only the
+	// job itself can finish it.
 	if stage == string(replacepkg.PublishStageConflict) {
 		return "", nil
 	}
