@@ -35,10 +35,13 @@ type inspectReport struct {
 // the attempt that produced it. It is the record that answers "did Anvil drop
 // that track" after the source file is gone.
 type inspectStreamSelection struct {
-	AttemptID     int64                          `json:"attempt_id"`
-	AttemptNumber int                            `json:"attempt_number"`
-	RecordedAt    time.Time                      `json:"recorded_at"`
-	Decision      domain.StreamSelectionDecision `json:"decision"`
+	AttemptID     int64     `json:"attempt_id"`
+	AttemptNumber int       `json:"attempt_number"`
+	RecordedAt    time.Time `json:"recorded_at"`
+	// Decision is absent when the record could not be decoded, so a reader can
+	// never mistake an unreadable decision for one that dropped nothing.
+	Decision      *domain.StreamSelectionDecision `json:"decision,omitempty"`
+	DecisionError string                          `json:"decision_error,omitempty"`
 }
 
 type inspectPublishOperation struct {
@@ -213,17 +216,25 @@ func latestStreamSelection(attempts []inspectAttempt) []inspectStreamSelection {
 	return nil
 }
 
+// streamSelections reports the decisions this attempt recorded, including ones
+// that failed to decode. An unreadable record still counts as recorded: hiding
+// it would let latestStreamSelection fall back to an older attempt and present
+// a stale decision as the current one.
 func (a inspectAttempt) streamSelections() []inspectStreamSelection {
 	var result []inspectStreamSelection
 	for _, event := range a.Events {
-		if event.StreamSelection == nil {
+		// A payload error on some other artifact is not a stream selection, and
+		// treating it as one would both invent a decision and stop the scan from
+		// reaching the real record.
+		if event.StreamSelection == nil && (event.PayloadError == "" || event.Name != pipeline.StreamSelectionArtifact) {
 			continue
 		}
 		result = append(result, inspectStreamSelection{
 			AttemptID:     a.ID,
 			AttemptNumber: a.Number,
 			RecordedAt:    event.CreatedAt,
-			Decision:      *event.StreamSelection,
+			Decision:      event.StreamSelection,
+			DecisionError: event.PayloadError,
 		})
 	}
 	return result
@@ -300,14 +311,14 @@ func inspectEventFromDomain(event domain.AttemptEvent) inspectEvent {
 		result.ProcessOutput = output
 		return result
 	}
-	if isStreamSelectionEvent(event) {
-		decision, err := decodeStreamSelection(event.Payload)
+	if pipeline.IsStreamSelectionEvent(event) {
+		decision, err := pipeline.DecodeStreamSelection(event.Payload)
 		if err != nil {
 			result.Payload = decodeInspectPayload(event.Payload)
 			result.PayloadError = err.Error()
 			return result
 		}
-		result.StreamSelection = decision
+		result.StreamSelection = &decision
 		return result
 	}
 	result.Payload = decodeInspectPayload(event.Payload)
@@ -316,18 +327,6 @@ func inspectEventFromDomain(event domain.AttemptEvent) inspectEvent {
 
 func isProcessOutputEvent(event domain.AttemptEvent) bool {
 	return event.Type == domain.AttemptEventArtifact && event.Name == processOutputArtifactName
-}
-
-func isStreamSelectionEvent(event domain.AttemptEvent) bool {
-	return event.Type == domain.AttemptEventArtifact && event.Name == pipeline.StreamSelectionArtifact
-}
-
-func decodeStreamSelection(payload []byte) (*domain.StreamSelectionDecision, error) {
-	var decision domain.StreamSelectionDecision
-	if err := json.Unmarshal(payload, &decision); err != nil {
-		return nil, err
-	}
-	return &decision, nil
 }
 
 func decodeProcessOutput(payload []byte) (*inspectProcessOutput, error) {
@@ -444,7 +443,11 @@ func writeInspectReport(out io.Writer, report inspectReport) error {
 		if len(report.StreamSelection) > 0 {
 			w.printf("\nStream selection (attempt %d):\n", report.StreamSelection[0].AttemptNumber)
 			for _, selection := range report.StreamSelection {
-				writeStreamSelection(w, "  ", selection.Decision)
+				if selection.Decision == nil {
+					w.printf("  unreadable: %s\n", selection.DecisionError)
+					continue
+				}
+				writeStreamSelection(w, "  ", *selection.Decision)
 			}
 		}
 
