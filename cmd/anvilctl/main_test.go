@@ -3,89 +3,300 @@ package main
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
-	"net"
-	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/zekurio/anvil/pkg/config"
+	"github.com/zekurio/anvil/pkg/control"
 	"github.com/zekurio/anvil/pkg/controlapi"
 	"github.com/zekurio/anvil/pkg/domain"
+	"github.com/zekurio/anvil/pkg/scanner"
+	"github.com/zekurio/anvil/pkg/store"
 )
 
-func TestRunStatusAndJobListUseControlAPI(t *testing.T) {
-	socketPath := filepath.Join(t.TempDir(), "anvild.sock")
+// testDaemon runs the real control service over a real Unix socket. The client
+// is only worth testing against the daemon it is supposed to drive: a fake
+// server would happily accept a command the daemon rejects.
+type testDaemon struct {
+	socketPath string
+	state      *store.SQLiteStore
+	job        domain.Job
+	library    config.LibraryConfig
+}
+
+func startTestDaemon(t *testing.T) *testDaemon {
+	t.Helper()
+	ctx := context.Background()
+	root := t.TempDir()
+	state, err := store.Open(ctx, filepath.Join(root, "anvil.db"))
+	if err != nil {
+		t.Fatalf("store.Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := state.Close(); err != nil {
+			t.Errorf("state.Close() error = %v", err)
+		}
+	})
+
+	library := config.LibraryConfig{
+		Name: "movies", Kind: string(domain.LibraryKindMedia),
+		Path: filepath.Join(root, "movies"), Flow: config.DefaultFlowName,
+		Profile: config.DefaultProfileName,
+	}
+	if err := os.MkdirAll(library.Path, 0o750); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(library.Path, "Movie.mkv"), []byte("media"), 0o600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	cfg := config.Default()
+	cfg.Daemon.TempDir = filepath.Join(root, "tmp")
+	cfg.Libraries = map[string]config.LibraryConfig{"movies": library}
+
+	now := time.Now().UTC()
+	forced, err := state.ForceOccurrence(ctx, store.ForceOccurrenceInput{
+		LibraryName: "movies", SourceKind: domain.SourceKindFile,
+		SourceRelativePath: "Movie.mkv", AssetRelativePath: "Movie.mkv",
+		AssetRole:         domain.MediaAssetRolePrimaryVideo,
+		SourceFingerprint: domain.FileFingerprint{SizeBytes: 5, ModTime: now},
+		AssetFingerprint:  domain.FileFingerprint{SizeBytes: 5, ModTime: now},
+		Now:               now,
+	})
+	if err != nil {
+		t.Fatalf("ForceOccurrence() error = %v", err)
+	}
+
+	socketPath := testSocketPath(t)
 	listener, cleanup, err := controlapi.ListenUnix(socketPath)
 	if err != nil {
 		t.Fatalf("ListenUnix() error = %v", err)
 	}
+	serveCtx, stop := context.WithCancel(ctx)
+	done := make(chan error, 1)
+	go func() {
+		done <- controlapi.Server{Service: controlapi.Service{
+			Store:         state,
+			Scanner:       scanner.Scanner{Store: state},
+			Config:        func() config.Config { return cfg },
+			ActiveWorkers: func() int { return 0 },
+			StartedAt:     now,
+			DaemonVersion: "test-daemon",
+		}}.Serve(serveCtx, listener)
+	}()
 	t.Cleanup(func() {
+		stop()
+		if err := <-done; err != nil {
+			t.Errorf("Serve() error = %v", err)
+		}
 		if err := cleanup(); err != nil {
 			t.Errorf("cleanup() error = %v", err)
 		}
 	})
-	mux := http.NewServeMux()
-	mux.HandleFunc("/v1/status", func(w http.ResponseWriter, _ *http.Request) {
-		writeTestJSON(t, w, controlapi.StatusResponse{
-			APIVersion: controlapi.Version,
-			Daemon:     controlapi.DaemonStatus{State: "ready", Version: "test"},
-		})
-	})
-	mux.HandleFunc("/v1/jobs", func(w http.ResponseWriter, r *http.Request) {
-		if got := r.URL.Query().Get("absolute_path"); got != "/downloads/Release" {
-			t.Errorf("absolute_path = %q", got)
-		}
-		if got := r.URL.Query().Get("current_only"); got != "true" {
-			t.Errorf("current_only = %q", got)
-		}
-		writeTestJSON(t, w, controlapi.JobListResponse{
-			APIVersion: controlapi.Version, Matched: 1,
-			Jobs: []controlapi.JobResponse{{
-				ID: 9, Slug: "kind-pink-heron", State: "running", Library: "downloads",
-				Source: controlapi.OccurrenceResponse{AbsolutePath: "/downloads/Release"},
-			}},
-		})
-	})
-	server := &http.Server{Handler: mux, ReadHeaderTimeout: time.Second}
-	serverDone := make(chan error, 1)
-	go func() { serverDone <- server.Serve(listener) }()
-	t.Cleanup(func() {
-		if err := server.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
-			t.Errorf("server.Close() error = %v", err)
-		}
-		if err := <-serverDone; err != nil && !errors.Is(err, http.ErrServerClosed) && !errors.Is(err, net.ErrClosed) {
-			t.Errorf("server.Serve() error = %v", err)
-		}
-	})
+	return &testDaemon{socketPath: socketPath, state: state, job: forced.Job, library: library}
+}
 
-	var stdout bytes.Buffer
-	var stderr bytes.Buffer
-	if err := run(context.Background(), []string{"--socket", socketPath, "status", "--json"}, &stdout, &stderr); err != nil {
-		t.Fatalf("run(status) error = %v, stderr = %s", err, stderr.String())
+// testSocketPath keeps the socket path under the platform's sockaddr_un limit,
+// which t.TempDir() paths routinely exceed on macOS.
+func testSocketPath(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "anvil")
+	if err != nil {
+		t.Fatalf("MkdirTemp() error = %v", err)
 	}
-	if !strings.Contains(stdout.String(), `"state": "ready"`) {
-		t.Fatalf("status output = %s", stdout.String())
+	t.Cleanup(func() {
+		if err := os.RemoveAll(dir); err != nil {
+			t.Errorf("remove socket dir: %v", err)
+		}
+	})
+	return filepath.Join(dir, "c.sock")
+}
+
+func (d *testDaemon) run(t *testing.T, args ...string) (string, string, error) {
+	t.Helper()
+	var stdout, stderr bytes.Buffer
+	err := run(context.Background(), append([]string{"--socket", d.socketPath}, args...), &stdout, &stderr)
+	return stdout.String(), stderr.String(), err
+}
+
+func TestCommandTreeDrivesTheDaemon(t *testing.T) {
+	daemon := startTestDaemon(t)
+
+	tests := []struct {
+		name string
+		args []string
+		want []string
+	}{
+		{name: "status", args: []string{"status"}, want: []string{"DAEMON", "ready", "WORKERS", "QUEUE", "pending=1"}},
+		{name: "job list", args: []string{"job", "list"}, want: []string{"JOB", daemon.job.Label(), "pending"}},
+		{name: "job show", args: []string{"job", "show", daemon.job.Label()}, want: []string{"Job " + daemon.job.Label(), "Attempts: none"}},
+		{name: "library stats", args: []string{"library", "stats"}, want: []string{"LIBRARY", "SAVED%"}},
+		{name: "job recover", args: []string{"job", "recover"}, want: []string{"recovered_jobs=0"}},
+		{name: "job prune", args: []string{"job", "prune"}, want: []string{"dry_run=true", "deleted_jobs=0"}},
+		{name: "staging cleanup", args: []string{"staging", "cleanup", "--older-than", "24h"}, want: []string{"dry_run=false", "removed=0"}},
+		{name: "library scan", args: []string{"library", "scan", "movies"}, want: []string{"libraries=1"}},
+		{name: "version", args: []string{"version"}, want: []string{"CLIENT", "DAEMON", "test-daemon", "PROTOCOL"}},
 	}
-	stdout.Reset()
-	stderr.Reset()
-	if err := run(context.Background(), []string{
-		"--socket", socketPath, "job", "list", "--absolute-path", "/downloads/Release", "--current-only", "--json",
-	}, &stdout, &stderr); err != nil {
-		t.Fatalf("run(job list) error = %v, stderr = %s", err, stderr.String())
-	}
-	if !strings.Contains(stdout.String(), `"slug": "kind-pink-heron"`) {
-		t.Fatalf("job output = %s", stdout.String())
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			stdout, stderr, err := daemon.run(t, tt.args...)
+			if err != nil {
+				t.Fatalf("run(%v) error = %v, stderr = %s", tt.args, err, stderr)
+			}
+			for _, want := range tt.want {
+				if !strings.Contains(stdout, want) {
+					t.Fatalf("run(%v) output missing %q:\n%s", tt.args, want, stdout)
+				}
+			}
+		})
 	}
 }
 
-func writeTestJSON(t *testing.T, w http.ResponseWriter, value any) {
-	t.Helper()
-	w.Header().Set("Content-Type", "application/json")
-	if err := writeJSON(w, value); err != nil {
-		t.Errorf("writeJSON() error = %v", err)
+// TestLegacyCommandNamesStillWork keeps the muscle memory of the old anvild
+// subcommands working, so a migration does not also mean relearning names.
+func TestLegacyCommandNamesStillWork(t *testing.T) {
+	daemon := startTestDaemon(t)
+	for _, args := range [][]string{
+		{"jobs"},
+		{"inspect", daemon.job.Label()},
+		{"stats"},
+		{"recover"},
+		{"prune-jobs"},
+		{"scan", "--library", "movies"},
+		{"cleanup-staging", "--dry-run", "--older-than", "24h"},
+	} {
+		t.Run(args[0], func(t *testing.T) {
+			if _, stderr, err := daemon.run(t, args...); err != nil {
+				t.Fatalf("run(%v) error = %v, stderr = %s", args, err, stderr)
+			}
+		})
+	}
+}
+
+func TestJobRetryAndCancelUseTheDaemon(t *testing.T) {
+	daemon := startTestDaemon(t)
+
+	// A bare cancel is refused before it reaches the daemon.
+	stdout, _, err := daemon.run(t, "job", "cancel")
+	if err == nil {
+		t.Fatalf("run(job cancel) error = nil, want a rejected bare cancel: %s", stdout)
+	}
+	if exitCode(err) != exitUsage {
+		t.Fatalf("bare cancel exit code = %d, want %d", exitCode(err), exitUsage)
+	}
+
+	stdout, stderr, err := daemon.run(t, "job", "cancel", "--library", "movies", daemon.job.Label())
+	if err != nil {
+		t.Fatalf("run(job cancel) error = %v, stderr = %s", err, stderr)
+	}
+	if !strings.Contains(stdout, "canceled 1 of 1 matching jobs") {
+		t.Fatalf("cancel output = %s", stdout)
+	}
+
+	// A canceled job is retryable, which is the documented recovery path.
+	stdout, stderr, err = daemon.run(t, "job", "retry", daemon.job.Label())
+	if err != nil {
+		t.Fatalf("run(job retry) error = %v, stderr = %s", err, stderr)
+	}
+	if !strings.Contains(stdout, "retried_jobs=1") {
+		t.Fatalf("retry output = %s", stdout)
+	}
+}
+
+func TestJobShowAcceptsIDsAndSlugsAndReportsMissingJobs(t *testing.T) {
+	daemon := startTestDaemon(t)
+
+	if _, _, err := daemon.run(t, "job", "show", "1"); err != nil {
+		t.Fatalf("run(job show 1) error = %v", err)
+	}
+	if _, _, err := daemon.run(t, "job", "show", daemon.job.Label()); err != nil {
+		t.Fatalf("run(job show slug) error = %v", err)
+	}
+	_, _, err := daemon.run(t, "job", "show", "no-such-job")
+	if err == nil {
+		t.Fatal("run(job show missing) error = nil, want not found")
+	}
+	if got := exitCode(err); got != exitNotFound {
+		t.Fatalf("exit code = %d, want %d", got, exitNotFound)
+	}
+}
+
+func TestOccurrenceForceRequiresALibraryAndRefusesActiveWork(t *testing.T) {
+	daemon := startTestDaemon(t)
+
+	if _, _, err := daemon.run(t, "occurrence", "force", "Movie.mkv"); err == nil {
+		t.Fatal("run(occurrence force) without --library error = nil, want usage error")
+	}
+
+	// The fixture already has a pending job for this path, and forcing a new
+	// occurrence on top of live work is exactly the mistake the refusal exists
+	// for. It is an operator-fixable state, so it must not read as an internal
+	// daemon failure.
+	_, _, err := daemon.run(t, "occurrence", "force", "--library", "movies", "Movie.mkv")
+	if err == nil {
+		t.Fatal("run(occurrence force) over active work error = nil, want a refusal")
+	}
+	if got := exitCode(err); got != exitUsage {
+		t.Fatalf("exit code = %d, want %d", got, exitUsage)
+	}
+
+	// A second file with no job is forced normally.
+	if err := os.WriteFile(filepath.Join(daemon.library.Path, "Другой.mkv"), []byte("media"), 0o600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	stdout, stderr, err := daemon.run(t, "occurrence", "force", "--library", "movies", "Другой.mkv")
+	if err != nil {
+		t.Fatalf("run(occurrence force) error = %v, stderr = %s", err, stderr)
+	}
+	if !strings.Contains(stdout, "library=movies path=Другой.mkv") {
+		t.Fatalf("force output = %s", stdout)
+	}
+}
+
+func TestStoreBackupResolvesRelativeDestinations(t *testing.T) {
+	daemon := startTestDaemon(t)
+	destination := filepath.Join(t.TempDir(), "backup.db")
+
+	stdout, stderr, err := daemon.run(t, "store", "backup", destination)
+	if err != nil {
+		t.Fatalf("run(store backup) error = %v, stderr = %s", err, stderr)
+	}
+	if !strings.Contains(stdout, "integrity=ok") {
+		t.Fatalf("backup output = %s", stdout)
+	}
+	if _, err := os.Stat(destination); err != nil {
+		t.Fatalf("backup file stat error = %v", err)
+	}
+}
+
+// TestGlobalJSONFlagAppliesToEveryCommand keeps --json usable before the
+// command name, which is where operators reach for it.
+func TestGlobalJSONFlagAppliesToEveryCommand(t *testing.T) {
+	daemon := startTestDaemon(t)
+	var out, errOut bytes.Buffer
+	if err := run(context.Background(), []string{"--socket", daemon.socketPath, "--json", "status"}, &out, &errOut); err != nil {
+		t.Fatalf("run(--json status) error = %v, stderr = %s", err, errOut.String())
+	}
+	if !strings.Contains(out.String(), `"api_version"`) {
+		t.Fatalf("json status output = %s", out.String())
+	}
+}
+
+func TestUnreachableDaemonExitsWithTheUnavailableCode(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	err := run(context.Background(), []string{"--socket", filepath.Join(t.TempDir(), "missing.sock"), "status"}, &stdout, &stderr)
+	if err == nil {
+		t.Fatal("run(status) error = nil, want an unreachable daemon")
+	}
+	if got := exitCode(err); got != exitUnavailable {
+		t.Fatalf("exit code = %d, want %d", got, exitUnavailable)
+	}
+	var controlErr *control.Error
+	if !errors.As(err, &controlErr) || controlErr.Code != control.CodeUnavailable {
+		t.Fatalf("error = %v, want a structured unavailable error", err)
 	}
 }
 
@@ -94,158 +305,79 @@ func TestRunHelpDoesNotRequireDaemon(t *testing.T) {
 	if err := run(context.Background(), []string{"help"}, &stdout, &bytes.Buffer{}); err != nil {
 		t.Fatalf("run(help) error = %v", err)
 	}
-	if !strings.Contains(stdout.String(), "anvilctl") {
-		t.Fatalf("help output = %q", stdout.String())
+	for _, want := range []string{"anvilctl", "job list", "store backup", "Exit status"} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("help output missing %q:\n%s", want, stdout.String())
+		}
 	}
 }
 
-func TestRunJobCancelRequiresSelectorAndPostsSelection(t *testing.T) {
-	socketPath := filepath.Join(t.TempDir(), "anvild.sock")
-	listener, cleanup, err := controlapi.ListenUnix(socketPath)
+func TestUnknownCommandsAreUsageErrors(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	err := run(context.Background(), []string{"--socket", "/run/anvil/anvild.sock", "explode"}, &stdout, &stderr)
+	if err == nil {
+		t.Fatal("run(explode) error = nil, want an unknown command error")
+	}
+	if got := exitCode(err); got != exitUsage {
+		t.Fatalf("exit code = %d, want %d", got, exitUsage)
+	}
+}
+
+// TestArgumentTerminatorEndsFlagParsing covers the escape an operator needs for
+// names Anvil legitimately carries. Job slugs, library names, and above all
+// file paths can start with a dash, and without "--" the only way to name one
+// would be to rename the file.
+func TestArgumentTerminatorEndsFlagParsing(t *testing.T) {
+	daemon := startTestDaemon(t)
+
+	// Everything after -- is a positional argument, even when it looks exactly
+	// like a flag this command defines.
+	_, _, err := daemon.run(t, "job", "show", "--", "--json")
+	var controlErr *control.Error
+	if !errors.As(err, &controlErr) || controlErr.Code != control.CodeNotFound {
+		t.Fatalf("run(job show -- --json) error = %v, want the daemon looking up a job literally named \"--json\"", err)
+	}
+
+	// A terminator after a positional argument is honored too, which the
+	// interleaved parse below would otherwise undo.
+	_, _, err = daemon.run(t, "job", "show", daemon.job.Label(), "--", "--json")
+	if err == nil {
+		t.Fatal("run(job show SLUG -- --json) error = nil, want two positional arguments refused")
+	}
+	if got := exitCode(err); got != exitUsage {
+		t.Fatalf("exit code = %d, want %d", got, exitUsage)
+	}
+
+	// And the flag still works when it is not terminated.
+	stdout, stderr, err := daemon.run(t, "job", "show", daemon.job.Label(), "--json")
 	if err != nil {
-		t.Fatalf("ListenUnix() error = %v", err)
+		t.Fatalf("run(job show SLUG --json) error = %v, stderr = %s", err, stderr)
 	}
-	t.Cleanup(func() {
-		if err := cleanup(); err != nil {
-			t.Errorf("cleanup() error = %v", err)
-		}
-	})
-	var received controlapi.JobCancelRequest
-	mux := http.NewServeMux()
-	mux.HandleFunc("/v1/jobs/cancel", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			t.Errorf("method = %s, want POST", r.Method)
-		}
-		if err := json.NewDecoder(r.Body).Decode(&received); err != nil {
-			t.Errorf("decode cancel request: %v", err)
-		}
-		writeTestJSON(t, w, controlapi.JobCancelResponse{
-			APIVersion: controlapi.Version, Matched: 1, Canceled: 1,
-			Jobs: []controlapi.JobCancelResult{{
-				ID: 167, Slug: "kind-pink-heron", Library: "downloads",
-				PreviousState: "running", State: "canceled", Canceled: true, WorkerSignaled: true,
-			}},
-		})
-	})
-	server := &http.Server{Handler: mux, ReadHeaderTimeout: time.Second}
-	serverDone := make(chan error, 1)
-	go func() { serverDone <- server.Serve(listener) }()
-	t.Cleanup(func() {
-		if err := server.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
-			t.Errorf("server.Close() error = %v", err)
-		}
-		if err := <-serverDone; err != nil && !errors.Is(err, http.ErrServerClosed) && !errors.Is(err, net.ErrClosed) {
-			t.Errorf("server.Serve() error = %v", err)
-		}
-	})
-
-	var stdout bytes.Buffer
-	var stderr bytes.Buffer
-	if err := run(context.Background(), []string{"--socket", socketPath, "job", "cancel"}, &stdout, &stderr); err == nil {
-		t.Fatal("run(job cancel) error = nil, want a rejected bare cancel")
-	}
-	if received.Library != "" || len(received.IDs) != 0 {
-		t.Fatalf("bare cancel reached the daemon: %+v", received)
-	}
-
-	stdout.Reset()
-	if err := run(context.Background(), []string{
-		"--socket", socketPath, "job", "cancel", "--library", "downloads", "--state", "pending,running", "167",
-	}, &stdout, &stderr); err != nil {
-		t.Fatalf("run(job cancel) error = %v, stderr = %s", err, stderr.String())
-	}
-	if received.Library != "downloads" || len(received.IDs) != 1 || received.IDs[0] != 167 {
-		t.Fatalf("cancel request = %+v", received)
-	}
-	if len(received.States) != 1 || received.States[0] != "pending,running" {
-		t.Fatalf("cancel states = %v", received.States)
-	}
-	if !strings.Contains(stdout.String(), "canceled 1 of 1 matching jobs") {
-		t.Fatalf("cancel output = %s", stdout.String())
-	}
-
-	stdout.Reset()
-	if err := run(context.Background(), []string{"--socket", socketPath, "job", "cancel", "--library", "downloads", "abc"}, &stdout, &stderr); err == nil {
-		t.Fatal("run(job cancel with invalid id) error = nil, want failure")
+	if !strings.Contains(stdout, `"api_version"`) {
+		t.Fatalf("run(job show SLUG --json) did not produce JSON:\n%s", stdout)
 	}
 }
 
-// TestWriteJobsRendersSelectionsAndMatchSides covers the operator-facing text
-// output, including the branches an automated consumer cannot see but a human
-// double-checking it will: an unreadable record, and a path that matched
-// nothing because it lies outside every library.
-func TestWriteJobsRendersSelectionsAndMatchSides(t *testing.T) {
-	tests := []struct {
-		name     string
-		response controlapi.JobListResponse
-		want     []string
-		absent   []string
-	}{
-		{
-			name: "match sides and a decision",
-			response: controlapi.JobListResponse{
-				Jobs: []controlapi.JobResponse{{
-					Slug: "kind-pink-heron", ID: 7, State: "complete", Library: "anime",
-					MatchedOn: []controlapi.PathMatchSide{controlapi.PathMatchAsset, controlapi.PathMatchDestination},
-					StreamSelection: []controlapi.StreamSelectionResponse{{
-						AttemptID: 41,
-						Decision: &domain.StreamSelectionDecision{
-							Kind: domain.StreamKindAudio, Rule: domain.StreamSelectionRuleLanguageFilter,
-							RequestedLanguages: []string{"orig", "deu"},
-							MissingLanguages:   []string{"deu"},
-							Streams: []domain.StreamDecision{
-								{Index: 0, Codec: "aac", Language: "jpn", Kept: true, Reason: domain.StreamKeptOriginalLanguage},
-								{Index: 1, Codec: "aac", Language: "eng", Reason: domain.StreamDroppedLanguage},
-							},
-						},
-					}},
-				}},
-			},
-			want: []string{
-				"MATCHED", "asset+destination",
-				"missing from source: deu",
-				"#0 aac jpn kept (original_language)",
-				"#1 aac eng dropped (language_not_requested)",
-			},
-		},
-		{
-			name: "no match side means no column",
-			response: controlapi.JobListResponse{
-				Jobs: []controlapi.JobResponse{{Slug: "kind-pink-heron", ID: 7, State: "pending"}},
-			},
-			absent: []string{"MATCHED"},
-		},
-		{
-			name: "unreadable decision is reported",
-			response: controlapi.JobListResponse{
-				Jobs: []controlapi.JobResponse{{
-					Slug: "kind-pink-heron", ID: 7,
-					StreamSelection: []controlapi.StreamSelectionResponse{{AttemptID: 41, DecisionError: "decode stream selection: boom"}},
-				}},
-			},
-			want: []string{"unreadable: decode stream selection: boom"},
-		},
-		{
-			name:     "path outside every library",
-			response: controlapi.JobListResponse{PathOutsideLibraries: true, Jobs: []controlapi.JobResponse{}},
-			want:     []string{"path resolves under no configured library root"},
-		},
+// TestFlagsMayFollowPositionalArguments covers what an operator actually types.
+// Stdlib flag parsing stops at the first non-flag argument, which would make
+// "job show 42 --json" report the flag as a stray argument.
+func TestFlagsMayFollowPositionalArguments(t *testing.T) {
+	daemon := startTestDaemon(t)
+	destination := filepath.Join(t.TempDir(), "backup.db")
+
+	tests := [][]string{
+		{"job", "show", daemon.job.Label(), "--json"},
+		{"library", "scan", "movies", "--json"},
+		{"store", "backup", destination, "--json"},
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			var out bytes.Buffer
-			if err := writeJobs(&out, tt.response); err != nil {
-				t.Fatalf("writeJobs() error = %v", err)
+	for _, args := range tests {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			stdout, stderr, err := daemon.run(t, args...)
+			if err != nil {
+				t.Fatalf("run(%v) error = %v, stderr = %s", args, err, stderr)
 			}
-			for _, want := range tt.want {
-				if !strings.Contains(out.String(), want) {
-					t.Fatalf("output missing %q:\n%s", want, out.String())
-				}
-			}
-			for _, absent := range tt.absent {
-				if strings.Contains(out.String(), absent) {
-					t.Fatalf("output unexpectedly contains %q:\n%s", absent, out.String())
-				}
+			if !strings.Contains(stdout, `"api_version"`) {
+				t.Fatalf("run(%v) did not produce JSON:\n%s", args, stdout)
 			}
 		})
 	}
