@@ -3,12 +3,10 @@ package controlapi
 import (
 	"context"
 	"encoding/json"
-	"net/http"
-	"net/http/httptest"
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
-	"strings"
 	"testing"
 	"time"
 
@@ -16,6 +14,7 @@ import (
 	"github.com/zekurio/anvil/pkg/domain"
 	"github.com/zekurio/anvil/pkg/pipeline"
 	replacepkg "github.com/zekurio/anvil/pkg/replace"
+	"github.com/zekurio/anvil/pkg/scanner"
 	"github.com/zekurio/anvil/pkg/store"
 )
 
@@ -185,25 +184,29 @@ func TestStatusReportsDaemonFactsAndQueueCounts(t *testing.T) {
 	}
 }
 
-func TestHTTPRejectsInexactOrUnscopedJobQueries(t *testing.T) {
-	service := Service{}
-	tests := []string{
-		"/v1/jobs?path=Release",
-		"/v1/jobs?absolute_path=relative/path",
-		"/v1/jobs?path=Release&absolute_path=/downloads/Release&library=downloads",
-		"/v1/jobs?unknown=value",
-		"/v1/jobs?with_selection=maybe",
+// TestListJobsRejectsInexactOrUnscopedQueries keeps path lookups exact. A
+// library-relative path without its library, or an "absolute" path that is not
+// absolute, cannot identify a job, and answering them approximately is how a
+// caller ends up acting on the wrong file.
+func TestListJobsRejectsInexactOrUnscopedJobQueries(t *testing.T) {
+	ctx := context.Background()
+	service, _, _, _ := testService(t, ctx)
+	tests := []struct {
+		name  string
+		query JobQuery
+	}{
+		{name: "relative path without library", query: JobQuery{Path: "Release"}},
+		{name: "absolute path that is relative", query: JobQuery{AbsolutePath: "relative/path"}},
+		{name: "both path forms", query: JobQuery{Library: "downloads", Path: "Release", AbsolutePath: "/downloads/Release"}},
+		{name: "negative limit", query: JobQuery{Limit: -1}},
+		{name: "unknown state", query: JobQuery{States: []string{"almost-done"}}},
 	}
-	for _, target := range tests {
-		t.Run(target, func(t *testing.T) {
-			request := httptest.NewRequest(http.MethodGet, target, nil)
-			response := httptest.NewRecorder()
-			service.Handler().ServeHTTP(response, request)
-			if response.Code != http.StatusBadRequest {
-				t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
-			}
-			if !strings.Contains(response.Body.String(), `"code":"invalid_argument"`) {
-				t.Fatalf("body = %s", response.Body.String())
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := service.ListJobs(ctx, tt.query)
+			var controlErr *Error
+			if !errors.As(err, &controlErr) || controlErr.Code != CodeInvalidArgument {
+				t.Fatalf("ListJobs() error = %v, want invalid_argument", err)
 			}
 		})
 	}
@@ -246,25 +249,22 @@ func testService(t *testing.T, ctx context.Context) (Service, *store.SQLiteStore
 	if err != nil {
 		t.Fatalf("ForceOccurrence() error = %v", err)
 	}
-	service := Service{Store: state, Config: func() config.Config { return cfg }, Now: func() time.Time { return now }}
+	service := Service{
+		Store:   state,
+		Scanner: scanner.Scanner{Store: state},
+		Config:  func() config.Config { return cfg },
+		Now:     func() time.Time { return now },
+	}
 	return service, state, cfg, forced.Job
 }
 
 func TestCancelJobsRequiresAnExplicitSelector(t *testing.T) {
 	ctx := context.Background()
 	service, _, _, _ := testService(t, ctx)
-	if _, err := service.CancelJobs(ctx, JobCancelRequest{}); err == nil {
-		t.Fatal("CancelJobs() with no selector error = nil, want rejection")
-	}
-
-	request := httptest.NewRequest(http.MethodPost, "/v1/jobs/cancel", strings.NewReader(`{}`))
-	response := httptest.NewRecorder()
-	service.Handler().ServeHTTP(response, request)
-	if response.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
-	}
-	if !strings.Contains(response.Body.String(), `"code":"invalid_argument"`) {
-		t.Fatalf("body = %s", response.Body.String())
+	_, err := service.CancelJobs(ctx, JobCancelRequest{})
+	var controlErr *Error
+	if !errors.As(err, &controlErr) || controlErr.Code != CodeInvalidArgument {
+		t.Fatalf("CancelJobs() with no selector error = %v, want invalid_argument", err)
 	}
 	remaining, err := service.ListJobs(ctx, JobQuery{Library: "downloads"})
 	if err != nil {
@@ -347,29 +347,6 @@ func TestCancelJobsNeverTargetsMoreThanTheEquivalentJobList(t *testing.T) {
 	}
 	if response.Canceled != 1 || response.Jobs[0].ID != int64(job.ID) {
 		t.Fatalf("CancelJobs() = %+v", response)
-	}
-}
-
-func TestJobCancelEndpointRejectsNonPostAndUnknownFields(t *testing.T) {
-	service := Service{}
-	tests := []struct {
-		name    string
-		request *http.Request
-		want    int
-	}{
-		{name: "get", request: httptest.NewRequest(http.MethodGet, "/v1/jobs/cancel", nil), want: http.StatusMethodNotAllowed},
-		{name: "query parameters", request: httptest.NewRequest(http.MethodPost, "/v1/jobs/cancel?library=downloads", strings.NewReader(`{}`)), want: http.StatusBadRequest},
-		{name: "unknown field", request: httptest.NewRequest(http.MethodPost, "/v1/jobs/cancel", strings.NewReader(`{"all":true}`)), want: http.StatusBadRequest},
-		{name: "trailing json", request: httptest.NewRequest(http.MethodPost, "/v1/jobs/cancel", strings.NewReader(`{"ids":[1]}{"ids":[2]}`)), want: http.StatusBadRequest},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			response := httptest.NewRecorder()
-			service.Handler().ServeHTTP(response, tt.request)
-			if response.Code != tt.want {
-				t.Fatalf("status = %d, want %d, body = %s", response.Code, tt.want, response.Body.String())
-			}
-		})
 	}
 }
 
@@ -794,34 +771,22 @@ func TestListJobsReportsEverySideAPathMatched(t *testing.T) {
 	}
 }
 
-// TestHTTPForwardsWithSelection covers the server half of the wire hop. The
-// client half is pinned in client_test.go; without both, --with-selection can
-// be broken end to end with the whole suite green.
-func TestHTTPForwardsWithSelection(t *testing.T) {
+// TestServiceOnlyReturnsStreamSelectionWhenAsked keeps the opt-in honest: the
+// decisions dwarf a listing, and a caller that did not ask must not be made to
+// pay for them. The wire hop for the same flag is pinned in server_test.go.
+func TestServiceOnlyReturnsStreamSelectionWhenAsked(t *testing.T) {
 	ctx := context.Background()
 	service, state, _, job := testService(t, ctx)
 	recordStreamSelection(t, ctx, state, job.ID, germanMissingDecision())
 
-	tests := []struct {
-		name   string
-		target string
-		want   bool
-	}{
-		{name: "requested", target: "/v1/jobs?library=downloads&with_selection=true", want: true},
-		{name: "not requested", target: "/v1/jobs?library=downloads"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			request := httptest.NewRequest(http.MethodGet, tt.target, nil)
-			response := httptest.NewRecorder()
-			service.Handler().ServeHTTP(response, request)
-			if response.Code != http.StatusOK {
-				t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
-			}
-			if got := strings.Contains(response.Body.String(), `"stream_selection"`); got != tt.want {
-				t.Fatalf("stream_selection present = %t, want %t, body = %s", got, tt.want, response.Body.String())
-			}
-		})
+	for _, withSelection := range []bool{true, false} {
+		response, err := service.ListJobs(ctx, JobQuery{Library: "downloads", WithSelection: withSelection})
+		if err != nil {
+			t.Fatalf("ListJobs(with_selection=%t) error = %v", withSelection, err)
+		}
+		if got := len(response.Jobs[0].StreamSelection) > 0; got != withSelection {
+			t.Fatalf("stream selection present = %t, want %t", got, withSelection)
+		}
 	}
 }
 

@@ -9,16 +9,15 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
-	"path/filepath"
-	"strconv"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
 
 	charmlog "charm.land/log/v2"
+	"github.com/zekurio/anvil/internal/textout"
 	"github.com/zekurio/anvil/pkg/config"
+	"github.com/zekurio/anvil/pkg/controlapi"
 	"github.com/zekurio/anvil/pkg/domain"
 	"github.com/zekurio/anvil/pkg/metadata"
 	"github.com/zekurio/anvil/pkg/scanner"
@@ -28,22 +27,34 @@ import (
 	"github.com/zekurio/anvil/pkg/worker"
 )
 
+// anvild owns the daemon and the two things that are intrinsically local and
+// read-only: validating a config file and planning against it. Everything that
+// touches live state moved to anvilctl, which asks the running daemon, because
+// a second process writing the daemon's database is a data-safety problem, not
+// a convenience.
 const (
 	commandRun         = "run"
 	commandCheckConfig = "check-config"
-	commandScan        = "scan"
 	commandPreflight   = "preflight"
-	commandJobs        = "jobs"
-	commandStats       = "stats"
-	commandInspect     = "inspect"
-	commandRetry       = "retry"
-	commandRecover     = "recover"
-	commandCleanup     = "cleanup-staging"
-	commandBackup      = "backup"
-	commandPruneJobs   = "prune-jobs"
-	commandForce       = "force-occurrence"
 	commandHelp        = "help"
 )
+
+// movedCommands maps every operator command anvild used to run directly against
+// SQLite to its anvilctl replacement. They are still recognized so an operator
+// who types the old form is told exactly what to run, instead of getting
+// "unknown command" or, far worse, a second writer on a live database.
+var movedCommands = map[string]string{
+	"scan":             "anvilctl library scan [--library NAME]",
+	"jobs":             "anvilctl job list [--library NAME] [--state STATE,...]",
+	"stats":            "anvilctl library stats [--library NAME]",
+	"inspect":          "anvilctl job show JOB_ID_OR_SLUG",
+	"retry":            "anvilctl job retry JOB_ID_OR_SLUG... | anvilctl job retry --failed",
+	"recover":          "anvilctl job recover",
+	"cleanup-staging":  "anvilctl staging cleanup [--older-than DURATION] [--dry-run]",
+	"backup":           "anvilctl store backup DESTINATION",
+	"prune-jobs":       "anvilctl job prune [--library NAME] [--state STATE,...] [--apply]",
+	"force-occurrence": "anvilctl occurrence force --library NAME RELATIVE_PATH",
+}
 
 var activeLogLevel slog.LevelVar
 
@@ -55,19 +66,8 @@ type options struct {
 	shutdownPolicy  string
 	shutdownTimeout string
 	libraryName     string
-	jobStates       []domain.JobState
-	jobStateFilter  string
-	jobLimit        int
 	preflightLimit  int
 	jsonOutput      bool
-	retryFailed     bool
-	jobIDs          []domain.JobID
-	jobRefs         []string
-	cleanupOlder    string
-	cleanupDryRun   bool
-	backupPath      string
-	pruneApply      bool
-	forcePath       string
 }
 
 type runtimeConfig struct {
@@ -132,38 +132,21 @@ func dispatchCommand(ctx context.Context, cfg config.Config, opts options) error
 		return runDaemon(ctx, cfg, opts)
 	case commandCheckConfig:
 		return runCheckConfig(cfg, opts)
-	case commandScan:
-		return runScanCommand(ctx, cfg, opts)
 	case commandPreflight:
 		return runPreflightCommand(ctx, cfg, opts)
-	case commandJobs:
-		return runJobsCommand(ctx, cfg, opts)
-	case commandStats:
-		return runStatsCommand(ctx, cfg, opts)
-	case commandInspect:
-		return runInspectCommand(ctx, cfg, opts)
-	case commandRetry:
-		return runRetryCommand(ctx, cfg, opts)
-	case commandRecover:
-		return runRecoverCommand(ctx, cfg, opts)
-	case commandCleanup:
-		return runCleanupStagingCommand(ctx, cfg, opts)
-	case commandBackup:
-		return runBackupCommand(ctx, cfg, opts)
-	case commandPruneJobs:
-		return runPruneJobsCommand(ctx, cfg, opts)
-	case commandForce:
-		return runForceOccurrenceCommand(ctx, cfg, opts)
 	default:
 		return fmt.Errorf("unknown command %q", opts.command)
 	}
 }
 
+// movedCommandError explains where a command went. It is an error rather than a
+// silent forward so nothing keeps depending on anvild for live state.
+func movedCommandError(command string, replacement string) error {
+	return fmt.Errorf("%q moved to the control client, because the running daemon owns the database: use %q", command, replacement)
+}
+
 func parseOptions(args []string) (options, error) {
-	opts := options{
-		command:  commandRun,
-		jobLimit: 20,
-	}
+	opts := options{command: commandRun}
 
 	globals := flag.NewFlagSet("anvild", flag.ContinueOnError)
 	globals.SetOutput(os.Stderr)
@@ -183,6 +166,9 @@ func parseOptions(args []string) (options, error) {
 	if len(remaining) == 0 {
 		return opts, nil
 	}
+	if replacement, moved := movedCommands[remaining[0]]; moved {
+		return options{}, movedCommandError(remaining[0], replacement)
+	}
 	if !isCommand(remaining[0]) {
 		return options{}, fmt.Errorf("unexpected arguments: %v", remaining)
 	}
@@ -200,36 +186,10 @@ func parseCommandOptions(opts options, args []string) (options, error) {
 		flags.BoolVar(&opts.daemonMode, "daemon", opts.daemonMode, "run in daemon mode")
 		addShutdownFlags(flags, &opts)
 	case commandCheckConfig:
-	case commandScan:
-		flags.StringVar(&opts.libraryName, "library", "", "scan one configured library")
 	case commandPreflight:
 		flags.StringVar(&opts.libraryName, "library", "", "preflight one configured library")
 		flags.IntVar(&opts.preflightLimit, "limit", 0, "maximum candidates to show; 0 means no limit")
 		flags.BoolVar(&opts.jsonOutput, "json", false, "write JSON output")
-	case commandJobs:
-		flags.StringVar(&opts.libraryName, "library", "", "filter by library name")
-		flags.StringVar(&opts.jobStateFilter, "state", "", "comma-separated job states to show")
-		flags.IntVar(&opts.jobLimit, "limit", opts.jobLimit, "maximum jobs to show; 0 means no limit")
-		flags.BoolVar(&opts.jsonOutput, "json", false, "write JSON output")
-	case commandStats:
-		flags.StringVar(&opts.libraryName, "library", "", "filter by library name")
-		flags.BoolVar(&opts.jsonOutput, "json", false, "write JSON output")
-	case commandInspect:
-		flags.BoolVar(&opts.jsonOutput, "json", false, "write JSON output")
-	case commandRetry:
-		flags.BoolVar(&opts.retryFailed, "failed", false, "retry all failed jobs")
-		flags.StringVar(&opts.libraryName, "library", "", "limit --failed to one library")
-	case commandRecover:
-	case commandCleanup:
-		flags.StringVar(&opts.cleanupOlder, "older-than", "", "remove Anvil staging dirs older than this duration; defaults to daemon.staging_cleanup_age")
-		flags.BoolVar(&opts.cleanupDryRun, "dry-run", false, "show cleanup candidates without deleting them")
-	case commandBackup:
-	case commandPruneJobs:
-		flags.StringVar(&opts.libraryName, "library", "", "limit pruning to one library")
-		flags.StringVar(&opts.jobStateFilter, "state", "", "comma-separated terminal job states; defaults to complete,failed,skipped,canceled")
-		flags.BoolVar(&opts.pruneApply, "apply", false, "delete matching jobs; without this flag the command is a dry run")
-	case commandForce:
-		flags.StringVar(&opts.libraryName, "library", "", "configured library containing the target")
 	case commandHelp:
 	default:
 		return options{}, fmt.Errorf("unknown command %q", opts.command)
@@ -238,81 +198,11 @@ func parseCommandOptions(opts options, args []string) (options, error) {
 		return options{}, err
 	}
 
-	switch opts.command {
-	case commandPreflight:
-		if opts.preflightLimit < 0 {
-			return options{}, errors.New("preflight --limit must be non-negative")
-		}
-		if flags.NArg() > 0 {
-			return options{}, fmt.Errorf("preflight does not accept arguments: %v", flags.Args())
-		}
-	case commandJobs:
-		states, err := parseJobStates(opts.jobStateFilter)
-		if err != nil {
-			return options{}, err
-		}
-		opts.jobStates = states
-		if flags.NArg() > 0 {
-			return options{}, fmt.Errorf("jobs does not accept arguments: %v", flags.Args())
-		}
-	case commandStats:
-		if flags.NArg() > 0 {
-			return options{}, fmt.Errorf("stats does not accept arguments: %v", flags.Args())
-		}
-	case commandInspect:
-		ids, err := parseJobIDs(flags.Args())
-		if err != nil {
-			return options{}, err
-		}
-		if len(flags.Args()) != 1 {
-			return options{}, errors.New("inspect requires exactly one job reference")
-		}
-		opts.jobIDs = ids
-		opts.jobRefs = append([]string(nil), flags.Args()...)
-	case commandRetry:
-		ids, err := parseJobIDs(flags.Args())
-		if err != nil {
-			return options{}, err
-		}
-		opts.jobIDs = ids
-		opts.jobRefs = append([]string(nil), flags.Args()...)
-		if !opts.retryFailed && len(opts.jobRefs) == 0 {
-			return options{}, errors.New("retry requires job references or --failed")
-		}
-		if opts.libraryName != "" && !opts.retryFailed {
-			return options{}, errors.New("--library can only be used with retry --failed")
-		}
-	case commandBackup:
-		if flags.NArg() != 1 {
-			return options{}, errors.New("backup requires exactly one destination path")
-		}
-		opts.backupPath = flags.Arg(0)
-	case commandPruneJobs:
-		states, err := parseJobStates(opts.jobStateFilter)
-		if err != nil {
-			return options{}, err
-		}
-		for _, state := range states {
-			if !state.Terminal() {
-				return options{}, fmt.Errorf("prune-jobs state %q is not terminal", state)
-			}
-		}
-		opts.jobStates = states
-		if flags.NArg() > 0 {
-			return options{}, fmt.Errorf("prune-jobs does not accept arguments: %v", flags.Args())
-		}
-	case commandForce:
-		if strings.TrimSpace(opts.libraryName) == "" {
-			return options{}, errors.New("force-occurrence requires --library")
-		}
-		if flags.NArg() != 1 {
-			return options{}, errors.New("force-occurrence requires exactly one relative path")
-		}
-		opts.forcePath = flags.Arg(0)
-	default:
-		if flags.NArg() > 0 {
-			return options{}, fmt.Errorf("%s does not accept arguments: %v", opts.command, flags.Args())
-		}
+	if opts.command == commandPreflight && opts.preflightLimit < 0 {
+		return options{}, errors.New("preflight --limit must be non-negative")
+	}
+	if flags.NArg() > 0 {
+		return options{}, fmt.Errorf("%s does not accept arguments: %v", opts.command, flags.Args())
 	}
 	return opts, nil
 }
@@ -372,6 +262,29 @@ func runDaemon(ctx context.Context, cfg config.Config, opts options) error {
 		mode = "daemon"
 	}
 
+	// Ownership is claimed before anything else, and the control socket is
+	// claimed before any start-up side effect. A second daemon on the same
+	// store used to recover stale jobs and sweep staging directories out from
+	// under the running one, and only then discover the live socket and exit.
+	ownership, err := acquireDaemonOwnership(cfg.Daemon.StorePath)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err := ownership.release(); err != nil {
+			slog.Error("release daemon ownership", "error", err)
+		}
+	}()
+	listener, releaseSocket, err := controlapi.ListenUnix(cfg.Daemon.ControlSocket)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err := releaseSocket(); err != nil {
+			slog.Error("clean up control socket", "error", err)
+		}
+	}()
+
 	state, err := openStore(serviceCtx, cfg)
 	if err != nil {
 		return err
@@ -383,15 +296,18 @@ func runDaemon(ctx context.Context, cfg config.Config, opts options) error {
 		return err
 	}
 
-	runConfiguredStagingCleanup(cfg)
+	runConfiguredStagingCleanup(serviceCtx, cfg, state)
 
 	slog.Info("starting anvild", "mode", mode, "config", configPathLabel(opts.configPath), "temp_dir", cfg.Daemon.TempDir, "store", cfg.Daemon.StorePath, "control_socket", cfg.Daemon.ControlSocket, "workers", cfg.Daemon.WorkerCount, "threads", cfg.Daemon.TotalThreads, "filesystem_event_debounce", cfg.FilesystemEventDebounce(), "shutdown_policy", cfg.Daemon.ShutdownPolicy, "shutdown_timeout", cfg.Daemon.ShutdownTimeout, "log_level", cfg.Daemon.LogLevel, "recovered_jobs", recovered)
 	logConfiguredWork(cfg)
 
 	var wg sync.WaitGroup
 	var plannerRef atomic.Pointer[scheduler.Scheduler]
-	control, err := startControlAPI(serviceCtx, &wg, runtimeCfg.Get, state, controlAPIWorkers{
-		active: func() int {
+	control := startControlService(serviceCtx, &wg, listener, controlServiceDeps{
+		store:     state,
+		config:    runtimeCfg.Get,
+		startedAt: startedAt,
+		activeWorkers: func() int {
 			planner := plannerRef.Load()
 			if planner == nil {
 				return 0
@@ -405,15 +321,7 @@ func runDaemon(ctx context.Context, cfg config.Config, opts options) error {
 			}
 			return planner.CancelJob(jobID)
 		},
-	}, startedAt)
-	if err != nil {
-		return err
-	}
-	defer func() {
-		if err := control.cleanup(); err != nil {
-			slog.Error("clean up control API", "error", err)
-		}
-	}()
+	})
 	startReloadLoop(serviceCtx, &wg, opts, runtimeCfg, reloadSignals)
 	runInitialScan(serviceCtx, runtimeCfg.Get(), state)
 	startRecoveryLoop(serviceCtx, &wg, runtimeCfg.Get, state)
@@ -424,8 +332,16 @@ func runDaemon(ctx context.Context, cfg config.Config, opts options) error {
 	var request shutdownRequest
 	select {
 	case request = <-shutdown:
-	case err := <-control.errors:
-		request.err = fmt.Errorf("control API stopped: %w", err)
+	case err, ok := <-control:
+		if !ok || err == nil {
+			// The control service only stops cleanly because the service
+			// context was canceled, and whoever canceled it has already queued
+			// the real shutdown reason. Reporting the stop itself would replace
+			// that reason with a nil error.
+			request = <-shutdown
+			break
+		}
+		request.err = fmt.Errorf("control service stopped: %w", err)
 		stopServices()
 	}
 	shutdownCfg := runtimeCfg.Get()
@@ -491,150 +407,6 @@ func waitForShutdown(done <-chan struct{}, signals <-chan os.Signal, timeout tim
 
 func runCheckConfig(cfg config.Config, opts options) error {
 	slog.Info("config ok", "config", configPathLabel(opts.configPath), "libraries", len(cfg.Libraries), "flows", len(cfg.Flows), "profiles", len(cfg.Profiles), "control_socket", cfg.Daemon.ControlSocket, "log_level", cfg.Daemon.LogLevel)
-	return nil
-}
-
-func runScanCommand(ctx context.Context, cfg config.Config, opts options) error {
-	state, err := openStore(ctx, cfg)
-	if err != nil {
-		return err
-	}
-	defer closeStore(state)
-
-	var result scanner.ScanResult
-	if opts.libraryName != "" {
-		library, ok := cfg.Libraries[opts.libraryName]
-		if !ok {
-			return fmt.Errorf("library %q not found", opts.libraryName)
-		}
-		library.Name = opts.libraryName
-		result, err = (scanner.Scanner{Store: state}).ScanLibrary(ctx, library)
-	} else {
-		result, err = (scanner.Scanner{Store: state}).Scan(ctx, cfg)
-	}
-	if err != nil {
-		return err
-	}
-	return writeScanResult(os.Stdout, result)
-}
-
-func runJobsCommand(ctx context.Context, cfg config.Config, opts options) error {
-	state, err := openStore(ctx, cfg)
-	if err != nil {
-		return err
-	}
-	defer closeStore(state)
-
-	jobs, err := state.ListJobs(ctx, store.JobListFilter{
-		LibraryName: domain.LibraryName(opts.libraryName),
-		States:      opts.jobStates,
-		Limit:       opts.jobLimit,
-	})
-	if err != nil {
-		return err
-	}
-	if opts.jsonOutput {
-		return writeIndentedJSON(os.Stdout, jobs)
-	}
-	return writeJobs(os.Stdout, jobs)
-}
-
-func runStatsCommand(ctx context.Context, cfg config.Config, opts options) error {
-	state, err := openStore(ctx, cfg)
-	if err != nil {
-		return err
-	}
-	defer closeStore(state)
-
-	stats, err := state.ListLibraryStats(ctx, store.LibraryStatsFilter{
-		LibraryName: domain.LibraryName(opts.libraryName),
-	})
-	if err != nil {
-		return err
-	}
-	if opts.jsonOutput {
-		return writeIndentedJSON(os.Stdout, stats)
-	}
-	return writeLibraryStats(os.Stdout, stats)
-}
-
-func runRetryCommand(ctx context.Context, cfg config.Config, opts options) error {
-	state, err := openStore(ctx, cfg)
-	if err != nil {
-		return err
-	}
-	defer closeStore(state)
-
-	now := time.Now().UTC()
-	w := newOutputWriter(os.Stdout)
-	if opts.retryFailed {
-		count, err := state.RetryFailedJobs(ctx, domain.LibraryName(opts.libraryName), now)
-		if err != nil {
-			return err
-		}
-		w.printf("retried_failed_jobs=%d\n", count)
-		if w.err != nil {
-			return fmt.Errorf("write output: %w", w.err)
-		}
-	}
-	for _, reference := range opts.jobRefs {
-		resolved, err := state.ResolveJobReference(ctx, reference)
-		if err != nil {
-			return fmt.Errorf("resolve job %q: %w", reference, err)
-		}
-		job, err := state.RetryJob(ctx, resolved.ID, now)
-		if err != nil {
-			return err
-		}
-		w.printf("job=%s id=%d state=%s\n", job.Label(), job.ID, job.State)
-		if w.err != nil {
-			return fmt.Errorf("write output: %w", w.err)
-		}
-	}
-	return nil
-}
-
-func runRecoverCommand(ctx context.Context, cfg config.Config, opts options) error {
-	state, err := openStore(ctx, cfg)
-	if err != nil {
-		return err
-	}
-	defer closeStore(state)
-
-	recovered, err := state.RecoverStaleJobs(ctx, cfg.Daemon.MaxAttempts, time.Now())
-	if err != nil {
-		return err
-	}
-	return writeOutput(os.Stdout, func(w *outputWriter) {
-		w.printf("recovered_jobs=%d\n", recovered)
-	})
-}
-
-func runCleanupStagingCommand(ctx context.Context, cfg config.Config, opts options) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	age := cfg.StagingCleanupAge()
-	if opts.cleanupOlder != "" {
-		parsed, err := time.ParseDuration(opts.cleanupOlder)
-		if err != nil {
-			return fmt.Errorf("parse --older-than: %w", err)
-		}
-		age = parsed
-	}
-	if age < 0 {
-		return errors.New("staging cleanup age must be non-negative")
-	}
-	result, err := staging.Manager{Root: stagingRoot(cfg)}.CleanupStale(age, time.Now().UTC(), opts.cleanupDryRun)
-	if err != nil {
-		return err
-	}
-	if err := writeCleanupResult(os.Stdout, os.Stderr, result, opts.cleanupDryRun); err != nil {
-		return err
-	}
-	if len(result.Errors) > 0 {
-		return fmt.Errorf("staging cleanup completed with %d errors", len(result.Errors))
-	}
 	return nil
 }
 
@@ -889,194 +661,45 @@ func validateReload(current config.Config, next config.Config) error {
 	return nil
 }
 
-func runConfiguredStagingCleanup(cfg config.Config) {
+// runConfiguredStagingCleanup sweeps leftovers from a previous run at start-up.
+// It protects jobs that are still active or still own an unresolved publish
+// journal, because a crash can leave both the directory and the work that owns
+// it behind, and recovery needs the staged artifact the journal names.
+func runConfiguredStagingCleanup(ctx context.Context, cfg config.Config, state *store.SQLiteStore) {
 	age := cfg.StagingCleanupAge()
 	if age <= 0 {
 		return
 	}
-	result, err := staging.Manager{Root: stagingRoot(cfg)}.CleanupStale(age, time.Now().UTC(), false)
+	protected, err := state.ProtectedJobs(ctx)
+	if err != nil {
+		slog.Error("staging cleanup skipped; protected jobs are unknown", "error", err)
+		return
+	}
+	held := make(map[int64]struct{}, len(protected))
+	for _, job := range protected {
+		held[int64(job.JobID)] = struct{}{}
+	}
+	result, err := staging.Manager{Root: staging.Root(cfg.Daemon.TempDir)}.CleanupStale(staging.CleanupStaleOptions{
+		OlderThan: age,
+		Now:       time.Now().UTC(),
+		Protected: func(jobID int64, _ int64) bool {
+			_, ok := held[jobID]
+			return ok
+		},
+	})
 	if err != nil {
 		slog.Error("staging cleanup failed", "error", err)
 		return
 	}
-	slog.Info("staging cleanup complete", "candidates", result.Candidates, "removed", result.Removed, "skipped", result.Skipped, "errors", len(result.Errors))
+	slog.Info("staging cleanup complete", "candidates", result.Candidates, "removed", result.Removed, "skipped", result.Skipped, "protected", result.Protected, "errors", len(result.Errors))
 	for _, message := range result.Errors {
 		slog.Error("staging cleanup error", "error", message)
 	}
 }
 
-func writeScanResult(out io.Writer, result scanner.ScanResult) error {
-	return writeOutput(out, func(w *outputWriter) {
-		w.printf("libraries=%d sources=%d assets=%d enqueued_jobs=%d existing_jobs=%d skipped_ignored=%d skipped_unstable=%d",
-			result.Libraries,
-			result.Sources,
-			result.Assets,
-			result.EnqueuedJobs,
-			result.ExistingJobs,
-			result.SkippedIgnored,
-			result.SkippedUnstable,
-		)
-		if !result.NextStableAt.IsZero() {
-			w.printf(" next_stable_at=%s", result.NextStableAt.Format(time.RFC3339))
-		}
-		w.println()
-	})
-}
-
-func writeCleanupResult(out io.Writer, errOut io.Writer, result staging.CleanupStaleResult, dryRun bool) error {
-	if err := writeOutput(out, func(w *outputWriter) {
-		w.printf("dry_run=%t candidates=%d removed=%d skipped=%d errors=%d\n",
-			dryRun,
-			result.Candidates,
-			result.Removed,
-			result.Skipped,
-			len(result.Errors),
-		)
-	}); err != nil {
-		return err
-	}
-	return writeOutput(errOut, func(w *outputWriter) {
-		for _, message := range result.Errors {
-			w.printf("cleanup_error=%q\n", message)
-		}
-	})
-}
-
-func stagingRoot(cfg config.Config) string {
-	return filepath.Join(cfg.Daemon.TempDir, "staging")
-}
-
-func writeJobs(out io.Writer, jobs []store.JobSummary) error {
-	return writeTable(out, func(w *outputWriter) {
-		w.println("JOB\tID\tSTATE\tLIBRARY\tATTEMPTS\tUPDATED\tPATH\tERROR")
-		for _, summary := range jobs {
-			w.printf("%s\t%d\t%s\t%s\t%d\t%s\t%s\t%s\n",
-				summary.Job.Label(),
-				summary.Job.ID,
-				summary.Job.State,
-				summary.Job.LibraryName,
-				summary.Job.AttemptCount,
-				summary.Job.UpdatedAt.Format(time.RFC3339),
-				jobPath(summary),
-				summary.Job.LastError,
-			)
-		}
-	})
-}
-
-func writeLibraryStats(out io.Writer, stats []store.LibraryStats) error {
-	return writeTable(out, func(w *outputWriter) {
-		w.println("LIBRARY\tJOBS\tBEFORE\tAFTER\tSAVED\tSAVED%")
-		for _, stat := range stats {
-			w.printf("%s\t%d\t%s\t%s\t%s\t%s\n",
-				stat.LibraryName,
-				stat.Jobs,
-				formatBytes(stat.InputSizeBytes),
-				formatBytes(stat.OutputSizeBytes),
-				formatBytes(stat.SavedBytes),
-				formatPercent(stat.SavedPercent),
-			)
-		}
-	})
-}
-
-func jobPath(summary store.JobSummary) string {
-	if summary.AssetPath == "" || summary.AssetPath == summary.SourcePath {
-		return summary.SourcePath
-	}
-	source := strings.Trim(summary.SourcePath, "/")
-	asset := strings.Trim(summary.AssetPath, "/")
-	if source == "" {
-		return asset
-	}
-	if asset == "" {
-		return source
-	}
-	return source + "/" + asset
-}
-
-func formatBytes(value int64) string {
-	sign := ""
-	size := float64(value)
-	if value < 0 {
-		sign = "-"
-		size = -size
-	}
-	units := []string{"B", "KiB", "MiB", "GiB", "TiB", "PiB"}
-	unit := 0
-	for size >= 1024 && unit < len(units)-1 {
-		size /= 1024
-		unit++
-	}
-	if unit == 0 {
-		return fmt.Sprintf("%s%d %s", sign, int64(size), units[unit])
-	}
-	return fmt.Sprintf("%s%.1f %s", sign, size, units[unit])
-}
-
-func formatPercent(value float64) string {
-	return fmt.Sprintf("%.1f%%", value)
-}
-
-func parseJobStates(value string) ([]domain.JobState, error) {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return nil, nil
-	}
-	parts := strings.Split(value, ",")
-	states := make([]domain.JobState, 0, len(parts))
-	for _, part := range parts {
-		state := domain.JobState(strings.TrimSpace(part))
-		if state == "" {
-			continue
-		}
-		if !domain.ValidJobState(state) {
-			return nil, fmt.Errorf("unknown job state %q", state)
-		}
-		states = append(states, state)
-	}
-	return states, nil
-}
-
-func parseJobIDs(args []string) ([]domain.JobID, error) {
-	ids := make([]domain.JobID, 0, len(args))
-	for _, arg := range args {
-		value, err := strconv.ParseInt(arg, 10, 64)
-		if err != nil {
-			if !validJobSlug(arg) {
-				return nil, fmt.Errorf("invalid job reference %q", arg)
-			}
-			continue
-		}
-		if value <= 0 {
-			return nil, fmt.Errorf("invalid job reference %q", arg)
-		}
-		ids = append(ids, domain.JobID(value))
-	}
-	return ids, nil
-}
-
-func validJobSlug(value string) bool {
-	parts := strings.Split(value, "-")
-	if len(parts) != 3 {
-		return false
-	}
-	for _, part := range parts {
-		if part == "" {
-			return false
-		}
-		for _, r := range part {
-			if r < 'a' || r > 'z' {
-				return false
-			}
-		}
-	}
-	return true
-}
-
 func isCommand(value string) bool {
 	switch value {
-	case commandRun, commandCheckConfig, commandScan, commandPreflight, commandJobs, commandStats, commandInspect, commandRetry, commandRecover, commandCleanup, commandBackup, commandPruneJobs, commandForce, commandHelp:
+	case commandRun, commandCheckConfig, commandPreflight, commandHelp:
 		return true
 	default:
 		return false
@@ -1084,23 +707,25 @@ func isCommand(value string) bool {
 }
 
 func writeUsage(out io.Writer) error {
-	return writeOutput(out, func(w *outputWriter) {
-		w.println(`Usage:
+	return textout.Write(out, func(w *textout.Writer) {
+		w.Println(`Usage:
   anvild [--config PATH] [--daemon] [--shutdown-policy drain|cancel] [--shutdown-timeout DURATION]
   anvild run [--config PATH] [--daemon] [--shutdown-policy drain|cancel] [--shutdown-timeout DURATION]
   anvild check-config [--config PATH]
-  anvild scan [--config PATH] [--library NAME]
   anvild preflight [--config PATH] [--library NAME] [--limit N] [--json]
-  anvild jobs [--config PATH] [--library NAME] [--state pending,failed] [--limit N] [--json]
-  anvild stats [--config PATH] [--library NAME] [--json]
-  anvild inspect [--config PATH] [--json] JOB_ID_OR_SLUG
-  anvild retry [--config PATH] JOB_ID_OR_SLUG...
-  anvild retry [--config PATH] --failed [--library NAME]
-  anvild recover [--config PATH]
-  anvild cleanup-staging [--config PATH] [--older-than DURATION] [--dry-run]
-  anvild backup [--config PATH] DESTINATION
-  anvild prune-jobs [--config PATH] [--library NAME] [--state complete,failed,skipped,canceled] [--apply]
-  anvild force-occurrence [--config PATH] --library NAME RELATIVE_PATH
+
+anvild is the service binary: it owns the config it is running, the SQLite
+store, staging, and publication. check-config and preflight stay here because
+both are local, read-only, and useful before a daemon exists.
+
+Every live operation is asked of the running daemon with anvilctl:
+
+  anvilctl status
+  anvilctl job list|show|cancel|retry|prune|recover
+  anvilctl library scan|stats
+  anvilctl occurrence force --library NAME RELATIVE_PATH
+  anvilctl staging cleanup
+  anvilctl store backup DESTINATION
 
 Legacy --check-config is still accepted.`)
 	})
