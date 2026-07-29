@@ -118,7 +118,7 @@ func (r Runner) Run(ctx context.Context, assignment scheduler.Assignment) error 
 	if recovered, recoverErr := recoverPendingPublish(ctx, pipelineRunner, jobContext); recoverErr != nil {
 		return r.fail(ctx, assignment.Job, attempt, cfg, recoverErr)
 	} else if recovered {
-		return r.finishSuccessful(ctx, assignment, flow, library, jobContext)
+		return r.finishSuccessful(context.WithoutCancel(ctx), assignment, flow, library, jobContext)
 	}
 	if err := r.verifyOccurrenceInput(inputPath, source, asset); err != nil {
 		return r.fail(ctx, assignment.Job, attempt, cfg, err)
@@ -170,11 +170,16 @@ func (r Runner) Run(ctx context.Context, assignment scheduler.Assignment) error 
 	})
 	if err := pipelineRunner.Run(pipelineCtx, jobContext); err != nil {
 		if !errors.Is(err, replacepkg.ErrPublishPending) {
-			r.cleanupFailedStaging(ctx, jobContext, cfg)
+			// A pending publish keeps its staging artifact so a resumed job can
+			// still publish it. The detached context only carries the cleanup
+			// telemetry, which has to outlive the cancellation that caused it.
+			r.cleanupFailedStaging(context.WithoutCancel(ctx), jobContext, cfg)
 		}
 		return r.fail(ctx, assignment.Job, attempt, cfg, err)
 	}
-	return r.finishSuccessful(ctx, assignment, flow, library, jobContext)
+	// A finished pipeline is authoritative: the artifact is published, so the
+	// completion bookkeeping must run even if a cancel landed in the meantime.
+	return r.finishSuccessful(context.WithoutCancel(ctx), assignment, flow, library, jobContext)
 }
 
 func (r Runner) finishSuccessful(ctx context.Context, assignment scheduler.Assignment, flow domain.Flow, library domain.Library, jobContext *pipeline.JobContext) error {
@@ -438,9 +443,57 @@ func finalInputFingerprint(job *pipeline.JobContext) *domain.FileFingerprint {
 	return &fingerprint
 }
 
-func (r Runner) fail(ctx context.Context, job domain.Job, attempt domain.Attempt, cfg config.Config, cause error) error {
+// jobCancellationCause reports the operator cancellation that ended this
+// attempt, or nil when it ended for any other reason such as daemon shutdown.
+// A store rejection counts even before the worker's own context observes the
+// cancel, because the job row is already terminally canceled.
+func jobCancellationCause(ctx context.Context, cause error) error {
+	if errors.Is(cause, store.ErrJobCanceled) {
+		return cause
+	}
+	if ctx.Err() == nil {
+		return nil
+	}
+	if canceled := context.Cause(ctx); errors.Is(canceled, scheduler.ErrJobCanceled) {
+		return canceled
+	}
+	return nil
+}
+
+// cancel records an operator cancellation. It runs on a context detached from
+// the cancellation so the terminal state is always persisted.
+func (r Runner) cancel(ctx context.Context, job domain.Job, attempt domain.Attempt, cause error) error {
 	message := cause.Error()
-	if _, err := r.Store.FinishAttempt(ctx, attempt.ID, domain.AttemptStateFailed, message, r.now()); err != nil {
+	if _, err := r.Store.FinishAttempt(ctx, attempt.ID, domain.AttemptStateCanceled, message, r.now()); err != nil && !errors.Is(err, store.ErrNotFound) {
+		return fmt.Errorf("finish canceled attempt: %w", err)
+	}
+	if _, err := r.Store.TransitionJob(ctx, job.ID, domain.JobStateCanceled, r.now(), message); err != nil {
+		return fmt.Errorf("transition job to canceled: %w", err)
+	}
+	slog.Warn("worker job canceled", "worker", attempt.WorkerID, "job", job.Label(), "attempt", attempt.Number, "library", string(job.LibraryName), "reason", message)
+	return nil
+}
+
+func (r Runner) fail(ctx context.Context, job domain.Job, attempt domain.Attempt, cfg config.Config, cause error) error {
+	// A pending publish is never made terminal, whatever ended the attempt: the
+	// journaled operation has to stay resumable, and only a job that can be
+	// re-leased ever reaches recoverPendingPublish.
+	//
+	// ConflictError.Is reports ErrPublishPending too, so a conflicted publish
+	// takes this branch as well. That is deliberate: a conflict also needs the
+	// journal kept, and the store leaves conflicted jobs cancelable so the
+	// attempt may already have been canceled underneath us.
+	pendingPublish := errors.Is(cause, replacepkg.ErrPublishPending)
+	if canceled := jobCancellationCause(ctx, cause); canceled != nil && !pendingPublish {
+		return r.cancel(context.WithoutCancel(ctx), job, attempt, canceled)
+	}
+	// Recording the outcome has to outlive whatever ended the attempt, or the
+	// job keeps a lease nobody owns until stale-job recovery expires it.
+	ctx = context.WithoutCancel(ctx)
+	message := cause.Error()
+	// A cancel that raced this attempt already finished it, so a missing running
+	// attempt is the store having recorded the outcome first, not an error.
+	if _, err := r.Store.FinishAttempt(ctx, attempt.ID, domain.AttemptStateFailed, message, r.now()); err != nil && !errors.Is(err, store.ErrNotFound) {
 		return fmt.Errorf("finish failed attempt: %w", err)
 	}
 	if errors.Is(cause, ErrInputOccurrenceChanged) {
