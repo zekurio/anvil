@@ -3,6 +3,8 @@ package controlapi
 import (
 	"strings"
 	"time"
+
+	"github.com/zekurio/anvil/pkg/domain"
 )
 
 const Version = "v1"
@@ -62,6 +64,35 @@ type JobResponse struct {
 	LastError       string              `json:"last_error,omitempty"`
 	DestinationPath string              `json:"destination_path,omitempty"`
 	PublishStage    string              `json:"publish_stage,omitempty"`
+	// MatchedOn reports which path of this job the absolute_path selector
+	// matched. It is empty when the query did not select by absolute path, so
+	// it never implies a match that was not asked for.
+	MatchedOn PathMatchSide `json:"matched_on,omitempty"`
+	// StreamSelection carries the audio and subtitle decisions of the most
+	// recent attempt that recorded any. It is only populated when the query
+	// asks for it, and stays absent for a job that never recorded a decision.
+	StreamSelection []StreamSelectionResponse `json:"stream_selection,omitempty"`
+}
+
+// PathMatchSide names which of a job's paths an absolute_path selector matched.
+// A destination match is the interesting one: it answers "which job produced
+// this file", which a source-indexed lookup cannot.
+type PathMatchSide string
+
+const (
+	PathMatchSource               PathMatchSide = "source"
+	PathMatchAsset                PathMatchSide = "asset"
+	PathMatchDestination          PathMatchSide = "destination"
+	PathMatchDestinationDirectory PathMatchSide = "destination_directory"
+)
+
+// StreamSelectionResponse is one recorded stream selection decision together
+// with the attempt that produced it.
+type StreamSelectionResponse struct {
+	AttemptID     int64                          `json:"attempt_id"`
+	RecordedAt    time.Time                      `json:"recorded_at"`
+	Decision      domain.StreamSelectionDecision `json:"decision"`
+	DecisionError string                         `json:"decision_error,omitempty"`
 }
 
 type OccurrenceResponse struct {
@@ -79,6 +110,9 @@ type JobQuery struct {
 	States       []string
 	CurrentOnly  bool
 	Limit        int
+	// WithSelection populates StreamSelection on each returned job. It is
+	// opt-in because the decisions are far larger than the rest of a listing.
+	WithSelection bool
 }
 
 // JobCancelRequest reuses the JobQuery selector vocabulary so a cancel can
