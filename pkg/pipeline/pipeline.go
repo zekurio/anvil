@@ -118,6 +118,9 @@ func (r Runner) Run(ctx context.Context, job *JobContext) error {
 		started := time.Now()
 		if resumed {
 			slog.Info("pipeline step resumed", "job", job.Job.Label(), "attempt", job.Attempt.Number, "step", step.Name, "step_index", index)
+			if err := r.recordDecision(ctx, block, job); err != nil {
+				return err
+			}
 			if err := r.record(ctx, job.Attempt.ID, domain.AttemptEventBlockFinished, step.Name, "", map[string]any{"step_index": index, "resumed": true}); err != nil {
 				return err
 			}
@@ -141,6 +144,9 @@ func (r Runner) Run(ctx context.Context, job *JobContext) error {
 		}
 		slog.Info("pipeline step finished", "job", job.Job.Label(), "attempt", job.Attempt.Number, "step", step.Name, "step_index", index, "duration", time.Since(started))
 		if err := r.stepSucceeded(ctx, step.Name, job); err != nil {
+			return err
+		}
+		if err := r.recordDecision(ctx, block, job); err != nil {
 			return err
 		}
 		if err := r.record(ctx, job.Attempt.ID, domain.AttemptEventBlockFinished, step.Name, "", map[string]any{"step_index": index}); err != nil {
@@ -169,6 +175,19 @@ func (r Runner) stepSucceeded(ctx context.Context, step string, job *JobContext)
 		return fmt.Errorf("persist pipeline step %q: %w", step, err)
 	}
 	return nil
+}
+
+func (r Runner) recordDecision(ctx context.Context, block Block, job *JobContext) error {
+	reporter, ok := block.(DecisionReporter)
+	if !ok {
+		return nil
+	}
+	decision, ok := reporter.Decision(job)
+	if !ok {
+		return nil
+	}
+	message := fmt.Sprintf("%s %s", decision.Kind, decision.Rule)
+	return r.record(ctx, job.Attempt.ID, domain.AttemptEventArtifact, StreamSelectionArtifact, message, decision)
 }
 
 func (r Runner) record(ctx context.Context, attemptID domain.AttemptID, eventType domain.AttemptEventType, name string, message string, payload any) error {
