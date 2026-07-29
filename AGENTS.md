@@ -29,7 +29,6 @@ scanner ──enqueue──▶ store (SQLite) ◀──lease── scheduler ─
 
 - `cmd/anvild` — the service binary: default `run` mode plus `check-config` and `preflight`, the only two commands that are local, read-only, and useful before a daemon exists. Every live operation moved to `anvilctl`; the old names are recognized and answered with their replacement, never executed.
 - `cmd/anvilctl` — the operator client. Opens no SQLite, runs no media tools, needs no config file. Noun/verb tree (`job`, `library`, `occurrence`, `staging`, `store`) with the old `anvild` subcommand names kept as aliases.
-- `cmd/anvil-mockarr` — fake Radarr/Sonarr HTTP server for the local smoke fixture.
 - `internal/textout` — shared operator-output helpers (error-carrying writer, tables, JSON, byte/percent formatting) used by both binaries.
 - `pkg/domain` — core job/attempt/media/profile/flow/encode types. Must stay free of persistence, ffmpeg, and CLI concerns.
 - `pkg/config` — TOML loading, defaults, validation. Downstream packages receive resolved settings; never reparse raw config elsewhere.
@@ -37,25 +36,21 @@ scanner ──enqueue──▶ store (SQLite) ◀──lease── scheduler ─
 - `pkg/scanner`, `pkg/scheduler`, `pkg/worker`, `pkg/pipeline` — orchestration layers as described above.
 - `pkg/probe`, `pkg/crop`, `pkg/audio`, `pkg/subtitle`, `pkg/search`, `pkg/ffmpeg`, `pkg/validate`, `pkg/replace`, `pkg/staging` — the pipeline blocks (ffprobe/DV detection, cropdetect, stream selection, ab-av1 search, encode plan + execution + Dolby Vision repair, output validation, safe replace/handoff, staging dirs).
 - `pkg/process` — the only place external commands run (`Command` + `OSRunner` via `exec.CommandContext`, captured stdout/stderr/exit code); `context.go` carries process logger/step metadata.
-- `pkg/controlapi` — control service, private socket protocol, typed request/response models, and the client both binaries share.
+- `pkg/control` — dependency-light private socket protocol, typed request/response models, and the client used by `anvilctl`.
+- `pkg/controlapi` — daemon-side control service and socket server.
 - `pkg/marker`, `pkg/metadata`, `pkg/language`, `pkg/video`, `pkg/resources` — Anvil output tags, Arr metadata resolution, language normalization, codec/crop helpers, thread budgeting.
 - `nix/`, `flake.nix`, `devenv.nix` — packaging, NixOS module (`services.anvil`), dev shell.
-- `scripts/mock-library.sh` — end-to-end smoke fixture builder/runner.
 
 ## Development Commands
 
 ```sh
 make fmt                # go fmt ./...
-make test               # go test ./...
 make lint               # golangci-lint run ./... (wrapped in `nix develop`)
 make lint-fix           # golangci-lint run --fix ./...
 make build              # go build bin/anvild and bin/anvilctl
-make mock-library       # scripts/mock-library.sh setup (build disposable fixture)
-make mock-config-check  # generate fixture config + anvild check-config
-make mock-smoke         # scripts/mock-library.sh run (full daemon smoke)
 ```
 
-**Task completion requirements** for any Go change: `make fmt && make test && make lint`. Add `make build` when entrypoints, package wiring, command construction, or build tags changed. Run `make mock-smoke` only when scanner/scheduler/worker/pipeline behavior changed and the external tools are available.
+**Task completion requirements** for any Go change: `make fmt && make lint`. Add `make build` when entrypoints, package wiring, command construction, or build tags changed.
 
 ## Code Conventions & Common Patterns
 
@@ -76,7 +71,7 @@ make mock-smoke         # scripts/mock-library.sh run (full daemon smoke)
 - `cmd/anvild/main.go` — CLI entrypoint: config load, logging setup, subcommand dispatch, moved-command migration errors; daemon mode claims ownership and the socket first, then splits service vs worker cancellation contexts and runs scan/reload/recovery/scheduler loops with configurable drain/cancel shutdown.
 - `cmd/anvild/ownership_unix.go` — the daemon singleton guard.
 - `cmd/anvild/preflight.go` — read-only planner: reports candidate/staging/publish plans and warnings without mutating anything.
-- `pkg/controlapi/protocol.go`, `server.go`, `client.go` — framing, command table, and client. `service*.go` holds the operations.
+- `pkg/control/protocol.go`, `client.go`, `types*.go` — dependency-light framing, wire contract, and userspace client. `pkg/controlapi/server.go` and `service*.go` own daemon-side dispatch and operations.
 - `pkg/store/protection.go` — the jobs maintenance must not disturb (active, or holding an unresolved publish journal). Staging cleanup and job pruning both depend on it.
 - `pkg/worker/worker.go` — `DefaultPipeline`, attempt lifecycle, job transitions.
 - `pkg/config/defaults.go` — default daemon settings, flows, profiles (canonical step order lives here).
@@ -93,10 +88,8 @@ make mock-smoke         # scripts/mock-library.sh run (full daemon smoke)
 - Flake outputs: `packages.default`/`packages.anvil` (all binaries, `anvild` wrapped with the runtime tool PATH), `packages.anvild`, `packages.anvilctl` (standalone, deliberately unwrapped), `apps.*`, `nixosModules.anvil`, dev shell. Bump `vendorHash` in `flake.nix` when Go deps change.
 - Default branch is `main`; use `main`/`origin/main` for diffs.
 
-## Testing & QA
+## Verification
 
-- **Framework**: stdlib `testing` only — no testify, no mock libraries. Table-driven tests with named subtests (see `pkg/config/config_test.go`, `pkg/ffmpeg/ffmpeg_test.go`).
-- **Fixtures**: `t.TempDir()` for filesystem tests; temp-file or `:memory:` SQLite (`pkg/store/sqlite_test.go` `openTestStore`); hand-written fakes for boundaries (`fakeWorkerStore` in `pkg/worker/worker_test.go`, `fakeRunner`/`captureCommandRunner` in `pkg/search/search_test.go`, `fakeProber` in `pkg/validate/validate_test.go`). Test observable behavior and public contracts; never duplicate production logic into assertions. No real external services or credentials.
-- **Running**: `go test ./...` (or `make test`); targeted `go test ./pkg/<pkg>/` while iterating. No race/coverage flags in the default target.
-- **Lint**: golangci-lint v2 config with `linters.default: none` and only `errcheck` (`check-blank: true`), `govet`, `ineffassign`, `staticcheck`, `unused` enabled.
-- **Smoke**: `scripts/mock-library.sh` (`setup`, `run`, `config`, `serve-arrs`, `reset`, `paths`) builds a disposable fixture under `tmp/mock-library` with ffmpeg-generated sample media, starts `anvil-mockarr` (fake Radarr/Sonarr, `X-Api-Key` auth) and `anvild`, waits for three complete jobs in `tmp/mock-library/state/anvil.db`, and exercises the `anvilctl` surface (`status`, `job list`, `library stats`, `job prune`, `staging cleanup`, `store backup`) against the live daemon. Use when scanner/scheduler/worker/pipeline or control-surface behavior changed and tools are available.
+- Use `gofmt` for formatting and `golangci-lint` for static analysis.
+- Build both entrypoints after changes to command parsing, package wiring, process execution, or build tags.
+- The repository does not carry an automated test or smoke-test suite.

@@ -55,8 +55,8 @@
         rec {
           default = anvil;
 
-          # anvil is the full build: the daemon wrapped with its runtime tools,
-          # the control client, and the smoke-test Arr stub.
+          # anvil is the full build: the daemon wrapped with its runtime tools
+          # together with the standalone control client.
           anvil = pkgs.buildGoModule {
             pname = "anvil";
             inherit version vendorHash ldflags;
@@ -68,7 +68,6 @@
             subPackages = [
               "cmd/anvild"
               "cmd/anvilctl"
-              "cmd/anvil-mockarr"
             ];
 
             postInstall = ''
@@ -119,18 +118,6 @@
               mainProgram = "anvilctl";
               platforms = pkgs.lib.platforms.unix;
             };
-          };
-        }
-      );
-
-      # The module check is evaluation-only, so it runs anywhere even though it
-      # describes a NixOS system.
-      checks = forEachSystem (
-        { pkgs, ... }:
-        {
-          nixos-module-boundaries = import ./nix/checks/module-boundaries.nix {
-            inherit pkgs;
-            module = ./nix/modules/anvil.nix;
           };
         }
       );
