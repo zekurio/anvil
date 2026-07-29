@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"path"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -23,6 +25,7 @@ type Store interface {
 	GetMediaAsset(context.Context, domain.MediaAssetID) (domain.MediaAsset, error)
 	GetPublishOperation(context.Context, domain.JobID) (replacepkg.PublishOperation, bool, error)
 	CountJobsByState(context.Context) (map[domain.JobState]int64, error)
+	CancelJobs(context.Context, store.CancelJobsInput) ([]store.CancelJobResult, error)
 }
 
 type Service struct {
@@ -32,6 +35,10 @@ type Service struct {
 	StartedAt     time.Time
 	DaemonVersion string
 	Now           func() time.Time
+	// CancelRunningJob signals the worker currently executing a job and
+	// reports whether one was signaled. It is optional: without it, cancel
+	// still records the terminal state but cannot stop a live process.
+	CancelRunningJob func(domain.JobID) bool
 }
 
 func (s Service) Status(ctx context.Context) (StatusResponse, error) {
@@ -111,6 +118,88 @@ func (s Service) ListJobs(ctx context.Context, query JobQuery) (JobListResponse,
 		response.Jobs = append(response.Jobs, item)
 	}
 	return response, nil
+}
+
+// CancelJobs cancels every job the equivalent job list would return. It
+// requires an explicit selector, and is idempotent for already terminal jobs.
+func (s Service) CancelJobs(ctx context.Context, request JobCancelRequest) (JobCancelResponse, error) {
+	if s.Store == nil {
+		return JobCancelResponse{}, errors.New("control API store is required")
+	}
+	if !request.hasSelector() {
+		return JobCancelResponse{}, invalidArgumentf("cancel requires at least one selector")
+	}
+	ids := make(map[domain.JobID]struct{}, len(request.IDs))
+	for _, id := range request.IDs {
+		if id <= 0 {
+			return JobCancelResponse{}, invalidArgumentf("invalid job id %d", id)
+		}
+		ids[domain.JobID(id)] = struct{}{}
+	}
+	_, _, states, err := normalizeJobQuery(request.query())
+	if err != nil {
+		return JobCancelResponse{}, err
+	}
+	listed, err := s.ListJobs(ctx, request.query())
+	if err != nil {
+		return JobCancelResponse{}, err
+	}
+	targets := make([]domain.JobID, 0, len(listed.Jobs))
+	matchedIDs := make(map[domain.JobID]struct{}, len(listed.Jobs))
+	for _, job := range listed.Jobs {
+		jobID := domain.JobID(job.ID)
+		if len(ids) > 0 {
+			if _, ok := ids[jobID]; !ok {
+				continue
+			}
+		}
+		matchedIDs[jobID] = struct{}{}
+		targets = append(targets, jobID)
+	}
+	if missing := missingJobIDs(request.IDs, matchedIDs); missing != "" {
+		return JobCancelResponse{}, invalidArgumentf("no job matched the selector for ids %s", missing)
+	}
+	response := JobCancelResponse{APIVersion: Version, ServerTime: s.now(), Jobs: make([]JobCancelResult, 0, len(targets))}
+	if len(targets) == 0 {
+		return response, nil
+	}
+	reason := strings.TrimSpace(request.Reason)
+	results, err := s.Store.CancelJobs(ctx, store.CancelJobsInput{IDs: targets, States: states, Reason: reason, Now: s.now()})
+	if err != nil {
+		return JobCancelResponse{}, err
+	}
+	for _, result := range results {
+		item := JobCancelResult{
+			ID: int64(result.JobID), Slug: result.Slug, Library: string(result.LibraryName),
+			PreviousState: string(result.PreviousState), State: string(result.State),
+			Canceled: result.Canceled, SkipReason: string(result.SkipReason),
+		}
+		if result.Canceled && s.CancelRunningJob != nil {
+			item.WorkerSignaled = s.CancelRunningJob(result.JobID)
+		}
+		if result.Canceled {
+			response.Canceled++
+		}
+		response.Matched++
+		response.Jobs = append(response.Jobs, item)
+	}
+	slog.Info("control API canceled jobs", "matched", response.Matched, "canceled", response.Canceled, "reason", reason)
+	return response, nil
+}
+
+func missingJobIDs(requested []int64, matched map[domain.JobID]struct{}) string {
+	missing := make([]string, 0, len(requested))
+	seen := make(map[int64]struct{}, len(requested))
+	for _, id := range requested {
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		if _, ok := matched[domain.JobID(id)]; !ok {
+			missing = append(missing, strconv.FormatInt(id, 10))
+		}
+	}
+	return strings.Join(missing, ", ")
 }
 
 type jobPathKeys struct {
@@ -246,17 +335,35 @@ func plannedDestination(cfg config.Config, job domain.Job, source domain.MediaSo
 	return ""
 }
 
+// invalidArgumentError marks a caller-fixable request problem so transports can
+// map it to a client error without matching error strings.
+type invalidArgumentError struct {
+	err error
+}
+
+func (e invalidArgumentError) Error() string {
+	return e.err.Error()
+}
+
+func (e invalidArgumentError) Unwrap() error {
+	return e.err
+}
+
+func invalidArgumentf(format string, args ...any) error {
+	return invalidArgumentError{err: fmt.Errorf(format, args...)}
+}
+
 func normalizeJobQuery(query JobQuery) (string, string, []domain.JobState, error) {
 	if query.Limit < 0 {
-		return "", "", nil, errors.New("limit must be non-negative")
+		return "", "", nil, invalidArgumentf("limit must be non-negative")
 	}
 	if strings.TrimSpace(query.Path) != "" && strings.TrimSpace(query.AbsolutePath) != "" {
-		return "", "", nil, errors.New("path and absolute_path are mutually exclusive")
+		return "", "", nil, invalidArgumentf("path and absolute_path are mutually exclusive")
 	}
 	relativePath := ""
 	if strings.TrimSpace(query.Path) != "" {
 		if strings.TrimSpace(query.Library) == "" {
-			return "", "", nil, errors.New("library is required with path")
+			return "", "", nil, invalidArgumentf("library is required with path")
 		}
 		cleaned, err := cleanRelativePath(query.Path)
 		if err != nil {
@@ -267,7 +374,7 @@ func normalizeJobQuery(query JobQuery) (string, string, []domain.JobState, error
 	absolutePath := ""
 	if strings.TrimSpace(query.AbsolutePath) != "" {
 		if strings.ContainsRune(query.AbsolutePath, '\x00') || !filepath.IsAbs(query.AbsolutePath) {
-			return "", "", nil, errors.New("absolute_path must be absolute")
+			return "", "", nil, invalidArgumentf("absolute_path must be absolute")
 		}
 		absolutePath = filepath.Clean(query.AbsolutePath)
 	}
@@ -279,8 +386,8 @@ func normalizeJobQuery(query JobQuery) (string, string, []domain.JobState, error
 			if state == "" {
 				continue
 			}
-			if !validJobState(state) {
-				return "", "", nil, fmt.Errorf("unknown job state %q", state)
+			if !domain.ValidJobState(state) {
+				return "", "", nil, invalidArgumentf("unknown job state %q", state)
 			}
 			if _, ok := seen[state]; ok {
 				continue
@@ -295,11 +402,11 @@ func normalizeJobQuery(query JobQuery) (string, string, []domain.JobState, error
 func cleanRelativePath(value string) (string, error) {
 	value = strings.TrimSpace(value)
 	if value == "" || strings.ContainsRune(value, '\x00') || filepath.IsAbs(value) {
-		return "", errors.New("path must be relative to the library root")
+		return "", invalidArgumentf("path must be relative to the library root")
 	}
 	cleaned := path.Clean(filepath.ToSlash(value))
 	if cleaned == "." || cleaned == ".." || path.IsAbs(cleaned) || strings.HasPrefix(cleaned, "../") {
-		return "", errors.New("path must stay within the library root")
+		return "", invalidArgumentf("path must stay within the library root")
 	}
 	return cleaned, nil
 }
@@ -332,20 +439,7 @@ func uniquePaths(values ...string) []string {
 	return result
 }
 
-func validJobState(state domain.JobState) bool {
-	for _, candidate := range allJobStates {
-		if state == candidate {
-			return true
-		}
-	}
-	return false
-}
-
-var allJobStates = []domain.JobState{
-	domain.JobStatePending, domain.JobStateLeased, domain.JobStateRunning,
-	domain.JobStateValidating, domain.JobStateReplacing, domain.JobStateComplete,
-	domain.JobStateFailed, domain.JobStateRetrying, domain.JobStateSkipped,
-}
+var allJobStates = domain.JobStates()
 
 func (s Service) now() time.Time {
 	if s.Now != nil {

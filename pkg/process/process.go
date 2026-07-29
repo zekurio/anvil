@@ -38,6 +38,11 @@ type Runner interface {
 	Run(ctx context.Context, command Command) (Result, error)
 }
 
+// waitDelay bounds how long a canceled command may keep the captured output
+// pipes open after its process group was killed, so a stuck grandchild can
+// never hold a canceled job open forever.
+const waitDelay = 10 * time.Second
+
 type OSRunner struct{}
 
 func (OSRunner) Run(ctx context.Context, command Command) (Result, error) {
@@ -47,6 +52,8 @@ func (OSRunner) Run(ctx context.Context, command Command) (Result, error) {
 
 	started := time.Now()
 	cmd := exec.CommandContext(ctx, command.Name, command.Args...)
+	terminateGroup(cmd)
+	cmd.WaitDelay = waitDelay
 	cmd.Dir = command.Dir
 	cmd.Stdin = command.Stdin
 	if len(command.Env) > 0 {

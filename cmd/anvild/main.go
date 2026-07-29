@@ -226,7 +226,7 @@ func parseCommandOptions(opts options, args []string) (options, error) {
 	case commandBackup:
 	case commandPruneJobs:
 		flags.StringVar(&opts.libraryName, "library", "", "limit pruning to one library")
-		flags.StringVar(&opts.jobStateFilter, "state", "", "comma-separated terminal job states; defaults to complete,failed,skipped")
+		flags.StringVar(&opts.jobStateFilter, "state", "", "comma-separated terminal job states; defaults to complete,failed,skipped,canceled")
 		flags.BoolVar(&opts.pruneApply, "apply", false, "delete matching jobs; without this flag the command is a dry run")
 	case commandForce:
 		flags.StringVar(&opts.libraryName, "library", "", "configured library containing the target")
@@ -390,12 +390,21 @@ func runDaemon(ctx context.Context, cfg config.Config, opts options) error {
 
 	var wg sync.WaitGroup
 	var plannerRef atomic.Pointer[scheduler.Scheduler]
-	control, err := startControlAPI(serviceCtx, &wg, runtimeCfg.Get, state, func() int {
-		planner := plannerRef.Load()
-		if planner == nil {
-			return 0
-		}
-		return planner.ActiveCount()
+	control, err := startControlAPI(serviceCtx, &wg, runtimeCfg.Get, state, controlAPIWorkers{
+		active: func() int {
+			planner := plannerRef.Load()
+			if planner == nil {
+				return 0
+			}
+			return planner.ActiveCount()
+		},
+		cancelJob: func(jobID domain.JobID) bool {
+			planner := plannerRef.Load()
+			if planner == nil {
+				return false
+			}
+			return planner.CancelJob(jobID)
+		},
 	}, startedAt)
 	if err != nil {
 		return err
@@ -1021,23 +1030,12 @@ func parseJobStates(value string) ([]domain.JobState, error) {
 		if state == "" {
 			continue
 		}
-		if !validJobState(state) {
+		if !domain.ValidJobState(state) {
 			return nil, fmt.Errorf("unknown job state %q", state)
 		}
 		states = append(states, state)
 	}
 	return states, nil
-}
-
-func validJobState(state domain.JobState) bool {
-	switch state {
-	case domain.JobStatePending, domain.JobStateLeased, domain.JobStateRunning,
-		domain.JobStateValidating, domain.JobStateReplacing, domain.JobStateComplete,
-		domain.JobStateFailed, domain.JobStateRetrying, domain.JobStateSkipped:
-		return true
-	default:
-		return false
-	}
 }
 
 func parseJobIDs(args []string) ([]domain.JobID, error) {
@@ -1101,7 +1099,7 @@ func writeUsage(out io.Writer) error {
   anvild recover [--config PATH]
   anvild cleanup-staging [--config PATH] [--older-than DURATION] [--dry-run]
   anvild backup [--config PATH] DESTINATION
-  anvild prune-jobs [--config PATH] [--library NAME] [--state complete,failed,skipped] [--apply]
+  anvild prune-jobs [--config PATH] [--library NAME] [--state complete,failed,skipped,canceled] [--apply]
   anvild force-occurrence [--config PATH] --library NAME RELATIVE_PATH
 
 Legacy --check-config is still accepted.`)

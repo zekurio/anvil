@@ -2,6 +2,7 @@ package domain
 
 import (
 	"fmt"
+	"slices"
 	"time"
 )
 
@@ -17,7 +18,24 @@ const (
 	JobStateFailed     JobState = "failed"
 	JobStateRetrying   JobState = "retrying"
 	JobStateSkipped    JobState = "skipped"
+	JobStateCanceled   JobState = "canceled"
 )
+
+// jobStates lists every persisted job state in lifecycle order.
+var jobStates = []JobState{
+	JobStatePending, JobStateLeased, JobStateRunning, JobStateValidating,
+	JobStateReplacing, JobStateComplete, JobStateFailed, JobStateRetrying,
+	JobStateSkipped, JobStateCanceled,
+}
+
+// JobStates lists every persisted job state in lifecycle order.
+func JobStates() []JobState {
+	return slices.Clone(jobStates)
+}
+
+func ValidJobState(state JobState) bool {
+	return slices.Contains(jobStates, state)
+}
 
 type Job struct {
 	ID              JobID
@@ -75,36 +93,36 @@ type JobPipelineStep struct {
 
 func (s JobState) Terminal() bool {
 	switch s {
-	case JobStateComplete, JobStateFailed, JobStateSkipped:
+	case JobStateComplete, JobStateFailed, JobStateSkipped, JobStateCanceled:
 		return true
 	default:
 		return false
 	}
 }
 
+// Cancelable reports whether an operator cancel request still has work to do.
+// Terminal states are not cancelable so that cancellation stays idempotent.
+func (s JobState) Cancelable() bool {
+	return ValidJobState(s) && !s.Terminal()
+}
+
+// jobTransitions lists every state reachable from a given state. States absent
+// from the map are terminal: nothing but re-asserting themselves is allowed.
+var jobTransitions = map[JobState][]JobState{
+	JobStatePending:    {JobStateLeased, JobStateSkipped, JobStateCanceled},
+	JobStateLeased:     {JobStateRunning, JobStateFailed, JobStateRetrying, JobStateSkipped, JobStateCanceled},
+	JobStateRunning:    {JobStateValidating, JobStateFailed, JobStateRetrying, JobStateSkipped, JobStateCanceled},
+	JobStateValidating: {JobStateReplacing, JobStateComplete, JobStateFailed, JobStateRetrying, JobStateSkipped, JobStateCanceled},
+	JobStateReplacing:  {JobStateComplete, JobStateFailed, JobStateRetrying, JobStateSkipped, JobStateCanceled},
+	JobStateFailed:     {JobStateRetrying},
+	JobStateRetrying:   {JobStatePending, JobStateFailed, JobStateSkipped, JobStateCanceled},
+}
+
 func CanTransitionJob(from, to JobState) bool {
 	if from == to {
 		return true
 	}
-
-	switch from {
-	case JobStatePending:
-		return to == JobStateLeased || to == JobStateSkipped
-	case JobStateLeased:
-		return to == JobStateRunning || to == JobStateFailed || to == JobStateRetrying || to == JobStateSkipped
-	case JobStateRunning:
-		return to == JobStateValidating || to == JobStateFailed || to == JobStateRetrying || to == JobStateSkipped
-	case JobStateValidating:
-		return to == JobStateReplacing || to == JobStateComplete || to == JobStateFailed || to == JobStateRetrying || to == JobStateSkipped
-	case JobStateReplacing:
-		return to == JobStateComplete || to == JobStateFailed || to == JobStateRetrying || to == JobStateSkipped
-	case JobStateFailed:
-		return to == JobStateRetrying
-	case JobStateRetrying:
-		return to == JobStatePending || to == JobStateFailed || to == JobStateSkipped
-	default:
-		return false
-	}
+	return slices.Contains(jobTransitions[from], to)
 }
 
 type AttemptState string

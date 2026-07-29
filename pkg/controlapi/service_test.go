@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -237,4 +238,266 @@ func testService(t *testing.T, ctx context.Context) (Service, *store.SQLiteStore
 	}
 	service := Service{Store: state, Config: func() config.Config { return cfg }, Now: func() time.Time { return now }}
 	return service, state, cfg, forced.Job
+}
+
+func TestCancelJobsRequiresAnExplicitSelector(t *testing.T) {
+	ctx := context.Background()
+	service, _, _, _ := testService(t, ctx)
+	if _, err := service.CancelJobs(ctx, JobCancelRequest{}); err == nil {
+		t.Fatal("CancelJobs() with no selector error = nil, want rejection")
+	}
+
+	request := httptest.NewRequest(http.MethodPost, "/v1/jobs/cancel", strings.NewReader(`{}`))
+	response := httptest.NewRecorder()
+	service.Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+	if !strings.Contains(response.Body.String(), `"code":"invalid_argument"`) {
+		t.Fatalf("body = %s", response.Body.String())
+	}
+	remaining, err := service.ListJobs(ctx, JobQuery{Library: "downloads"})
+	if err != nil {
+		t.Fatalf("ListJobs() error = %v", err)
+	}
+	if remaining.Jobs[0].State != string(domain.JobStatePending) {
+		t.Fatalf("rejected cancel changed job state to %q", remaining.Jobs[0].State)
+	}
+}
+
+func TestCancelJobsUsesTheJobListSelectorAndStaysIdempotent(t *testing.T) {
+	ctx := context.Background()
+	service, _, cfg, job := testService(t, ctx)
+	signaled := make([]domain.JobID, 0, 1)
+	service.CancelRunningJob = func(jobID domain.JobID) bool {
+		signaled = append(signaled, jobID)
+		return false
+	}
+
+	absolutePath := filepath.Join(cfg.Libraries["downloads"].Path, "Release", "Season", "Episode.mkv")
+	response, err := service.CancelJobs(ctx, JobCancelRequest{AbsolutePath: absolutePath, Reason: "queued by mistake"})
+	if err != nil {
+		t.Fatalf("CancelJobs() error = %v", err)
+	}
+	if response.Matched != 1 || response.Canceled != 1 || len(response.Jobs) != 1 {
+		t.Fatalf("CancelJobs() = %+v", response)
+	}
+	if response.Jobs[0].ID != int64(job.ID) || response.Jobs[0].PreviousState != string(domain.JobStatePending) || response.Jobs[0].State != string(domain.JobStateCanceled) {
+		t.Fatalf("CancelJobs() job = %+v", response.Jobs[0])
+	}
+	if len(signaled) != 1 || signaled[0] != job.ID {
+		t.Fatalf("signaled workers = %v, want job %d", signaled, job.ID)
+	}
+
+	listed, err := service.ListJobs(ctx, JobQuery{States: []string{string(domain.JobStateCanceled)}})
+	if err != nil {
+		t.Fatalf("ListJobs(canceled) error = %v", err)
+	}
+	if listed.Matched != 1 || listed.Jobs[0].ID != int64(job.ID) {
+		t.Fatalf("ListJobs(canceled) = %+v", listed)
+	}
+	skipped, err := service.ListJobs(ctx, JobQuery{States: []string{string(domain.JobStateSkipped)}})
+	if err != nil {
+		t.Fatalf("ListJobs(skipped) error = %v", err)
+	}
+	if skipped.Matched != 0 {
+		t.Fatalf("canceled job is indistinguishable from skipped: %+v", skipped)
+	}
+
+	repeat, err := service.CancelJobs(ctx, JobCancelRequest{AbsolutePath: absolutePath})
+	if err != nil {
+		t.Fatalf("repeat CancelJobs() error = %v", err)
+	}
+	if repeat.Matched != 1 || repeat.Canceled != 0 || repeat.Jobs[0].Canceled {
+		t.Fatalf("repeat CancelJobs() = %+v, want an idempotent no-op", repeat)
+	}
+	if len(signaled) != 1 {
+		t.Fatalf("terminal job signaled a worker again: %v", signaled)
+	}
+}
+
+func TestCancelJobsNeverTargetsMoreThanTheEquivalentJobList(t *testing.T) {
+	ctx := context.Background()
+	service, _, _, job := testService(t, ctx)
+
+	if _, err := service.CancelJobs(ctx, JobCancelRequest{Library: "other", IDs: []int64{int64(job.ID)}}); err == nil {
+		t.Fatal("CancelJobs() for an id outside the selector error = nil, want rejection")
+	}
+	listed, err := service.ListJobs(ctx, JobQuery{})
+	if err != nil {
+		t.Fatalf("ListJobs() error = %v", err)
+	}
+	if listed.Jobs[0].State != string(domain.JobStatePending) {
+		t.Fatalf("rejected cancel changed job state to %q", listed.Jobs[0].State)
+	}
+
+	response, err := service.CancelJobs(ctx, JobCancelRequest{Library: "downloads", IDs: []int64{int64(job.ID)}})
+	if err != nil {
+		t.Fatalf("CancelJobs() error = %v", err)
+	}
+	if response.Canceled != 1 || response.Jobs[0].ID != int64(job.ID) {
+		t.Fatalf("CancelJobs() = %+v", response)
+	}
+}
+
+func TestJobCancelEndpointRejectsNonPostAndUnknownFields(t *testing.T) {
+	service := Service{}
+	tests := []struct {
+		name    string
+		request *http.Request
+		want    int
+	}{
+		{name: "get", request: httptest.NewRequest(http.MethodGet, "/v1/jobs/cancel", nil), want: http.StatusMethodNotAllowed},
+		{name: "query parameters", request: httptest.NewRequest(http.MethodPost, "/v1/jobs/cancel?library=downloads", strings.NewReader(`{}`)), want: http.StatusBadRequest},
+		{name: "unknown field", request: httptest.NewRequest(http.MethodPost, "/v1/jobs/cancel", strings.NewReader(`{"all":true}`)), want: http.StatusBadRequest},
+		{name: "trailing json", request: httptest.NewRequest(http.MethodPost, "/v1/jobs/cancel", strings.NewReader(`{"ids":[1]}{"ids":[2]}`)), want: http.StatusBadRequest},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			response := httptest.NewRecorder()
+			service.Handler().ServeHTTP(response, tt.request)
+			if response.Code != tt.want {
+				t.Fatalf("status = %d, want %d, body = %s", response.Code, tt.want, response.Body.String())
+			}
+		})
+	}
+}
+
+// TestCancelJobsRejectsCurrentOnlyAsTheOnlySelector pins that the refinement
+// flag cannot stand in for a selector: on its own it matches every job in every
+// library and state, which is exactly what the selector guard exists to stop.
+func TestCancelJobsRejectsCurrentOnlyAsTheOnlySelector(t *testing.T) {
+	ctx := context.Background()
+	service, _, _, _ := testService(t, ctx)
+
+	if _, err := service.CancelJobs(ctx, JobCancelRequest{CurrentOnly: true}); err == nil {
+		t.Fatal("CancelJobs(--current-only) error = nil, want rejection")
+	}
+	listed, err := service.ListJobs(ctx, JobQuery{})
+	if err != nil {
+		t.Fatalf("ListJobs() error = %v", err)
+	}
+	if listed.Jobs[0].State != string(domain.JobStatePending) {
+		t.Fatalf("rejected cancel changed job state to %q", listed.Jobs[0].State)
+	}
+	if _, err := service.CancelJobs(ctx, JobCancelRequest{Library: "downloads", CurrentOnly: true}); err != nil {
+		t.Fatalf("CancelJobs(--library --current-only) error = %v", err)
+	}
+}
+
+// TestCancelJobsReportsWhyAJobWasNotCanceled covers the operator-visible half of
+// the publish guard: the refusal is reported per job with a machine-readable
+// reason instead of erroring the batch.
+func TestCancelJobsReportsWhyAJobWasNotCanceled(t *testing.T) {
+	ctx := context.Background()
+	service, state, _, job := testService(t, ctx)
+	now := time.Date(2026, 7, 21, 9, 0, 0, 0, time.UTC)
+	if err := state.CreatePublishOperation(ctx, replacepkg.PublishOperation{
+		JobID: job.ID, Kind: "handoff", Mode: "move", Stage: replacepkg.PublishStagePrepared,
+		ArtifactPath: "/staging/output.mkv", DestinationPath: "/converted/Release/Season/Episode.mkv",
+		CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("CreatePublishOperation() error = %v", err)
+	}
+	signaled := 0
+	service.CancelRunningJob = func(domain.JobID) bool {
+		signaled++
+		return true
+	}
+
+	response, err := service.CancelJobs(ctx, JobCancelRequest{Library: "downloads"})
+	if err != nil {
+		t.Fatalf("CancelJobs() error = %v", err)
+	}
+	if response.Matched != 1 || response.Canceled != 0 {
+		t.Fatalf("CancelJobs() = %+v, want the publish refused", response)
+	}
+	if response.Jobs[0].Canceled || response.Jobs[0].SkipReason != string(store.CancelSkipPublishInFlight) {
+		t.Fatalf("CancelJobs() job = %+v", response.Jobs[0])
+	}
+	if signaled != 0 {
+		t.Fatalf("signaled workers = %d, want the worker left alone", signaled)
+	}
+	listed, err := service.ListJobs(ctx, JobQuery{Library: "downloads"})
+	if err != nil {
+		t.Fatalf("ListJobs() error = %v", err)
+	}
+	if listed.Jobs[0].State != string(domain.JobStatePending) {
+		t.Fatalf("refused cancel changed job state to %q", listed.Jobs[0].State)
+	}
+}
+
+// TestCancelJobsReportsASignaledWorker asserts the worker_signaled path end to
+// end, not just the "no worker was running" case.
+func TestCancelJobsReportsASignaledWorker(t *testing.T) {
+	ctx := context.Background()
+	service, _, _, job := testService(t, ctx)
+	signaled := make([]domain.JobID, 0, 1)
+	service.CancelRunningJob = func(jobID domain.JobID) bool {
+		signaled = append(signaled, jobID)
+		return true
+	}
+
+	response, err := service.CancelJobs(ctx, JobCancelRequest{Library: "downloads"})
+	if err != nil {
+		t.Fatalf("CancelJobs() error = %v", err)
+	}
+	if response.Canceled != 1 || !response.Jobs[0].WorkerSignaled {
+		t.Fatalf("CancelJobs() = %+v, want a signaled worker", response)
+	}
+	if len(signaled) != 1 || signaled[0] != job.ID {
+		t.Fatalf("signaled workers = %v, want job %d", signaled, job.ID)
+	}
+}
+
+// recordingCancelStore captures the input the service builds for the store so a
+// test can assert the selector survives the hop, then delegates to the real one.
+type recordingCancelStore struct {
+	Store
+	input store.CancelJobsInput
+}
+
+func (r *recordingCancelStore) CancelJobs(ctx context.Context, input store.CancelJobsInput) ([]store.CancelJobResult, error) {
+	r.input = input
+	return r.Store.CancelJobs(ctx, input)
+}
+
+// TestCancelJobsForwardsTheSelectorStatesToTheStore pins the control-API half of
+// the state guard. The store re-checks the state inside the cancel transaction,
+// but only if the service actually hands the selector's states over: without
+// that, a job that changed state between the listing and the cancel is canceled
+// anyway, which is how `--state pending` could kill a running encode.
+func TestCancelJobsForwardsTheSelectorStatesToTheStore(t *testing.T) {
+	ctx := context.Background()
+	service, _, _, job := testService(t, ctx)
+	recorder := &recordingCancelStore{Store: service.Store}
+	service.Store = recorder
+
+	response, err := service.CancelJobs(ctx, JobCancelRequest{Library: "downloads", States: []string{"pending", "retrying"}})
+	if err != nil {
+		t.Fatalf("CancelJobs() error = %v", err)
+	}
+	if len(response.Jobs) != 1 || !response.Jobs[0].Canceled {
+		t.Fatalf("cancel results = %+v, want job %d canceled", response.Jobs, job.ID)
+	}
+	want := []domain.JobState{domain.JobStatePending, domain.JobStateRetrying}
+	if !slices.Equal(recorder.input.States, want) {
+		t.Fatalf("CancelJobsInput.States = %v, want %v", recorder.input.States, want)
+	}
+}
+
+// TestCancelJobsWithoutAStateSelectorForwardsNoStates keeps the guard from
+// silently narrowing a cancel that never asked for a state.
+func TestCancelJobsWithoutAStateSelectorForwardsNoStates(t *testing.T) {
+	ctx := context.Background()
+	service, _, _, _ := testService(t, ctx)
+	recorder := &recordingCancelStore{Store: service.Store}
+	service.Store = recorder
+
+	if _, err := service.CancelJobs(ctx, JobCancelRequest{Library: "downloads"}); err != nil {
+		t.Fatalf("CancelJobs() error = %v", err)
+	}
+	if len(recorder.input.States) != 0 {
+		t.Fatalf("CancelJobsInput.States = %v, want none", recorder.input.States)
+	}
 }

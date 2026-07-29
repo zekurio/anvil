@@ -25,6 +25,11 @@ type Worker interface {
 
 type ConfigProvider func() config.Config
 
+// ErrJobCanceled is the cancellation cause attached to a dispatched worker's
+// context when an operator cancels that job. Workers use it to tell an
+// operator cancel apart from daemon shutdown.
+var ErrJobCanceled = errors.New("job canceled by operator")
+
 type Assignment struct {
 	Job       domain.Job
 	WorkerID  string
@@ -50,8 +55,11 @@ type Scheduler struct {
 }
 
 type activeAssignment struct {
+	jobID   domain.JobID
+	label   string
 	library domain.LibraryName
 	threads int
+	cancel  context.CancelCauseFunc
 }
 
 type activeSnapshot struct {
@@ -150,6 +158,32 @@ func (s *Scheduler) ScheduleOnce(ctx context.Context) (bool, error) {
 
 func (s *Scheduler) ActiveCount() int {
 	return s.activeCount()
+}
+
+// CancelJob signals every worker currently running jobID and reports whether
+// any worker was signaled. It is safe to call for unknown or already finished
+// jobs, which makes operator cancellation idempotent.
+func (s *Scheduler) CancelJob(jobID domain.JobID) bool {
+	label := domain.Job{ID: jobID}.Label()
+	s.mu.Lock()
+	cancels := make([]context.CancelCauseFunc, 0, 1)
+	for _, assignment := range s.active {
+		if assignment.jobID != jobID || assignment.cancel == nil {
+			continue
+		}
+		if assignment.label != "" {
+			label = assignment.label
+		}
+		cancels = append(cancels, assignment.cancel)
+	}
+	s.mu.Unlock()
+	for _, cancel := range cancels {
+		cancel(ErrJobCanceled)
+	}
+	if len(cancels) > 0 {
+		slog.Info("worker cancellation requested", "job", label, "workers", len(cancels))
+	}
+	return len(cancels) > 0
 }
 
 func (s *Scheduler) Wait() {
@@ -279,9 +313,10 @@ func (s *Scheduler) dispatchLeased(ctx context.Context, leased []leasedAssignmen
 			Resources: allocation,
 		}
 		slog.Info("worker scheduled", "worker", assignment.WorkerID, "job", assignment.Job.Label(), "library", string(assignment.Job.LibraryName), "threads", allocation.Threads, "active_workers", activeBefore+i+1, "lease_deadline", leasedAssignment.leaseDeadline)
-		s.register(assignment)
+		jobCtx, cancel := context.WithCancelCause(workerCtx)
+		s.register(assignment, cancel)
 		s.workerWG.Add(1)
-		go s.runWorker(workerCtx, assignment)
+		go s.runWorker(jobCtx, cancel, assignment)
 		started++
 	}
 	return started, nil
@@ -305,9 +340,12 @@ func (s *Scheduler) releaseLeased(ctx context.Context, leased []leasedAssignment
 	return errors.Join(errs...)
 }
 
-func (s *Scheduler) runWorker(ctx context.Context, assignment Assignment) {
+func (s *Scheduler) runWorker(ctx context.Context, cancel context.CancelCauseFunc, assignment Assignment) {
 	started := time.Now()
 	defer s.workerWG.Done()
+	// Releasing the per-job context after unregistering keeps the cancel func
+	// reachable for the whole run and prevents it from leaking afterwards.
+	defer cancel(context.Canceled)
 	defer s.unregister(assignment.WorkerID)
 	slog.Info("worker started", "worker", assignment.WorkerID, "job", assignment.Job.Label(), "library", string(assignment.Job.LibraryName), "threads", assignment.Resources.Threads)
 	if err := s.Worker.Run(ctx, assignment); err != nil {
@@ -317,15 +355,18 @@ func (s *Scheduler) runWorker(ctx context.Context, assignment Assignment) {
 	slog.Info("worker finished", "worker", assignment.WorkerID, "job", assignment.Job.Label(), "library", string(assignment.Job.LibraryName), "duration", time.Since(started))
 }
 
-func (s *Scheduler) register(assignment Assignment) {
+func (s *Scheduler) register(assignment Assignment, cancel context.CancelCauseFunc) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.active == nil {
 		s.active = make(map[string]activeAssignment)
 	}
 	s.active[assignment.WorkerID] = activeAssignment{
+		jobID:   assignment.Job.ID,
+		label:   assignment.Job.Label(),
 		library: assignment.Job.LibraryName,
 		threads: assignment.Resources.Threads,
+		cancel:  cancel,
 	}
 }
 

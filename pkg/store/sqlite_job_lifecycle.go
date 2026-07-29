@@ -5,10 +5,12 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/zekurio/anvil/pkg/domain"
+	replacepkg "github.com/zekurio/anvil/pkg/replace"
 )
 
 const activeOccurrenceTargetSQL = `EXISTS (
@@ -23,6 +25,8 @@ const activeOccurrenceTargetSQL = `EXISTS (
 )`
 
 const inactiveOccurrenceJobError = "input occurrence is no longer current and active"
+
+const defaultCancelReason = "canceled by operator"
 
 func (s *SQLiteStore) EnqueueJob(ctx context.Context, input EnqueueJobInput) (domain.Job, bool, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -54,7 +58,7 @@ func (s *SQLiteStore) RetryJob(ctx context.Context, id domain.JobID, now time.Ti
 		return domain.Job{}, err
 	}
 	switch job.State {
-	case domain.JobStateFailed, domain.JobStateSkipped, domain.JobStateRetrying:
+	case domain.JobStateFailed, domain.JobStateSkipped, domain.JobStateCanceled, domain.JobStateRetrying:
 	default:
 		return domain.Job{}, fmt.Errorf("cannot retry job %d from state %q", id, job.State)
 	}
@@ -84,6 +88,121 @@ WHERE id = ?
 		return domain.Job{}, fmt.Errorf("commit retry transaction: %w", err)
 	}
 	return job, nil
+}
+
+// CancelJobs terminally cancels every requested job that is still cancelable.
+// It is idempotent and never fails the batch for one job: an already terminal
+// job, a job whose state no longer matches the requested filter, a job that
+// disappeared, and a job with a journaled publish are all reported with
+// Canceled=false and a SkipReason. Refusing a journaled publish is the
+// data-safety rule that matters most: canceling clears the lease, so a job
+// terminated between preparing and committing a publish could never be
+// re-leased, recovered, or rescanned, and its destination file, backup, and
+// journal row would be stranded. Attempts still marked running are canceled in
+// the same transaction, because a canceled job clears its lease and would
+// otherwise never be visited by stale-job recovery.
+func (s *SQLiteStore) CancelJobs(ctx context.Context, input CancelJobsInput) ([]CancelJobResult, error) {
+	now := defaultNow(input.Now)
+	reason := strings.TrimSpace(input.Reason)
+	if reason == "" {
+		reason = defaultCancelReason
+	}
+	if len(input.IDs) == 0 {
+		return nil, errors.New("at least one job id is required")
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("begin cancel transaction: %w", err)
+	}
+	defer rollback(tx)
+
+	seen := make(map[domain.JobID]struct{}, len(input.IDs))
+	results := make([]CancelJobResult, 0, len(input.IDs))
+	for _, id := range input.IDs {
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		job, err := getJobTx(ctx, tx, id)
+		if errors.Is(err, ErrNotFound) {
+			results = append(results, CancelJobResult{JobID: id, SkipReason: CancelSkipMissing})
+			continue
+		}
+		if err != nil {
+			return nil, fmt.Errorf("load job %d for cancel: %w", id, err)
+		}
+		result := CancelJobResult{
+			JobID: job.ID, Slug: job.Slug, LibraryName: job.LibraryName,
+			PreviousState: job.State, State: job.State,
+		}
+		skip, err := cancelSkipReasonTx(ctx, tx, job, input.States)
+		if err != nil {
+			return nil, err
+		}
+		if skip != "" {
+			result.SkipReason = skip
+			results = append(results, result)
+			continue
+		}
+		if _, err := tx.ExecContext(ctx, `
+UPDATE attempts
+SET state = ?, finished_at = ?, error = ?
+WHERE job_id = ? AND state = ?
+`, string(domain.AttemptStateCanceled), encodeTime(now), reason, int64(job.ID), string(domain.AttemptStateRunning)); err != nil {
+			return nil, fmt.Errorf("cancel attempts for job %d: %w", job.ID, err)
+		}
+		if _, err := tx.ExecContext(ctx, `
+UPDATE jobs
+SET state = ?, lease_owner = '', lease_deadline = NULL, heartbeat_at = NULL,
+	last_error = ?, updated_at = ?, completed_at = ?
+WHERE id = ? AND state = ?
+`, string(domain.JobStateCanceled), reason, encodeTime(now), encodeTime(now), int64(job.ID), string(job.State)); err != nil {
+			return nil, fmt.Errorf("cancel job %d: %w", job.ID, err)
+		}
+		result.State = domain.JobStateCanceled
+		result.Canceled = true
+		results = append(results, result)
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit cancel transaction: %w", err)
+	}
+	return results, nil
+}
+
+// cancelSkipReasonTx reports why a job must not be canceled, or an empty reason
+// when canceling it is safe.
+func cancelSkipReasonTx(ctx context.Context, tx *sql.Tx, job domain.Job, states []domain.JobState) (CancelSkipReason, error) {
+	if !job.State.Cancelable() {
+		return CancelSkipAlreadyTerminal, nil
+	}
+	if len(states) > 0 && !slices.Contains(states, job.State) {
+		return CancelSkipStateChanged, nil
+	}
+	var stage string
+	err := tx.QueryRowContext(ctx, `
+SELECT stage FROM publish_operations WHERE job_id = ?
+`, int64(job.ID)).Scan(&stage)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("check publish operation for job %d: %w", job.ID, err)
+	}
+	// A conflicted publish has already stopped making progress and needs an
+	// operator, so refusing the cancel would only trap the job. Note the
+	// destination may already be published and the original may already be a
+	// .anvil-backup: a conflict can be raised from the published stage during
+	// cleanup. Canceling leaves that residue in place, exactly as the conflict
+	// did; `anvild retry` re-queues the job and re-runs publish recovery.
+	//
+	// Every other stage means the destination is being written or has been
+	// written and the job still owes its completion bookkeeping, so only the
+	// job itself can finish it.
+	if stage == string(replacepkg.PublishStageConflict) {
+		return "", nil
+	}
+	return CancelSkipPublishInFlight, nil
 }
 
 func (s *SQLiteStore) RecordJobFileSizes(ctx context.Context, jobID domain.JobID, inputSizeBytes int64, outputSizeBytes int64, now time.Time) (domain.Job, error) {
@@ -414,6 +533,14 @@ func (s *SQLiteStore) TransitionJob(ctx context.Context, jobID domain.JobID, to 
 	}
 	if !domain.CanTransitionJob(job.State, to) {
 		return domain.Job{}, fmt.Errorf("invalid job transition %q -> %q", job.State, to)
+	}
+	if job.State == to && to.Terminal() {
+		// A terminal state is already final. Re-recording it keeps repeated
+		// cancellations idempotent without rewriting the original outcome.
+		if err := tx.Commit(); err != nil {
+			return domain.Job{}, fmt.Errorf("commit transition transaction: %w", err)
+		}
+		return job, nil
 	}
 	if to == domain.JobStatePending {
 		active, err := jobTargetActiveTx(ctx, tx, jobID)

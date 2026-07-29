@@ -3,6 +3,7 @@ package scheduler
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -448,4 +449,109 @@ func containsLibrary(libraries []domain.LibraryName, want domain.LibraryName) bo
 		}
 	}
 	return false
+}
+
+func TestCancelJobSignalsOnlyTheTargetedWorkerAndReleasesIt(t *testing.T) {
+	ctx := context.Background()
+	store := &fakeScheduleStore{
+		jobs: []domain.Job{
+			{ID: 1, LibraryName: "movies", State: domain.JobStatePending},
+			{ID: 2, LibraryName: "tv", State: domain.JobStatePending},
+		},
+	}
+	worker := newContextWorker()
+	defer worker.releaseAll()
+
+	s := &Scheduler{
+		Store:          store,
+		Worker:         worker,
+		ConfigProvider: scheduleConfig,
+		Allocator:      resources.NewAllocator(8),
+		WorkerCount:    2,
+		LeaseDuration:  time.Minute,
+	}
+	if _, err := s.ScheduleAvailable(ctx); err != nil {
+		t.Fatalf("ScheduleAvailable() error = %v", err)
+	}
+	first := worker.waitRun(t)
+	second := worker.waitRun(t)
+	target, other := first, second
+	if target.assignment.Job.ID != 1 {
+		target, other = second, first
+	}
+
+	if !s.CancelJob(target.assignment.Job.ID) {
+		t.Fatal("CancelJob() = false, want true for a running job")
+	}
+	select {
+	case <-target.ctx.Done():
+	case <-time.After(time.Second):
+		t.Fatal("canceled worker context was not canceled")
+	}
+	if cause := context.Cause(target.ctx); !errors.Is(cause, ErrJobCanceled) {
+		t.Fatalf("context.Cause() = %v, want ErrJobCanceled", cause)
+	}
+	if other.ctx.Err() != nil {
+		t.Fatalf("unrelated worker context = %v, want still running", other.ctx.Err())
+	}
+
+	worker.releaseAll()
+	waitCtx, cancelWait := context.WithTimeout(context.Background(), time.Second)
+	defer cancelWait()
+	if err := s.WaitContext(waitCtx); err != nil {
+		t.Fatalf("WaitContext() error = %v", err)
+	}
+	if s.CancelJob(target.assignment.Job.ID) {
+		t.Fatal("CancelJob() = true after the worker finished; the registry leaked a cancel func")
+	}
+	if s.ActiveCount() != 0 {
+		t.Fatalf("ActiveCount() = %d, want 0", s.ActiveCount())
+	}
+}
+
+func TestCancelJobIsANoOpForUnknownJobs(t *testing.T) {
+	s := &Scheduler{}
+	if s.CancelJob(404) {
+		t.Fatal("CancelJob(unknown) = true, want false")
+	}
+}
+
+type runningWorker struct {
+	ctx        context.Context
+	assignment Assignment
+}
+
+type contextWorker struct {
+	runs    chan runningWorker
+	release chan struct{}
+	once    sync.Once
+}
+
+func newContextWorker() *contextWorker {
+	return &contextWorker{runs: make(chan runningWorker, 8), release: make(chan struct{})}
+}
+
+func (w *contextWorker) Run(ctx context.Context, assignment Assignment) error {
+	w.runs <- runningWorker{ctx: ctx, assignment: assignment}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-w.release:
+		return nil
+	}
+}
+
+func (w *contextWorker) waitRun(t *testing.T) runningWorker {
+	t.Helper()
+	select {
+	case run := <-w.runs:
+		return run
+	case <-time.After(time.Second):
+		t.Fatal("worker did not start")
+	}
+	return runningWorker{}
+}
+
+func (w *contextWorker) releaseAll() {
+	w.once.Do(func() { close(w.release) })
 }

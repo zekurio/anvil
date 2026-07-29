@@ -6,12 +6,17 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+
+	"github.com/zekurio/anvil/pkg/store"
 )
+
+const maxRequestBytes = 1 << 20
 
 func (s Service) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/status", s.handleStatus)
 	mux.HandleFunc("/v1/jobs", s.handleJobs)
+	mux.HandleFunc("/v1/jobs/cancel", s.handleJobCancel)
 	return mux
 }
 
@@ -45,6 +50,42 @@ func (s Service) handleJobs(w http.ResponseWriter, r *http.Request) {
 	response, err := s.ListJobs(r.Context(), query)
 	if err != nil {
 		writeAPIError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, response)
+}
+
+func (s Service) handleJobCancel(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeAPIError(w, http.StatusMethodNotAllowed, "method_not_allowed", "only POST is supported")
+		return
+	}
+	if r.URL.RawQuery != "" {
+		writeAPIError(w, http.StatusBadRequest, "invalid_argument", "cancel does not accept query parameters")
+		return
+	}
+	var request JobCancelRequest
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxRequestBytes))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&request); err != nil {
+		writeAPIError(w, http.StatusBadRequest, "invalid_argument", "decode cancel request: "+err.Error())
+		return
+	}
+	if decoder.More() {
+		writeAPIError(w, http.StatusBadRequest, "invalid_argument", "cancel accepts exactly one JSON object")
+		return
+	}
+	response, err := s.CancelJobs(r.Context(), request)
+	if err != nil {
+		var invalid invalidArgumentError
+		switch {
+		case errors.As(err, &invalid):
+			writeAPIError(w, http.StatusBadRequest, "invalid_argument", err.Error())
+		case errors.Is(err, store.ErrNotFound):
+			writeAPIError(w, http.StatusNotFound, "not_found", err.Error())
+		default:
+			writeAPIError(w, http.StatusInternalServerError, "internal_error", err.Error())
+		}
 		return
 	}
 	writeJSON(w, http.StatusOK, response)

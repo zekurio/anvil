@@ -286,7 +286,10 @@ func wrapCloseError(err error, operation string) error {
 
 func terminalPruneStates(states []domain.JobState) ([]domain.JobState, error) {
 	if len(states) == 0 {
-		return []domain.JobState{domain.JobStateComplete, domain.JobStateFailed, domain.JobStateSkipped}, nil
+		return []domain.JobState{
+			domain.JobStateComplete, domain.JobStateFailed,
+			domain.JobStateSkipped, domain.JobStateCanceled,
+		}, nil
 	}
 	seen := make(map[domain.JobState]struct{}, len(states))
 	result := make([]domain.JobState, 0, len(states))

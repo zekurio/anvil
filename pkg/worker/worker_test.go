@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,6 +16,7 @@ import (
 	"github.com/zekurio/anvil/pkg/pipeline"
 	"github.com/zekurio/anvil/pkg/probe"
 	"github.com/zekurio/anvil/pkg/process"
+	replacepkg "github.com/zekurio/anvil/pkg/replace"
 	"github.com/zekurio/anvil/pkg/scheduler"
 	"github.com/zekurio/anvil/pkg/staging"
 	"github.com/zekurio/anvil/pkg/store"
@@ -790,19 +792,30 @@ func (f *fakeWorkerStore) StartAttempt(_ context.Context, _ domain.JobID, _ stri
 	return f.attempt, nil
 }
 
-func (f *fakeWorkerStore) FinishAttempt(_ context.Context, _ domain.AttemptID, state domain.AttemptState, message string, finishedAt time.Time) (domain.Attempt, error) {
+func (f *fakeWorkerStore) FinishAttempt(ctx context.Context, _ domain.AttemptID, state domain.AttemptState, message string, finishedAt time.Time) (domain.Attempt, error) {
+	// The real store begins a transaction, so a dead context is a write that
+	// never happens.
+	if err := ctx.Err(); err != nil {
+		return domain.Attempt{}, err
+	}
 	f.attempt.State = state
 	f.attempt.Error = message
 	f.attempt.FinishedAt = &finishedAt
 	return f.attempt, nil
 }
 
-func (f *fakeWorkerStore) TransitionJob(_ context.Context, _ domain.JobID, to domain.JobState, _ time.Time, _ string) (domain.Job, error) {
+func (f *fakeWorkerStore) TransitionJob(ctx context.Context, _ domain.JobID, to domain.JobState, _ time.Time, _ string) (domain.Job, error) {
+	if err := ctx.Err(); err != nil {
+		return domain.Job{}, err
+	}
 	f.transitions = append(f.transitions, to)
 	return domain.Job{State: to}, nil
 }
 
-func (f *fakeWorkerStore) CompleteJobOccurrence(_ context.Context, input store.CompleteJobOccurrenceInput) (domain.Job, error) {
+func (f *fakeWorkerStore) CompleteJobOccurrence(ctx context.Context, input store.CompleteJobOccurrenceInput) (domain.Job, error) {
+	if err := ctx.Err(); err != nil {
+		return domain.Job{}, err
+	}
 	f.recordedInputSize = input.InputSizeBytes
 	f.recordedOutputSize = input.OutputSizeBytes
 	f.attempt.State = domain.AttemptStateSucceeded
@@ -867,4 +880,328 @@ func (m mutableDolbyVisionTool) Available(context.Context) (bool, string, error)
 		return false, "", nil
 	}
 	return *m.available, "", nil
+}
+
+// TestRunnerCancelStopsRunningProcessAndCleansStaging covers the operator
+// cancel path end to end: the child process dies, the staging dir with the
+// partial output is removed, and the job and attempt end up canceled.
+func TestRunnerCancelStopsRunningProcessAndCleansStaging(t *testing.T) {
+	ctx, cancel := context.WithCancelCause(context.Background())
+	defer cancel(context.Canceled)
+
+	tempDir := t.TempDir()
+	cfg := workerConfig()
+	cfg.Daemon.TempDir = tempDir
+	cfg.Flows["test-flow"] = config.FlowConfig{Steps: []string{"stage", "encode"}}
+
+	fakeStore := newFakeWorkerStore()
+	fakeStore.source = domain.MediaSource{ID: 1, LibraryName: "movies", Kind: domain.SourceKindFile, RelativePath: "Movie.mkv"}
+
+	encoding := make(chan string, 1)
+	runner := Runner{
+		Store:             fakeStore,
+		ConfigProvider:    func() config.Config { return cfg },
+		TempDir:           tempDir,
+		MaxAttempts:       2,
+		VerifyFingerprint: acceptFingerprint,
+		Pipeline: pipeline.Runner{
+			Registry: pipeline.NewRegistry(
+				staging.StageBlock{Manager: staging.Manager{Root: filepath.Join(tempDir, "staging")}},
+				pipeline.BlockFunc{BlockName: "encode", Fn: func(ctx context.Context, job *pipeline.JobContext) error {
+					if job.StagingDir == "" {
+						t.Error("staging dir was empty")
+						return errors.New("staging dir was empty")
+					}
+					if err := os.WriteFile(job.OutputPath, []byte("partial"), 0o640); err != nil {
+						return err
+					}
+					encoding <- job.StagingDir
+					_, err := process.OSRunner{}.Run(ctx, process.Command{Name: "/bin/sh", Args: []string{"-c", "sleep 30"}})
+					return err
+				}},
+			),
+		},
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- runner.Run(ctx, scheduler.Assignment{
+			Job:      domain.Job{ID: 99, SourceID: 1, LibraryName: "movies", State: domain.JobStateLeased},
+			WorkerID: "worker-1",
+		})
+	}()
+
+	var stagingDir string
+	select {
+	case stagingDir = <-encoding:
+	case <-time.After(5 * time.Second):
+		t.Fatal("encode block did not start")
+	}
+	started := time.Now()
+	cancel(scheduler.ErrJobCanceled)
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Run() error = %v, want nil for an operator cancel", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("canceled worker did not stop the running process in bounded time")
+	}
+	if elapsed := time.Since(started); elapsed > 10*time.Second {
+		t.Fatalf("cancel took %s, want prompt termination", elapsed)
+	}
+	if _, err := os.Stat(stagingDir); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("staging dir stat error = %v, want the partial output removed", err)
+	}
+	if fakeStore.attempt.State != domain.AttemptStateCanceled {
+		t.Fatalf("attempt state = %q, want canceled", fakeStore.attempt.State)
+	}
+	if got := fakeStore.transitions[len(fakeStore.transitions)-1]; got != domain.JobStateCanceled {
+		t.Fatalf("last transition = %q, want canceled", got)
+	}
+}
+
+func TestRunnerShutdownCancellationStillFailsTheAttempt(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	fakeStore := newFakeWorkerStore()
+	fakeStore.source = domain.MediaSource{ID: 1, LibraryName: "movies", Kind: domain.SourceKindFile, RelativePath: "Movie.mkv"}
+	runner := Runner{
+		Store:             fakeStore,
+		ConfigProvider:    workerConfig,
+		MaxAttempts:       2,
+		VerifyFingerprint: acceptFingerprint,
+		Pipeline: pipeline.Runner{
+			Registry: pipeline.NewRegistry(pipeline.BlockFunc{BlockName: "noop", Fn: func(ctx context.Context, _ *pipeline.JobContext) error {
+				cancel()
+				return ctx.Err()
+			}}),
+		},
+	}
+
+	err := runner.Run(ctx, scheduler.Assignment{
+		Job:      domain.Job{ID: 99, SourceID: 1, LibraryName: "movies", State: domain.JobStateLeased},
+		WorkerID: "worker-1",
+	})
+	if err == nil {
+		t.Fatal("Run() error = nil, want the shutdown failure to surface")
+	}
+	if fakeStore.attempt.State == domain.AttemptStateCanceled {
+		t.Fatal("daemon shutdown must not be recorded as an operator cancel")
+	}
+	for _, transition := range fakeStore.transitions {
+		if transition == domain.JobStateCanceled {
+			t.Fatal("daemon shutdown must not cancel the job")
+		}
+	}
+}
+
+// TestRunnerCancelDuringPendingPublishKeepsTheJobResumable pins the data-safety
+// rule: a cancel that lands while a publish is journaled must not make the job
+// terminal, because a canceled job clears its lease and can never reach
+// recoverPendingPublish again.
+func TestRunnerCancelDuringPendingPublishKeepsTheJobResumable(t *testing.T) {
+	ctx, cancel := context.WithCancelCause(context.Background())
+	defer cancel(context.Canceled)
+
+	tempDir := t.TempDir()
+	cfg := workerConfig()
+	cfg.Daemon.TempDir = tempDir
+	cfg.Flows["test-flow"] = config.FlowConfig{Steps: []string{"stage", "replace"}}
+
+	fakeStore := newFakeWorkerStore()
+	fakeStore.source = domain.MediaSource{ID: 1, LibraryName: "movies", Kind: domain.SourceKindFile, RelativePath: "Movie.mkv"}
+
+	var stagingDir string
+	runner := Runner{
+		Store:             fakeStore,
+		ConfigProvider:    func() config.Config { return cfg },
+		TempDir:           tempDir,
+		MaxAttempts:       2,
+		VerifyFingerprint: acceptFingerprint,
+		Pipeline: pipeline.Runner{
+			Registry: pipeline.NewRegistry(
+				staging.StageBlock{Manager: staging.Manager{Root: filepath.Join(tempDir, "staging")}},
+				pipeline.BlockFunc{BlockName: "replace", Fn: func(_ context.Context, job *pipeline.JobContext) error {
+					stagingDir = job.StagingDir
+					if err := os.WriteFile(job.OutputPath, []byte("published"), 0o640); err != nil {
+						return err
+					}
+					// The destination is already mutated when the journal write
+					// races the cancel.
+					cancel(scheduler.ErrJobCanceled)
+					return fmt.Errorf("record publish stage: %w", replacepkg.ErrPublishPending)
+				}},
+			),
+		},
+	}
+
+	err := runner.Run(ctx, scheduler.Assignment{
+		Job:      domain.Job{ID: 99, SourceID: 1, LibraryName: "movies", State: domain.JobStateLeased},
+		WorkerID: "worker-1",
+	})
+	if !errors.Is(err, replacepkg.ErrPublishPending) {
+		t.Fatalf("Run() error = %v, want the pending publish to surface", err)
+	}
+	for _, transition := range fakeStore.transitions {
+		if transition == domain.JobStateCanceled {
+			t.Fatalf("pending publish was made terminal: %v", fakeStore.transitions)
+		}
+	}
+	if got := fakeStore.transitions[len(fakeStore.transitions)-1]; got != domain.JobStatePending {
+		t.Fatalf("last transition = %q, want pending so the publish can be resumed", got)
+	}
+	if fakeStore.attempt.State != domain.AttemptStateFailed {
+		t.Fatalf("attempt state = %q, want failed", fakeStore.attempt.State)
+	}
+	if _, err := os.Stat(stagingDir); err != nil {
+		t.Fatalf("staging dir stat error = %v, want the artifact kept for the resumed publish", err)
+	}
+}
+
+// TestRunnerStoreCancelDuringPublishIsRecordedAsACancel covers the reverse
+// ordering: the store refuses to journal a publish for an already canceled job
+// before anything is written, so the worker records the cancel instead of
+// retrying a job that is already terminal.
+func TestRunnerStoreCancelDuringPublishIsRecordedAsACancel(t *testing.T) {
+	ctx := context.Background()
+	fakeStore := newFakeWorkerStore()
+	fakeStore.source = domain.MediaSource{ID: 1, LibraryName: "movies", Kind: domain.SourceKindFile, RelativePath: "Movie.mkv"}
+	runner := Runner{
+		Store:             fakeStore,
+		ConfigProvider:    workerConfig,
+		MaxAttempts:       2,
+		VerifyFingerprint: acceptFingerprint,
+		Pipeline: pipeline.Runner{
+			Registry: pipeline.NewRegistry(pipeline.BlockFunc{BlockName: "noop", Fn: func(context.Context, *pipeline.JobContext) error {
+				return fmt.Errorf("prepare publish operation: %w", store.ErrJobCanceled)
+			}}),
+		},
+	}
+
+	if err := runner.Run(ctx, scheduler.Assignment{
+		Job:      domain.Job{ID: 99, SourceID: 1, LibraryName: "movies", State: domain.JobStateLeased},
+		WorkerID: "worker-1",
+	}); err != nil {
+		t.Fatalf("Run() error = %v, want nil for a store-observed cancel", err)
+	}
+	if fakeStore.attempt.State != domain.AttemptStateCanceled {
+		t.Fatalf("attempt state = %q, want canceled", fakeStore.attempt.State)
+	}
+	if got := fakeStore.transitions[len(fakeStore.transitions)-1]; got != domain.JobStateCanceled {
+		t.Fatalf("last transition = %q, want canceled", got)
+	}
+}
+
+// TestRunnerCancelRacingASuccessfulPipelineStillCompletesTheJob pins that a
+// finished pipeline is authoritative: the artifact is published, so completion
+// bookkeeping must not be skipped by a cancel that lands a moment too late.
+func TestRunnerCancelRacingASuccessfulPipelineStillCompletesTheJob(t *testing.T) {
+	ctx, cancel := context.WithCancelCause(context.Background())
+	defer cancel(context.Canceled)
+
+	tempDir := t.TempDir()
+	outputPath := filepath.Join(tempDir, "output.mkv")
+	fakeStore := newFakeWorkerStore()
+	fakeStore.source = domain.MediaSource{
+		ID: 1, LibraryName: "movies", Kind: domain.SourceKindFile, RelativePath: "Movie.mkv",
+		Fingerprint: domain.FileFingerprint{SizeBytes: 1000},
+	}
+	runner := Runner{
+		Store:             fakeStore,
+		ConfigProvider:    workerConfig,
+		MaxAttempts:       2,
+		VerifyFingerprint: acceptFingerprint,
+		Pipeline: pipeline.Runner{
+			Registry: pipeline.NewRegistry(pipeline.BlockFunc{BlockName: "noop", Fn: func(_ context.Context, job *pipeline.JobContext) error {
+				if err := os.WriteFile(outputPath, make([]byte, 650), 0o600); err != nil {
+					return err
+				}
+				job.FinalPath = outputPath
+				cancel(scheduler.ErrJobCanceled)
+				return nil
+			}}),
+		},
+	}
+
+	if err := runner.Run(ctx, scheduler.Assignment{
+		Job:      domain.Job{ID: 99, SourceID: 1, LibraryName: "movies", State: domain.JobStateLeased},
+		WorkerID: "worker-1",
+	}); err != nil {
+		t.Fatalf("Run() error = %v, want the published job to complete", err)
+	}
+	if got := fakeStore.transitions[len(fakeStore.transitions)-1]; got != domain.JobStateComplete {
+		t.Fatalf("last transition = %q, want complete", got)
+	}
+	if fakeStore.attempt.State != domain.AttemptStateSucceeded {
+		t.Fatalf("attempt state = %q, want succeeded", fakeStore.attempt.State)
+	}
+	if fakeStore.recordedInputSize != 1000 || fakeStore.recordedOutputSize != 650 {
+		t.Fatalf("recorded sizes = %d/%d, want the completion bookkeeping to run", fakeStore.recordedInputSize, fakeStore.recordedOutputSize)
+	}
+}
+
+// recoveringPublishBlock stands in for the replace/handoff block on the crash
+// recovery path: it reports the journaled publish as finished without running
+// the rest of the pipeline.
+type recoveringPublishBlock struct {
+	finalPath string
+}
+
+func (recoveringPublishBlock) Name() string { return "replace" }
+
+func (recoveringPublishBlock) Run(context.Context, *pipeline.JobContext) error { return nil }
+
+func (b recoveringPublishBlock) Recover(_ context.Context, job *pipeline.JobContext) (bool, error) {
+	job.FinalPath = b.finalPath
+	return true, nil
+}
+
+// TestRunnerCancelRacingPublishRecoveryStillCompletesTheJob is the recovery-path
+// twin of the successful-pipeline race. A recovered publish means the artifact
+// is already on disk, so a cancel arriving while the worker records completion
+// must not skip the bookkeeping and strand the journal.
+func TestRunnerCancelRacingPublishRecoveryStillCompletesTheJob(t *testing.T) {
+	ctx, cancel := context.WithCancelCause(context.Background())
+	defer cancel(context.Canceled)
+
+	outputPath := filepath.Join(t.TempDir(), "output.mkv")
+	if err := os.WriteFile(outputPath, make([]byte, 650), 0o600); err != nil {
+		t.Fatalf("write recovered artifact: %v", err)
+	}
+	fakeStore := newFakeWorkerStore()
+	fakeStore.source = domain.MediaSource{
+		ID: 1, LibraryName: "movies", Kind: domain.SourceKindFile, RelativePath: "Movie.mkv",
+		Fingerprint: domain.FileFingerprint{SizeBytes: 1000},
+	}
+	runner := Runner{
+		Store:             fakeStore,
+		VerifyFingerprint: acceptFingerprint,
+		MaxAttempts:       2,
+		ConfigProvider: func() config.Config {
+			cfg := workerConfig()
+			cfg.Flows = map[string]config.FlowConfig{"test-flow": {Steps: []string{"replace"}}}
+			return cfg
+		},
+		Pipeline: pipeline.Runner{
+			Registry: pipeline.NewRegistry(recoveringPublishBlock{finalPath: outputPath}),
+		},
+	}
+
+	// The cancel lands before the worker records completion, exactly as an
+	// operator cancel racing the recovery would.
+	cancel(scheduler.ErrJobCanceled)
+
+	if err := runner.Run(ctx, scheduler.Assignment{
+		Job:      domain.Job{ID: 99, SourceID: 1, LibraryName: "movies", State: domain.JobStateLeased},
+		WorkerID: "worker-1",
+	}); err != nil {
+		t.Fatalf("Run() error = %v, want the recovered publish to complete", err)
+	}
+	if got := fakeStore.transitions[len(fakeStore.transitions)-1]; got != domain.JobStateComplete {
+		t.Fatalf("last transition = %q, want complete", got)
+	}
+	if fakeStore.recordedInputSize != 1000 || fakeStore.recordedOutputSize != 650 {
+		t.Fatalf("recorded sizes = %d/%d, want the completion bookkeeping to run", fakeStore.recordedInputSize, fakeStore.recordedOutputSize)
+	}
 }
