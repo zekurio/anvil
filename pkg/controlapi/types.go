@@ -101,8 +101,11 @@ func (r JobCancelRequest) query() JobQuery {
 	}
 }
 
+// hasSelector reports whether the request narrows the queue. CurrentOnly is
+// deliberately excluded: it only refines another selector, and on its own it
+// matches every job in every library and state.
 func (r JobCancelRequest) hasSelector() bool {
-	if len(r.IDs) > 0 || r.CurrentOnly {
+	if len(r.IDs) > 0 {
 		return true
 	}
 	if strings.TrimSpace(r.Library) != "" || strings.TrimSpace(r.Path) != "" || strings.TrimSpace(r.AbsolutePath) != "" {
@@ -125,11 +128,14 @@ type JobCancelResponse struct {
 }
 
 type JobCancelResult struct {
-	ID             int64  `json:"id"`
-	Slug           string `json:"slug"`
-	Library        string `json:"library"`
-	PreviousState  string `json:"previous_state"`
-	State          string `json:"state"`
-	Canceled       bool   `json:"canceled"`
+	ID            int64  `json:"id"`
+	Slug          string `json:"slug"`
+	Library       string `json:"library"`
+	PreviousState string `json:"previous_state"`
+	State         string `json:"state"`
+	Canceled      bool   `json:"canceled"`
+	// SkipReason is a stable machine-readable explanation of why a matched job
+	// was not canceled, such as publish_in_progress.
+	SkipReason     string `json:"skip_reason,omitempty"`
 	WorkerSignaled bool   `json:"worker_signaled"`
 }

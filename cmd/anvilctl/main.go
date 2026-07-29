@@ -265,12 +265,12 @@ func writeJobs(out io.Writer, response controlapi.JobListResponse) error {
 
 func writeCanceledJobs(out io.Writer, response controlapi.JobCancelResponse) error {
 	w := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
-	if _, err := fmt.Fprintln(w, "JOB\tID\tLIBRARY\tPREVIOUS\tSTATE\tCANCELED\tWORKER SIGNALED"); err != nil {
+	if _, err := fmt.Fprintln(w, "JOB\tID\tLIBRARY\tPREVIOUS\tSTATE\tCANCELED\tWORKER SIGNALED\tSKIPPED"); err != nil {
 		return err
 	}
 	for _, job := range response.Jobs {
-		if _, err := fmt.Fprintf(w, "%s\t%d\t%s\t%s\t%s\t%t\t%t\n",
-			job.Slug, job.ID, job.Library, job.PreviousState, job.State, job.Canceled, job.WorkerSignaled,
+		if _, err := fmt.Fprintf(w, "%s\t%d\t%s\t%s\t%s\t%t\t%t\t%s\n",
+			job.Slug, job.ID, job.Library, job.PreviousState, job.State, job.Canceled, job.WorkerSignaled, job.SkipReason,
 		); err != nil {
 			return err
 		}
@@ -290,7 +290,10 @@ func writeUsage(out io.Writer) error {
   anvilctl [--socket PATH] job cancel [--library NAME] [--path PATH | --absolute-path PATH]
            [--state STATE,...] [--current-only] [--reason TEXT] [--json] [JOB_ID...]
 
-Job cancellation requires at least one selector; a bare "job cancel" is rejected.`)
+Job cancellation requires at least one narrowing selector, so a bare "job cancel"
+is rejected; --current-only only refines another selector and is not one itself.
+A matched job that was not canceled is reported with a SKIPPED reason such as
+publish_in_progress.`)
 	return err
 }
 
