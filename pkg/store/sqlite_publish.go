@@ -35,17 +35,31 @@ WHERE job_id = ?
 	return operation, true, nil
 }
 
+// CreatePublishOperation journals a publish before anything touches the
+// destination. It refuses to journal one for a canceled job: CancelJobs refuses
+// jobs that already journaled a publish, and this is the other half of that
+// mutual exclusion, so an operator cancel and a starting publish can never both
+// win. The store is the arbiter because it serializes both writers.
 func (s *SQLiteStore) CreatePublishOperation(ctx context.Context, operation replacepkg.PublishOperation) error {
 	data, err := json.Marshal(operation)
 	if err != nil {
 		return fmt.Errorf("encode publish operation: %w", err)
 	}
-	_, err = s.db.ExecContext(ctx, `
+	result, err := s.db.ExecContext(ctx, `
 INSERT INTO publish_operations (job_id, stage, operation_json, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?)
-`, int64(operation.JobID), operation.Stage, data, encodeTime(operation.CreatedAt), encodeTime(operation.UpdatedAt))
+SELECT ?, ?, ?, ?, ?
+WHERE NOT EXISTS (SELECT 1 FROM jobs WHERE id = ? AND state = ?)
+`, int64(operation.JobID), operation.Stage, data, encodeTime(operation.CreatedAt), encodeTime(operation.UpdatedAt),
+		int64(operation.JobID), string(domain.JobStateCanceled))
 	if err != nil {
 		return fmt.Errorf("create publish operation: %w", err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("create publish operation rows affected: %w", err)
+	}
+	if rows == 0 {
+		return fmt.Errorf("create publish operation for job %d: %w", operation.JobID, ErrJobCanceled)
 	}
 	return nil
 }
