@@ -94,7 +94,8 @@ func (s Service) handleJobCancel(w http.ResponseWriter, r *http.Request) {
 func parseJobQuery(r *http.Request) (JobQuery, error) {
 	values := r.URL.Query()
 	allowed := map[string]struct{}{
-		"library": {}, "path": {}, "absolute_path": {}, "state": {}, "current_only": {}, "limit": {},
+		"library": {}, "path": {}, "absolute_path": {}, "state": {}, "current_only": {},
+		"limit": {}, "with_selection": {},
 	}
 	for key := range values {
 		if _, ok := allowed[key]; !ok {
@@ -111,6 +112,13 @@ func parseJobQuery(r *http.Request) (JobQuery, error) {
 			return JobQuery{}, errors.New("current_only must be true or false")
 		}
 		query.CurrentOnly = currentOnly
+	}
+	if value := strings.TrimSpace(values.Get("with_selection")); value != "" {
+		withSelection, err := strconv.ParseBool(value)
+		if err != nil {
+			return JobQuery{}, errors.New("with_selection must be true or false")
+		}
+		query.WithSelection = withSelection
 	}
 	if value := strings.TrimSpace(values.Get("limit")); value != "" {
 		limit, err := strconv.Atoi(value)

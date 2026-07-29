@@ -31,6 +31,11 @@ func TestClientUsesUnixSocketAndPreservesJobQuery(t *testing.T) {
 		if query.Get("absolute_path") != "/downloads/Release" || query.Get("current_only") != "true" || query.Get("state") != "running,failed" {
 			t.Errorf("job query = %q", r.URL.RawQuery)
 		}
+		// The selection flag has to survive the hop, or --with-selection is a
+		// silent no-op that no other test would catch.
+		if query.Get("with_selection") != "true" {
+			t.Errorf("with_selection = %q, want it forwarded", query.Get("with_selection"))
+		}
 		writeJSON(w, http.StatusOK, JobListResponse{
 			APIVersion: Version, Matched: 1,
 			Jobs: []JobResponse{{ID: 7, Slug: "kind-pink-heron", State: "running"}},
@@ -63,6 +68,7 @@ func TestClientUsesUnixSocketAndPreservesJobQuery(t *testing.T) {
 	}
 	jobs, err := client.ListJobs(context.Background(), JobQuery{
 		AbsolutePath: "/downloads/Release", CurrentOnly: true, States: []string{"running,failed"},
+		WithSelection: true,
 	})
 	if err != nil {
 		t.Fatalf("ListJobs() error = %v", err)

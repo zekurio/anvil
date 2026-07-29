@@ -2,8 +2,10 @@ package controlapi
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -12,6 +14,7 @@ import (
 
 	"github.com/zekurio/anvil/pkg/config"
 	"github.com/zekurio/anvil/pkg/domain"
+	"github.com/zekurio/anvil/pkg/pipeline"
 	replacepkg "github.com/zekurio/anvil/pkg/replace"
 	"github.com/zekurio/anvil/pkg/store"
 )
@@ -23,16 +26,17 @@ func TestListJobsMatchesExactSourceAssetAndDestinationPaths(t *testing.T) {
 	handoffRoot := cfg.Libraries["downloads"].Download.HandoffPath
 
 	tests := []struct {
-		name  string
-		query JobQuery
+		name      string
+		query     JobQuery
+		matchedOn []PathMatchSide
 	}{
 		{name: "relative package", query: JobQuery{Library: "downloads", Path: "Release", CurrentOnly: true}},
 		{name: "relative asset", query: JobQuery{Library: "downloads", Path: "Release/Season/Episode.mkv", CurrentOnly: true}},
-		{name: "absolute package", query: JobQuery{AbsolutePath: filepath.Join(sourceRoot, "Release"), CurrentOnly: true}},
-		{name: "absolute asset", query: JobQuery{AbsolutePath: filepath.Join(sourceRoot, "Release", "Season", "Episode.mkv"), CurrentOnly: true}},
-		{name: "planned destination", query: JobQuery{AbsolutePath: filepath.Join(handoffRoot, "Release", "Season", "Episode.mkv"), CurrentOnly: true}},
-		{name: "asset destination directory", query: JobQuery{AbsolutePath: filepath.Join(handoffRoot, "Release", "Season"), CurrentOnly: true}},
-		{name: "package destination directory", query: JobQuery{AbsolutePath: filepath.Join(handoffRoot, "Release"), CurrentOnly: true}},
+		{name: "absolute package", query: JobQuery{AbsolutePath: filepath.Join(sourceRoot, "Release"), CurrentOnly: true}, matchedOn: []PathMatchSide{PathMatchSource}},
+		{name: "absolute asset", query: JobQuery{AbsolutePath: filepath.Join(sourceRoot, "Release", "Season", "Episode.mkv"), CurrentOnly: true}, matchedOn: []PathMatchSide{PathMatchAsset}},
+		{name: "planned destination", query: JobQuery{AbsolutePath: filepath.Join(handoffRoot, "Release", "Season", "Episode.mkv"), CurrentOnly: true}, matchedOn: []PathMatchSide{PathMatchDestination}},
+		{name: "asset destination directory", query: JobQuery{AbsolutePath: filepath.Join(handoffRoot, "Release", "Season"), CurrentOnly: true}, matchedOn: []PathMatchSide{PathMatchDestinationDirectory}},
+		{name: "package destination directory", query: JobQuery{AbsolutePath: filepath.Join(handoffRoot, "Release"), CurrentOnly: true}, matchedOn: []PathMatchSide{PathMatchDestinationDirectory}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -42,6 +46,11 @@ func TestListJobsMatchesExactSourceAssetAndDestinationPaths(t *testing.T) {
 			}
 			if response.Matched != 1 || len(response.Jobs) != 1 || response.Jobs[0].ID != int64(job.ID) {
 				t.Fatalf("ListJobs() = %+v, want only job %d", response, job.ID)
+			}
+			// A relative-path query reports no side, because it did not ask
+			// about absolute paths at all.
+			if !slices.Equal(response.Jobs[0].MatchedOn, tt.matchedOn) {
+				t.Fatalf("MatchedOn = %v, want %v", response.Jobs[0].MatchedOn, tt.matchedOn)
 			}
 		})
 	}
@@ -183,6 +192,7 @@ func TestHTTPRejectsInexactOrUnscopedJobQueries(t *testing.T) {
 		"/v1/jobs?absolute_path=relative/path",
 		"/v1/jobs?path=Release&absolute_path=/downloads/Release&library=downloads",
 		"/v1/jobs?unknown=value",
+		"/v1/jobs?with_selection=maybe",
 	}
 	for _, target := range tests {
 		t.Run(target, func(t *testing.T) {
@@ -499,5 +509,338 @@ func TestCancelJobsWithoutAStateSelectorForwardsNoStates(t *testing.T) {
 	}
 	if len(recorder.input.States) != 0 {
 		t.Fatalf("CancelJobsInput.States = %v, want none", recorder.input.States)
+	}
+}
+
+// recordStreamSelection stores a decision the way the pipeline runner does, as
+// an artifact attempt event, so the test exercises the real payload contract.
+func recordStreamSelection(t *testing.T, ctx context.Context, state *store.SQLiteStore, jobID domain.JobID, decision domain.StreamSelectionDecision) domain.Attempt {
+	t.Helper()
+	attempt := startTestAttempt(t, ctx, state, jobID)
+	payload, err := json.Marshal(decision)
+	if err != nil {
+		t.Fatalf("marshal decision: %v", err)
+	}
+	if _, err := state.RecordAttemptEvent(ctx, domain.AttemptEvent{
+		AttemptID: attempt.ID, Type: domain.AttemptEventArtifact,
+		Name: pipeline.StreamSelectionArtifact, Message: "audio language_filter", Payload: payload,
+	}); err != nil {
+		t.Fatalf("RecordAttemptEvent() error = %v", err)
+	}
+	return attempt
+}
+
+// startTestAttempt leases the job first, because StartAttempt only accepts the
+// worker that currently holds the lease.
+func startTestAttempt(t *testing.T, ctx context.Context, state *store.SQLiteStore, jobID domain.JobID) domain.Attempt {
+	t.Helper()
+	now := time.Now().UTC()
+	for {
+		leased, err := state.LeaseNextJobForLibraries(ctx, "worker-1", now.Add(time.Minute), now, nil)
+		if err != nil {
+			t.Fatalf("LeaseNextJobForLibraries() error = %v", err)
+		}
+		if leased == nil {
+			t.Fatalf("no pending job to lease for job %d", jobID)
+		}
+		if leased.ID != jobID {
+			continue
+		}
+		attempt, err := state.StartAttempt(ctx, jobID, "worker-1", nil, nil, nil, now)
+		if err != nil {
+			t.Fatalf("StartAttempt() error = %v", err)
+		}
+		return attempt
+	}
+}
+
+func germanMissingDecision() domain.StreamSelectionDecision {
+	return domain.StreamSelectionDecision{
+		Kind: domain.StreamKindAudio, Rule: domain.StreamSelectionRuleLanguageFilter,
+		OriginalLanguage:   "jpn",
+		RequestedLanguages: []string{"orig", "deu"},
+		ResolvedLanguages:  []string{"jpn", "deu"},
+		MissingLanguages:   []string{"deu"},
+		Streams: []domain.StreamDecision{
+			{Index: 0, Codec: "aac", Language: "jpn", Kept: true, Reason: domain.StreamKeptOriginalLanguage},
+			{Index: 1, Codec: "aac", Language: "eng", Reason: domain.StreamDroppedLanguage},
+		},
+	}
+}
+
+// TestListJobsExposesStreamSelectionAfterTheSourceIsGone is the incident this
+// feature exists for: the source file has been deleted by cleanup, and the only
+// remaining evidence of why German is absent has to come back over the socket.
+func TestListJobsExposesStreamSelectionAfterTheSourceIsGone(t *testing.T) {
+	ctx := context.Background()
+	service, state, cfg, job := testService(t, ctx)
+	attempt := recordStreamSelection(t, ctx, state, job.ID, germanMissingDecision())
+
+	sourcePath := filepath.Join(cfg.Libraries["downloads"].Path, "Release")
+	if _, err := os.Stat(sourcePath); !os.IsNotExist(err) {
+		t.Fatalf("test fixture unexpectedly has a real source at %s", sourcePath)
+	}
+
+	response, err := service.ListJobs(ctx, JobQuery{Library: "downloads", WithSelection: true})
+	if err != nil {
+		t.Fatalf("ListJobs() error = %v", err)
+	}
+	if len(response.Jobs) != 1 || len(response.Jobs[0].StreamSelection) != 1 {
+		t.Fatalf("ListJobs() = %+v, want one job carrying one selection", response)
+	}
+	selection := response.Jobs[0].StreamSelection[0]
+	if selection.AttemptID != int64(attempt.ID) {
+		t.Fatalf("AttemptID = %d, want %d", selection.AttemptID, attempt.ID)
+	}
+	if selection.DecisionError != "" {
+		t.Fatalf("DecisionError = %q, want the decision to decode", selection.DecisionError)
+	}
+	if !slices.Equal(selection.Decision.MissingLanguages, []string{"deu"}) {
+		t.Fatalf("MissingLanguages = %v, want [deu]", selection.Decision.MissingLanguages)
+	}
+	kept := selection.Decision.Streams[0]
+	if !kept.Kept || kept.Reason != domain.StreamKeptOriginalLanguage {
+		t.Fatalf("kept stream = %+v, want jpn kept as the original language", kept)
+	}
+	dropped := selection.Decision.Streams[1]
+	if dropped.Kept || dropped.Reason != domain.StreamDroppedLanguage {
+		t.Fatalf("dropped stream = %+v, want eng dropped as not requested", dropped)
+	}
+}
+
+// TestListJobsStreamSelectionIsOptIn keeps listings small by default, and keeps
+// "nothing recorded" distinguishable from "recorded, and it kept everything".
+func TestListJobsStreamSelectionIsOptIn(t *testing.T) {
+	ctx := context.Background()
+	service, state, _, job := testService(t, ctx)
+
+	t.Run("absent without the flag", func(t *testing.T) {
+		recordStreamSelection(t, ctx, state, job.ID, germanMissingDecision())
+		response, err := service.ListJobs(ctx, JobQuery{Library: "downloads"})
+		if err != nil {
+			t.Fatalf("ListJobs() error = %v", err)
+		}
+		if len(response.Jobs) != 1 || response.Jobs[0].StreamSelection != nil {
+			t.Fatalf("StreamSelection = %+v, want it omitted without WithSelection", response.Jobs[0].StreamSelection)
+		}
+	})
+
+	t.Run("a job that recorded nothing carries no selection", func(t *testing.T) {
+		other, err := state.ForceOccurrence(ctx, store.ForceOccurrenceInput{
+			LibraryName: "downloads", SourceKind: domain.SourceKindPackage,
+			SourceRelativePath: "Other", AssetRelativePath: "Season/Other.mkv",
+			AssetRole:         domain.MediaAssetRolePrimaryVideo,
+			SourceFingerprint: domain.FileFingerprint{SizeBytes: 2},
+			AssetFingerprint:  domain.FileFingerprint{SizeBytes: 2},
+		})
+		if err != nil {
+			t.Fatalf("ForceOccurrence() error = %v", err)
+		}
+		response, err := service.ListJobs(ctx, JobQuery{Library: "downloads", WithSelection: true})
+		if err != nil {
+			t.Fatalf("ListJobs() error = %v", err)
+		}
+		var checked bool
+		for _, item := range response.Jobs {
+			if item.ID != int64(other.Job.ID) {
+				continue
+			}
+			checked = true
+			if item.StreamSelection != nil {
+				t.Fatalf("StreamSelection = %+v, want none for a job that recorded no decision", item.StreamSelection)
+			}
+		}
+		if !checked {
+			t.Fatalf("job %d missing from the listing", other.Job.ID)
+		}
+	})
+}
+
+// TestListJobsReportsAnUnreadableStreamSelection pins that a decision Anvil
+// cannot decode is reported as unreadable rather than silently omitted, so a
+// consumer never reads a corrupt record as "no streams were dropped".
+func TestListJobsReportsAnUnreadableStreamSelection(t *testing.T) {
+	ctx := context.Background()
+	service, state, _, job := testService(t, ctx)
+	attempt := startTestAttempt(t, ctx, state, job.ID)
+	if _, err := state.RecordAttemptEvent(ctx, domain.AttemptEvent{
+		AttemptID: attempt.ID, Type: domain.AttemptEventArtifact,
+		Name: pipeline.StreamSelectionArtifact, Payload: []byte("{not json"),
+	}); err != nil {
+		t.Fatalf("RecordAttemptEvent() error = %v", err)
+	}
+
+	response, err := service.ListJobs(ctx, JobQuery{Library: "downloads", WithSelection: true})
+	if err != nil {
+		t.Fatalf("ListJobs() error = %v", err)
+	}
+	if len(response.Jobs[0].StreamSelection) != 1 {
+		t.Fatalf("StreamSelection = %+v, want the unreadable record reported", response.Jobs[0].StreamSelection)
+	}
+	if response.Jobs[0].StreamSelection[0].DecisionError == "" {
+		t.Fatal("DecisionError = \"\", want the decode failure reported")
+	}
+}
+
+// TestListJobsReturnsBothAudioAndSubtitleDecisions pins that one attempt's two
+// decisions both come back. The feature is half useless with only one kind, and
+// a query narrowed to a single row per job would pass every other test here.
+func TestListJobsReturnsBothAudioAndSubtitleDecisions(t *testing.T) {
+	ctx := context.Background()
+	service, state, _, job := testService(t, ctx)
+	attempt := startTestAttempt(t, ctx, state, job.ID)
+
+	for _, decision := range []domain.StreamSelectionDecision{
+		germanMissingDecision(),
+		{Kind: domain.StreamKindSubtitle, Rule: domain.StreamSelectionRuleLanguageFilter},
+	} {
+		payload, err := json.Marshal(decision)
+		if err != nil {
+			t.Fatalf("marshal decision: %v", err)
+		}
+		if _, err := state.RecordAttemptEvent(ctx, domain.AttemptEvent{
+			AttemptID: attempt.ID, Type: domain.AttemptEventArtifact,
+			Name: pipeline.StreamSelectionArtifact, Payload: payload,
+		}); err != nil {
+			t.Fatalf("RecordAttemptEvent() error = %v", err)
+		}
+	}
+
+	response, err := service.ListJobs(ctx, JobQuery{Library: "downloads", WithSelection: true})
+	if err != nil {
+		t.Fatalf("ListJobs() error = %v", err)
+	}
+	kinds := make([]domain.StreamKind, 0, 2)
+	for _, selection := range response.Jobs[0].StreamSelection {
+		if selection.Decision == nil {
+			t.Fatalf("selection %+v has no decision", selection)
+		}
+		kinds = append(kinds, selection.Decision.Kind)
+	}
+	if !slices.Equal(kinds, []domain.StreamKind{domain.StreamKindAudio, domain.StreamKindSubtitle}) {
+		t.Fatalf("decision kinds = %v, want both audio and subtitle", kinds)
+	}
+}
+
+// TestListJobsReportsAPathOutsideEveryLibrary closes the other half of the
+// incident: zero results for a path Anvil could never match must not look like
+// zero results for a path that simply has no job.
+func TestListJobsReportsAPathOutsideEveryLibrary(t *testing.T) {
+	ctx := context.Background()
+	service, _, cfg, _ := testService(t, ctx)
+
+	tests := []struct {
+		name    string
+		path    string
+		outside bool
+	}{
+		{name: "outside every configured library", path: filepath.Join(t.TempDir(), "elsewhere", "Episode.mkv"), outside: true},
+		{name: "under the library but unknown", path: filepath.Join(cfg.Libraries["downloads"].Path, "Unknown", "Episode.mkv")},
+		{name: "under the handoff root but unknown", path: filepath.Join(cfg.Libraries["downloads"].Download.HandoffPath, "Unknown.mkv")},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			response, err := service.ListJobs(ctx, JobQuery{AbsolutePath: tt.path})
+			if err != nil {
+				t.Fatalf("ListJobs() error = %v", err)
+			}
+			if response.Matched != 0 {
+				t.Fatalf("Matched = %d, want no match", response.Matched)
+			}
+			if response.PathOutsideLibraries != tt.outside {
+				t.Fatalf("PathOutsideLibraries = %t, want %t", response.PathOutsideLibraries, tt.outside)
+			}
+		})
+	}
+
+	// A path that did match must never be reported as unmatchable.
+	response, err := service.ListJobs(ctx, JobQuery{AbsolutePath: filepath.Join(cfg.Libraries["downloads"].Path, "Release")})
+	if err != nil {
+		t.Fatalf("matching ListJobs() error = %v", err)
+	}
+	if response.Matched != 1 || response.PathOutsideLibraries {
+		t.Fatalf("matching listing = %+v, want a match and no outside-library flag", response)
+	}
+}
+
+// TestListJobsReportsEverySideAPathMatched covers an in-place replacement, where
+// the converted file is written back over its own source. Reporting one side
+// would tell a consumer the output is not a destination.
+func TestListJobsReportsEverySideAPathMatched(t *testing.T) {
+	ctx := context.Background()
+	service, state, cfg, job := testService(t, ctx)
+
+	// Journal a publish whose destination is the asset's own path.
+	assetPath := filepath.Join(cfg.Libraries["downloads"].Path, "Release", "Season", "Episode.mkv")
+	now := time.Now().UTC()
+	if err := state.CreatePublishOperation(ctx, replacepkg.PublishOperation{
+		JobID: job.ID, Kind: "replace", Mode: "replace", Stage: replacepkg.PublishStagePrepared,
+		ArtifactPath: "/staging/output.mkv", DestinationPath: assetPath,
+		CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("CreatePublishOperation() error = %v", err)
+	}
+
+	response, err := service.ListJobs(ctx, JobQuery{AbsolutePath: assetPath})
+	if err != nil {
+		t.Fatalf("ListJobs() error = %v", err)
+	}
+	if response.Matched != 1 {
+		t.Fatalf("Matched = %d, want the in-place job", response.Matched)
+	}
+	want := []PathMatchSide{PathMatchAsset, PathMatchDestination}
+	if !slices.Equal(response.Jobs[0].MatchedOn, want) {
+		t.Fatalf("MatchedOn = %v, want %v so the output is not reported as merely a source", response.Jobs[0].MatchedOn, want)
+	}
+}
+
+// TestHTTPForwardsWithSelection covers the server half of the wire hop. The
+// client half is pinned in client_test.go; without both, --with-selection can
+// be broken end to end with the whole suite green.
+func TestHTTPForwardsWithSelection(t *testing.T) {
+	ctx := context.Background()
+	service, state, _, job := testService(t, ctx)
+	recordStreamSelection(t, ctx, state, job.ID, germanMissingDecision())
+
+	tests := []struct {
+		name   string
+		target string
+		want   bool
+	}{
+		{name: "requested", target: "/v1/jobs?library=downloads&with_selection=true", want: true},
+		{name: "not requested", target: "/v1/jobs?library=downloads"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			request := httptest.NewRequest(http.MethodGet, tt.target, nil)
+			response := httptest.NewRecorder()
+			service.Handler().ServeHTTP(response, request)
+			if response.Code != http.StatusOK {
+				t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+			}
+			if got := strings.Contains(response.Body.String(), `"stream_selection"`); got != tt.want {
+				t.Fatalf("stream_selection present = %t, want %t, body = %s", got, tt.want, response.Body.String())
+			}
+		})
+	}
+}
+
+// TestUniqueAbsoluteKeysNormalizesAndDeduplicates pins the normalization that
+// keeps a traversal-equivalent path from being treated as a different key.
+func TestUniqueAbsoluteKeysNormalizesAndDeduplicates(t *testing.T) {
+	keys := uniqueAbsoluteKeys(
+		absolutePathKey{path: "/media/Movie.mkv", side: PathMatchSource},
+		absolutePathKey{path: "/media/Season/../Movie.mkv", side: PathMatchAsset},
+		absolutePathKey{path: "  ", side: PathMatchDestination},
+		absolutePathKey{path: "/media/Movie.mkv", side: PathMatchSource},
+		absolutePathKey{path: "/media/Movie.mkv/", side: PathMatchDestination},
+	)
+	want := []absolutePathKey{
+		{path: "/media/Movie.mkv", side: PathMatchSource},
+		{path: "/media/Movie.mkv", side: PathMatchAsset},
+		{path: "/media/Movie.mkv", side: PathMatchDestination},
+	}
+	if !slices.Equal(keys, want) {
+		t.Fatalf("uniqueAbsoluteKeys() = %+v, want %+v", keys, want)
 	}
 }

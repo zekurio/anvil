@@ -3,6 +3,8 @@ package controlapi
 import (
 	"strings"
 	"time"
+
+	"github.com/zekurio/anvil/pkg/domain"
 )
 
 const Version = "v1"
@@ -43,6 +45,15 @@ type JobListResponse struct {
 	Matched    int           `json:"matched"`
 	Truncated  bool          `json:"truncated"`
 	Jobs       []JobResponse `json:"jobs"`
+	// PathOutsideLibraries reports that the absolute_path selector resolved
+	// under no configured library root or handoff destination. Without this,
+	// zero results are indistinguishable from a question Anvil was structurally
+	// unable to answer, and a caller reports absence as fact.
+	//
+	// It describes the path against the current configuration, not the whole
+	// job history: a job journaled against a library that has since been
+	// reconfigured can still own a path reported as outside.
+	PathOutsideLibraries bool `json:"path_outside_libraries,omitempty"`
 }
 
 type JobResponse struct {
@@ -62,6 +73,41 @@ type JobResponse struct {
 	LastError       string              `json:"last_error,omitempty"`
 	DestinationPath string              `json:"destination_path,omitempty"`
 	PublishStage    string              `json:"publish_stage,omitempty"`
+	// MatchedOn reports every path of this job the absolute_path selector
+	// matched. It is empty when the query did not select by absolute path, so
+	// it never implies a match that was not asked for.
+	//
+	// It is a list because one path is legitimately several sides at once: an
+	// in-place replacement writes the converted file back over its own source,
+	// so reporting a single side would claim the output is not a destination.
+	MatchedOn []PathMatchSide `json:"matched_on,omitempty"`
+	// StreamSelection carries the audio and subtitle decisions of the most
+	// recent attempt that recorded any. It is only populated when the query
+	// asks for it, and stays absent for a job that never recorded a decision.
+	StreamSelection []StreamSelectionResponse `json:"stream_selection,omitempty"`
+}
+
+// PathMatchSide names which of a job's paths an absolute_path selector matched.
+// A destination match is the interesting one: it answers "which job produced
+// this file", which a source-indexed lookup cannot.
+type PathMatchSide string
+
+const (
+	PathMatchSource               PathMatchSide = "source"
+	PathMatchAsset                PathMatchSide = "asset"
+	PathMatchDestination          PathMatchSide = "destination"
+	PathMatchDestinationDirectory PathMatchSide = "destination_directory"
+)
+
+// StreamSelectionResponse is one recorded stream selection decision together
+// with the attempt that produced it.
+type StreamSelectionResponse struct {
+	AttemptID  int64     `json:"attempt_id"`
+	RecordedAt time.Time `json:"recorded_at"`
+	// Decision is absent when the record could not be decoded, so a reader can
+	// never mistake an unreadable decision for one that dropped nothing.
+	Decision      *domain.StreamSelectionDecision `json:"decision,omitempty"`
+	DecisionError string                          `json:"decision_error,omitempty"`
 }
 
 type OccurrenceResponse struct {
@@ -79,6 +125,9 @@ type JobQuery struct {
 	States       []string
 	CurrentOnly  bool
 	Limit        int
+	// WithSelection populates StreamSelection on each returned job. It is
+	// opt-in because the decisions are far larger than the rest of a listing.
+	WithSelection bool
 }
 
 // JobCancelRequest reuses the JobQuery selector vocabulary so a cancel can
