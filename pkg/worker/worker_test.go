@@ -868,3 +868,117 @@ func (m mutableDolbyVisionTool) Available(context.Context) (bool, string, error)
 	}
 	return *m.available, "", nil
 }
+
+// TestRunnerCancelStopsRunningProcessAndCleansStaging covers the operator
+// cancel path end to end: the child process dies, the staging dir with the
+// partial output is removed, and the job and attempt end up canceled.
+func TestRunnerCancelStopsRunningProcessAndCleansStaging(t *testing.T) {
+	ctx, cancel := context.WithCancelCause(context.Background())
+	defer cancel(context.Canceled)
+
+	tempDir := t.TempDir()
+	cfg := workerConfig()
+	cfg.Daemon.TempDir = tempDir
+	cfg.Flows["test-flow"] = config.FlowConfig{Steps: []string{"stage", "encode"}}
+
+	fakeStore := newFakeWorkerStore()
+	fakeStore.source = domain.MediaSource{ID: 1, LibraryName: "movies", Kind: domain.SourceKindFile, RelativePath: "Movie.mkv"}
+
+	encoding := make(chan string, 1)
+	runner := Runner{
+		Store:             fakeStore,
+		ConfigProvider:    func() config.Config { return cfg },
+		TempDir:           tempDir,
+		MaxAttempts:       2,
+		VerifyFingerprint: acceptFingerprint,
+		Pipeline: pipeline.Runner{
+			Registry: pipeline.NewRegistry(
+				staging.StageBlock{Manager: staging.Manager{Root: filepath.Join(tempDir, "staging")}},
+				pipeline.BlockFunc{BlockName: "encode", Fn: func(ctx context.Context, job *pipeline.JobContext) error {
+					if job.StagingDir == "" {
+						t.Error("staging dir was empty")
+						return errors.New("staging dir was empty")
+					}
+					if err := os.WriteFile(job.OutputPath, []byte("partial"), 0o640); err != nil {
+						return err
+					}
+					encoding <- job.StagingDir
+					_, err := process.OSRunner{}.Run(ctx, process.Command{Name: "/bin/sh", Args: []string{"-c", "sleep 30"}})
+					return err
+				}},
+			),
+		},
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- runner.Run(ctx, scheduler.Assignment{
+			Job:      domain.Job{ID: 99, SourceID: 1, LibraryName: "movies", State: domain.JobStateLeased},
+			WorkerID: "worker-1",
+		})
+	}()
+
+	var stagingDir string
+	select {
+	case stagingDir = <-encoding:
+	case <-time.After(5 * time.Second):
+		t.Fatal("encode block did not start")
+	}
+	started := time.Now()
+	cancel(scheduler.ErrJobCanceled)
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Run() error = %v, want nil for an operator cancel", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("canceled worker did not stop the running process in bounded time")
+	}
+	if elapsed := time.Since(started); elapsed > 10*time.Second {
+		t.Fatalf("cancel took %s, want prompt termination", elapsed)
+	}
+	if _, err := os.Stat(stagingDir); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("staging dir stat error = %v, want the partial output removed", err)
+	}
+	if fakeStore.attempt.State != domain.AttemptStateCanceled {
+		t.Fatalf("attempt state = %q, want canceled", fakeStore.attempt.State)
+	}
+	if got := fakeStore.transitions[len(fakeStore.transitions)-1]; got != domain.JobStateCanceled {
+		t.Fatalf("last transition = %q, want canceled", got)
+	}
+}
+
+func TestRunnerShutdownCancellationStillFailsTheAttempt(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	fakeStore := newFakeWorkerStore()
+	fakeStore.source = domain.MediaSource{ID: 1, LibraryName: "movies", Kind: domain.SourceKindFile, RelativePath: "Movie.mkv"}
+	runner := Runner{
+		Store:             fakeStore,
+		ConfigProvider:    workerConfig,
+		MaxAttempts:       2,
+		VerifyFingerprint: acceptFingerprint,
+		Pipeline: pipeline.Runner{
+			Registry: pipeline.NewRegistry(pipeline.BlockFunc{BlockName: "noop", Fn: func(ctx context.Context, _ *pipeline.JobContext) error {
+				cancel()
+				return ctx.Err()
+			}}),
+		},
+	}
+
+	err := runner.Run(ctx, scheduler.Assignment{
+		Job:      domain.Job{ID: 99, SourceID: 1, LibraryName: "movies", State: domain.JobStateLeased},
+		WorkerID: "worker-1",
+	})
+	if err == nil {
+		t.Fatal("Run() error = nil, want the shutdown failure to surface")
+	}
+	if fakeStore.attempt.State == domain.AttemptStateCanceled {
+		t.Fatal("daemon shutdown must not be recorded as an operator cancel")
+	}
+	for _, transition := range fakeStore.transitions {
+		if transition == domain.JobStateCanceled {
+			t.Fatal("daemon shutdown must not cancel the job")
+		}
+	}
+}

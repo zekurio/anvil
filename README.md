@@ -112,7 +112,12 @@ Before replace or handoff, Anvil probes the staged output and records diagnostic
 anvilctl status --json
 anvilctl job list --library sonarr-anime-downloads --path 'Release/Episode.mkv' --current-only --json
 anvilctl job list --absolute-path '/mnt/downloads/complete/Release/Episode.mkv' --current-only --json
+anvilctl job cancel --library sonarr-anime-downloads --state pending,running
+anvilctl job cancel --absolute-path '/mnt/downloads/complete/Release/Episode.mkv' --reason 'queued by mistake'
+anvilctl job cancel --library sonarr-anime-downloads 167 168 --json
 ```
+
+`job cancel` accepts the same selector vocabulary as `job list`, so it can never target a broader set than the equivalent listing; explicit job ids only narrow that selection further. It requires at least one selector, so a bare `anvilctl job cancel` is rejected instead of canceling the queue. Cancellation moves `pending`, `leased`, `running`, `validating`, `replacing`, and `retrying` jobs to the terminal `canceled` state, records the reason, cancels the running attempt, and signals the worker so `ffmpeg`/`ab-av1` are stopped and the staging directory with any partial output is removed; nothing is written to the destination. `canceled` is distinct from `skipped`, which still means Anvil decided a job needs no work. Cancelling an already terminal job is a reported no-op, not an error, and `anvild retry` can requeue a canceled job.
 
 Job path filters are exact. `--path` is library-relative and requires `--library`; `--absolute-path` resolves exact source, asset, planned handoff, journaled destination, and package destination-directory paths across configured libraries without requiring the path to still exist. Zero, one, or multiple jobs are returned without fuzzy selection. The API reports factual daemon, occurrence, job, heartbeat, lease, and publication state only; it does not emit workflow policy such as `wait_recommended`.
 
@@ -134,14 +139,14 @@ go run ./cmd/anvild retry --config examples/anvil.toml --failed --library movies
 go run ./cmd/anvild recover --config examples/anvil.toml
 go run ./cmd/anvild cleanup-staging --config examples/anvil.toml --older-than 24h --dry-run
 go run ./cmd/anvild backup --config examples/anvil.toml /srv/backups/anvil-$(date +%F).db
-go run ./cmd/anvild prune-jobs --config examples/anvil.toml --library movies --state complete,failed
-go run ./cmd/anvild prune-jobs --config examples/anvil.toml --library movies --state complete,failed --apply
+go run ./cmd/anvild prune-jobs --config examples/anvil.toml --library movies --state complete,failed,canceled
+go run ./cmd/anvild prune-jobs --config examples/anvil.toml --library movies --state complete,failed,canceled --apply
 go run ./cmd/anvild force-occurrence --config examples/anvil.toml --library usenet-tv 'Release/Episode.mkv'
 ```
 
 `backup` creates a consistent SQLite snapshot with `VACUUM INTO`, so committed data still present in the live WAL is included. The destination directory must already exist. Anvil writes a private sibling temporary database, verifies it with `PRAGMA integrity_check`, and installs it without replacement; it refuses URI destinations, the live database path, and every destination that already exists.
 
-`prune-jobs` only considers terminal jobs (`complete`, `failed`, or `skipped`) whose source occurrence is already marked `missing`. It preserves active jobs, jobs for present sources, and the source records themselves. The command is a dry run unless `--apply` is given, and reports matched jobs, affected sources, deletions, and per-state counts. Use `--library` and `--state` to narrow the transaction before applying it.
+`prune-jobs` only considers terminal jobs (`complete`, `failed`, `skipped`, or `canceled`) whose source occurrence is already marked `missing`. It preserves active jobs, jobs for present sources, and the source records themselves. The command is a dry run unless `--apply` is given, and reports matched jobs, affected sources, deletions, and per-state counts. Use `--library` and `--state` to narrow the transaction before applying it.
 
 `force-occurrence` resolves one exact library-relative media path through the configured scan rules, then explicitly creates and enqueues the next occurrence. It refuses absolute or escaping paths, missing or ambiguous targets, ignored media, unstable downloads, non-enqueueable assets, and any target with active work. File targets advance the source generation; package targets advance only the selected asset generation. Use this only when cleanup is disabled and an unchanged retained path intentionally represents new content that automatic discovery cannot distinguish.
 
@@ -151,7 +156,7 @@ Send `SIGHUP` to reload config without restarting. Reload can update libraries, 
 
 `preflight` is read-only: it does not migrate or mutate SQLite and does not create, copy, move, delete, or write media, staging, or log files. It reports scan candidates, current source and asset generations, whether a scan would retain an occurrence or create the next generation, existing job status, resolved flow/profile steps, staging/output paths with `job-<new>-attempt-<new>` placeholders where needed, planned publish and cleanup actions, and warnings for destructive settings. Search policy output is described as `ab-av1`/CRF-search driven; when search decides AV1 fitting is not worthwhile, the preflight plan shows whether Anvil will continue as video-copy/remux/metadata processing or force an encode with the lowest tested CRF.
 
-The SQLite store is bootstrapped at schema version 5 and fails closed when an existing database has a different schema. Start with a fresh store path when intentionally crossing an incompatible schema boundary.
+The SQLite store is bootstrapped at schema version 6. Databases from an earlier released schema version are migrated forward in place on open; unrecognized schemas still fail closed, so start with a fresh store path when intentionally crossing an incompatible schema boundary. Version 6 rebuilds the `jobs` table so its state constraint accepts `canceled`.
 
 With Nix:
 

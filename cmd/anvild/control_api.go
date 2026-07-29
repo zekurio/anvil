@@ -11,6 +11,7 @@ import (
 
 	"github.com/zekurio/anvil/pkg/config"
 	"github.com/zekurio/anvil/pkg/controlapi"
+	"github.com/zekurio/anvil/pkg/domain"
 	"github.com/zekurio/anvil/pkg/store"
 )
 
@@ -19,7 +20,14 @@ type runningControlAPI struct {
 	cleanup func() error
 }
 
-func startControlAPI(ctx context.Context, wg *sync.WaitGroup, cfgProvider func() config.Config, state *store.SQLiteStore, activeWorkers func() int, startedAt time.Time) (runningControlAPI, error) {
+// controlAPIWorkers exposes the live scheduler to the control API without
+// making the API depend on scheduler start-up order.
+type controlAPIWorkers struct {
+	active    func() int
+	cancelJob func(domain.JobID) bool
+}
+
+func startControlAPI(ctx context.Context, wg *sync.WaitGroup, cfgProvider func() config.Config, state *store.SQLiteStore, workers controlAPIWorkers, startedAt time.Time) (runningControlAPI, error) {
 	cfg := cfgProvider()
 	listener, cleanup, err := controlapi.ListenUnix(cfg.Daemon.ControlSocket)
 	if err != nil {
@@ -27,8 +35,9 @@ func startControlAPI(ctx context.Context, wg *sync.WaitGroup, cfgProvider func()
 	}
 	server := &http.Server{
 		Handler: controlapi.Service{
-			Store: state, Config: cfgProvider, ActiveWorkers: activeWorkers,
-			StartedAt: startedAt, DaemonVersion: controlapi.BuildVersion,
+			Store: state, Config: cfgProvider, ActiveWorkers: workers.active,
+			CancelRunningJob: workers.cancelJob,
+			StartedAt:        startedAt, DaemonVersion: controlapi.BuildVersion,
 		}.Handler(),
 		ReadHeaderTimeout: 5 * time.Second,
 		WriteTimeout:      30 * time.Second,

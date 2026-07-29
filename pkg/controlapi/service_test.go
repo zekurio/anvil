@@ -238,3 +238,126 @@ func testService(t *testing.T, ctx context.Context) (Service, *store.SQLiteStore
 	service := Service{Store: state, Config: func() config.Config { return cfg }, Now: func() time.Time { return now }}
 	return service, state, cfg, forced.Job
 }
+
+func TestCancelJobsRequiresAnExplicitSelector(t *testing.T) {
+	ctx := context.Background()
+	service, _, _, _ := testService(t, ctx)
+	if _, err := service.CancelJobs(ctx, JobCancelRequest{}); err == nil {
+		t.Fatal("CancelJobs() with no selector error = nil, want rejection")
+	}
+
+	request := httptest.NewRequest(http.MethodPost, "/v1/jobs/cancel", strings.NewReader(`{}`))
+	response := httptest.NewRecorder()
+	service.Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+	if !strings.Contains(response.Body.String(), `"code":"invalid_argument"`) {
+		t.Fatalf("body = %s", response.Body.String())
+	}
+	remaining, err := service.ListJobs(ctx, JobQuery{Library: "downloads"})
+	if err != nil {
+		t.Fatalf("ListJobs() error = %v", err)
+	}
+	if remaining.Jobs[0].State != string(domain.JobStatePending) {
+		t.Fatalf("rejected cancel changed job state to %q", remaining.Jobs[0].State)
+	}
+}
+
+func TestCancelJobsUsesTheJobListSelectorAndStaysIdempotent(t *testing.T) {
+	ctx := context.Background()
+	service, _, cfg, job := testService(t, ctx)
+	signaled := make([]domain.JobID, 0, 1)
+	service.CancelRunningJob = func(jobID domain.JobID) bool {
+		signaled = append(signaled, jobID)
+		return false
+	}
+
+	absolutePath := filepath.Join(cfg.Libraries["downloads"].Path, "Release", "Season", "Episode.mkv")
+	response, err := service.CancelJobs(ctx, JobCancelRequest{AbsolutePath: absolutePath, Reason: "queued by mistake"})
+	if err != nil {
+		t.Fatalf("CancelJobs() error = %v", err)
+	}
+	if response.Matched != 1 || response.Canceled != 1 || len(response.Jobs) != 1 {
+		t.Fatalf("CancelJobs() = %+v", response)
+	}
+	if response.Jobs[0].ID != int64(job.ID) || response.Jobs[0].PreviousState != string(domain.JobStatePending) || response.Jobs[0].State != string(domain.JobStateCanceled) {
+		t.Fatalf("CancelJobs() job = %+v", response.Jobs[0])
+	}
+	if len(signaled) != 1 || signaled[0] != job.ID {
+		t.Fatalf("signaled workers = %v, want job %d", signaled, job.ID)
+	}
+
+	listed, err := service.ListJobs(ctx, JobQuery{States: []string{string(domain.JobStateCanceled)}})
+	if err != nil {
+		t.Fatalf("ListJobs(canceled) error = %v", err)
+	}
+	if listed.Matched != 1 || listed.Jobs[0].ID != int64(job.ID) {
+		t.Fatalf("ListJobs(canceled) = %+v", listed)
+	}
+	skipped, err := service.ListJobs(ctx, JobQuery{States: []string{string(domain.JobStateSkipped)}})
+	if err != nil {
+		t.Fatalf("ListJobs(skipped) error = %v", err)
+	}
+	if skipped.Matched != 0 {
+		t.Fatalf("canceled job is indistinguishable from skipped: %+v", skipped)
+	}
+
+	repeat, err := service.CancelJobs(ctx, JobCancelRequest{AbsolutePath: absolutePath})
+	if err != nil {
+		t.Fatalf("repeat CancelJobs() error = %v", err)
+	}
+	if repeat.Matched != 1 || repeat.Canceled != 0 || repeat.Jobs[0].Canceled {
+		t.Fatalf("repeat CancelJobs() = %+v, want an idempotent no-op", repeat)
+	}
+	if len(signaled) != 1 {
+		t.Fatalf("terminal job signaled a worker again: %v", signaled)
+	}
+}
+
+func TestCancelJobsNeverTargetsMoreThanTheEquivalentJobList(t *testing.T) {
+	ctx := context.Background()
+	service, _, _, job := testService(t, ctx)
+
+	if _, err := service.CancelJobs(ctx, JobCancelRequest{Library: "other", IDs: []int64{int64(job.ID)}}); err == nil {
+		t.Fatal("CancelJobs() for an id outside the selector error = nil, want rejection")
+	}
+	listed, err := service.ListJobs(ctx, JobQuery{})
+	if err != nil {
+		t.Fatalf("ListJobs() error = %v", err)
+	}
+	if listed.Jobs[0].State != string(domain.JobStatePending) {
+		t.Fatalf("rejected cancel changed job state to %q", listed.Jobs[0].State)
+	}
+
+	response, err := service.CancelJobs(ctx, JobCancelRequest{Library: "downloads", IDs: []int64{int64(job.ID)}})
+	if err != nil {
+		t.Fatalf("CancelJobs() error = %v", err)
+	}
+	if response.Canceled != 1 || response.Jobs[0].ID != int64(job.ID) {
+		t.Fatalf("CancelJobs() = %+v", response)
+	}
+}
+
+func TestJobCancelEndpointRejectsNonPostAndUnknownFields(t *testing.T) {
+	service := Service{}
+	tests := []struct {
+		name    string
+		request *http.Request
+		want    int
+	}{
+		{name: "get", request: httptest.NewRequest(http.MethodGet, "/v1/jobs/cancel", nil), want: http.StatusMethodNotAllowed},
+		{name: "query parameters", request: httptest.NewRequest(http.MethodPost, "/v1/jobs/cancel?library=downloads", strings.NewReader(`{}`)), want: http.StatusBadRequest},
+		{name: "unknown field", request: httptest.NewRequest(http.MethodPost, "/v1/jobs/cancel", strings.NewReader(`{"all":true}`)), want: http.StatusBadRequest},
+		{name: "trailing json", request: httptest.NewRequest(http.MethodPost, "/v1/jobs/cancel", strings.NewReader(`{"ids":[1]}{"ids":[2]}`)), want: http.StatusBadRequest},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			response := httptest.NewRecorder()
+			service.Handler().ServeHTTP(response, tt.request)
+			if response.Code != tt.want {
+				t.Fatalf("status = %d, want %d, body = %s", response.Code, tt.want, response.Body.String())
+			}
+		})
+	}
+}

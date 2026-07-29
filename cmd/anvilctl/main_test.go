@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"net"
 	"net/http"
@@ -94,5 +95,76 @@ func TestRunHelpDoesNotRequireDaemon(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), "anvilctl") {
 		t.Fatalf("help output = %q", stdout.String())
+	}
+}
+
+func TestRunJobCancelRequiresSelectorAndPostsSelection(t *testing.T) {
+	socketPath := filepath.Join(t.TempDir(), "anvild.sock")
+	listener, cleanup, err := controlapi.ListenUnix(socketPath)
+	if err != nil {
+		t.Fatalf("ListenUnix() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := cleanup(); err != nil {
+			t.Errorf("cleanup() error = %v", err)
+		}
+	})
+	var received controlapi.JobCancelRequest
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/jobs/cancel", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Errorf("method = %s, want POST", r.Method)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&received); err != nil {
+			t.Errorf("decode cancel request: %v", err)
+		}
+		writeTestJSON(t, w, controlapi.JobCancelResponse{
+			APIVersion: controlapi.Version, Matched: 1, Canceled: 1,
+			Jobs: []controlapi.JobCancelResult{{
+				ID: 167, Slug: "kind-pink-heron", Library: "downloads",
+				PreviousState: "running", State: "canceled", Canceled: true, WorkerSignaled: true,
+			}},
+		})
+	})
+	server := &http.Server{Handler: mux, ReadHeaderTimeout: time.Second}
+	serverDone := make(chan error, 1)
+	go func() { serverDone <- server.Serve(listener) }()
+	t.Cleanup(func() {
+		if err := server.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+			t.Errorf("server.Close() error = %v", err)
+		}
+		if err := <-serverDone; err != nil && !errors.Is(err, http.ErrServerClosed) && !errors.Is(err, net.ErrClosed) {
+			t.Errorf("server.Serve() error = %v", err)
+		}
+	})
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	if err := run(context.Background(), []string{"--socket", socketPath, "job", "cancel"}, &stdout, &stderr); err == nil {
+		t.Fatal("run(job cancel) error = nil, want a rejected bare cancel")
+	}
+	if received.Library != "" || len(received.IDs) != 0 {
+		t.Fatalf("bare cancel reached the daemon: %+v", received)
+	}
+
+	stdout.Reset()
+	if err := run(context.Background(), []string{
+		"--socket", socketPath, "job", "cancel", "--library", "downloads", "--state", "pending,running", "167",
+	}, &stdout, &stderr); err != nil {
+		t.Fatalf("run(job cancel) error = %v, stderr = %s", err, stderr.String())
+	}
+	if received.Library != "downloads" || len(received.IDs) != 1 || received.IDs[0] != 167 {
+		t.Fatalf("cancel request = %+v", received)
+	}
+	if len(received.States) != 1 || received.States[0] != "pending,running" {
+		t.Fatalf("cancel states = %v", received.States)
+	}
+	if !strings.Contains(stdout.String(), "canceled 1 of 1 matching jobs") {
+		t.Fatalf("cancel output = %s", stdout.String())
+	}
+
+	stdout.Reset()
+	if err := run(context.Background(), []string{"--socket", socketPath, "job", "cancel", "--library", "downloads", "abc"}, &stdout, &stderr); err == nil {
+		t.Fatal("run(job cancel with invalid id) error = nil, want failure")
 	}
 }

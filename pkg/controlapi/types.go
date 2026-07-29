@@ -1,6 +1,9 @@
 package controlapi
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
 const Version = "v1"
 
@@ -76,4 +79,57 @@ type JobQuery struct {
 	States       []string
 	CurrentOnly  bool
 	Limit        int
+}
+
+// JobCancelRequest reuses the JobQuery selector vocabulary so a cancel can
+// never target a broader set than the equivalent job list. IDs narrow the
+// selection further; they never widen it.
+type JobCancelRequest struct {
+	Library      string   `json:"library,omitempty"`
+	Path         string   `json:"path,omitempty"`
+	AbsolutePath string   `json:"absolute_path,omitempty"`
+	States       []string `json:"state,omitempty"`
+	CurrentOnly  bool     `json:"current_only,omitempty"`
+	IDs          []int64  `json:"ids,omitempty"`
+	Reason       string   `json:"reason,omitempty"`
+}
+
+func (r JobCancelRequest) query() JobQuery {
+	return JobQuery{
+		Library: r.Library, Path: r.Path, AbsolutePath: r.AbsolutePath,
+		States: r.States, CurrentOnly: r.CurrentOnly,
+	}
+}
+
+func (r JobCancelRequest) hasSelector() bool {
+	if len(r.IDs) > 0 || r.CurrentOnly {
+		return true
+	}
+	if strings.TrimSpace(r.Library) != "" || strings.TrimSpace(r.Path) != "" || strings.TrimSpace(r.AbsolutePath) != "" {
+		return true
+	}
+	for _, state := range r.States {
+		if strings.TrimSpace(state) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+type JobCancelResponse struct {
+	APIVersion string            `json:"api_version"`
+	ServerTime time.Time         `json:"server_time"`
+	Matched    int               `json:"matched"`
+	Canceled   int               `json:"canceled"`
+	Jobs       []JobCancelResult `json:"jobs"`
+}
+
+type JobCancelResult struct {
+	ID             int64  `json:"id"`
+	Slug           string `json:"slug"`
+	Library        string `json:"library"`
+	PreviousState  string `json:"previous_state"`
+	State          string `json:"state"`
+	Canceled       bool   `json:"canceled"`
+	WorkerSignaled bool   `json:"worker_signaled"`
 }
