@@ -229,13 +229,16 @@ The flake exposes `packages.default` (everything), `packages.anvild` (the daemon
 
 The package and dev shell prefer `jellyfin-ffmpeg` on Linux when nixpkgs provides it, and fall back to stock ffmpeg elsewhere. The NixOS module adds Jellyfin ffmpeg, `ab-av1`, `dovi-tool`, and MKVToolNix to the service PATH by default, writes the generated TOML to `/etc/anvil/anvil.toml`, creates `/var/lib/anvil/tmp` with `StateDirectory`, exposes the control socket from `RuntimeDirectory`, hardens the systemd service with a writable path allowlist, and exposes `services.anvil.service.*` knobs for nice/IO/CPU weighting and extra writable paths.
 
-The module installs the control client by default and points it at the configured socket:
+The module can install the standalone control client and point it at the configured socket:
 
 ```nix
 services.anvil = {
   enable = true;
   package = inputs.anvil.packages.${pkgs.system}.anvild;
-  controlClient.package = inputs.anvil.packages.${pkgs.system}.anvilctl;
+  controlClient = {
+    install = true;
+    package = inputs.anvil.packages.${pkgs.system}.anvilctl;
+  };
   group = "anvil";
 };
 users.users.alice.extraGroups = [ "anvil" ];
