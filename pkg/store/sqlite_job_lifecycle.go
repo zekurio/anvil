@@ -5,10 +5,12 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/zekurio/anvil/pkg/domain"
+	replacepkg "github.com/zekurio/anvil/pkg/replace"
 )
 
 const activeOccurrenceTargetSQL = `EXISTS (
@@ -88,11 +90,17 @@ WHERE id = ?
 	return job, nil
 }
 
-// CancelJobs terminally cancels every requested job that is not already
-// terminal. It is idempotent: an already terminal job is reported with
-// Canceled=false instead of failing the whole request. Attempts still marked
-// running are canceled in the same transaction, because a canceled job clears
-// its lease and would otherwise never be visited by stale-job recovery.
+// CancelJobs terminally cancels every requested job that is still cancelable.
+// It is idempotent and never fails the batch for one job: an already terminal
+// job, a job whose state no longer matches the requested filter, a job that
+// disappeared, and a job with a journaled publish are all reported with
+// Canceled=false and a SkipReason. Refusing a journaled publish is the
+// data-safety rule that matters most: canceling clears the lease, so a job
+// terminated between preparing and committing a publish could never be
+// re-leased, recovered, or rescanned, and its destination file, backup, and
+// journal row would be stranded. Attempts still marked running are canceled in
+// the same transaction, because a canceled job clears its lease and would
+// otherwise never be visited by stale-job recovery.
 func (s *SQLiteStore) CancelJobs(ctx context.Context, input CancelJobsInput) ([]CancelJobResult, error) {
 	now := defaultNow(input.Now)
 	reason := strings.TrimSpace(input.Reason)
@@ -117,6 +125,10 @@ func (s *SQLiteStore) CancelJobs(ctx context.Context, input CancelJobsInput) ([]
 		}
 		seen[id] = struct{}{}
 		job, err := getJobTx(ctx, tx, id)
+		if errors.Is(err, ErrNotFound) {
+			results = append(results, CancelJobResult{JobID: id, SkipReason: CancelSkipMissing})
+			continue
+		}
 		if err != nil {
 			return nil, fmt.Errorf("load job %d for cancel: %w", id, err)
 		}
@@ -124,7 +136,12 @@ func (s *SQLiteStore) CancelJobs(ctx context.Context, input CancelJobsInput) ([]
 			JobID: job.ID, Slug: job.Slug, LibraryName: job.LibraryName,
 			PreviousState: job.State, State: job.State,
 		}
-		if !job.State.Cancelable() {
+		skip, err := cancelSkipReasonTx(ctx, tx, job, input.States)
+		if err != nil {
+			return nil, err
+		}
+		if skip != "" {
+			result.SkipReason = skip
 			results = append(results, result)
 			continue
 		}
@@ -151,6 +168,34 @@ WHERE id = ? AND state = ?
 		return nil, fmt.Errorf("commit cancel transaction: %w", err)
 	}
 	return results, nil
+}
+
+// cancelSkipReasonTx reports why a job must not be canceled, or an empty reason
+// when canceling it is safe.
+func cancelSkipReasonTx(ctx context.Context, tx *sql.Tx, job domain.Job, states []domain.JobState) (CancelSkipReason, error) {
+	if !job.State.Cancelable() {
+		return CancelSkipAlreadyTerminal, nil
+	}
+	if len(states) > 0 && !slices.Contains(states, job.State) {
+		return CancelSkipStateChanged, nil
+	}
+	var stage string
+	err := tx.QueryRowContext(ctx, `
+SELECT stage FROM publish_operations WHERE job_id = ?
+`, int64(job.ID)).Scan(&stage)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("check publish operation for job %d: %w", job.ID, err)
+	}
+	// A conflicted publish wrote nothing and needs operator attention, so it
+	// stays cancelable. Every other stage means the destination is already
+	// being written or has been written, and only the job itself can finish it.
+	if stage == string(replacepkg.PublishStageConflict) {
+		return "", nil
+	}
+	return CancelSkipPublishInFlight, nil
 }
 
 func (s *SQLiteStore) RecordJobFileSizes(ctx context.Context, jobID domain.JobID, inputSizeBytes int64, outputSizeBytes int64, now time.Time) (domain.Job, error) {
