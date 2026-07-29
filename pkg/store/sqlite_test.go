@@ -998,3 +998,86 @@ func leaseAndStartAttempt(t *testing.T, ctx context.Context, store *SQLiteStore,
 func testNow() time.Time {
 	return time.Date(2026, 6, 27, 12, 0, 0, 0, time.UTC)
 }
+
+// TestLatestAttemptArtifactsReturnsOnlyTheNewestAttempt pins the contract the
+// control API depends on: a retried job reports the decision that describes the
+// file on disk now, and a job that recorded nothing is absent rather than empty.
+func TestLatestAttemptArtifactsReturnsOnlyTheNewestAttempt(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	now := testNow()
+
+	source := upsertTestSource(t, ctx, store, "movies", "Movie.mkv")
+	if _, _, err := store.EnqueueJob(ctx, EnqueueJobInput{
+		SourceID: source.ID, LibraryName: source.LibraryName, Now: now,
+	}); err != nil {
+		t.Fatalf("enqueue job: %v", err)
+	}
+	silent := upsertTestSource(t, ctx, store, "movies", "Silent.mkv")
+	if _, _, err := store.EnqueueJob(ctx, EnqueueJobInput{
+		SourceID: silent.ID, LibraryName: silent.LibraryName, Now: now,
+	}); err != nil {
+		t.Fatalf("enqueue silent job: %v", err)
+	}
+
+	job, err := store.LeaseNextJob(ctx, "worker-1", now.Add(time.Minute), now)
+	if err != nil {
+		t.Fatalf("LeaseNextJob() error = %v", err)
+	}
+	silentJob, err := store.LeaseNextJob(ctx, "worker-2", now.Add(time.Minute), now)
+	if err != nil {
+		t.Fatalf("LeaseNextJob() for the silent job error = %v", err)
+	}
+
+	// Two attempts on the same job, each recording its own decision.
+	var attemptIDs []domain.AttemptID
+	for i, payload := range []string{`{"rule":"language_filter"}`, `{"rule":"fallback_keep_first"}`} {
+		attempt, err := store.StartAttempt(ctx, job.ID, "worker-1", nil, nil, nil, now.Add(time.Duration(i)*time.Second))
+		if err != nil {
+			t.Fatalf("StartAttempt() error = %v", err)
+		}
+		attemptIDs = append(attemptIDs, attempt.ID)
+		if _, err := store.RecordAttemptEvent(ctx, domain.AttemptEvent{
+			AttemptID: attempt.ID, Type: domain.AttemptEventArtifact,
+			Name: "stream-selection", Payload: []byte(payload),
+		}); err != nil {
+			t.Fatalf("RecordAttemptEvent() error = %v", err)
+		}
+		// An unrelated artifact must not be returned.
+		if _, err := store.RecordAttemptEvent(ctx, domain.AttemptEvent{
+			AttemptID: attempt.ID, Type: domain.AttemptEventArtifact,
+			Name: "process-output", Payload: []byte(`{"command":["ffmpeg"]}`),
+		}); err != nil {
+			t.Fatalf("RecordAttemptEvent() for the unrelated artifact error = %v", err)
+		}
+		if _, err := store.FinishAttempt(ctx, attempt.ID, domain.AttemptStateFailed, "boom", now.Add(time.Duration(i)*time.Second)); err != nil {
+			t.Fatalf("FinishAttempt() error = %v", err)
+		}
+	}
+
+	result, err := store.LatestAttemptArtifacts(ctx, "stream-selection", []domain.JobID{job.ID, silentJob.ID})
+	if err != nil {
+		t.Fatalf("LatestAttemptArtifacts() error = %v", err)
+	}
+	events := result[job.ID]
+	if len(events) != 1 {
+		t.Fatalf("events = %+v, want only the newest attempt's decision", events)
+	}
+	if events[0].AttemptID != attemptIDs[len(attemptIDs)-1] {
+		t.Fatalf("attempt = %d, want the newest attempt %d", events[0].AttemptID, attemptIDs[len(attemptIDs)-1])
+	}
+	if string(events[0].Payload) != `{"rule":"fallback_keep_first"}` {
+		t.Fatalf("payload = %s, want the newest attempt's decision", events[0].Payload)
+	}
+	if _, ok := result[silentJob.ID]; ok {
+		t.Fatalf("job that recorded nothing is present in %+v, want it absent", result)
+	}
+
+	empty, err := store.LatestAttemptArtifacts(ctx, "stream-selection", nil)
+	if err != nil {
+		t.Fatalf("LatestAttemptArtifacts(nil) error = %v", err)
+	}
+	if len(empty) != 0 {
+		t.Fatalf("LatestAttemptArtifacts(nil) = %+v, want empty", empty)
+	}
+}

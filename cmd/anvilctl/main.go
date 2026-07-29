@@ -18,15 +18,16 @@ import (
 const defaultControlSocket = "/run/anvil/anvild.sock"
 
 type options struct {
-	socketPath   string
-	jsonOutput   bool
-	library      string
-	path         string
-	absolutePath string
-	states       string
-	currentOnly  bool
-	limit        int
-	reason       string
+	socketPath    string
+	jsonOutput    bool
+	library       string
+	path          string
+	absolutePath  string
+	states        string
+	currentOnly   bool
+	limit         int
+	reason        string
+	withSelection bool
 }
 
 func main() {
@@ -122,6 +123,7 @@ func runJobList(ctx context.Context, client *controlapi.Client, opts options, ar
 	flags.StringVar(&opts.states, "state", "", "comma-separated job states")
 	flags.BoolVar(&opts.currentOnly, "current-only", false, "restrict to current source and asset occurrences")
 	flags.IntVar(&opts.limit, "limit", 0, "maximum jobs to return; 0 means no limit")
+	flags.BoolVar(&opts.withSelection, "with-selection", false, "include the recorded audio and subtitle stream selection")
 	flags.BoolVar(&opts.jsonOutput, "json", false, "write JSON output")
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -144,6 +146,7 @@ func runJobList(ctx context.Context, client *controlapi.Client, opts options, ar
 	query := controlapi.JobQuery{
 		Library: opts.library, Path: opts.path, AbsolutePath: opts.absolutePath,
 		States: splitStates(opts.states), CurrentOnly: opts.currentOnly, Limit: opts.limit,
+		WithSelection: opts.withSelection,
 	}
 	response, err := client.ListJobs(ctx, query)
 	if err != nil {
@@ -241,14 +244,14 @@ func writeStatus(out io.Writer, response controlapi.StatusResponse) error {
 
 func writeJobs(out io.Writer, response controlapi.JobListResponse) error {
 	w := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
-	if _, err := fmt.Fprintln(w, "JOB\tID\tSTATE\tLIBRARY\tUPDATED\tSOURCE\tDESTINATION\tERROR"); err != nil {
+	if _, err := fmt.Fprintln(w, "JOB\tID\tSTATE\tLIBRARY\tUPDATED\tMATCHED\tSOURCE\tDESTINATION\tERROR"); err != nil {
 		return err
 	}
 	for _, job := range response.Jobs {
-		if _, err := fmt.Fprintf(w, "%s\t%d\t%s\t%s\t%s\t%s\t%s\t%s\n",
+		if _, err := fmt.Fprintf(w, "%s\t%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
 			job.Slug, job.ID, job.State, job.Library,
 			job.UpdatedAt.Format("2006-01-02T15:04:05Z07:00"),
-			job.Source.AbsolutePath, job.DestinationPath, job.LastError,
+			job.MatchedOn, job.Source.AbsolutePath, job.DestinationPath, job.LastError,
 		); err != nil {
 			return err
 		}
@@ -256,9 +259,55 @@ func writeJobs(out io.Writer, response controlapi.JobListResponse) error {
 	if err := w.Flush(); err != nil {
 		return err
 	}
+	if err := writeJobStreamSelections(out, response.Jobs); err != nil {
+		return err
+	}
 	if response.Truncated {
 		_, err := fmt.Fprintf(out, "showing %d of %d matching jobs\n", len(response.Jobs), response.Matched)
 		return err
+	}
+	return nil
+}
+
+// writeJobStreamSelections renders the recorded decisions below the listing.
+// They are far too wide for a table column, and they are only present when the
+// caller asked for them.
+func writeJobStreamSelections(out io.Writer, jobs []controlapi.JobResponse) error {
+	for _, job := range jobs {
+		for _, selection := range job.StreamSelection {
+			if selection.DecisionError != "" {
+				if _, err := fmt.Fprintf(out, "\n%s stream selection (attempt %d): unreadable: %s\n",
+					job.Slug, selection.AttemptID, selection.DecisionError); err != nil {
+					return err
+				}
+				continue
+			}
+			decision := selection.Decision
+			if _, err := fmt.Fprintf(out, "\n%s %s selection (attempt %d): rule %s\n",
+				job.Slug, decision.Kind, selection.AttemptID, decision.Rule); err != nil {
+				return err
+			}
+			if len(decision.RequestedLanguages) > 0 {
+				if _, err := fmt.Fprintf(out, "  requested: %s\n", strings.Join(decision.RequestedLanguages, ", ")); err != nil {
+					return err
+				}
+			}
+			if len(decision.MissingLanguages) > 0 {
+				if _, err := fmt.Fprintf(out, "  missing from source: %s\n", strings.Join(decision.MissingLanguages, ", ")); err != nil {
+					return err
+				}
+			}
+			for _, stream := range decision.Streams {
+				status := "dropped"
+				if stream.Kept {
+					status = "kept"
+				}
+				if _, err := fmt.Fprintf(out, "  #%d %s %s %s (%s)\n",
+					stream.Index, stream.Codec, stream.Language, status, stream.Reason); err != nil {
+					return err
+				}
+			}
+		}
 	}
 	return nil
 }
@@ -286,9 +335,17 @@ func writeUsage(out io.Writer) error {
 	_, err := fmt.Fprintln(out, `Usage:
   anvilctl [--socket PATH] status [--json]
   anvilctl [--socket PATH] job list [--library NAME] [--path PATH | --absolute-path PATH]
-           [--state STATE,...] [--current-only] [--limit N] [--json]
+           [--state STATE,...] [--current-only] [--limit N] [--with-selection] [--json]
   anvilctl [--socket PATH] job cancel [--library NAME] [--path PATH | --absolute-path PATH]
            [--state STATE,...] [--current-only] [--reason TEXT] [--json] [JOB_ID...]
+
+--absolute-path matches a job's source, asset, and destination paths, so a
+converted file resolves back to the job that produced it. The MATCHED column
+reports which side matched.
+
+--with-selection adds the audio and subtitle streams Anvil kept and dropped,
+with the reason for each, recorded per attempt and readable after the source
+file is gone.
 
 Job cancellation requires at least one narrowing selector, so a bare "job cancel"
 is rejected; --current-only only refines another selector and is not one itself.

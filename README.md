@@ -112,6 +112,8 @@ Before replace or handoff, Anvil probes the staged output and records diagnostic
 anvilctl status --json
 anvilctl job list --library sonarr-anime-downloads --path 'Release/Episode.mkv' --current-only --json
 anvilctl job list --absolute-path '/mnt/downloads/complete/Release/Episode.mkv' --current-only --json
+anvilctl job list --absolute-path '/mnt/media/converted/Release/Episode.mkv' --json
+anvilctl job list --library sonarr-anime-downloads --with-selection --json
 anvilctl job cancel --library sonarr-anime-downloads --state pending,running
 anvilctl job cancel --absolute-path '/mnt/downloads/complete/Release/Episode.mkv' --reason 'queued by mistake'
 anvilctl job cancel --library sonarr-anime-downloads 167 168 --json
@@ -125,7 +127,9 @@ There is deliberately no `--force`: bypassing the guard is the same thing as str
 
 A publish that has already stopped at `conflict` is the one exception: it stays cancelable, because it needs an operator either way and refusing would only trap the job. A conflict can be raised after the destination was published, so cancelling one can leave a published destination and an orphaned `.anvil-backup` in place — the same residue the conflict itself left. `anvild retry` re-queues the job and re-runs publish recovery.
 
-Job path filters are exact. `--path` is library-relative and requires `--library`; `--absolute-path` resolves exact source, asset, planned handoff, journaled destination, and package destination-directory paths across configured libraries without requiring the path to still exist. Zero, one, or multiple jobs are returned without fuzzy selection. The API reports factual daemon, occurrence, job, heartbeat, lease, and publication state only; it does not emit workflow policy such as `wait_recommended`.
+Job path filters are exact. `--path` is library-relative and requires `--library`; `--absolute-path` resolves exact source, asset, planned handoff, journaled destination, and package destination-directory paths across configured libraries without requiring the path to still exist. A converted file therefore resolves back to the job that produced it, and each match reports `matched_on` — `source`, `asset`, `destination`, or `destination_directory` — so a caller can tell which side it hit. `matched_on` is absent when the query did not select by absolute path, so it never implies a match nobody asked for. Zero, one, or multiple jobs are returned without fuzzy selection.
+
+`--with-selection` adds `stream_selection`: the audio and subtitle decisions recorded by the most recent attempt that made any, including the requested languages, the languages the source never had, and per-stream `kept`/`reason`. It is opt-in because the decisions dwarf the rest of a listing. Because the record lives on the attempt, it answers "was that audio track dropped, or was it never there?" long after `cleanupSourceMedia` deleted the original. A job that recorded no decision has no `stream_selection` field at all, which is deliberately distinct from a decision that kept every stream. The API reports factual daemon, occurrence, job, heartbeat, lease, and publication state only; it does not emit workflow policy such as `wait_recommended`.
 
 Other operator commands:
 
