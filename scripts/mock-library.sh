@@ -317,7 +317,7 @@ run_smoke() {
     > "$root/logs/anvild.log" 2>&1 &
   daemon_pid="$!"
 
-  wait_for_control_api "$root/state/anvild.sock"
+  wait_for_control_socket "$root/state/anvild.sock"
   go run ./cmd/anvilctl --socket "$root/state/anvild.sock" status --json \
     | grep -q '"state": "ready"'
 
@@ -327,6 +327,17 @@ run_smoke() {
     --absolute-path "$root/imports/tv/Mock.Download.S01/Mock.Download.S01E01/Mock Download S01E01.mkv" \
     --current-only --json \
     | grep -q '"matched": 1'
+
+  # The operator surface is part of what this fixture proves: every live
+  # command now runs inside the daemon, so a broken one is a broken daemon.
+  go run ./cmd/anvilctl --socket "$root/state/anvild.sock" library stats --json >/dev/null
+  go run ./cmd/anvilctl --socket "$root/state/anvild.sock" job prune --json \
+    | grep -q '"dry_run": true'
+  go run ./cmd/anvilctl --socket "$root/state/anvild.sock" staging cleanup --older-than 24h --dry-run --json \
+    | grep -q '"dry_run": true'
+  go run ./cmd/anvilctl --socket "$root/state/anvild.sock" store backup "$root/state/anvil-backup.db" --json \
+    | grep -q '"integrity": "ok"'
+  rm -f "$root/state/anvil-backup.db"
 
   cleanup_processes
   rm -f "$root/state/anvild.sock"
@@ -343,6 +354,8 @@ clean_run_outputs() {
     "$root/state/anvil.db" \
     "$root/state/anvil.db-shm" \
     "$root/state/anvil.db-wal" \
+    "$root/state/anvil.db.lock" \
+    "$root/state/anvil-backup.db" \
     "$root/state/anvild.sock" \
     "$root/media/movies/Mock Movie (2026)/Mock Movie (2026).anvil.mkv" \
     "$root/media/tv/Mock Anime/Season 01/Mock Anime S01E01.anvil.mkv"
@@ -365,12 +378,12 @@ wait_for_arr() {
   done
 }
 
-wait_for_control_api() {
+wait_for_control_socket() {
   local socket_path="$1"
   local deadline=$((SECONDS + 15))
   until [ -S "$socket_path" ]; do
     if [ "$SECONDS" -ge "$deadline" ]; then
-      echo "Anvil control API did not create $socket_path." >&2
+      echo "anvild did not create the control socket $socket_path." >&2
       exit 1
     fi
     sleep 0.25

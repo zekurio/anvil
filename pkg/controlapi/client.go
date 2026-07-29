@@ -1,23 +1,30 @@
 package controlapi
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net"
-	"net/http"
-	"net/url"
+	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 )
 
+// dialTimeout bounds the connect itself. A daemon that is up answers instantly
+// over a Unix socket; a longer wait only delays a clear "not running" message.
+const dialTimeout = 5 * time.Second
+
+// Client speaks the private control protocol over the daemon's Unix socket. It
+// opens one connection per command, so a slow or abandoned command can never
+// wedge later ones.
 type Client struct {
-	httpClient *http.Client
+	socketPath string
+	// Timeout overrides the per-command default deadline. Zero uses the
+	// command's own timeout, which is what operators want by default.
+	Timeout time.Duration
 }
 
 func NewClient(socketPath string) (*Client, error) {
@@ -26,114 +33,195 @@ func NewClient(socketPath string) (*Client, error) {
 		return nil, errors.New("control socket path is required")
 	}
 	if !filepath.IsAbs(socketPath) {
-		return nil, errors.New("control socket path must be absolute")
+		return nil, fmt.Errorf("control socket path %q must be absolute", socketPath)
 	}
-	dialer := &net.Dialer{Timeout: 5 * time.Second}
-	transport := &http.Transport{
-		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-			return dialer.DialContext(ctx, "unix", socketPath)
-		},
+	return &Client{socketPath: socketPath}, nil
+}
+
+// SocketPath reports the socket this client talks to, so callers can name it in
+// their own diagnostics without tracking it separately.
+func (c *Client) SocketPath() string {
+	if c == nil {
+		return ""
 	}
-	return &Client{httpClient: &http.Client{Transport: transport, Timeout: 15 * time.Second}}, nil
+	return c.socketPath
 }
 
 func (c *Client) Status(ctx context.Context) (StatusResponse, error) {
-	var response StatusResponse
-	if err := c.get(ctx, "/v1/status", nil, &response); err != nil {
-		return StatusResponse{}, err
-	}
-	return response, nil
+	return call[emptyRequest, StatusResponse](ctx, c, CommandStatus, emptyRequest{})
 }
 
 func (c *Client) ListJobs(ctx context.Context, query JobQuery) (JobListResponse, error) {
-	if _, _, _, err := normalizeJobQuery(query); err != nil {
+	if err := query.validate(); err != nil {
 		return JobListResponse{}, err
 	}
-	values := make(url.Values)
-	if query.Library != "" {
-		values.Set("library", query.Library)
-	}
-	if query.Path != "" {
-		values.Set("path", query.Path)
-	}
-	if query.AbsolutePath != "" {
-		values.Set("absolute_path", query.AbsolutePath)
-	}
-	for _, state := range query.States {
-		values.Add("state", state)
-	}
-	if query.CurrentOnly {
-		values.Set("current_only", "true")
-	}
-	if query.WithSelection {
-		values.Set("with_selection", "true")
-	}
-	if query.Limit > 0 {
-		values.Set("limit", strconv.Itoa(query.Limit))
-	}
-	var response JobListResponse
-	if err := c.get(ctx, "/v1/jobs", values, &response); err != nil {
-		return JobListResponse{}, err
-	}
-	return response, nil
+	return call[JobQuery, JobListResponse](ctx, c, CommandJobList, query)
+}
+
+func (c *Client) ShowJob(ctx context.Context, request JobShowRequest) (JobShowResponse, error) {
+	return call[JobShowRequest, JobShowResponse](ctx, c, CommandJobShow, request)
 }
 
 // CancelJobs requires an explicit selector; the daemon rejects an empty one so
-// a mistyped command can never cancel the whole queue.
+// a mistyped command can never cancel the whole queue. The client checks too,
+// so the mistake never leaves the terminal.
 func (c *Client) CancelJobs(ctx context.Context, request JobCancelRequest) (JobCancelResponse, error) {
 	if !request.hasSelector() {
-		return JobCancelResponse{}, errors.New("cancel requires at least one selector")
+		return JobCancelResponse{}, newError(CodeInvalidArgument, "cancel requires at least one selector")
 	}
-	if _, _, _, err := normalizeJobQuery(request.query()); err != nil {
+	if err := request.query().validate(); err != nil {
 		return JobCancelResponse{}, err
 	}
-	body, err := json.Marshal(request)
-	if err != nil {
-		return JobCancelResponse{}, fmt.Errorf("encode cancel request: %w", err)
-	}
-	var response JobCancelResponse
-	if err := c.do(ctx, http.MethodPost, "/v1/jobs/cancel", nil, body, &response); err != nil {
-		return JobCancelResponse{}, err
-	}
-	return response, nil
+	return call[JobCancelRequest, JobCancelResponse](ctx, c, CommandJobCancel, request)
 }
 
-func (c *Client) get(ctx context.Context, requestPath string, query url.Values, target any) error {
-	return c.do(ctx, http.MethodGet, requestPath, query, nil, target)
+func (c *Client) RetryJobs(ctx context.Context, request JobRetryRequest) (JobRetryResponse, error) {
+	return call[JobRetryRequest, JobRetryResponse](ctx, c, CommandJobRetry, request)
 }
 
-func (c *Client) do(ctx context.Context, method string, requestPath string, query url.Values, body []byte, target any) (err error) {
-	if c == nil || c.httpClient == nil {
-		return errors.New("control API client is required")
+func (c *Client) PruneJobs(ctx context.Context, request JobPruneRequest) (JobPruneResponse, error) {
+	return call[JobPruneRequest, JobPruneResponse](ctx, c, CommandJobPrune, request)
+}
+
+func (c *Client) RecoverJobs(ctx context.Context) (JobRecoverResponse, error) {
+	return call[emptyRequest, JobRecoverResponse](ctx, c, CommandJobRecover, emptyRequest{})
+}
+
+func (c *Client) ScanLibraries(ctx context.Context, request LibraryScanRequest) (LibraryScanResponse, error) {
+	return call[LibraryScanRequest, LibraryScanResponse](ctx, c, CommandLibraryScan, request)
+}
+
+func (c *Client) LibraryStats(ctx context.Context, request LibraryStatsRequest) (LibraryStatsResponse, error) {
+	return call[LibraryStatsRequest, LibraryStatsResponse](ctx, c, CommandLibraryStats, request)
+}
+
+func (c *Client) ForceOccurrence(ctx context.Context, request ForceOccurrenceRequest) (ForceOccurrenceResponse, error) {
+	return call[ForceOccurrenceRequest, ForceOccurrenceResponse](ctx, c, CommandOccurrenceForce, request)
+}
+
+func (c *Client) CleanupStaging(ctx context.Context, request StagingCleanupRequest) (StagingCleanupResponse, error) {
+	return call[StagingCleanupRequest, StagingCleanupResponse](ctx, c, CommandStagingCleanup, request)
+}
+
+func (c *Client) BackupStore(ctx context.Context, request StoreBackupRequest) (StoreBackupResponse, error) {
+	return call[StoreBackupRequest, StoreBackupResponse](ctx, c, CommandStoreBackup, request)
+}
+
+func call[Req any, Res any](ctx context.Context, c *Client, command Command, payload Req) (Res, error) {
+	var result Res
+	if c == nil || c.socketPath == "" {
+		return result, newError(CodeInvalidArgument, "control client is not configured")
 	}
-	u := url.URL{Scheme: "http", Host: "anvild", Path: requestPath, RawQuery: query.Encode()}
-	var payload io.Reader
-	if body != nil {
-		payload = bytes.NewReader(body)
-	}
-	request, err := http.NewRequestWithContext(ctx, method, u.String(), payload)
+	encoded, err := json.Marshal(payload)
 	if err != nil {
-		return fmt.Errorf("build control API request: %w", err)
+		return result, newError(CodeInvalidArgument, "encode %s request: %v", command, err)
 	}
-	if body != nil {
-		request.Header.Set("Content-Type", "application/json")
-	}
-	response, err := c.httpClient.Do(request)
+	body, err := json.Marshal(request{Command: command, Payload: encoded})
 	if err != nil {
-		return fmt.Errorf("call control API: %w", err)
+		return result, newError(CodeInvalidArgument, "encode %s envelope: %v", command, err)
+	}
+
+	timeout := c.Timeout
+	if timeout <= 0 {
+		timeout = command.Timeout()
+	}
+	commandCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	raw, err := c.roundTrip(commandCtx, body)
+	if err != nil {
+		return result, err
+	}
+	var answer response
+	if err := json.Unmarshal(raw, &answer); err != nil {
+		return result, newError(CodeInternal, "decode %s response: %v", command, err)
+	}
+	if answer.Error != nil {
+		return result, answer.Error
+	}
+	if len(answer.Result) == 0 {
+		return result, newError(CodeInternal, "daemon returned no result for %s", command)
+	}
+	if err := json.Unmarshal(answer.Result, &result); err != nil {
+		return result, newError(CodeInternal, "decode %s result: %v", command, err)
+	}
+	return result, nil
+}
+
+func (c *Client) roundTrip(ctx context.Context, body []byte) (payload []byte, err error) {
+	dialer := net.Dialer{Timeout: dialTimeout}
+	connection, err := dialer.DialContext(ctx, "unix", c.socketPath)
+	if err != nil {
+		return nil, c.dialError(err)
 	}
 	defer func() {
-		err = errors.Join(err, response.Body.Close())
-	}()
-	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
-		var apiError ErrorResponse
-		if err := json.NewDecoder(response.Body).Decode(&apiError); err == nil && apiError.Error.Message != "" {
-			return fmt.Errorf("control API %s: %s", apiError.Error.Code, apiError.Error.Message)
+		if closeErr := connection.Close(); closeErr != nil && !errors.Is(closeErr, net.ErrClosed) && err == nil {
+			err = newError(CodeInternal, "close control connection: %v", closeErr)
 		}
-		return fmt.Errorf("control API returned %s", response.Status)
+	}()
+	if deadline, ok := ctx.Deadline(); ok {
+		if err := connection.SetDeadline(deadline); err != nil {
+			return nil, newError(CodeInternal, "set control deadline: %v", err)
+		}
 	}
-	if err := json.NewDecoder(response.Body).Decode(target); err != nil {
-		return fmt.Errorf("decode control API response: %w", err)
+	// Cancellation has to reach a blocked read, and closing the connection is
+	// the only thing that does. Reading the daemon's answer is abandoned; the
+	// command itself keeps running on the daemon, which is why the caller is
+	// told the outcome is unknown rather than that nothing happened.
+	done := make(chan struct{})
+	defer close(done)
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = connection.Close() //nolint:errcheck // the deferred close reports the real result
+		case <-done:
+		}
+	}()
+
+	if err := writeFrame(connection, body); err != nil {
+		return nil, c.transportError(ctx, err)
 	}
-	return nil
+	version, payload, err := readFrame(connection, maxResponseBytes)
+	if err != nil {
+		if version != 0 && version != ProtocolVersion {
+			return nil, versionMismatchError(version)
+		}
+		return nil, c.transportError(ctx, err)
+	}
+	if version != ProtocolVersion {
+		return nil, versionMismatchError(version)
+	}
+	return payload, nil
+}
+
+func (c *Client) dialError(err error) *Error {
+	if errors.Is(err, os.ErrNotExist) {
+		return newError(CodeUnavailable, "control socket %s does not exist; is anvild running?", c.socketPath)
+	}
+	if errors.Is(err, os.ErrPermission) {
+		return newError(CodeUnavailable, "control socket %s is not accessible; the daemon grants access by group, so this user must be in anvild's group", c.socketPath)
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return newError(CodeDeadlineExceeded, "connecting to control socket %s timed out", c.socketPath)
+	}
+	return newError(CodeUnavailable, "connect to control socket %s: %v", c.socketPath, err)
+}
+
+func (c *Client) transportError(ctx context.Context, err error) *Error {
+	switch {
+	case ctx.Err() != nil && errors.Is(ctx.Err(), context.DeadlineExceeded):
+		return newError(CodeDeadlineExceeded, "the daemon did not answer within the command deadline; the command may still be running")
+	case ctx.Err() != nil:
+		return newError(CodeUnavailable, "control command canceled; the command may still be running on the daemon")
+	case errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF):
+		return newError(CodeUnavailable, "the daemon closed the control connection before answering")
+	default:
+		return newError(CodeUnavailable, "control socket %s: %v", c.socketPath, err)
+	}
+}
+
+func versionMismatchError(peer uint16) *Error {
+	return newError(CodeVersionMismatch,
+		"the daemon speaks control protocol version %d and this client speaks version %d; upgrade anvild and anvilctl together",
+		peer, ProtocolVersion)
 }

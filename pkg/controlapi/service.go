@@ -16,21 +16,49 @@ import (
 	"github.com/zekurio/anvil/pkg/mediapath"
 	"github.com/zekurio/anvil/pkg/pipeline"
 	replacepkg "github.com/zekurio/anvil/pkg/replace"
+	"github.com/zekurio/anvil/pkg/scanner"
 	"github.com/zekurio/anvil/pkg/store"
 )
 
+// Store is everything the control surface needs from persistence. It is wide
+// because the daemon owns every live operation an operator can ask for; the
+// point of the interface is that the control surface names exactly what it
+// uses, and that tests can stand in for parts of it.
 type Store interface {
 	ListJobs(context.Context, store.JobListFilter) ([]store.JobSummary, error)
+	GetJobSummary(context.Context, domain.JobID) (store.JobSummary, error)
+	ResolveJobReference(context.Context, string) (domain.Job, error)
 	GetMediaSource(context.Context, domain.MediaSourceID) (domain.MediaSource, error)
 	GetMediaAsset(context.Context, domain.MediaAssetID) (domain.MediaAsset, error)
 	GetPublishOperation(context.Context, domain.JobID) (replacepkg.PublishOperation, bool, error)
 	CountJobsByState(context.Context) (map[domain.JobState]int64, error)
 	CancelJobs(context.Context, store.CancelJobsInput) ([]store.CancelJobResult, error)
 	LatestAttemptArtifacts(context.Context, string, []domain.JobID) (map[domain.JobID][]domain.AttemptEvent, error)
+	ListAttemptsForJob(context.Context, domain.JobID) ([]domain.Attempt, error)
+	ListAttemptEvents(context.Context, domain.AttemptID) ([]domain.AttemptEvent, error)
+	GetJobPipelineContext(context.Context, domain.JobID) (domain.JobPipelineContext, bool, error)
+	RetryJob(context.Context, domain.JobID, time.Time) (domain.Job, error)
+	RetryFailedJobs(context.Context, domain.LibraryName, time.Time) (int64, error)
+	RecoverStaleJobs(context.Context, int, time.Time) (int64, error)
+	ListLibraryStats(context.Context, store.LibraryStatsFilter) ([]store.LibraryStats, error)
+	PruneMissingSourceJobs(context.Context, store.PruneMissingSourceJobsOptions) (store.PruneMissingSourceJobsResult, error)
+	ForceOccurrence(context.Context, store.ForceOccurrenceInput) (store.ForceOccurrenceResult, error)
+	Backup(context.Context, string) (store.BackupResult, error)
+	ProtectedJobs(context.Context) ([]store.ProtectedJob, error)
+}
+
+// Scanner is the daemon's own scanner. Scans requested over the control socket
+// run in the daemon so they share its store handle, occurrence bookkeeping, and
+// configuration instead of racing a second process against them.
+type Scanner interface {
+	Scan(context.Context, config.Config) (scanner.ScanResult, error)
+	ScanLibrary(context.Context, config.LibraryConfig) (scanner.ScanResult, error)
+	PlanLibrary(context.Context, config.LibraryConfig) (scanner.LibraryPlan, error)
 }
 
 type Service struct {
 	Store         Store
+	Scanner       Scanner
 	Config        func() config.Config
 	ActiveWorkers func() int
 	StartedAt     time.Time
@@ -43,8 +71,8 @@ type Service struct {
 }
 
 func (s Service) Status(ctx context.Context) (StatusResponse, error) {
-	if s.Store == nil {
-		return StatusResponse{}, errors.New("control API store is required")
+	if err := s.requireStore(); err != nil {
+		return StatusResponse{}, err
 	}
 	counts, err := s.Store.CountJobsByState(ctx)
 	if err != nil {
@@ -54,10 +82,7 @@ func (s Service) Status(ctx context.Context) (StatusResponse, error) {
 	for _, state := range allJobStates {
 		queue[string(state)] = counts[state]
 	}
-	configured := 0
-	if s.Config != nil {
-		configured = s.Config().Daemon.WorkerCount
-	}
+	configured := s.runtimeConfig().Daemon.WorkerCount
 	active := 0
 	if s.ActiveWorkers != nil {
 		active = s.ActiveWorkers()
@@ -80,8 +105,8 @@ func (s Service) Status(ctx context.Context) (StatusResponse, error) {
 }
 
 func (s Service) ListJobs(ctx context.Context, query JobQuery) (JobListResponse, error) {
-	if s.Store == nil {
-		return JobListResponse{}, errors.New("control API store is required")
+	if err := s.requireStore(); err != nil {
+		return JobListResponse{}, err
 	}
 	relativePath, absolutePath, states, err := normalizeJobQuery(query)
 	if err != nil {
@@ -92,10 +117,7 @@ func (s Service) ListJobs(ctx context.Context, query JobQuery) (JobListResponse,
 	if err != nil {
 		return JobListResponse{}, err
 	}
-	cfg := config.Config{}
-	if s.Config != nil {
-		cfg = s.Config()
-	}
+	cfg := s.runtimeConfig()
 	response := JobListResponse{APIVersion: Version, ServerTime: s.now(), Jobs: make([]JobResponse, 0)}
 	for _, summary := range summaries {
 		item, keys, current, err := s.jobResponse(ctx, cfg, summary)
@@ -223,17 +245,18 @@ func (s Service) attachStreamSelections(ctx context.Context, jobs []JobResponse)
 // CancelJobs cancels every job the equivalent job list would return. It
 // requires an explicit selector, and is idempotent for already terminal jobs.
 func (s Service) CancelJobs(ctx context.Context, request JobCancelRequest) (JobCancelResponse, error) {
-	if s.Store == nil {
-		return JobCancelResponse{}, errors.New("control API store is required")
+	if err := s.requireStore(); err != nil {
+		return JobCancelResponse{}, err
 	}
 	if !request.hasSelector() {
 		return JobCancelResponse{}, invalidArgumentf("cancel requires at least one selector")
 	}
-	ids := make(map[domain.JobID]struct{}, len(request.IDs))
-	for _, id := range request.IDs {
-		if id <= 0 {
-			return JobCancelResponse{}, invalidArgumentf("invalid job id %d", id)
-		}
+	requestedIDs, err := s.resolveJobReferences(ctx, request.IDs, request.References)
+	if err != nil {
+		return JobCancelResponse{}, err
+	}
+	ids := make(map[domain.JobID]struct{}, len(requestedIDs))
+	for _, id := range requestedIDs {
 		ids[domain.JobID(id)] = struct{}{}
 	}
 	_, _, states, err := normalizeJobQuery(request.query())
@@ -256,8 +279,11 @@ func (s Service) CancelJobs(ctx context.Context, request JobCancelRequest) (JobC
 		matchedIDs[jobID] = struct{}{}
 		targets = append(targets, jobID)
 	}
-	if missing := missingJobIDs(request.IDs, matchedIDs); missing != "" {
-		return JobCancelResponse{}, invalidArgumentf("no job matched the selector for ids %s", missing)
+	// A named job outside the selector is refused rather than cancelled: the
+	// two disagree about what the operator meant, and guessing either way can
+	// cancel work nobody asked about.
+	if missing := missingJobIDs(requestedIDs, matchedIDs); missing != "" {
+		return JobCancelResponse{}, invalidArgumentf("no job matched the selector for job ids %s", missing)
 	}
 	response := JobCancelResponse{APIVersion: Version, ServerTime: s.now(), Jobs: make([]JobCancelResult, 0, len(targets))}
 	if len(targets) == 0 {
@@ -283,8 +309,37 @@ func (s Service) CancelJobs(ctx context.Context, request JobCancelRequest) (JobC
 		response.Matched++
 		response.Jobs = append(response.Jobs, item)
 	}
-	slog.Info("control API canceled jobs", "matched", response.Matched, "canceled", response.Canceled, "reason", reason)
+	slog.Info("control canceled jobs", "matched", response.Matched, "canceled", response.Canceled, "reason", reason)
 	return response, nil
+}
+
+// resolveJobReferences turns operator-supplied job references into ids. Both
+// forms are accepted everywhere a job can be named: an id is what shows up in
+// logs, a slug is what shows up in listings, and making an operator translate
+// between them under pressure is how the wrong job gets canceled.
+func (s Service) resolveJobReferences(ctx context.Context, ids []int64, references []string) ([]int64, error) {
+	resolved := make([]int64, 0, len(ids)+len(references))
+	for _, id := range ids {
+		if id <= 0 {
+			return nil, invalidArgumentf("invalid job id %d", id)
+		}
+		resolved = append(resolved, id)
+	}
+	for _, reference := range references {
+		reference = strings.TrimSpace(reference)
+		if reference == "" {
+			return nil, invalidArgumentf("job reference must not be empty")
+		}
+		job, err := s.Store.ResolveJobReference(ctx, reference)
+		if errors.Is(err, store.ErrNotFound) {
+			return nil, notFoundf("no job matches reference %q", reference)
+		}
+		if err != nil {
+			return nil, fmt.Errorf("resolve job %q: %w", reference, err)
+		}
+		resolved = append(resolved, int64(job.ID))
+	}
+	return resolved, nil
 }
 
 func missingJobIDs(requested []int64, matched map[domain.JobID]struct{}) string {
@@ -476,22 +531,15 @@ func plannedDestination(cfg config.Config, job domain.Job, source domain.MediaSo
 	return ""
 }
 
-// invalidArgumentError marks a caller-fixable request problem so transports can
-// map it to a client error without matching error strings.
-type invalidArgumentError struct {
-	err error
-}
-
-func (e invalidArgumentError) Error() string {
-	return e.err.Error()
-}
-
-func (e invalidArgumentError) Unwrap() error {
-	return e.err
-}
-
+// invalidArgumentf marks a caller-fixable request problem. It produces the same
+// structured error the transport returns, so the code an operator sees is
+// decided once, here, rather than by string matching at the edge.
 func invalidArgumentf(format string, args ...any) error {
-	return invalidArgumentError{err: fmt.Errorf(format, args...)}
+	return newError(CodeInvalidArgument, format, args...)
+}
+
+func notFoundf(format string, args ...any) error {
+	return newError(CodeNotFound, format, args...)
 }
 
 func normalizeJobQuery(query JobQuery) (string, string, []domain.JobState, error) {
@@ -587,4 +635,23 @@ func (s Service) now() time.Time {
 		return s.Now().UTC()
 	}
 	return time.Now().UTC()
+}
+
+// runtimeConfig is the daemon's live configuration. Control commands use it
+// instead of re-reading the config file, so an operator can never act on a
+// config the running daemon has not accepted.
+func (s Service) runtimeConfig() config.Config {
+	if s.Config == nil {
+		return config.Config{}
+	}
+	return s.Config()
+}
+
+// requireStore keeps every command's first failure identical instead of each
+// one inventing its own wording for a service that was never wired up.
+func (s Service) requireStore() error {
+	if s.Store == nil {
+		return newError(CodeInternal, "control service store is required")
+	}
+	return nil
 }

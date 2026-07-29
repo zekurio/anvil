@@ -30,6 +30,11 @@ type PruneMissingSourceJobsResult struct {
 	AffectedSources int64
 	DeletedJobs     int64
 	ByState         map[domain.JobState]int64
+	// ProtectedJobs lists jobs that matched every other prune condition but
+	// still own an unresolved publish journal. Deleting them would cascade the
+	// journal row away and strand the staged artifact, destination, or backup
+	// file it is the only remaining record of.
+	ProtectedJobs []ProtectedJob
 }
 
 func (s *SQLiteStore) Backup(ctx context.Context, destination string) (result BackupResult, err error) {
@@ -211,6 +216,12 @@ func (s *SQLiteStore) PruneMissingSourceJobs(ctx context.Context, options PruneM
 		DryRun:  !options.Apply,
 		ByState: make(map[domain.JobState]int64),
 	}
+	protectedWhere, protectedArgs := missingSourceJobsPublishHoldWhere(options.LibraryName, states)
+	protected, err := scanProtectedJobs(ctx, tx, protectedWhere, protectedArgs)
+	if err != nil {
+		return PruneMissingSourceJobsResult{}, err
+	}
+	result.ProtectedJobs = protected
 	if err := tx.QueryRowContext(ctx, `
 SELECT COUNT(*), COUNT(DISTINCT j.source_id)
 FROM jobs j
@@ -306,9 +317,23 @@ func terminalPruneStates(states []domain.JobState) ([]domain.JobState, error) {
 	return result, nil
 }
 
+// missingSourceJobsWhere selects prunable jobs. The publish guard is part of
+// the selector rather than a separate pre-check, so the count, the per-state
+// breakdown, and the delete can never disagree about which jobs are in scope.
 func missingSourceJobsWhere(library domain.LibraryName, states []domain.JobState) (string, []any) {
+	where, args := missingSourceJobsBaseWhere(library, states)
+	return where + " AND " + noUnresolvedPublishCondition, append(args, committedPublishStage())
+}
+
+// missingSourceJobsPublishHoldWhere selects the jobs the guard excludes.
+func missingSourceJobsPublishHoldWhere(library domain.LibraryName, states []domain.JobState) (string, []any) {
+	where, args := missingSourceJobsBaseWhere(library, states)
+	return where + " AND " + unresolvedPublishCondition, append(args, committedPublishStage())
+}
+
+func missingSourceJobsBaseWhere(library domain.LibraryName, states []domain.JobState) (string, []any) {
 	where := "s.status = ? AND j.state IN (" + placeholders(len(states)) + ")"
-	args := make([]any, 0, len(states)+2)
+	args := make([]any, 0, len(states)+3)
 	args = append(args, string(domain.MediaSourceMissing))
 	for _, state := range states {
 		args = append(args, string(state))
@@ -318,4 +343,32 @@ func missingSourceJobsWhere(library domain.LibraryName, states []domain.JobState
 		args = append(args, string(library))
 	}
 	return where, args
+}
+
+func scanProtectedJobs(ctx context.Context, tx *sql.Tx, where string, args []any) (protected []ProtectedJob, err error) {
+	rows, err := tx.QueryContext(ctx, `
+SELECT j.id, j.slug, j.state
+FROM jobs j
+JOIN media_sources s ON s.id = j.source_id
+WHERE `+where+`
+ORDER BY j.id`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list jobs held by a publish journal: %w", err)
+	}
+	defer closeRows(rows, &err, "close jobs held by a publish journal")
+	for rows.Next() {
+		job := ProtectedJob{Reason: JobProtectedPublishJournal}
+		var slug *string
+		if err := rows.Scan(&job.JobID, &slug, &job.State); err != nil {
+			return nil, fmt.Errorf("scan job held by a publish journal: %w", err)
+		}
+		if slug != nil {
+			job.Slug = *slug
+		}
+		protected = append(protected, job)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate jobs held by a publish journal: %w", err)
+	}
+	return protected, nil
 }

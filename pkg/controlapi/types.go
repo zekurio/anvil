@@ -7,18 +7,13 @@ import (
 	"github.com/zekurio/anvil/pkg/domain"
 )
 
+// Version names the control surface contract: the anvilctl command syntax,
+// its --json shapes, and the error codes. It moves only when that contract
+// changes, independently of ProtocolVersion, which is about wire compatibility
+// between two binaries.
 const Version = "v1"
 
 var BuildVersion = "dev"
-
-type ErrorResponse struct {
-	Error APIError `json:"error"`
-}
-
-type APIError struct {
-	Code    string `json:"code"`
-	Message string `json:"message"`
-}
 
 type StatusResponse struct {
 	APIVersion string           `json:"api_version"`
@@ -119,15 +114,22 @@ type OccurrenceResponse struct {
 }
 
 type JobQuery struct {
-	Library      string
-	Path         string
-	AbsolutePath string
-	States       []string
-	CurrentOnly  bool
-	Limit        int
+	Library      string   `json:"library,omitempty"`
+	Path         string   `json:"path,omitempty"`
+	AbsolutePath string   `json:"absolute_path,omitempty"`
+	States       []string `json:"state,omitempty"`
+	CurrentOnly  bool     `json:"current_only,omitempty"`
+	Limit        int      `json:"limit,omitempty"`
 	// WithSelection populates StreamSelection on each returned job. It is
 	// opt-in because the decisions are far larger than the rest of a listing.
-	WithSelection bool
+	WithSelection bool `json:"with_selection,omitempty"`
+}
+
+// validate rejects a query the daemon would reject anyway, so an operator
+// mistake is reported without a round trip and with the same wording.
+func (q JobQuery) validate() error {
+	_, _, _, err := normalizeJobQuery(q)
+	return err
 }
 
 // JobCancelRequest reuses the JobQuery selector vocabulary so a cancel can
@@ -139,8 +141,11 @@ type JobCancelRequest struct {
 	AbsolutePath string   `json:"absolute_path,omitempty"`
 	States       []string `json:"state,omitempty"`
 	CurrentOnly  bool     `json:"current_only,omitempty"`
-	IDs          []int64  `json:"ids,omitempty"`
-	Reason       string   `json:"reason,omitempty"`
+	// References narrow the selection to specific jobs by id or slug. Like
+	// IDs, they never widen it.
+	References []string `json:"references,omitempty"`
+	IDs        []int64  `json:"ids,omitempty"`
+	Reason     string   `json:"reason,omitempty"`
 }
 
 func (r JobCancelRequest) query() JobQuery {
@@ -154,7 +159,7 @@ func (r JobCancelRequest) query() JobQuery {
 // deliberately excluded: it only refines another selector, and on its own it
 // matches every job in every library and state.
 func (r JobCancelRequest) hasSelector() bool {
-	if len(r.IDs) > 0 {
+	if len(r.IDs) > 0 || len(r.References) > 0 {
 		return true
 	}
 	if strings.TrimSpace(r.Library) != "" || strings.TrimSpace(r.Path) != "" || strings.TrimSpace(r.AbsolutePath) != "" {
