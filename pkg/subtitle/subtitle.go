@@ -34,6 +34,9 @@ func (Selector) Select(probe *domain.ProbeResult, profile domain.SubtitleProfile
 	}
 	if len(subtitleStreams) == 0 {
 		decision.Rule = domain.StreamSelectionRuleNoStreams
+		// Every requested language is trivially missing when the source has no
+		// subtitles at all; report it so the warning fires here too.
+		decision.MissingLanguages = domain.MissingRequestedLanguages(selection.LanguagesToKeep, nil)
 		selection.Decision = &decision
 		return selection, nil
 	}
@@ -106,14 +109,18 @@ func (Block) Name() string {
 
 func (b Block) Run(_ context.Context, job *pipeline.JobContext) error {
 	selection, err := b.Selector.Select(job.Probe, job.Profile.Subtitles, job.Metadata)
-	if err != nil {
+	if err != nil && selection.Decision == nil {
 		return err
 	}
+	// A fail_job fallback returns both a decision and an error. The decision is
+	// attached anyway because it is the only record of why nothing matched, and
+	// the pipeline aborts on the returned error before any later block can read
+	// the empty selection.
 	job.Subtitles = &selection
 	if selection.Decision != nil {
 		pipeline.LogStreamSelection(job, *selection.Decision)
 	}
-	return nil
+	return err
 }
 
 // Decision exposes the selection record so the pipeline runner can persist it
@@ -190,7 +197,7 @@ func configuredLanguages(values []string) []string {
 	result := make([]string, 0, len(values))
 	for _, value := range values {
 		value = strings.TrimSpace(strings.ToLower(value))
-		if value != "" {
+		if value != "" && !slices.Contains(result, value) {
 			result = append(result, value)
 		}
 	}

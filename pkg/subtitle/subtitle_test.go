@@ -286,10 +286,11 @@ func TestSelectRecordsStreamDecision(t *testing.T) {
 			},
 		},
 		{
-			name:     "source without subtitle streams",
-			streams:  []domain.MediaStream{{Index: 0, Type: "video"}},
-			profile:  domain.SubtitleProfile{LanguagesToKeep: []string{"deu"}, Fallback: domain.StreamFallbackKeepAll},
-			wantRule: domain.StreamSelectionRuleNoStreams,
+			name:        "source without subtitle streams reports every requested language as missing",
+			streams:     []domain.MediaStream{{Index: 0, Type: "video"}},
+			profile:     domain.SubtitleProfile{LanguagesToKeep: []string{"deu"}, Fallback: domain.StreamFallbackKeepAll},
+			wantRule:    domain.StreamSelectionRuleNoStreams,
+			wantMissing: []string{"deu"},
 		},
 	}
 
@@ -361,6 +362,60 @@ func TestBlockExposesDecisionForAttemptEvent(t *testing.T) {
 	}
 	if got, want := decision.KeptIndexes(), []int{1}; !equalInts(got, want) {
 		t.Fatalf("kept indexes = %v, want %v", got, want)
+	}
+}
+
+func TestSelectRecordsDecisionWhenFallbackFailsJob(t *testing.T) {
+	probe := &domain.ProbeResult{Streams: []domain.MediaStream{
+		{Index: 1, Type: "subtitle", Language: "eng"},
+	}}
+	selection, err := (Selector{}).Select(probe, domain.SubtitleProfile{
+		LanguagesToKeep: []string{"deu"},
+		Fallback:        domain.StreamFallbackFailJob,
+	}, domain.JobMetadata{})
+	if err == nil {
+		t.Fatal("Select() error = nil, want failure")
+	}
+	if selection.Decision == nil {
+		t.Fatal("Select() decision = nil, want record")
+	}
+	if got, want := selection.Decision.Rule, domain.StreamSelectionRuleFallbackFailJob; got != want {
+		t.Fatalf("decision rule = %q, want %q", got, want)
+	}
+	if got, want := selection.Decision.MissingLanguages, []string{"deu"}; !equalStrings(got, want) {
+		t.Fatalf("missing languages = %v, want %v", got, want)
+	}
+}
+
+func TestBlockRecordsDecisionWhenFallbackFailsJob(t *testing.T) {
+	job := &pipeline.JobContext{
+		Probe: &domain.ProbeResult{Streams: []domain.MediaStream{
+			{Index: 1, Type: "subtitle", Language: "eng", Disposition: map[string]bool{"forced": true}},
+		}},
+		Profile: domain.Profile{Subtitles: domain.SubtitleProfile{
+			LanguagesToKeep: []string{"deu"},
+			Fallback:        domain.StreamFallbackFailJob,
+		}},
+	}
+	block := Block{}
+	if err := block.Run(context.Background(), job); err == nil {
+		t.Fatal("Run() error = nil, want failure")
+	}
+	decision, ok := block.Decision(job)
+	if !ok {
+		t.Fatal("Decision() after a failed Run = false, want the record that explains the failure")
+	}
+	if got, want := decision.Rule, domain.StreamSelectionRuleFallbackFailJob; got != want {
+		t.Fatalf("decision rule = %q, want %q", got, want)
+	}
+	if got, want := decision.MissingLanguages, []string{"deu"}; !equalStrings(got, want) {
+		t.Fatalf("missing languages = %v, want %v", got, want)
+	}
+	if got := decision.KeptIndexes(); len(got) != 0 {
+		t.Fatalf("kept indexes = %v, want none", got)
+	}
+	if job.Subtitles == nil || len(job.Subtitles.StreamIndexes) != 0 {
+		t.Fatalf("selection = %+v, want an empty stream list", job.Subtitles)
 	}
 }
 
