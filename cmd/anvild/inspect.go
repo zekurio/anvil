@@ -16,6 +16,7 @@ import (
 
 	"github.com/zekurio/anvil/pkg/config"
 	"github.com/zekurio/anvil/pkg/domain"
+	"github.com/zekurio/anvil/pkg/pipeline"
 	replacepkg "github.com/zekurio/anvil/pkg/replace"
 	"github.com/zekurio/anvil/pkg/store"
 )
@@ -26,7 +27,18 @@ type inspectReport struct {
 	Job              inspectJob               `json:"job"`
 	PipelineContext  *inspectPipelineContext  `json:"pipeline_context,omitempty"`
 	PublishOperation *inspectPublishOperation `json:"publish_operation,omitempty"`
+	StreamSelection  []inspectStreamSelection `json:"stream_selection,omitempty"`
 	Attempts         []inspectAttempt         `json:"attempts"`
+}
+
+// inspectStreamSelection reports one stream-selection decision together with
+// the attempt that produced it. It is the record that answers "did Anvil drop
+// that track" after the source file is gone.
+type inspectStreamSelection struct {
+	AttemptID     int64                          `json:"attempt_id"`
+	AttemptNumber int                            `json:"attempt_number"`
+	RecordedAt    time.Time                      `json:"recorded_at"`
+	Decision      domain.StreamSelectionDecision `json:"decision"`
 }
 
 type inspectPublishOperation struct {
@@ -72,15 +84,16 @@ type inspectAttempt struct {
 }
 
 type inspectEvent struct {
-	ID            int64                 `json:"id"`
-	AttemptID     int64                 `json:"attempt_id"`
-	CreatedAt     time.Time             `json:"created_at"`
-	Type          string                `json:"type"`
-	Name          string                `json:"name"`
-	Message       string                `json:"message"`
-	Payload       *inspectPayload       `json:"payload,omitempty"`
-	ProcessOutput *inspectProcessOutput `json:"process_output,omitempty"`
-	PayloadError  string                `json:"payload_error,omitempty"`
+	ID              int64                           `json:"id"`
+	AttemptID       int64                           `json:"attempt_id"`
+	CreatedAt       time.Time                       `json:"created_at"`
+	Type            string                          `json:"type"`
+	Name            string                          `json:"name"`
+	Message         string                          `json:"message"`
+	Payload         *inspectPayload                 `json:"payload,omitempty"`
+	ProcessOutput   *inspectProcessOutput           `json:"process_output,omitempty"`
+	StreamSelection *domain.StreamSelectionDecision `json:"stream_selection,omitempty"`
+	PayloadError    string                          `json:"payload_error,omitempty"`
 }
 
 type inspectPayload struct {
@@ -184,7 +197,36 @@ func buildInspectReport(ctx context.Context, state *store.SQLiteStore, jobID dom
 		}
 		report.Attempts = append(report.Attempts, inspectAttemptFromDomain(attempt, events))
 	}
+	report.StreamSelection = latestStreamSelection(report.Attempts)
 	return report, nil
+}
+
+// latestStreamSelection returns the stream-selection decisions of the most
+// recent attempt that recorded any, because that is the state of the file on
+// disk right now.
+func latestStreamSelection(attempts []inspectAttempt) []inspectStreamSelection {
+	for i := len(attempts) - 1; i >= 0; i-- {
+		if selections := attempts[i].streamSelections(); len(selections) > 0 {
+			return selections
+		}
+	}
+	return nil
+}
+
+func (a inspectAttempt) streamSelections() []inspectStreamSelection {
+	var result []inspectStreamSelection
+	for _, event := range a.Events {
+		if event.StreamSelection == nil {
+			continue
+		}
+		result = append(result, inspectStreamSelection{
+			AttemptID:     a.ID,
+			AttemptNumber: a.Number,
+			RecordedAt:    event.CreatedAt,
+			Decision:      *event.StreamSelection,
+		})
+	}
+	return result
 }
 
 func inspectPublishOperationFromDomain(operation replacepkg.PublishOperation) inspectPublishOperation {
@@ -258,12 +300,34 @@ func inspectEventFromDomain(event domain.AttemptEvent) inspectEvent {
 		result.ProcessOutput = output
 		return result
 	}
+	if isStreamSelectionEvent(event) {
+		decision, err := decodeStreamSelection(event.Payload)
+		if err != nil {
+			result.Payload = decodeInspectPayload(event.Payload)
+			result.PayloadError = err.Error()
+			return result
+		}
+		result.StreamSelection = decision
+		return result
+	}
 	result.Payload = decodeInspectPayload(event.Payload)
 	return result
 }
 
 func isProcessOutputEvent(event domain.AttemptEvent) bool {
 	return event.Type == domain.AttemptEventArtifact && event.Name == processOutputArtifactName
+}
+
+func isStreamSelectionEvent(event domain.AttemptEvent) bool {
+	return event.Type == domain.AttemptEventArtifact && event.Name == pipeline.StreamSelectionArtifact
+}
+
+func decodeStreamSelection(payload []byte) (*domain.StreamSelectionDecision, error) {
+	var decision domain.StreamSelectionDecision
+	if err := json.Unmarshal(payload, &decision); err != nil {
+		return nil, err
+	}
+	return &decision, nil
 }
 
 func decodeProcessOutput(payload []byte) (*inspectProcessOutput, error) {
@@ -377,6 +441,13 @@ func writeInspectReport(out io.Writer, report inspectReport) error {
 			w.printf("  Updated: %s\n", formatInspectTime(operation.UpdatedAt))
 		}
 
+		if len(report.StreamSelection) > 0 {
+			w.printf("\nStream selection (attempt %d):\n", report.StreamSelection[0].AttemptNumber)
+			for _, selection := range report.StreamSelection {
+				writeStreamSelection(w, "  ", selection.Decision)
+			}
+		}
+
 		if len(report.Attempts) == 0 {
 			w.printf("\nAttempts: none\n")
 			return
@@ -409,6 +480,10 @@ func writeInspectReport(out io.Writer, report inspectReport) error {
 				}
 				if event.ProcessOutput != nil {
 					writeProcessOutput(w, "        ", *event.ProcessOutput)
+					continue
+				}
+				if event.StreamSelection != nil {
+					writeStreamSelection(w, "        ", *event.StreamSelection)
 					continue
 				}
 				if event.Payload != nil {
@@ -462,6 +537,54 @@ func formatPipelineSteps(steps []inspectPipelineStep) string {
 		values = append(values, value)
 	}
 	return strings.Join(values, ", ")
+}
+
+func writeStreamSelection(w *outputWriter, indent string, decision domain.StreamSelectionDecision) {
+	w.printf("%s%s streams: rule=%s\n", indent, displayOrNone(string(decision.Kind)), displayOrNone(string(decision.Rule)))
+	w.printf("%s  original language: %s\n", indent, displayOrNone(decision.OriginalLanguage))
+	w.printf("%s  requested: %s\n", indent, formatLanguages(decision.RequestedLanguages))
+	w.printf("%s  resolved: %s\n", indent, formatLanguages(decision.ResolvedLanguages))
+	if len(decision.MissingLanguages) > 0 {
+		w.printf("%s  missing from source: %s\n", indent, formatLanguages(decision.MissingLanguages))
+	}
+	if decision.CleanupDisabledReason != "" {
+		w.printf("%s  cleanup disabled: %s\n", indent, decision.CleanupDisabledReason)
+	}
+	w.printf("%s  kept: %s\n", indent, formatIndexes(decision.KeptIndexes()))
+	w.printf("%s  dropped: %s\n", indent, formatIndexes(decision.DroppedIndexes()))
+	for _, stream := range decision.Streams {
+		state := "dropped"
+		if stream.Kept {
+			state = "kept"
+		}
+		w.printf("%s  [%d] %s %s %s %s (%s)\n",
+			indent,
+			stream.Index,
+			displayOrNone(stream.Language),
+			displayOrNone(stream.Codec),
+			strconv.Quote(stream.Title),
+			state,
+			stream.Reason,
+		)
+	}
+}
+
+func formatLanguages(values []string) string {
+	if len(values) == 0 {
+		return "<none>"
+	}
+	return strings.Join(values, ", ")
+}
+
+func formatIndexes(values []int) string {
+	if len(values) == 0 {
+		return "<none>"
+	}
+	formatted := make([]string, 0, len(values))
+	for _, value := range values {
+		formatted = append(formatted, strconv.Itoa(value))
+	}
+	return strings.Join(formatted, ", ")
 }
 
 func writeProcessOutput(w *outputWriter, indent string, output inspectProcessOutput) {
