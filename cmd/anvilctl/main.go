@@ -243,21 +243,45 @@ func writeStatus(out io.Writer, response controlapi.StatusResponse) error {
 }
 
 func writeJobs(out io.Writer, response controlapi.JobListResponse) error {
+	// The MATCHED column only carries meaning for an absolute-path query, so it
+	// is omitted rather than rendered permanently blank.
+	matched := false
+	for _, job := range response.Jobs {
+		if len(job.MatchedOn) > 0 {
+			matched = true
+			break
+		}
+	}
 	w := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
-	if _, err := fmt.Fprintln(w, "JOB\tID\tSTATE\tLIBRARY\tUPDATED\tMATCHED\tSOURCE\tDESTINATION\tERROR"); err != nil {
+	header := "JOB\tID\tSTATE\tLIBRARY\tUPDATED\tSOURCE\tDESTINATION\tERROR"
+	if matched {
+		header = "JOB\tID\tSTATE\tLIBRARY\tUPDATED\tMATCHED\tSOURCE\tDESTINATION\tERROR"
+	}
+	if _, err := fmt.Fprintln(w, header); err != nil {
 		return err
 	}
 	for _, job := range response.Jobs {
-		if _, err := fmt.Fprintf(w, "%s\t%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+		columns := []any{
 			job.Slug, job.ID, job.State, job.Library,
 			job.UpdatedAt.Format("2006-01-02T15:04:05Z07:00"),
-			job.MatchedOn, job.Source.AbsolutePath, job.DestinationPath, job.LastError,
-		); err != nil {
+		}
+		format := "%s\t%d\t%s\t%s\t%s\t%s\t%s\t%s\n"
+		if matched {
+			format = "%s\t%d\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n"
+			columns = append(columns, formatMatchedOn(job.MatchedOn))
+		}
+		columns = append(columns, job.Source.AbsolutePath, job.DestinationPath, job.LastError)
+		if _, err := fmt.Fprintf(w, format, columns...); err != nil {
 			return err
 		}
 	}
 	if err := w.Flush(); err != nil {
 		return err
+	}
+	if response.PathOutsideLibraries {
+		if _, err := fmt.Fprintln(out, "path resolves under no configured library, so no job could match it"); err != nil {
+			return err
+		}
 	}
 	if err := writeJobStreamSelections(out, response.Jobs); err != nil {
 		return err
@@ -267,6 +291,14 @@ func writeJobs(out io.Writer, response controlapi.JobListResponse) error {
 		return err
 	}
 	return nil
+}
+
+func formatMatchedOn(sides []controlapi.PathMatchSide) string {
+	parts := make([]string, 0, len(sides))
+	for _, side := range sides {
+		parts = append(parts, string(side))
+	}
+	return strings.Join(parts, "+")
 }
 
 // writeJobStreamSelections renders the recorded decisions below the listing.
@@ -280,6 +312,9 @@ func writeJobStreamSelections(out io.Writer, jobs []controlapi.JobResponse) erro
 					job.Slug, selection.AttemptID, selection.DecisionError); err != nil {
 					return err
 				}
+				continue
+			}
+			if selection.Decision == nil {
 				continue
 			}
 			decision := selection.Decision
