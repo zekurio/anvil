@@ -2,6 +2,7 @@ package audio
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 
 	"github.com/zekurio/anvil/pkg/domain"
@@ -301,10 +302,11 @@ func TestSelectRecordsStreamDecision(t *testing.T) {
 			wantKept: []int{1, 2},
 		},
 		{
-			name:     "source without audio streams",
-			streams:  []domain.MediaStream{{Index: 0, Type: "video"}},
-			profile:  domain.AudioProfile{LanguagesToKeep: []string{"deu"}, Fallback: domain.StreamFallbackKeepAll},
-			wantRule: domain.StreamSelectionRuleNoStreams,
+			name:        "source without audio streams reports every requested language as missing",
+			streams:     []domain.MediaStream{{Index: 0, Type: "video"}},
+			profile:     domain.AudioProfile{LanguagesToKeep: []string{"deu"}, Fallback: domain.StreamFallbackKeepAll},
+			wantRule:    domain.StreamSelectionRuleNoStreams,
+			wantMissing: []string{"deu"},
 		},
 	}
 
@@ -399,6 +401,141 @@ func TestBlockExposesDecisionForAttemptEvent(t *testing.T) {
 	if got, want := decision.KeptIndexes(), []int{1}; !equalInts(got, want) {
 		t.Fatalf("kept indexes = %v, want %v", got, want)
 	}
+}
+
+func TestBlockRecordsDecisionWhenFallbackFailsJob(t *testing.T) {
+	job := &pipeline.JobContext{
+		Probe: &domain.ProbeResult{Streams: []domain.MediaStream{
+			{Index: 1, Type: "audio", Language: "eng", Title: "Director commentary"},
+		}},
+		Profile: domain.Profile{Audio: domain.AudioProfile{
+			LanguagesToKeep: []string{"deu"},
+			Fallback:        domain.StreamFallbackFailJob,
+		}},
+	}
+	block := Block{}
+	if err := block.Run(context.Background(), job); err == nil {
+		t.Fatal("Run() error = nil, want failure")
+	}
+	decision, ok := block.Decision(job)
+	if !ok {
+		t.Fatal("Decision() after a failed Run = false, want the record that explains the failure")
+	}
+	if got, want := decision.Rule, domain.StreamSelectionRuleFallbackFailJob; got != want {
+		t.Fatalf("decision rule = %q, want %q", got, want)
+	}
+	if got, want := decision.MissingLanguages, []string{"deu"}; !equalStrings(got, want) {
+		t.Fatalf("missing languages = %v, want %v", got, want)
+	}
+	if got := decision.KeptIndexes(); len(got) != 0 {
+		t.Fatalf("kept indexes = %v, want none", got)
+	}
+}
+
+// TestFailedSelectionNeverReachesLaterBlocks pins the safety property that
+// lets Run attach a selection it is about to fail on: the pipeline aborts
+// immediately, so the empty selection cannot reach the encode plan, and no
+// resume checkpoint is written that a later attempt could reuse.
+func TestFailedSelectionNeverReachesLaterBlocks(t *testing.T) {
+	next := &spyBlock{name: "encode"}
+	persistence := &spyPersistence{}
+	recorder := &spyEventRecorder{}
+	runner := pipeline.Runner{
+		Registry:        pipeline.NewRegistry(Block{}, next),
+		Events:          recorder,
+		StepPersistence: persistence,
+	}
+	job := &pipeline.JobContext{
+		Attempt: domain.Attempt{ID: 21},
+		Flow: domain.Flow{Steps: []domain.FlowStep{
+			{Name: "audio-cleanup"},
+			{Name: "encode"},
+		}},
+		Probe: &domain.ProbeResult{Streams: []domain.MediaStream{
+			{Index: 1, Type: "audio", Language: "eng"},
+			{Index: 2, Type: "audio", Language: "jpn"},
+		}},
+		Profile: domain.Profile{Audio: domain.AudioProfile{
+			LanguagesToKeep: []string{"deu"},
+			Fallback:        domain.StreamFallbackFailJob,
+		}},
+	}
+
+	if err := runner.Run(context.Background(), job); err == nil {
+		t.Fatal("Run() error = nil, want failure")
+	}
+	if next.ran {
+		t.Fatal("block after audio-cleanup ran despite the failed selection")
+	}
+	if len(persistence.succeeded) != 0 {
+		t.Fatalf("checkpointed steps = %v, want none", persistence.succeeded)
+	}
+	if job.Audio == nil {
+		t.Fatal("job.Audio = nil, want the failed selection for the decision record")
+	}
+	if got := job.Audio.StreamIndexes; len(got) != 0 {
+		t.Fatalf("selection stream indexes = %v, want none", got)
+	}
+	decisions := recorder.named(pipeline.StreamSelectionArtifact)
+	if got, want := len(decisions), 1; got != want {
+		t.Fatalf("recorded decisions = %d, want %d", got, want)
+	}
+	var recorded domain.StreamSelectionDecision
+	if err := json.Unmarshal(decisions[0].Payload, &recorded); err != nil {
+		t.Fatalf("decode decision payload: %v", err)
+	}
+	if got, want := recorded.Rule, domain.StreamSelectionRuleFallbackFailJob; got != want {
+		t.Fatalf("decision rule = %q, want %q", got, want)
+	}
+	if got, want := recorded.DroppedIndexes(), []int{1, 2}; !equalInts(got, want) {
+		t.Fatalf("dropped indexes = %v, want %v", got, want)
+	}
+}
+
+type spyBlock struct {
+	name string
+	ran  bool
+}
+
+func (b *spyBlock) Name() string {
+	return b.name
+}
+
+func (b *spyBlock) Run(context.Context, *pipeline.JobContext) error {
+	b.ran = true
+	return nil
+}
+
+type spyPersistence struct {
+	succeeded []string
+}
+
+func (*spyPersistence) ResumeStep(context.Context, string, *pipeline.JobContext) (bool, error) {
+	return false, nil
+}
+
+func (p *spyPersistence) StepSucceeded(_ context.Context, step string, _ *pipeline.JobContext) error {
+	p.succeeded = append(p.succeeded, step)
+	return nil
+}
+
+type spyEventRecorder struct {
+	events []domain.AttemptEvent
+}
+
+func (r *spyEventRecorder) RecordAttemptEvent(_ context.Context, event domain.AttemptEvent) (domain.AttemptEvent, error) {
+	r.events = append(r.events, event)
+	return event, nil
+}
+
+func (r *spyEventRecorder) named(name string) []domain.AttemptEvent {
+	var result []domain.AttemptEvent
+	for _, event := range r.events {
+		if event.Name == name {
+			result = append(result, event)
+		}
+	}
+	return result
 }
 
 func streamDecision(streams []domain.StreamDecision, index int) (domain.StreamDecision, bool) {

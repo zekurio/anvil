@@ -118,6 +118,11 @@ func (r Runner) Run(ctx context.Context, job *JobContext) error {
 		started := time.Now()
 		if resumed {
 			slog.Info("pipeline step resumed", "job", job.Job.Label(), "attempt", job.Attempt.Number, "step", step.Name, "step_index", index)
+			// The block itself did not run, so re-emit its decision: the log of
+			// the attempt that originally decided may already be rotated away.
+			if decision, ok := blockDecision(block, job); ok {
+				LogStreamSelection(job, decision)
+			}
 			if err := r.recordDecision(ctx, block, job); err != nil {
 				return err
 			}
@@ -139,6 +144,10 @@ func (r Runner) Run(ctx context.Context, job *JobContext) error {
 		}
 		if err := block.Run(stepCtx, job); err != nil {
 			slog.Error("pipeline step failed", "job", job.Job.Label(), "attempt", job.Attempt.Number, "step", step.Name, "step_index", index, "duration", time.Since(started), "error", err)
+			// A failing block can still have decided something worth keeping —
+			// a fail_job stream selection is exactly the case where the record
+			// explains the failure the error message cannot.
+			_ = r.recordDecision(ctx, block, job)                                                                                          //nolint:errcheck // preserve the block error; decision recording is best-effort
 			_ = r.record(ctx, job.Attempt.ID, domain.AttemptEventBlockFailed, step.Name, err.Error(), map[string]any{"step_index": index}) //nolint:errcheck // preserve the block error; failed-event recording is best-effort
 			return fmt.Errorf("run block %q: %w", step.Name, err)
 		}
@@ -177,12 +186,16 @@ func (r Runner) stepSucceeded(ctx context.Context, step string, job *JobContext)
 	return nil
 }
 
-func (r Runner) recordDecision(ctx context.Context, block Block, job *JobContext) error {
+func blockDecision(block Block, job *JobContext) (domain.StreamSelectionDecision, bool) {
 	reporter, ok := block.(DecisionReporter)
 	if !ok {
-		return nil
+		return domain.StreamSelectionDecision{}, false
 	}
-	decision, ok := reporter.Decision(job)
+	return reporter.Decision(job)
+}
+
+func (r Runner) recordDecision(ctx context.Context, block Block, job *JobContext) error {
+	decision, ok := blockDecision(block, job)
 	if !ok {
 		return nil
 	}
