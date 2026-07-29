@@ -71,12 +71,14 @@ type AudioSelection struct {
 	OriginalLanguage string
 	LanguagesToKeep  []string
 	StreamIndexes    []int
+	Decision         *StreamSelectionDecision `json:"decision,omitempty"`
 }
 
 type SubtitleSelection struct {
 	OriginalLanguage string
 	LanguagesToKeep  []string
 	StreamIndexes    []int
+	Decision         *StreamSelectionDecision `json:"decision,omitempty"`
 }
 
 type CropResult struct {
