@@ -136,6 +136,10 @@ func (s Service) CancelJobs(ctx context.Context, request JobCancelRequest) (JobC
 		}
 		ids[domain.JobID(id)] = struct{}{}
 	}
+	_, _, states, err := normalizeJobQuery(request.query())
+	if err != nil {
+		return JobCancelResponse{}, err
+	}
 	listed, err := s.ListJobs(ctx, request.query())
 	if err != nil {
 		return JobCancelResponse{}, err
@@ -160,7 +164,7 @@ func (s Service) CancelJobs(ctx context.Context, request JobCancelRequest) (JobC
 		return response, nil
 	}
 	reason := strings.TrimSpace(request.Reason)
-	results, err := s.Store.CancelJobs(ctx, store.CancelJobsInput{IDs: targets, Reason: reason, Now: s.now()})
+	results, err := s.Store.CancelJobs(ctx, store.CancelJobsInput{IDs: targets, States: states, Reason: reason, Now: s.now()})
 	if err != nil {
 		return JobCancelResponse{}, err
 	}
@@ -168,7 +172,7 @@ func (s Service) CancelJobs(ctx context.Context, request JobCancelRequest) (JobC
 		item := JobCancelResult{
 			ID: int64(result.JobID), Slug: result.Slug, Library: string(result.LibraryName),
 			PreviousState: string(result.PreviousState), State: string(result.State),
-			Canceled: result.Canceled,
+			Canceled: result.Canceled, SkipReason: string(result.SkipReason),
 		}
 		if result.Canceled && s.CancelRunningJob != nil {
 			item.WorkerSignaled = s.CancelRunningJob(result.JobID)

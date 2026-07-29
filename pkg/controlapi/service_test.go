@@ -361,3 +361,90 @@ func TestJobCancelEndpointRejectsNonPostAndUnknownFields(t *testing.T) {
 		})
 	}
 }
+
+// TestCancelJobsRejectsCurrentOnlyAsTheOnlySelector pins that the refinement
+// flag cannot stand in for a selector: on its own it matches every job in every
+// library and state, which is exactly what the selector guard exists to stop.
+func TestCancelJobsRejectsCurrentOnlyAsTheOnlySelector(t *testing.T) {
+	ctx := context.Background()
+	service, _, _, _ := testService(t, ctx)
+
+	if _, err := service.CancelJobs(ctx, JobCancelRequest{CurrentOnly: true}); err == nil {
+		t.Fatal("CancelJobs(--current-only) error = nil, want rejection")
+	}
+	listed, err := service.ListJobs(ctx, JobQuery{})
+	if err != nil {
+		t.Fatalf("ListJobs() error = %v", err)
+	}
+	if listed.Jobs[0].State != string(domain.JobStatePending) {
+		t.Fatalf("rejected cancel changed job state to %q", listed.Jobs[0].State)
+	}
+	if _, err := service.CancelJobs(ctx, JobCancelRequest{Library: "downloads", CurrentOnly: true}); err != nil {
+		t.Fatalf("CancelJobs(--library --current-only) error = %v", err)
+	}
+}
+
+// TestCancelJobsReportsWhyAJobWasNotCanceled covers the operator-visible half of
+// the publish guard: the refusal is reported per job with a machine-readable
+// reason instead of erroring the batch.
+func TestCancelJobsReportsWhyAJobWasNotCanceled(t *testing.T) {
+	ctx := context.Background()
+	service, state, _, job := testService(t, ctx)
+	now := time.Date(2026, 7, 21, 9, 0, 0, 0, time.UTC)
+	if err := state.CreatePublishOperation(ctx, replacepkg.PublishOperation{
+		JobID: job.ID, Kind: "handoff", Mode: "move", Stage: replacepkg.PublishStagePrepared,
+		ArtifactPath: "/staging/output.mkv", DestinationPath: "/converted/Release/Season/Episode.mkv",
+		CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("CreatePublishOperation() error = %v", err)
+	}
+	signaled := 0
+	service.CancelRunningJob = func(domain.JobID) bool {
+		signaled++
+		return true
+	}
+
+	response, err := service.CancelJobs(ctx, JobCancelRequest{Library: "downloads"})
+	if err != nil {
+		t.Fatalf("CancelJobs() error = %v", err)
+	}
+	if response.Matched != 1 || response.Canceled != 0 {
+		t.Fatalf("CancelJobs() = %+v, want the publish refused", response)
+	}
+	if response.Jobs[0].Canceled || response.Jobs[0].SkipReason != string(store.CancelSkipPublishInFlight) {
+		t.Fatalf("CancelJobs() job = %+v", response.Jobs[0])
+	}
+	if signaled != 0 {
+		t.Fatalf("signaled workers = %d, want the worker left alone", signaled)
+	}
+	listed, err := service.ListJobs(ctx, JobQuery{Library: "downloads"})
+	if err != nil {
+		t.Fatalf("ListJobs() error = %v", err)
+	}
+	if listed.Jobs[0].State != string(domain.JobStatePending) {
+		t.Fatalf("refused cancel changed job state to %q", listed.Jobs[0].State)
+	}
+}
+
+// TestCancelJobsReportsASignaledWorker asserts the worker_signaled path end to
+// end, not just the "no worker was running" case.
+func TestCancelJobsReportsASignaledWorker(t *testing.T) {
+	ctx := context.Background()
+	service, _, _, job := testService(t, ctx)
+	signaled := make([]domain.JobID, 0, 1)
+	service.CancelRunningJob = func(jobID domain.JobID) bool {
+		signaled = append(signaled, jobID)
+		return true
+	}
+
+	response, err := service.CancelJobs(ctx, JobCancelRequest{Library: "downloads"})
+	if err != nil {
+		t.Fatalf("CancelJobs() error = %v", err)
+	}
+	if response.Canceled != 1 || !response.Jobs[0].WorkerSignaled {
+		t.Fatalf("CancelJobs() = %+v, want a signaled worker", response)
+	}
+	if len(signaled) != 1 || signaled[0] != job.ID {
+		t.Fatalf("signaled workers = %v, want job %d", signaled, job.ID)
+	}
+}
