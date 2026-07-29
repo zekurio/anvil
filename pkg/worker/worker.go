@@ -118,7 +118,7 @@ func (r Runner) Run(ctx context.Context, assignment scheduler.Assignment) error 
 	if recovered, recoverErr := recoverPendingPublish(ctx, pipelineRunner, jobContext); recoverErr != nil {
 		return r.fail(ctx, assignment.Job, attempt, cfg, recoverErr)
 	} else if recovered {
-		return r.finishSuccessful(ctx, assignment, flow, library, jobContext)
+		return r.finishSuccessful(context.WithoutCancel(ctx), assignment, flow, library, jobContext)
 	}
 	if err := r.verifyOccurrenceInput(inputPath, source, asset); err != nil {
 		return r.fail(ctx, assignment.Job, attempt, cfg, err)
@@ -170,13 +170,16 @@ func (r Runner) Run(ctx context.Context, assignment scheduler.Assignment) error 
 	})
 	if err := pipelineRunner.Run(pipelineCtx, jobContext); err != nil {
 		if !errors.Is(err, replacepkg.ErrPublishPending) {
-			// Staging cleanup has to outlive cancellation so a canceled encode
-			// never leaves a partial output behind.
+			// A pending publish keeps its staging artifact so a resumed job can
+			// still publish it. The detached context only carries the cleanup
+			// telemetry, which has to outlive the cancellation that caused it.
 			r.cleanupFailedStaging(context.WithoutCancel(ctx), jobContext, cfg)
 		}
 		return r.fail(ctx, assignment.Job, attempt, cfg, err)
 	}
-	return r.finishSuccessful(ctx, assignment, flow, library, jobContext)
+	// A finished pipeline is authoritative: the artifact is published, so the
+	// completion bookkeeping must run even if a cancel landed in the meantime.
+	return r.finishSuccessful(context.WithoutCancel(ctx), assignment, flow, library, jobContext)
 }
 
 func (r Runner) finishSuccessful(ctx context.Context, assignment scheduler.Assignment, flow domain.Flow, library domain.Library, jobContext *pipeline.JobContext) error {
@@ -440,15 +443,19 @@ func finalInputFingerprint(job *pipeline.JobContext) *domain.FileFingerprint {
 	return &fingerprint
 }
 
-// jobCancellationCause reports the operator cancellation that ended ctx, or
-// nil when ctx ended for any other reason such as daemon shutdown.
-func jobCancellationCause(ctx context.Context) error {
+// jobCancellationCause reports the operator cancellation that ended this
+// attempt, or nil when it ended for any other reason such as daemon shutdown.
+// A store rejection counts even before the worker's own context observes the
+// cancel, because the job row is already terminally canceled.
+func jobCancellationCause(ctx context.Context, cause error) error {
+	if errors.Is(cause, store.ErrJobCanceled) {
+		return cause
+	}
 	if ctx.Err() == nil {
 		return nil
 	}
-	cause := context.Cause(ctx)
-	if errors.Is(cause, scheduler.ErrJobCanceled) {
-		return cause
+	if canceled := context.Cause(ctx); errors.Is(canceled, scheduler.ErrJobCanceled) {
+		return canceled
 	}
 	return nil
 }
@@ -468,9 +475,16 @@ func (r Runner) cancel(ctx context.Context, job domain.Job, attempt domain.Attem
 }
 
 func (r Runner) fail(ctx context.Context, job domain.Job, attempt domain.Attempt, cfg config.Config, cause error) error {
-	if canceled := jobCancellationCause(ctx); canceled != nil {
+	// A pending publish is never made terminal, whatever ended the attempt: the
+	// journaled operation has to stay resumable, and only a job that can be
+	// re-leased ever reaches recoverPendingPublish.
+	pendingPublish := errors.Is(cause, replacepkg.ErrPublishPending)
+	if canceled := jobCancellationCause(ctx, cause); canceled != nil && !pendingPublish {
 		return r.cancel(context.WithoutCancel(ctx), job, attempt, canceled)
 	}
+	// Recording the outcome has to outlive whatever ended the attempt, or the
+	// job keeps a lease nobody owns until stale-job recovery expires it.
+	ctx = context.WithoutCancel(ctx)
 	message := cause.Error()
 	if _, err := r.Store.FinishAttempt(ctx, attempt.ID, domain.AttemptStateFailed, message, r.now()); err != nil {
 		return fmt.Errorf("finish failed attempt: %w", err)
