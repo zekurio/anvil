@@ -28,15 +28,15 @@ func TestListJobsMatchesExactSourceAssetAndDestinationPaths(t *testing.T) {
 	tests := []struct {
 		name      string
 		query     JobQuery
-		matchedOn PathMatchSide
+		matchedOn []PathMatchSide
 	}{
 		{name: "relative package", query: JobQuery{Library: "downloads", Path: "Release", CurrentOnly: true}},
 		{name: "relative asset", query: JobQuery{Library: "downloads", Path: "Release/Season/Episode.mkv", CurrentOnly: true}},
-		{name: "absolute package", query: JobQuery{AbsolutePath: filepath.Join(sourceRoot, "Release"), CurrentOnly: true}, matchedOn: PathMatchSource},
-		{name: "absolute asset", query: JobQuery{AbsolutePath: filepath.Join(sourceRoot, "Release", "Season", "Episode.mkv"), CurrentOnly: true}, matchedOn: PathMatchAsset},
-		{name: "planned destination", query: JobQuery{AbsolutePath: filepath.Join(handoffRoot, "Release", "Season", "Episode.mkv"), CurrentOnly: true}, matchedOn: PathMatchDestination},
-		{name: "asset destination directory", query: JobQuery{AbsolutePath: filepath.Join(handoffRoot, "Release", "Season"), CurrentOnly: true}, matchedOn: PathMatchDestinationDirectory},
-		{name: "package destination directory", query: JobQuery{AbsolutePath: filepath.Join(handoffRoot, "Release"), CurrentOnly: true}, matchedOn: PathMatchDestinationDirectory},
+		{name: "absolute package", query: JobQuery{AbsolutePath: filepath.Join(sourceRoot, "Release"), CurrentOnly: true}, matchedOn: []PathMatchSide{PathMatchSource}},
+		{name: "absolute asset", query: JobQuery{AbsolutePath: filepath.Join(sourceRoot, "Release", "Season", "Episode.mkv"), CurrentOnly: true}, matchedOn: []PathMatchSide{PathMatchAsset}},
+		{name: "planned destination", query: JobQuery{AbsolutePath: filepath.Join(handoffRoot, "Release", "Season", "Episode.mkv"), CurrentOnly: true}, matchedOn: []PathMatchSide{PathMatchDestination}},
+		{name: "asset destination directory", query: JobQuery{AbsolutePath: filepath.Join(handoffRoot, "Release", "Season"), CurrentOnly: true}, matchedOn: []PathMatchSide{PathMatchDestinationDirectory}},
+		{name: "package destination directory", query: JobQuery{AbsolutePath: filepath.Join(handoffRoot, "Release"), CurrentOnly: true}, matchedOn: []PathMatchSide{PathMatchDestinationDirectory}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -49,8 +49,8 @@ func TestListJobsMatchesExactSourceAssetAndDestinationPaths(t *testing.T) {
 			}
 			// A relative-path query reports no side, because it did not ask
 			// about absolute paths at all.
-			if response.Jobs[0].MatchedOn != tt.matchedOn {
-				t.Fatalf("MatchedOn = %q, want %q", response.Jobs[0].MatchedOn, tt.matchedOn)
+			if !slices.Equal(response.Jobs[0].MatchedOn, tt.matchedOn) {
+				t.Fatalf("MatchedOn = %v, want %v", response.Jobs[0].MatchedOn, tt.matchedOn)
 			}
 		})
 	}
@@ -192,6 +192,7 @@ func TestHTTPRejectsInexactOrUnscopedJobQueries(t *testing.T) {
 		"/v1/jobs?absolute_path=relative/path",
 		"/v1/jobs?path=Release&absolute_path=/downloads/Release&library=downloads",
 		"/v1/jobs?unknown=value",
+		"/v1/jobs?with_selection=maybe",
 	}
 	for _, target := range tests {
 		t.Run(target, func(t *testing.T) {
@@ -678,5 +679,117 @@ func TestListJobsReportsAnUnreadableStreamSelection(t *testing.T) {
 	}
 	if response.Jobs[0].StreamSelection[0].DecisionError == "" {
 		t.Fatal("DecisionError = \"\", want the decode failure reported")
+	}
+}
+
+// TestListJobsReturnsBothAudioAndSubtitleDecisions pins that one attempt's two
+// decisions both come back. The feature is half useless with only one kind, and
+// a query narrowed to a single row per job would pass every other test here.
+func TestListJobsReturnsBothAudioAndSubtitleDecisions(t *testing.T) {
+	ctx := context.Background()
+	service, state, _, job := testService(t, ctx)
+	attempt := startTestAttempt(t, ctx, state, job.ID)
+
+	for _, decision := range []domain.StreamSelectionDecision{
+		germanMissingDecision(),
+		{Kind: domain.StreamKindSubtitle, Rule: domain.StreamSelectionRuleLanguageFilter},
+	} {
+		payload, err := json.Marshal(decision)
+		if err != nil {
+			t.Fatalf("marshal decision: %v", err)
+		}
+		if _, err := state.RecordAttemptEvent(ctx, domain.AttemptEvent{
+			AttemptID: attempt.ID, Type: domain.AttemptEventArtifact,
+			Name: pipeline.StreamSelectionArtifact, Payload: payload,
+		}); err != nil {
+			t.Fatalf("RecordAttemptEvent() error = %v", err)
+		}
+	}
+
+	response, err := service.ListJobs(ctx, JobQuery{Library: "downloads", WithSelection: true})
+	if err != nil {
+		t.Fatalf("ListJobs() error = %v", err)
+	}
+	kinds := make([]domain.StreamKind, 0, 2)
+	for _, selection := range response.Jobs[0].StreamSelection {
+		if selection.Decision == nil {
+			t.Fatalf("selection %+v has no decision", selection)
+		}
+		kinds = append(kinds, selection.Decision.Kind)
+	}
+	if !slices.Equal(kinds, []domain.StreamKind{domain.StreamKindAudio, domain.StreamKindSubtitle}) {
+		t.Fatalf("decision kinds = %v, want both audio and subtitle", kinds)
+	}
+}
+
+// TestListJobsReportsAPathOutsideEveryLibrary closes the other half of the
+// incident: zero results for a path Anvil could never match must not look like
+// zero results for a path that simply has no job.
+func TestListJobsReportsAPathOutsideEveryLibrary(t *testing.T) {
+	ctx := context.Background()
+	service, _, cfg, _ := testService(t, ctx)
+
+	tests := []struct {
+		name    string
+		path    string
+		outside bool
+	}{
+		{name: "outside every configured library", path: filepath.Join(t.TempDir(), "elsewhere", "Episode.mkv"), outside: true},
+		{name: "under the library but unknown", path: filepath.Join(cfg.Libraries["downloads"].Path, "Unknown", "Episode.mkv")},
+		{name: "under the handoff root but unknown", path: filepath.Join(cfg.Libraries["downloads"].Download.HandoffPath, "Unknown.mkv")},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			response, err := service.ListJobs(ctx, JobQuery{AbsolutePath: tt.path})
+			if err != nil {
+				t.Fatalf("ListJobs() error = %v", err)
+			}
+			if response.Matched != 0 {
+				t.Fatalf("Matched = %d, want no match", response.Matched)
+			}
+			if response.PathOutsideLibraries != tt.outside {
+				t.Fatalf("PathOutsideLibraries = %t, want %t", response.PathOutsideLibraries, tt.outside)
+			}
+		})
+	}
+
+	// A path that did match must never be reported as unmatchable.
+	response, err := service.ListJobs(ctx, JobQuery{AbsolutePath: filepath.Join(cfg.Libraries["downloads"].Path, "Release")})
+	if err != nil {
+		t.Fatalf("matching ListJobs() error = %v", err)
+	}
+	if response.Matched != 1 || response.PathOutsideLibraries {
+		t.Fatalf("matching listing = %+v, want a match and no outside-library flag", response)
+	}
+}
+
+// TestListJobsReportsEverySideAPathMatched covers an in-place replacement, where
+// the converted file is written back over its own source. Reporting one side
+// would tell a consumer the output is not a destination.
+func TestListJobsReportsEverySideAPathMatched(t *testing.T) {
+	ctx := context.Background()
+	service, state, cfg, job := testService(t, ctx)
+
+	// Journal a publish whose destination is the asset's own path.
+	assetPath := filepath.Join(cfg.Libraries["downloads"].Path, "Release", "Season", "Episode.mkv")
+	now := time.Now().UTC()
+	if err := state.CreatePublishOperation(ctx, replacepkg.PublishOperation{
+		JobID: job.ID, Kind: "replace", Mode: "replace", Stage: replacepkg.PublishStagePrepared,
+		ArtifactPath: "/staging/output.mkv", DestinationPath: assetPath,
+		CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("CreatePublishOperation() error = %v", err)
+	}
+
+	response, err := service.ListJobs(ctx, JobQuery{AbsolutePath: assetPath})
+	if err != nil {
+		t.Fatalf("ListJobs() error = %v", err)
+	}
+	if response.Matched != 1 {
+		t.Fatalf("Matched = %d, want the in-place job", response.Matched)
+	}
+	want := []PathMatchSide{PathMatchAsset, PathMatchDestination}
+	if !slices.Equal(response.Jobs[0].MatchedOn, want) {
+		t.Fatalf("MatchedOn = %v, want %v so the output is not reported as merely a source", response.Jobs[0].MatchedOn, want)
 	}
 }

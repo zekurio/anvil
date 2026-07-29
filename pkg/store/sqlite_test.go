@@ -1081,3 +1081,52 @@ func TestLatestAttemptArtifactsReturnsOnlyTheNewestAttempt(t *testing.T) {
 		t.Fatalf("LatestAttemptArtifacts(nil) = %+v, want empty", empty)
 	}
 }
+
+// TestLatestAttemptArtifactsChunksLargeJobIDLists pins that a listing wider than
+// SQLite's bound-parameter cap still works. Before chunking this failed with
+// "too many SQL variables", which turned a whole listing into an error rather
+// than degrading, exactly when the queue was large enough to matter.
+func TestLatestAttemptArtifactsChunksLargeJobIDLists(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t)
+	now := testNow()
+
+	source := upsertTestSource(t, ctx, store, "movies", "Movie.mkv")
+	if _, _, err := store.EnqueueJob(ctx, EnqueueJobInput{
+		SourceID: source.ID, LibraryName: source.LibraryName, Now: now,
+	}); err != nil {
+		t.Fatalf("enqueue job: %v", err)
+	}
+	job, err := store.LeaseNextJob(ctx, "worker-1", now.Add(time.Minute), now)
+	if err != nil {
+		t.Fatalf("LeaseNextJob() error = %v", err)
+	}
+	attempt, err := store.StartAttempt(ctx, job.ID, "worker-1", nil, nil, nil, now)
+	if err != nil {
+		t.Fatalf("StartAttempt() error = %v", err)
+	}
+	if _, err := store.RecordAttemptEvent(ctx, domain.AttemptEvent{
+		AttemptID: attempt.ID, Type: domain.AttemptEventArtifact,
+		Name: "stream-selection", Payload: []byte(`{"rule":"language_filter"}`),
+	}); err != nil {
+		t.Fatalf("RecordAttemptEvent() error = %v", err)
+	}
+
+	// Far more ids than SQLite will bind in a single statement.
+	jobIDs := make([]domain.JobID, 0, 40000)
+	jobIDs = append(jobIDs, job.ID)
+	for i := 2; i <= 40000; i++ {
+		jobIDs = append(jobIDs, domain.JobID(i))
+	}
+
+	result, err := store.LatestAttemptArtifacts(ctx, "stream-selection", jobIDs)
+	if err != nil {
+		t.Fatalf("LatestAttemptArtifacts() with %d ids error = %v", len(jobIDs), err)
+	}
+	if len(result[job.ID]) != 1 {
+		t.Fatalf("events for job %d = %+v, want the recorded decision", job.ID, result[job.ID])
+	}
+	if len(result) != 1 {
+		t.Fatalf("result has %d jobs, want only the one that recorded a decision", len(result))
+	}
+}

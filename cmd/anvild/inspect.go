@@ -39,6 +39,7 @@ type inspectStreamSelection struct {
 	AttemptNumber int                            `json:"attempt_number"`
 	RecordedAt    time.Time                      `json:"recorded_at"`
 	Decision      domain.StreamSelectionDecision `json:"decision"`
+	DecisionError string                         `json:"decision_error,omitempty"`
 }
 
 type inspectPublishOperation struct {
@@ -213,20 +214,35 @@ func latestStreamSelection(attempts []inspectAttempt) []inspectStreamSelection {
 	return nil
 }
 
+// streamSelections reports the decisions this attempt recorded, including ones
+// that failed to decode. An unreadable record still counts as recorded: hiding
+// it would let latestStreamSelection fall back to an older attempt and present
+// a stale decision as the current one.
 func (a inspectAttempt) streamSelections() []inspectStreamSelection {
 	var result []inspectStreamSelection
 	for _, event := range a.Events {
-		if event.StreamSelection == nil {
+		if event.StreamSelection == nil && event.PayloadError == "" {
 			continue
 		}
-		result = append(result, inspectStreamSelection{
+		if event.StreamSelection == nil && !isStreamSelectionName(event.Name) {
+			continue
+		}
+		selection := inspectStreamSelection{
 			AttemptID:     a.ID,
 			AttemptNumber: a.Number,
 			RecordedAt:    event.CreatedAt,
-			Decision:      *event.StreamSelection,
-		})
+			DecisionError: event.PayloadError,
+		}
+		if event.StreamSelection != nil {
+			selection.Decision = *event.StreamSelection
+		}
+		result = append(result, selection)
 	}
 	return result
+}
+
+func isStreamSelectionName(name string) bool {
+	return name == pipeline.StreamSelectionArtifact
 }
 
 func inspectPublishOperationFromDomain(operation replacepkg.PublishOperation) inspectPublishOperation {
@@ -432,6 +448,10 @@ func writeInspectReport(out io.Writer, report inspectReport) error {
 		if len(report.StreamSelection) > 0 {
 			w.printf("\nStream selection (attempt %d):\n", report.StreamSelection[0].AttemptNumber)
 			for _, selection := range report.StreamSelection {
+				if selection.DecisionError != "" {
+					w.printf("  unreadable: %s\n", selection.DecisionError)
+					continue
+				}
 				writeStreamSelection(w, "  ", selection.Decision)
 			}
 		}
