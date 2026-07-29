@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -16,11 +17,42 @@ type Manager struct {
 	Root string
 }
 
+// Root reports the staging root inside a daemon temp dir. Every component that
+// creates, cleans, or reports staging directories resolves it here, so a
+// cleanup sweep can never point at a different directory than the encodes do.
+func Root(tempDir string) string {
+	return filepath.Join(tempDir, "staging")
+}
+
+// CleanupStaleOptions describes one stale-staging sweep.
+type CleanupStaleOptions struct {
+	OlderThan time.Duration
+	Now       time.Time
+	DryRun    bool
+	// Protected reports a staging directory that must survive the sweep even
+	// though it is old enough to remove. Age alone is not proof that a
+	// directory is abandoned: a directory's mtime only moves when an entry is
+	// created or removed in it, so a multi-hour encode writing into an
+	// already-created output file keeps a stale mtime the whole time. Only the
+	// daemon knows which jobs are live or still own an unresolved publish
+	// journal, so it supplies that knowledge here.
+	//
+	// A nil predicate protects nothing, which is only safe when the caller
+	// knows no attempt can be running.
+	Protected func(jobID int64, attemptID int64) bool
+}
+
 type CleanupStaleResult struct {
 	Candidates int
 	Removed    int
 	Skipped    int
-	Errors     []string
+	// Protected counts directories old enough to remove that were kept because
+	// the caller still owns them.
+	Protected int
+	// ProtectedJobs lists the job ids behind Protected, so an operator can see
+	// which work is holding staging space instead of guessing.
+	ProtectedJobs []int64
+	Errors        []string
 }
 
 type PathPlan struct {
@@ -78,14 +110,14 @@ func (m Manager) Cleanup(job *pipeline.JobContext) error {
 	return os.RemoveAll(dir)
 }
 
-func (m Manager) CleanupStale(olderThan time.Duration, now time.Time, dryRun bool) (CleanupStaleResult, error) {
+func (m Manager) CleanupStale(options CleanupStaleOptions) (CleanupStaleResult, error) {
 	var result CleanupStaleResult
-	if olderThan <= 0 {
-		return result, nil
-	}
 	root := filepath.Clean(strings.TrimSpace(m.Root))
 	if err := safeRoot(root); err != nil {
 		return result, err
+	}
+	if options.OlderThan <= 0 {
+		return result, nil
 	}
 	entries, err := os.ReadDir(root)
 	if errors.Is(err, os.ErrNotExist) {
@@ -94,9 +126,10 @@ func (m Manager) CleanupStale(olderThan time.Duration, now time.Time, dryRun boo
 	if err != nil {
 		return result, fmt.Errorf("read staging root: %w", err)
 	}
-	cutoff := now.UTC().Add(-olderThan)
+	cutoff := options.Now.UTC().Add(-options.OlderThan)
 	for _, entry := range entries {
-		if !entry.IsDir() || !stagingDirName(entry.Name()) {
+		jobID, attemptID, ok := parseStagingDirName(entry.Name())
+		if !entry.IsDir() || !ok {
 			result.Skipped++
 			continue
 		}
@@ -110,8 +143,13 @@ func (m Manager) CleanupStale(olderThan time.Duration, now time.Time, dryRun boo
 			result.Skipped++
 			continue
 		}
+		if options.Protected != nil && options.Protected(jobID, attemptID) {
+			result.Protected++
+			result.ProtectedJobs = append(result.ProtectedJobs, jobID)
+			continue
+		}
 		result.Candidates++
-		if dryRun {
+		if options.DryRun {
 			continue
 		}
 		if err := os.RemoveAll(path); err != nil {
@@ -167,23 +205,36 @@ func safeRoot(root string) error {
 	return nil
 }
 
-func stagingDirName(name string) bool {
-	if !strings.HasPrefix(name, "job-") {
-		return false
+// parseStagingDirName recognizes a directory Anvil created and reports the job
+// and attempt it belongs to. Anything else is left alone: the staging root is
+// operator-visible, and a sweep must never delete a directory it cannot prove
+// it owns.
+func parseStagingDirName(name string) (int64, int64, bool) {
+	rest, ok := strings.CutPrefix(name, "job-")
+	if !ok {
+		return 0, 0, false
 	}
-	rest := strings.TrimPrefix(name, "job-")
-	jobID, attempt, ok := strings.Cut(rest, "-attempt-")
-	return ok && digits(jobID) && digits(attempt)
+	jobLabel, attemptLabel, ok := strings.Cut(rest, "-attempt-")
+	if !ok {
+		return 0, 0, false
+	}
+	jobID, ok := parseStagingID(jobLabel)
+	if !ok {
+		return 0, 0, false
+	}
+	attemptID, ok := parseStagingID(attemptLabel)
+	if !ok {
+		return 0, 0, false
+	}
+	return jobID, attemptID, true
 }
 
-func digits(value string) bool {
-	if value == "" {
-		return false
+// parseStagingID accepts only the exact decimal form Prepare writes, so a
+// hand-made directory that merely looks similar is not treated as Anvil's.
+func parseStagingID(label string) (int64, bool) {
+	value, err := strconv.ParseInt(label, 10, 64)
+	if err != nil || value <= 0 || strconv.FormatInt(value, 10) != label {
+		return 0, false
 	}
-	for _, r := range value {
-		if r < '0' || r > '9' {
-			return false
-		}
-	}
-	return true
+	return value, true
 }

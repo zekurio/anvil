@@ -1,24 +1,23 @@
-package controlapi
+package control
 
 import (
+	"path"
+	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/zekurio/anvil/pkg/domain"
 )
 
+// Version names the control surface contract: the anvilctl command syntax,
+// its --json shapes, and the error codes. It moves only when that contract
+// changes, independently of ProtocolVersion, which is about wire compatibility
+// between two binaries.
 const Version = "v1"
 
+// BuildVersion is stamped at link time. Both binaries report it, so an operator
+// can tell which client is talking to which daemon.
 var BuildVersion = "dev"
-
-type ErrorResponse struct {
-	Error APIError `json:"error"`
-}
-
-type APIError struct {
-	Code    string `json:"code"`
-	Message string `json:"message"`
-}
 
 type StatusResponse struct {
 	APIVersion string           `json:"api_version"`
@@ -119,15 +118,115 @@ type OccurrenceResponse struct {
 }
 
 type JobQuery struct {
-	Library      string
-	Path         string
-	AbsolutePath string
-	States       []string
-	CurrentOnly  bool
-	Limit        int
+	Library      string   `json:"library,omitempty"`
+	Path         string   `json:"path,omitempty"`
+	AbsolutePath string   `json:"absolute_path,omitempty"`
+	States       []string `json:"state,omitempty"`
+	CurrentOnly  bool     `json:"current_only,omitempty"`
+	// Limit bounds how many jobs are returned, not how many are matched. It is
+	// a display bound: a selector-driven operation such as cancel must never
+	// carry it, or it would silently act on a subset of what it selected.
+	Limit int `json:"limit,omitempty"`
 	// WithSelection populates StreamSelection on each returned job. It is
 	// opt-in because the decisions are far larger than the rest of a listing.
-	WithSelection bool
+	WithSelection bool `json:"with_selection,omitempty"`
+}
+
+// NormalizedJobQuery is a validated job selector. Both sides normalize through
+// the same code, so the client refuses a mistake with the daemon's wording and
+// the daemon never has to trust the client's normalization.
+type NormalizedJobQuery struct {
+	Library string
+	// RelativePath is library-relative and slash-separated, empty when the
+	// query did not select by relative path.
+	RelativePath string
+	// AbsolutePath is cleaned, empty when the query did not select by it.
+	AbsolutePath string
+	States       []domain.JobState
+	CurrentOnly  bool
+	Limit        int
+}
+
+// Normalize validates the selector and returns its canonical form.
+func (q JobQuery) Normalize() (NormalizedJobQuery, error) {
+	normalized := NormalizedJobQuery{
+		Library:     strings.TrimSpace(q.Library),
+		CurrentOnly: q.CurrentOnly,
+		Limit:       q.Limit,
+	}
+	if q.Limit < 0 {
+		return NormalizedJobQuery{}, NewError(CodeInvalidArgument, "limit must be non-negative")
+	}
+	if strings.TrimSpace(q.Path) != "" && strings.TrimSpace(q.AbsolutePath) != "" {
+		return NormalizedJobQuery{}, NewError(CodeInvalidArgument, "path and absolute_path are mutually exclusive")
+	}
+	if strings.TrimSpace(q.Path) != "" {
+		if normalized.Library == "" {
+			return NormalizedJobQuery{}, NewError(CodeInvalidArgument, "library is required with path")
+		}
+		cleaned, err := CleanRelativePath(q.Path)
+		if err != nil {
+			return NormalizedJobQuery{}, err
+		}
+		normalized.RelativePath = cleaned
+	}
+	if strings.TrimSpace(q.AbsolutePath) != "" {
+		if strings.ContainsRune(q.AbsolutePath, '\x00') || !filepath.IsAbs(q.AbsolutePath) {
+			return NormalizedJobQuery{}, NewError(CodeInvalidArgument, "absolute_path must be absolute")
+		}
+		normalized.AbsolutePath = filepath.Clean(q.AbsolutePath)
+	}
+	states, err := ParseJobStates(q.States)
+	if err != nil {
+		return NormalizedJobQuery{}, err
+	}
+	normalized.States = states
+	return normalized, nil
+}
+
+// validate rejects a query the daemon would reject anyway, so an operator
+// mistake is reported without a round trip and with the same wording.
+func (q JobQuery) validate() error {
+	_, err := q.Normalize()
+	return err
+}
+
+// ParseJobStates accepts repeated and comma-separated state selectors so the
+// same wording works in a flag, a request field, and a config value.
+func ParseJobStates(values []string) ([]domain.JobState, error) {
+	states := make([]domain.JobState, 0, len(values))
+	seen := make(map[domain.JobState]struct{}, len(values))
+	for _, value := range values {
+		for _, part := range strings.Split(value, ",") {
+			state := domain.JobState(strings.TrimSpace(part))
+			if state == "" {
+				continue
+			}
+			if !domain.ValidJobState(state) {
+				return nil, NewError(CodeInvalidArgument, "unknown job state %q", state)
+			}
+			if _, ok := seen[state]; ok {
+				continue
+			}
+			seen[state] = struct{}{}
+			states = append(states, state)
+		}
+	}
+	return states, nil
+}
+
+// CleanRelativePath canonicalizes a library-relative path and refuses anything
+// that could escape the library root.
+func CleanRelativePath(value string) (string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" || strings.ContainsRune(value, '\x00') || filepath.IsAbs(value) {
+		return "", NewError(CodeInvalidArgument, "path must be relative to the library root")
+	}
+	cleaned := path.Clean(filepath.ToSlash(value))
+	if cleaned == "." || cleaned == ".." || path.IsAbs(cleaned) || strings.HasPrefix(cleaned, "../") {
+		return "", NewError(CodeInvalidArgument, "path must stay within the library root")
+	}
+	return cleaned, nil
 }
 
 // JobCancelRequest reuses the JobQuery selector vocabulary so a cancel can
@@ -139,22 +238,28 @@ type JobCancelRequest struct {
 	AbsolutePath string   `json:"absolute_path,omitempty"`
 	States       []string `json:"state,omitempty"`
 	CurrentOnly  bool     `json:"current_only,omitempty"`
-	IDs          []int64  `json:"ids,omitempty"`
-	Reason       string   `json:"reason,omitempty"`
+	// References narrow the selection to specific jobs by id or slug. Like
+	// IDs, they never widen it.
+	References []string `json:"references,omitempty"`
+	IDs        []int64  `json:"ids,omitempty"`
+	Reason     string   `json:"reason,omitempty"`
 }
 
-func (r JobCancelRequest) query() JobQuery {
+// Query is the listing this cancel acts on. It deliberately carries no Limit:
+// a cancel must act on everything its selector matched, never on the first
+// page of it.
+func (r JobCancelRequest) Query() JobQuery {
 	return JobQuery{
 		Library: r.Library, Path: r.Path, AbsolutePath: r.AbsolutePath,
 		States: r.States, CurrentOnly: r.CurrentOnly,
 	}
 }
 
-// hasSelector reports whether the request narrows the queue. CurrentOnly is
+// HasSelector reports whether the request narrows the queue. CurrentOnly is
 // deliberately excluded: it only refines another selector, and on its own it
 // matches every job in every library and state.
-func (r JobCancelRequest) hasSelector() bool {
-	if len(r.IDs) > 0 {
+func (r JobCancelRequest) HasSelector() bool {
+	if len(r.IDs) > 0 || len(r.References) > 0 {
 		return true
 	}
 	if strings.TrimSpace(r.Library) != "" || strings.TrimSpace(r.Path) != "" || strings.TrimSpace(r.AbsolutePath) != "" {

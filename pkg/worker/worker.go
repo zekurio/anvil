@@ -254,7 +254,7 @@ func probeMetadataRefresh(runner pipeline.Runner) resumeProbeMetadataRefresher {
 }
 
 func DefaultPipeline(tempDir string, journal replacepkg.PublishJournal) pipeline.Runner {
-	stageManager := staging.Manager{Root: filepath.Join(tempDir, "staging")}
+	stageManager := staging.Manager{Root: staging.Root(tempDir)}
 	prober := probe.FFProbe{}
 	publishManager := replacepkg.Manager{Journal: journal}
 	return pipeline.Runner{
@@ -531,7 +531,7 @@ func (r Runner) cleanupFailedStaging(ctx context.Context, job *pipeline.JobConte
 	if job == nil || job.StagingDir == "" {
 		return
 	}
-	err := staging.Manager{Root: filepath.Join(r.tempDir(cfg), "staging")}.Cleanup(job)
+	err := staging.Manager{Root: staging.Root(r.tempDir(cfg))}.Cleanup(job)
 	if err == nil || r.Store == nil {
 		return
 	}

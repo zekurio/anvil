@@ -3,19 +3,19 @@ package controlapi
 import (
 	"context"
 	"encoding/json"
-	"net/http"
-	"net/http/httptest"
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
-	"strings"
 	"testing"
 	"time"
 
 	"github.com/zekurio/anvil/pkg/config"
+	"github.com/zekurio/anvil/pkg/control"
 	"github.com/zekurio/anvil/pkg/domain"
 	"github.com/zekurio/anvil/pkg/pipeline"
 	replacepkg "github.com/zekurio/anvil/pkg/replace"
+	"github.com/zekurio/anvil/pkg/scanner"
 	"github.com/zekurio/anvil/pkg/store"
 )
 
@@ -27,16 +27,16 @@ func TestListJobsMatchesExactSourceAssetAndDestinationPaths(t *testing.T) {
 
 	tests := []struct {
 		name      string
-		query     JobQuery
-		matchedOn []PathMatchSide
+		query     control.JobQuery
+		matchedOn []control.PathMatchSide
 	}{
-		{name: "relative package", query: JobQuery{Library: "downloads", Path: "Release", CurrentOnly: true}},
-		{name: "relative asset", query: JobQuery{Library: "downloads", Path: "Release/Season/Episode.mkv", CurrentOnly: true}},
-		{name: "absolute package", query: JobQuery{AbsolutePath: filepath.Join(sourceRoot, "Release"), CurrentOnly: true}, matchedOn: []PathMatchSide{PathMatchSource}},
-		{name: "absolute asset", query: JobQuery{AbsolutePath: filepath.Join(sourceRoot, "Release", "Season", "Episode.mkv"), CurrentOnly: true}, matchedOn: []PathMatchSide{PathMatchAsset}},
-		{name: "planned destination", query: JobQuery{AbsolutePath: filepath.Join(handoffRoot, "Release", "Season", "Episode.mkv"), CurrentOnly: true}, matchedOn: []PathMatchSide{PathMatchDestination}},
-		{name: "asset destination directory", query: JobQuery{AbsolutePath: filepath.Join(handoffRoot, "Release", "Season"), CurrentOnly: true}, matchedOn: []PathMatchSide{PathMatchDestinationDirectory}},
-		{name: "package destination directory", query: JobQuery{AbsolutePath: filepath.Join(handoffRoot, "Release"), CurrentOnly: true}, matchedOn: []PathMatchSide{PathMatchDestinationDirectory}},
+		{name: "relative package", query: control.JobQuery{Library: "downloads", Path: "Release", CurrentOnly: true}},
+		{name: "relative asset", query: control.JobQuery{Library: "downloads", Path: "Release/Season/Episode.mkv", CurrentOnly: true}},
+		{name: "absolute package", query: control.JobQuery{AbsolutePath: filepath.Join(sourceRoot, "Release"), CurrentOnly: true}, matchedOn: []control.PathMatchSide{control.PathMatchSource}},
+		{name: "absolute asset", query: control.JobQuery{AbsolutePath: filepath.Join(sourceRoot, "Release", "Season", "Episode.mkv"), CurrentOnly: true}, matchedOn: []control.PathMatchSide{control.PathMatchAsset}},
+		{name: "planned destination", query: control.JobQuery{AbsolutePath: filepath.Join(handoffRoot, "Release", "Season", "Episode.mkv"), CurrentOnly: true}, matchedOn: []control.PathMatchSide{control.PathMatchDestination}},
+		{name: "asset destination directory", query: control.JobQuery{AbsolutePath: filepath.Join(handoffRoot, "Release", "Season"), CurrentOnly: true}, matchedOn: []control.PathMatchSide{control.PathMatchDestinationDirectory}},
+		{name: "package destination directory", query: control.JobQuery{AbsolutePath: filepath.Join(handoffRoot, "Release"), CurrentOnly: true}, matchedOn: []control.PathMatchSide{control.PathMatchDestinationDirectory}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -55,7 +55,7 @@ func TestListJobsMatchesExactSourceAssetAndDestinationPaths(t *testing.T) {
 		})
 	}
 
-	response, err := service.ListJobs(ctx, JobQuery{AbsolutePath: filepath.Join(sourceRoot, "Release", "Episode"), CurrentOnly: true})
+	response, err := service.ListJobs(ctx, control.JobQuery{AbsolutePath: filepath.Join(sourceRoot, "Release", "Episode"), CurrentOnly: true})
 	if err != nil {
 		t.Fatalf("partial ListJobs() error = %v", err)
 	}
@@ -71,21 +71,21 @@ func TestListJobsMatchesExactSourceAssetAndDestinationPaths(t *testing.T) {
 	if err := state.CreatePublishOperation(ctx, operation); err != nil {
 		t.Fatalf("CreatePublishOperation() error = %v", err)
 	}
-	response, err = service.ListJobs(ctx, JobQuery{AbsolutePath: operation.DestinationPath})
+	response, err = service.ListJobs(ctx, control.JobQuery{AbsolutePath: operation.DestinationPath})
 	if err != nil {
 		t.Fatalf("journaled ListJobs() error = %v", err)
 	}
 	if response.Matched != 1 || response.Jobs[0].DestinationPath != operation.DestinationPath || response.Jobs[0].PublishStage != string(operation.Stage) {
 		t.Fatalf("journaled ListJobs() = %+v", response)
 	}
-	response, err = service.ListJobs(ctx, JobQuery{AbsolutePath: filepath.Join(handoffRoot, "Release", "Season", "Episode.mkv")})
+	response, err = service.ListJobs(ctx, control.JobQuery{AbsolutePath: filepath.Join(handoffRoot, "Release", "Season", "Episode.mkv")})
 	if err != nil {
 		t.Fatalf("superseded plan ListJobs() error = %v", err)
 	}
 	if response.Matched != 0 {
 		t.Fatalf("superseded planned destination matched after journal: %+v", response)
 	}
-	response, err = service.ListJobs(ctx, JobQuery{AbsolutePath: filepath.Join(handoffRoot, "Release")})
+	response, err = service.ListJobs(ctx, control.JobQuery{AbsolutePath: filepath.Join(handoffRoot, "Release")})
 	if err != nil {
 		t.Fatalf("superseded package directory ListJobs() error = %v", err)
 	}
@@ -120,14 +120,14 @@ func TestListJobsCurrentOnlyUsesOccurrenceCurrentness(t *testing.T) {
 		t.Fatalf("ForceOccurrence(second) error = %v", err)
 	}
 
-	all, err := service.ListJobs(ctx, JobQuery{Library: "downloads", Path: "Release/Season/Episode.mkv"})
+	all, err := service.ListJobs(ctx, control.JobQuery{Library: "downloads", Path: "Release/Season/Episode.mkv"})
 	if err != nil {
 		t.Fatalf("ListJobs(all) error = %v", err)
 	}
 	if all.Matched != 2 {
 		t.Fatalf("ListJobs(all).Matched = %d, want 2", all.Matched)
 	}
-	current, err := service.ListJobs(ctx, JobQuery{Library: "downloads", Path: "Release/Season/Episode.mkv", CurrentOnly: true})
+	current, err := service.ListJobs(ctx, control.JobQuery{Library: "downloads", Path: "Release/Season/Episode.mkv", CurrentOnly: true})
 	if err != nil {
 		t.Fatalf("ListJobs(current) error = %v", err)
 	}
@@ -151,7 +151,7 @@ func TestPackageDirectoryLookupPreservesAmbiguity(t *testing.T) {
 		t.Fatalf("ForceOccurrence(second asset) error = %v", err)
 	}
 	packageDirectory := filepath.Join(cfg.Libraries["downloads"].Download.HandoffPath, "Release")
-	response, err := service.ListJobs(ctx, JobQuery{AbsolutePath: packageDirectory, CurrentOnly: true, Limit: 1})
+	response, err := service.ListJobs(ctx, control.JobQuery{AbsolutePath: packageDirectory, CurrentOnly: true, Limit: 1})
 	if err != nil {
 		t.Fatalf("ListJobs() error = %v", err)
 	}
@@ -174,7 +174,7 @@ func TestStatusReportsDaemonFactsAndQueueCounts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Status() error = %v", err)
 	}
-	if response.APIVersion != Version || response.ServerTime != now || response.Daemon.State != "ready" || response.Daemon.Version != "test-version" {
+	if response.APIVersion != control.Version || response.ServerTime != now || response.Daemon.State != "ready" || response.Daemon.Version != "test-version" {
 		t.Fatalf("Status() = %+v", response)
 	}
 	if response.Workers.Configured != 2 || response.Workers.Active != 1 || response.Queue[string(domain.JobStatePending)] != 1 {
@@ -185,25 +185,29 @@ func TestStatusReportsDaemonFactsAndQueueCounts(t *testing.T) {
 	}
 }
 
-func TestHTTPRejectsInexactOrUnscopedJobQueries(t *testing.T) {
-	service := Service{}
-	tests := []string{
-		"/v1/jobs?path=Release",
-		"/v1/jobs?absolute_path=relative/path",
-		"/v1/jobs?path=Release&absolute_path=/downloads/Release&library=downloads",
-		"/v1/jobs?unknown=value",
-		"/v1/jobs?with_selection=maybe",
+// TestListJobsRejectsInexactOrUnscopedQueries keeps path lookups exact. A
+// library-relative path without its library, or an "absolute" path that is not
+// absolute, cannot identify a job, and answering them approximately is how a
+// caller ends up acting on the wrong file.
+func TestListJobsRejectsInexactOrUnscopedJobQueries(t *testing.T) {
+	ctx := context.Background()
+	service, _, _, _ := testService(t, ctx)
+	tests := []struct {
+		name  string
+		query control.JobQuery
+	}{
+		{name: "relative path without library", query: control.JobQuery{Path: "Release"}},
+		{name: "absolute path that is relative", query: control.JobQuery{AbsolutePath: "relative/path"}},
+		{name: "both path forms", query: control.JobQuery{Library: "downloads", Path: "Release", AbsolutePath: "/downloads/Release"}},
+		{name: "negative limit", query: control.JobQuery{Limit: -1}},
+		{name: "unknown state", query: control.JobQuery{States: []string{"almost-done"}}},
 	}
-	for _, target := range tests {
-		t.Run(target, func(t *testing.T) {
-			request := httptest.NewRequest(http.MethodGet, target, nil)
-			response := httptest.NewRecorder()
-			service.Handler().ServeHTTP(response, request)
-			if response.Code != http.StatusBadRequest {
-				t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
-			}
-			if !strings.Contains(response.Body.String(), `"code":"invalid_argument"`) {
-				t.Fatalf("body = %s", response.Body.String())
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := service.ListJobs(ctx, tt.query)
+			var controlErr *control.Error
+			if !errors.As(err, &controlErr) || controlErr.Code != control.CodeInvalidArgument {
+				t.Fatalf("ListJobs() error = %v, want invalid_argument", err)
 			}
 		})
 	}
@@ -233,6 +237,15 @@ func testService(t *testing.T, ctx context.Context) (Service, *store.SQLiteStore
 				PreserveRelativePath: true, PackageMode: config.DefaultPackageMode,
 			},
 		},
+		// A second configured library with no jobs, so a selector can name a
+		// library the daemon knows but the job does not belong to. That is a
+		// different answer from naming a library that does not exist at all.
+		"archive": {
+			Name: "archive", Kind: string(domain.LibraryKindMedia),
+			Path: filepath.Join(root, "archive"), Flow: config.DefaultFlowName,
+			Profile: config.DefaultProfileName,
+			Media:   config.MediaLibraryConfig{ReplacementMode: config.DefaultReplacementMode},
+		},
 	}
 	now := time.Date(2026, 7, 21, 9, 0, 0, 0, time.UTC)
 	forced, err := state.ForceOccurrence(ctx, store.ForceOccurrenceInput{
@@ -246,27 +259,24 @@ func testService(t *testing.T, ctx context.Context) (Service, *store.SQLiteStore
 	if err != nil {
 		t.Fatalf("ForceOccurrence() error = %v", err)
 	}
-	service := Service{Store: state, Config: func() config.Config { return cfg }, Now: func() time.Time { return now }}
+	service := Service{
+		Store:   state,
+		Scanner: scanner.Scanner{Store: state},
+		Config:  func() config.Config { return cfg },
+		Now:     func() time.Time { return now },
+	}
 	return service, state, cfg, forced.Job
 }
 
 func TestCancelJobsRequiresAnExplicitSelector(t *testing.T) {
 	ctx := context.Background()
 	service, _, _, _ := testService(t, ctx)
-	if _, err := service.CancelJobs(ctx, JobCancelRequest{}); err == nil {
-		t.Fatal("CancelJobs() with no selector error = nil, want rejection")
+	_, err := service.CancelJobs(ctx, control.JobCancelRequest{})
+	var controlErr *control.Error
+	if !errors.As(err, &controlErr) || controlErr.Code != control.CodeInvalidArgument {
+		t.Fatalf("CancelJobs() with no selector error = %v, want invalid_argument", err)
 	}
-
-	request := httptest.NewRequest(http.MethodPost, "/v1/jobs/cancel", strings.NewReader(`{}`))
-	response := httptest.NewRecorder()
-	service.Handler().ServeHTTP(response, request)
-	if response.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
-	}
-	if !strings.Contains(response.Body.String(), `"code":"invalid_argument"`) {
-		t.Fatalf("body = %s", response.Body.String())
-	}
-	remaining, err := service.ListJobs(ctx, JobQuery{Library: "downloads"})
+	remaining, err := service.ListJobs(ctx, control.JobQuery{Library: "downloads"})
 	if err != nil {
 		t.Fatalf("ListJobs() error = %v", err)
 	}
@@ -285,7 +295,7 @@ func TestCancelJobsUsesTheJobListSelectorAndStaysIdempotent(t *testing.T) {
 	}
 
 	absolutePath := filepath.Join(cfg.Libraries["downloads"].Path, "Release", "Season", "Episode.mkv")
-	response, err := service.CancelJobs(ctx, JobCancelRequest{AbsolutePath: absolutePath, Reason: "queued by mistake"})
+	response, err := service.CancelJobs(ctx, control.JobCancelRequest{AbsolutePath: absolutePath, Reason: "queued by mistake"})
 	if err != nil {
 		t.Fatalf("CancelJobs() error = %v", err)
 	}
@@ -299,14 +309,14 @@ func TestCancelJobsUsesTheJobListSelectorAndStaysIdempotent(t *testing.T) {
 		t.Fatalf("signaled workers = %v, want job %d", signaled, job.ID)
 	}
 
-	listed, err := service.ListJobs(ctx, JobQuery{States: []string{string(domain.JobStateCanceled)}})
+	listed, err := service.ListJobs(ctx, control.JobQuery{States: []string{string(domain.JobStateCanceled)}})
 	if err != nil {
 		t.Fatalf("ListJobs(canceled) error = %v", err)
 	}
 	if listed.Matched != 1 || listed.Jobs[0].ID != int64(job.ID) {
 		t.Fatalf("ListJobs(canceled) = %+v", listed)
 	}
-	skipped, err := service.ListJobs(ctx, JobQuery{States: []string{string(domain.JobStateSkipped)}})
+	skipped, err := service.ListJobs(ctx, control.JobQuery{States: []string{string(domain.JobStateSkipped)}})
 	if err != nil {
 		t.Fatalf("ListJobs(skipped) error = %v", err)
 	}
@@ -314,7 +324,7 @@ func TestCancelJobsUsesTheJobListSelectorAndStaysIdempotent(t *testing.T) {
 		t.Fatalf("canceled job is indistinguishable from skipped: %+v", skipped)
 	}
 
-	repeat, err := service.CancelJobs(ctx, JobCancelRequest{AbsolutePath: absolutePath})
+	repeat, err := service.CancelJobs(ctx, control.JobCancelRequest{AbsolutePath: absolutePath})
 	if err != nil {
 		t.Fatalf("repeat CancelJobs() error = %v", err)
 	}
@@ -330,10 +340,10 @@ func TestCancelJobsNeverTargetsMoreThanTheEquivalentJobList(t *testing.T) {
 	ctx := context.Background()
 	service, _, _, job := testService(t, ctx)
 
-	if _, err := service.CancelJobs(ctx, JobCancelRequest{Library: "other", IDs: []int64{int64(job.ID)}}); err == nil {
+	if _, err := service.CancelJobs(ctx, control.JobCancelRequest{Library: "other", IDs: []int64{int64(job.ID)}}); err == nil {
 		t.Fatal("CancelJobs() for an id outside the selector error = nil, want rejection")
 	}
-	listed, err := service.ListJobs(ctx, JobQuery{})
+	listed, err := service.ListJobs(ctx, control.JobQuery{})
 	if err != nil {
 		t.Fatalf("ListJobs() error = %v", err)
 	}
@@ -341,35 +351,12 @@ func TestCancelJobsNeverTargetsMoreThanTheEquivalentJobList(t *testing.T) {
 		t.Fatalf("rejected cancel changed job state to %q", listed.Jobs[0].State)
 	}
 
-	response, err := service.CancelJobs(ctx, JobCancelRequest{Library: "downloads", IDs: []int64{int64(job.ID)}})
+	response, err := service.CancelJobs(ctx, control.JobCancelRequest{Library: "downloads", IDs: []int64{int64(job.ID)}})
 	if err != nil {
 		t.Fatalf("CancelJobs() error = %v", err)
 	}
 	if response.Canceled != 1 || response.Jobs[0].ID != int64(job.ID) {
 		t.Fatalf("CancelJobs() = %+v", response)
-	}
-}
-
-func TestJobCancelEndpointRejectsNonPostAndUnknownFields(t *testing.T) {
-	service := Service{}
-	tests := []struct {
-		name    string
-		request *http.Request
-		want    int
-	}{
-		{name: "get", request: httptest.NewRequest(http.MethodGet, "/v1/jobs/cancel", nil), want: http.StatusMethodNotAllowed},
-		{name: "query parameters", request: httptest.NewRequest(http.MethodPost, "/v1/jobs/cancel?library=downloads", strings.NewReader(`{}`)), want: http.StatusBadRequest},
-		{name: "unknown field", request: httptest.NewRequest(http.MethodPost, "/v1/jobs/cancel", strings.NewReader(`{"all":true}`)), want: http.StatusBadRequest},
-		{name: "trailing json", request: httptest.NewRequest(http.MethodPost, "/v1/jobs/cancel", strings.NewReader(`{"ids":[1]}{"ids":[2]}`)), want: http.StatusBadRequest},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			response := httptest.NewRecorder()
-			service.Handler().ServeHTTP(response, tt.request)
-			if response.Code != tt.want {
-				t.Fatalf("status = %d, want %d, body = %s", response.Code, tt.want, response.Body.String())
-			}
-		})
 	}
 }
 
@@ -380,17 +367,17 @@ func TestCancelJobsRejectsCurrentOnlyAsTheOnlySelector(t *testing.T) {
 	ctx := context.Background()
 	service, _, _, _ := testService(t, ctx)
 
-	if _, err := service.CancelJobs(ctx, JobCancelRequest{CurrentOnly: true}); err == nil {
+	if _, err := service.CancelJobs(ctx, control.JobCancelRequest{CurrentOnly: true}); err == nil {
 		t.Fatal("CancelJobs(--current-only) error = nil, want rejection")
 	}
-	listed, err := service.ListJobs(ctx, JobQuery{})
+	listed, err := service.ListJobs(ctx, control.JobQuery{})
 	if err != nil {
 		t.Fatalf("ListJobs() error = %v", err)
 	}
 	if listed.Jobs[0].State != string(domain.JobStatePending) {
 		t.Fatalf("rejected cancel changed job state to %q", listed.Jobs[0].State)
 	}
-	if _, err := service.CancelJobs(ctx, JobCancelRequest{Library: "downloads", CurrentOnly: true}); err != nil {
+	if _, err := service.CancelJobs(ctx, control.JobCancelRequest{Library: "downloads", CurrentOnly: true}); err != nil {
 		t.Fatalf("CancelJobs(--library --current-only) error = %v", err)
 	}
 }
@@ -415,7 +402,7 @@ func TestCancelJobsReportsWhyAJobWasNotCanceled(t *testing.T) {
 		return true
 	}
 
-	response, err := service.CancelJobs(ctx, JobCancelRequest{Library: "downloads"})
+	response, err := service.CancelJobs(ctx, control.JobCancelRequest{Library: "downloads"})
 	if err != nil {
 		t.Fatalf("CancelJobs() error = %v", err)
 	}
@@ -428,7 +415,7 @@ func TestCancelJobsReportsWhyAJobWasNotCanceled(t *testing.T) {
 	if signaled != 0 {
 		t.Fatalf("signaled workers = %d, want the worker left alone", signaled)
 	}
-	listed, err := service.ListJobs(ctx, JobQuery{Library: "downloads"})
+	listed, err := service.ListJobs(ctx, control.JobQuery{Library: "downloads"})
 	if err != nil {
 		t.Fatalf("ListJobs() error = %v", err)
 	}
@@ -448,7 +435,7 @@ func TestCancelJobsReportsASignaledWorker(t *testing.T) {
 		return true
 	}
 
-	response, err := service.CancelJobs(ctx, JobCancelRequest{Library: "downloads"})
+	response, err := service.CancelJobs(ctx, control.JobCancelRequest{Library: "downloads"})
 	if err != nil {
 		t.Fatalf("CancelJobs() error = %v", err)
 	}
@@ -483,7 +470,7 @@ func TestCancelJobsForwardsTheSelectorStatesToTheStore(t *testing.T) {
 	recorder := &recordingCancelStore{Store: service.Store}
 	service.Store = recorder
 
-	response, err := service.CancelJobs(ctx, JobCancelRequest{Library: "downloads", States: []string{"pending", "retrying"}})
+	response, err := service.CancelJobs(ctx, control.JobCancelRequest{Library: "downloads", States: []string{"pending", "retrying"}})
 	if err != nil {
 		t.Fatalf("CancelJobs() error = %v", err)
 	}
@@ -504,7 +491,7 @@ func TestCancelJobsWithoutAStateSelectorForwardsNoStates(t *testing.T) {
 	recorder := &recordingCancelStore{Store: service.Store}
 	service.Store = recorder
 
-	if _, err := service.CancelJobs(ctx, JobCancelRequest{Library: "downloads"}); err != nil {
+	if _, err := service.CancelJobs(ctx, control.JobCancelRequest{Library: "downloads"}); err != nil {
 		t.Fatalf("CancelJobs() error = %v", err)
 	}
 	if len(recorder.input.States) != 0 {
@@ -581,7 +568,7 @@ func TestListJobsExposesStreamSelectionAfterTheSourceIsGone(t *testing.T) {
 		t.Fatalf("test fixture unexpectedly has a real source at %s", sourcePath)
 	}
 
-	response, err := service.ListJobs(ctx, JobQuery{Library: "downloads", WithSelection: true})
+	response, err := service.ListJobs(ctx, control.JobQuery{Library: "downloads", WithSelection: true})
 	if err != nil {
 		t.Fatalf("ListJobs() error = %v", err)
 	}
@@ -616,7 +603,7 @@ func TestListJobsStreamSelectionIsOptIn(t *testing.T) {
 
 	t.Run("absent without the flag", func(t *testing.T) {
 		recordStreamSelection(t, ctx, state, job.ID, germanMissingDecision())
-		response, err := service.ListJobs(ctx, JobQuery{Library: "downloads"})
+		response, err := service.ListJobs(ctx, control.JobQuery{Library: "downloads"})
 		if err != nil {
 			t.Fatalf("ListJobs() error = %v", err)
 		}
@@ -636,7 +623,7 @@ func TestListJobsStreamSelectionIsOptIn(t *testing.T) {
 		if err != nil {
 			t.Fatalf("ForceOccurrence() error = %v", err)
 		}
-		response, err := service.ListJobs(ctx, JobQuery{Library: "downloads", WithSelection: true})
+		response, err := service.ListJobs(ctx, control.JobQuery{Library: "downloads", WithSelection: true})
 		if err != nil {
 			t.Fatalf("ListJobs() error = %v", err)
 		}
@@ -670,7 +657,7 @@ func TestListJobsReportsAnUnreadableStreamSelection(t *testing.T) {
 		t.Fatalf("RecordAttemptEvent() error = %v", err)
 	}
 
-	response, err := service.ListJobs(ctx, JobQuery{Library: "downloads", WithSelection: true})
+	response, err := service.ListJobs(ctx, control.JobQuery{Library: "downloads", WithSelection: true})
 	if err != nil {
 		t.Fatalf("ListJobs() error = %v", err)
 	}
@@ -706,7 +693,7 @@ func TestListJobsReturnsBothAudioAndSubtitleDecisions(t *testing.T) {
 		}
 	}
 
-	response, err := service.ListJobs(ctx, JobQuery{Library: "downloads", WithSelection: true})
+	response, err := service.ListJobs(ctx, control.JobQuery{Library: "downloads", WithSelection: true})
 	if err != nil {
 		t.Fatalf("ListJobs() error = %v", err)
 	}
@@ -740,7 +727,7 @@ func TestListJobsReportsAPathOutsideEveryLibrary(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			response, err := service.ListJobs(ctx, JobQuery{AbsolutePath: tt.path})
+			response, err := service.ListJobs(ctx, control.JobQuery{AbsolutePath: tt.path})
 			if err != nil {
 				t.Fatalf("ListJobs() error = %v", err)
 			}
@@ -754,7 +741,7 @@ func TestListJobsReportsAPathOutsideEveryLibrary(t *testing.T) {
 	}
 
 	// A path that did match must never be reported as unmatchable.
-	response, err := service.ListJobs(ctx, JobQuery{AbsolutePath: filepath.Join(cfg.Libraries["downloads"].Path, "Release")})
+	response, err := service.ListJobs(ctx, control.JobQuery{AbsolutePath: filepath.Join(cfg.Libraries["downloads"].Path, "Release")})
 	if err != nil {
 		t.Fatalf("matching ListJobs() error = %v", err)
 	}
@@ -781,47 +768,35 @@ func TestListJobsReportsEverySideAPathMatched(t *testing.T) {
 		t.Fatalf("CreatePublishOperation() error = %v", err)
 	}
 
-	response, err := service.ListJobs(ctx, JobQuery{AbsolutePath: assetPath})
+	response, err := service.ListJobs(ctx, control.JobQuery{AbsolutePath: assetPath})
 	if err != nil {
 		t.Fatalf("ListJobs() error = %v", err)
 	}
 	if response.Matched != 1 {
 		t.Fatalf("Matched = %d, want the in-place job", response.Matched)
 	}
-	want := []PathMatchSide{PathMatchAsset, PathMatchDestination}
+	want := []control.PathMatchSide{control.PathMatchAsset, control.PathMatchDestination}
 	if !slices.Equal(response.Jobs[0].MatchedOn, want) {
 		t.Fatalf("MatchedOn = %v, want %v so the output is not reported as merely a source", response.Jobs[0].MatchedOn, want)
 	}
 }
 
-// TestHTTPForwardsWithSelection covers the server half of the wire hop. The
-// client half is pinned in client_test.go; without both, --with-selection can
-// be broken end to end with the whole suite green.
-func TestHTTPForwardsWithSelection(t *testing.T) {
+// TestServiceOnlyReturnsStreamSelectionWhenAsked keeps the opt-in honest: the
+// decisions dwarf a listing, and a caller that did not ask must not be made to
+// pay for them. The wire hop for the same flag is pinned in server_test.go.
+func TestServiceOnlyReturnsStreamSelectionWhenAsked(t *testing.T) {
 	ctx := context.Background()
 	service, state, _, job := testService(t, ctx)
 	recordStreamSelection(t, ctx, state, job.ID, germanMissingDecision())
 
-	tests := []struct {
-		name   string
-		target string
-		want   bool
-	}{
-		{name: "requested", target: "/v1/jobs?library=downloads&with_selection=true", want: true},
-		{name: "not requested", target: "/v1/jobs?library=downloads"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			request := httptest.NewRequest(http.MethodGet, tt.target, nil)
-			response := httptest.NewRecorder()
-			service.Handler().ServeHTTP(response, request)
-			if response.Code != http.StatusOK {
-				t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
-			}
-			if got := strings.Contains(response.Body.String(), `"stream_selection"`); got != tt.want {
-				t.Fatalf("stream_selection present = %t, want %t, body = %s", got, tt.want, response.Body.String())
-			}
-		})
+	for _, withSelection := range []bool{true, false} {
+		response, err := service.ListJobs(ctx, control.JobQuery{Library: "downloads", WithSelection: withSelection})
+		if err != nil {
+			t.Fatalf("ListJobs(with_selection=%t) error = %v", withSelection, err)
+		}
+		if got := len(response.Jobs[0].StreamSelection) > 0; got != withSelection {
+			t.Fatalf("stream selection present = %t, want %t", got, withSelection)
+		}
 	}
 }
 
@@ -829,16 +804,16 @@ func TestHTTPForwardsWithSelection(t *testing.T) {
 // keeps a traversal-equivalent path from being treated as a different key.
 func TestUniqueAbsoluteKeysNormalizesAndDeduplicates(t *testing.T) {
 	keys := uniqueAbsoluteKeys(
-		absolutePathKey{path: "/media/Movie.mkv", side: PathMatchSource},
-		absolutePathKey{path: "/media/Season/../Movie.mkv", side: PathMatchAsset},
-		absolutePathKey{path: "  ", side: PathMatchDestination},
-		absolutePathKey{path: "/media/Movie.mkv", side: PathMatchSource},
-		absolutePathKey{path: "/media/Movie.mkv/", side: PathMatchDestination},
+		absolutePathKey{path: "/media/Movie.mkv", side: control.PathMatchSource},
+		absolutePathKey{path: "/media/Season/../Movie.mkv", side: control.PathMatchAsset},
+		absolutePathKey{path: "  ", side: control.PathMatchDestination},
+		absolutePathKey{path: "/media/Movie.mkv", side: control.PathMatchSource},
+		absolutePathKey{path: "/media/Movie.mkv/", side: control.PathMatchDestination},
 	)
 	want := []absolutePathKey{
-		{path: "/media/Movie.mkv", side: PathMatchSource},
-		{path: "/media/Movie.mkv", side: PathMatchAsset},
-		{path: "/media/Movie.mkv", side: PathMatchDestination},
+		{path: "/media/Movie.mkv", side: control.PathMatchSource},
+		{path: "/media/Movie.mkv", side: control.PathMatchAsset},
+		{path: "/media/Movie.mkv", side: control.PathMatchDestination},
 	}
 	if !slices.Equal(keys, want) {
 		t.Fatalf("uniqueAbsoluteKeys() = %+v, want %+v", keys, want)

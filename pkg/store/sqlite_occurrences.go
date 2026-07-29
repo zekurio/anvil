@@ -233,7 +233,7 @@ func (s *SQLiteStore) ForceOccurrence(ctx context.Context, input ForceOccurrence
 		return ForceOccurrenceResult{}, err
 	}
 	if active {
-		return ForceOccurrenceResult{}, fmt.Errorf("force occurrence refused for %q: active work exists", input.SourceRelativePath)
+		return ForceOccurrenceResult{}, fmt.Errorf("force occurrence refused for %q: %w", input.SourceRelativePath, ErrActiveWork)
 	}
 
 	source, found, err := currentSourceTx(ctx, tx, input.LibraryName, input.SourceRelativePath)
