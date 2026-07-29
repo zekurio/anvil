@@ -12,6 +12,17 @@ import (
 
 const currentSchemaVersion = 6
 
+// minUpgradableSchemaVersion is the oldest schema version schemaMigrations can
+// still upgrade in place. Anything older predates the migration chain and is
+// rejected by version instead of by whichever table happens to be missing.
+const minUpgradableSchemaVersion = 5
+
+// minReadOnlySchemaVersion is the oldest schema version a read-only handle can
+// query. Bump it whenever a migration changes a table or column this package
+// reads, so preflight fails with ErrIncompatibleSchema instead of a raw SQL
+// error from deep inside a query.
+const minReadOnlySchemaVersion = 5
+
 const currentSchema = `
 CREATE TABLE schema_migrations (
 	version INTEGER PRIMARY KEY,
@@ -201,8 +212,8 @@ func (s *SQLiteStore) migrate(ctx context.Context) error {
 		}
 		return s.verifyForeignKeys(ctx)
 	}
-	if version <= 0 || version > currentSchemaVersion {
-		return ErrIncompatibleSchema
+	if version < minUpgradableSchemaVersion || version > currentSchemaVersion {
+		return fmt.Errorf("%w: schema version %d is outside the upgradable range %d-%d", ErrIncompatibleSchema, version, minUpgradableSchemaVersion, currentSchemaVersion)
 	}
 	if err := s.requireCoreTables(ctx); err != nil {
 		return err
@@ -255,11 +266,13 @@ func (s *SQLiteStore) upgradeSchema(ctx context.Context, from int) (err error) {
 		if err := applySchemaMigration(ctx, conn, migration); err != nil {
 			return fmt.Errorf("apply schema migration %d: %w", migration.version, err)
 		}
+		// A schema rebuild is an operator-visible one-off event that no caller
+		// can report, so this is the one place the persistence layer logs.
 		slog.Info("store schema migrated", "from_version", from, "version", migration.version)
 		from = migration.version
 	}
 	if from != currentSchemaVersion {
-		return ErrIncompatibleSchema
+		return fmt.Errorf("%w: migrations stopped at schema version %d, expected %d", ErrIncompatibleSchema, from, currentSchemaVersion)
 	}
 	return nil
 }

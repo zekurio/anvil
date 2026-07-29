@@ -16,16 +16,36 @@ import (
 var (
 	ErrNotFound           = errors.New("store: not found")
 	ErrIncompatibleSchema = errors.New("store: incompatible database schema; reset the database before starting Anvil")
+	// ErrJobCanceled reports that a job row is already terminally canceled, so
+	// the requested work must not start. It is authoritative even before the
+	// worker's own context observes the cancellation.
+	ErrJobCanceled = errors.New("store: job is canceled")
+)
+
+// CancelSkipReason explains why a requested job was not canceled. It is stable
+// and machine-readable so operators and clients can act on it.
+type CancelSkipReason string
+
+const (
+	CancelSkipAlreadyTerminal CancelSkipReason = "already_terminal"
+	CancelSkipPublishInFlight CancelSkipReason = "publish_in_progress"
+	CancelSkipStateChanged    CancelSkipReason = "state_changed"
+	CancelSkipMissing         CancelSkipReason = "not_found"
 )
 
 type CancelJobsInput struct {
-	IDs    []domain.JobID
+	IDs []domain.JobID
+	// States, when set, re-checks the selector's state filter inside the cancel
+	// transaction so a job that changed state after it was listed is reported
+	// instead of canceled.
+	States []domain.JobState
 	Reason string
 	Now    time.Time
 }
 
 // CancelJobResult reports one requested cancellation. Canceled is false when
-// the job was already terminal, which keeps cancellation idempotent.
+// the job could not be canceled, which keeps cancellation idempotent; SkipReason
+// then says why.
 type CancelJobResult struct {
 	JobID         domain.JobID
 	Slug          string
@@ -33,6 +53,7 @@ type CancelJobResult struct {
 	PreviousState domain.JobState
 	State         domain.JobState
 	Canceled      bool
+	SkipReason    CancelSkipReason
 }
 
 type SQLiteStore struct {
@@ -183,14 +204,16 @@ func OpenReadOnly(ctx context.Context, path string) (*SQLiteStore, error) {
 	if err := store.configureReadOnly(ctx); err != nil {
 		return nil, closeDBOnError(db, err)
 	}
-	// A read-only handle cannot migrate, so it accepts any released schema
-	// version: reads never depend on the newest CHECK constraints.
+	// A read-only handle cannot migrate, so it accepts any schema version whose
+	// readable surface still matches what queries expect. Bump
+	// minReadOnlySchemaVersion in the same commit as any migration that changes
+	// a table or column this package reads.
 	version, exists, err := store.schemaVersion(ctx)
 	if err != nil {
 		return nil, closeDBOnError(db, err)
 	}
-	if !exists || version <= 0 || version > currentSchemaVersion {
-		return nil, closeDBOnError(db, ErrIncompatibleSchema)
+	if !exists || version < minReadOnlySchemaVersion || version > currentSchemaVersion {
+		return nil, closeDBOnError(db, fmt.Errorf("%w: read-only schema version %d is outside the supported range %d-%d", ErrIncompatibleSchema, version, minReadOnlySchemaVersion, currentSchemaVersion))
 	}
 	if err := store.requireCoreTables(ctx); err != nil {
 		return nil, closeDBOnError(db, err)
