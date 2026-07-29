@@ -20,6 +20,10 @@ var (
 	// the requested work must not start. It is authoritative even before the
 	// worker's own context observes the cancellation.
 	ErrJobCanceled = errors.New("store: job is canceled")
+	// ErrActiveWork reports an operation refused because its target still has
+	// active work. It is a caller-visible refusal an operator can act on, not a
+	// daemon failure, so callers can classify it instead of matching text.
+	ErrActiveWork = errors.New("store: active work exists for the target")
 )
 
 // CancelSkipReason explains why a requested job was not canceled. It is stable
