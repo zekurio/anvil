@@ -22,6 +22,12 @@ func terminateGroup(cmd *exec.Cmd) {
 		if cmd.Process == nil {
 			return os.ErrProcessDone
 		}
+		// Wait reaps the child before it observes the cancellation, so Cancel can
+		// run once the pid is already free. Signalling a recycled pid's group
+		// would kill an unrelated process, so probe the child first.
+		if err := cmd.Process.Signal(syscall.Signal(0)); errors.Is(err, os.ErrProcessDone) {
+			return os.ErrProcessDone
+		}
 		if err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); err != nil {
 			if errors.Is(err, syscall.ESRCH) {
 				return os.ErrProcessDone
