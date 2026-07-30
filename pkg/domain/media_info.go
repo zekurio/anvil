@@ -1,5 +1,7 @@
 package domain
 
+import "strings"
+
 type MediaStream struct {
 	Index          int
 	Type           string
@@ -186,25 +188,52 @@ type HDRMetadata struct {
 }
 
 // EffectiveVideoProfile returns the video settings for this job after
-// source-dependent overrides, such as Dolby Vision handling, are applied.
-func EffectiveVideoProfile(profile Profile, metadata JobMetadata) VideoProfile {
+// source-dependent overrides are applied, most specific last: the base
+// profile, then the override matching the source video codec family, then
+// the dolby_vision override when the Dolby Vision encoder is selected.
+func EffectiveVideoProfile(profile Profile, metadata JobMetadata, sourceVideoCodec string) VideoProfile {
 	video := profile.Video
-	if !metadata.HDR.DolbyVisionEncoderSelected {
-		return video
+	codec := strings.ToLower(strings.TrimSpace(sourceVideoCodec))
+	if codec != "" && codec != VideoOverrideDolbyVision {
+		if override, ok := profile.Video.Overrides[codec]; ok {
+			video = applyVideoOverride(video, override)
+		}
 	}
+	if metadata.HDR.DolbyVisionEncoderSelected {
+		if override, ok := profile.Video.Overrides[VideoOverrideDolbyVision]; ok {
+			video = applyVideoOverride(video, override)
+		}
+	}
+	return video
+}
 
-	override := profile.Video.DolbyVision
-	if override.Codec != "" {
-		video.Codec = override.Codec
+func applyVideoOverride(video VideoProfile, override VideoOverride) VideoProfile {
+	if override.Codec != nil {
+		video.Codec = *override.Codec
 	}
-	if override.Accelerator != "" {
-		video.Accelerator = override.Accelerator
+	if override.Accelerator != nil {
+		video.Accelerator = *override.Accelerator
 	}
-	if override.Preset != "" {
-		video.Preset = override.Preset
+	if override.Preset != nil {
+		video.Preset = *override.Preset
 	}
-	if override.BitDepth != 0 {
-		video.BitDepth = override.BitDepth
+	if override.BitDepth != nil {
+		video.BitDepth = *override.BitDepth
+	}
+	if override.CRFMin != nil {
+		video.CRFMin = *override.CRFMin
+	}
+	if override.CRFMax != nil {
+		video.CRFMax = *override.CRFMax
+	}
+	if override.TargetVMAF != nil {
+		video.TargetVMAF = *override.TargetVMAF
+	}
+	if override.MinSavingsPercent != nil {
+		video.MinSavingsPercent = *override.MinSavingsPercent
+	}
+	if override.ForceEncodeOnNoFit != nil {
+		video.ForceEncodeOnNoFit = *override.ForceEncodeOnNoFit
 	}
 	video.FFmpegArgs = append(append([]string(nil), video.FFmpegArgs...), override.FFmpegArgs...)
 	video.ABAV1Args = append(append([]string(nil), video.ABAV1Args...), override.ABAV1Args...)
