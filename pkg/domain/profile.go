@@ -31,6 +31,7 @@ type VideoProfile struct {
 	TargetVMAF         float64
 	MinSavingsPercent  float64
 	ForceEncodeOnNoFit bool
+	SkipEncode         bool
 	FFmpegArgs         []string
 	ABAV1Args          []string
 	Overrides          map[string]VideoOverride
@@ -55,6 +56,7 @@ type VideoOverride struct {
 	TargetVMAF         *float64
 	MinSavingsPercent  *float64
 	ForceEncodeOnNoFit *bool
+	SkipEncode         *bool
 	FFmpegArgs         []string
 	ABAV1Args          []string
 }

@@ -24,6 +24,7 @@ let
     "crf-search"
     "encode"
     "dovi-fix"
+    "track-stats"
     "validate"
     "replace"
     "cleanup"
@@ -38,6 +39,7 @@ let
     "crf-search"
     "encode"
     "dovi-fix"
+    "track-stats"
     "validate"
     "handoff"
     "cleanup"
@@ -58,6 +60,7 @@ let
     // optionalAttrs (videoOverride.forceEncodeOnNoFit != null) {
       force_encode_on_no_fit = videoOverride.forceEncodeOnNoFit;
     }
+    // optionalAttrs (videoOverride.skipEncode != null) { skip_encode = videoOverride.skipEncode; }
     // optionalAttrs (videoOverride.ffmpegArgs != [ ]) { ffmpeg_args = videoOverride.ffmpegArgs; }
     // optionalAttrs (videoOverride.abAv1Args != [ ]) { ab_av1_args = videoOverride.abAv1Args; };
 
@@ -73,6 +76,7 @@ let
         target_vmaf = profile.video.targetVmaf;
         min_savings_percent = profile.video.minSavingsPercent;
         force_encode_on_no_fit = profile.video.forceEncodeOnNoFit;
+        skip_encode = profile.video.skipEncode;
         ffmpeg_args = profile.video.ffmpegArgs;
         ab_av1_args = profile.video.abAv1Args;
         dolby_vision = {
@@ -337,6 +341,11 @@ let
           default = false;
           description = "When ab-av1 cannot find a CRF satisfying search constraints, force an encode with the lowest tested CRF instead of falling back to video-copy/remux.";
         };
+        skipEncode = mkOption {
+          type = types.bool;
+          default = false;
+          description = "Skip CRF search and video encoding entirely and copy the video stream. Audio, subtitle, metadata, and publish handling still run. Usually set through video.overrides.<codec>.skipEncode to exempt specific source codecs.";
+        };
         ffmpegArgs = mkOption {
           type = types.listOf types.str;
           default = [ ];
@@ -425,6 +434,12 @@ let
                 default = null;
                 example = true;
                 description = "Whether to force an encode when CRF search finds no fit for this source condition. Null inherits the base video setting.";
+              };
+              skipEncode = mkOption {
+                type = types.nullOr types.bool;
+                default = null;
+                example = true;
+                description = "Whether to skip CRF search and video encoding entirely for this source condition and copy the video stream instead. Audio, subtitle, metadata, and publish handling still run. Null inherits the base video setting.";
               };
               ffmpegArgs = mkOption {
                 type = types.listOf types.str;

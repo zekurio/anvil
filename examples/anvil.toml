@@ -15,11 +15,11 @@ staging_cleanup_age = "0s"
 log_level = "info"
 
 [flows.av1-replace]
-steps = ["probe", "crop-detect", "audio-cleanup", "subtitle-cleanup", "stage", "crf-search", "encode", "dovi-fix", "validate", "replace", "cleanup"]
+steps = ["probe", "crop-detect", "audio-cleanup", "subtitle-cleanup", "stage", "crf-search", "encode", "dovi-fix", "track-stats", "validate", "replace", "cleanup"]
 
 # Download libraries must publish through handoff flows, not replace flows.
 [flows.download-av1-handoff]
-steps = ["probe", "crop-detect", "audio-cleanup", "subtitle-cleanup", "stage", "crf-search", "encode", "dovi-fix", "validate", "handoff", "cleanup"]
+steps = ["probe", "crop-detect", "audio-cleanup", "subtitle-cleanup", "stage", "crf-search", "encode", "dovi-fix", "track-stats", "validate", "handoff", "cleanup"]
 
 [profiles.default-av1]
 container = "mkv"
@@ -57,6 +57,10 @@ ab_av1_args = ["--enc", "low_power=1"]
 # [profiles.default-av1.video.overrides.h264]
 # # H.264 sources are usually near-source quality: be more lenient.
 # target_vmaf = 93
+# [profiles.default-av1.video.overrides.av1]
+# # AV1 sources are already in the target codec: copy the video stream and
+# # skip CRF search entirely. Audio/subtitle cleanup and publish still run.
+# skip_encode = true
 
 [profiles.default-av1.audio]
 languages_to_keep = ["orig", "deu"]

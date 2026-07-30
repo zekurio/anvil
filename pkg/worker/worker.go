@@ -30,6 +30,7 @@ import (
 	"github.com/zekurio/anvil/pkg/staging"
 	"github.com/zekurio/anvil/pkg/store"
 	"github.com/zekurio/anvil/pkg/subtitle"
+	"github.com/zekurio/anvil/pkg/trackstats"
 	"github.com/zekurio/anvil/pkg/validate"
 )
 
@@ -267,6 +268,7 @@ func DefaultPipeline(tempDir string, journal replacepkg.PublishJournal) pipeline
 			search.Block{},
 			ffmpeg.Block{},
 			ffmpeg.DolbyVisionBlock{},
+			trackstats.Block{},
 			validate.Block{Validator: validate.Validator{Prober: prober}},
 			replacepkg.ReplaceBlock{Manager: publishManager},
 			replacepkg.HandoffBlock{Manager: publishManager},

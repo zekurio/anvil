@@ -125,6 +125,7 @@ type preflightProfile struct {
 	CRFMax             int                      `json:"crf_max"`
 	TargetVMAF         float64                  `json:"target_vmaf"`
 	ForceEncodeOnNoFit bool                     `json:"force_encode_on_no_fit"`
+	SkipEncode         bool                     `json:"skip_encode"`
 	FFmpegArgs         []string                 `json:"ffmpeg_args,omitempty"`
 	ABAV1Args          []string                 `json:"ab_av1_args,omitempty"`
 	DolbyVision        preflightDolbyVision     `json:"dolby_vision"`
@@ -152,6 +153,7 @@ type preflightVideoOverride struct {
 	TargetVMAF         *float64 `json:"target_vmaf,omitempty"`
 	MinSavingsPercent  *float64 `json:"min_savings_percent,omitempty"`
 	ForceEncodeOnNoFit *bool    `json:"force_encode_on_no_fit,omitempty"`
+	SkipEncode         *bool    `json:"skip_encode,omitempty"`
 	FFmpegArgs         []string `json:"ffmpeg_args,omitempty"`
 	ABAV1Args          []string `json:"ab_av1_args,omitempty"`
 }
@@ -529,6 +531,7 @@ func preflightProfileFromDomain(profile domain.Profile) preflightProfile {
 		CRFMax:             profile.Video.CRFMax,
 		TargetVMAF:         profile.Video.TargetVMAF,
 		ForceEncodeOnNoFit: profile.Video.ForceEncodeOnNoFit,
+		SkipEncode:         profile.Video.SkipEncode,
 		FFmpegArgs:         append([]string(nil), profile.Video.FFmpegArgs...),
 		ABAV1Args:          append([]string(nil), profile.Video.ABAV1Args...),
 		DolbyVision: preflightDolbyVision{
@@ -571,6 +574,7 @@ func preflightVideoOverrides(video domain.VideoProfile) []preflightVideoOverride
 			TargetVMAF:         clonePreflightValue(override.TargetVMAF),
 			MinSavingsPercent:  clonePreflightValue(override.MinSavingsPercent),
 			ForceEncodeOnNoFit: clonePreflightValue(override.ForceEncodeOnNoFit),
+			SkipEncode:         clonePreflightValue(override.SkipEncode),
 			FFmpegArgs:         append([]string(nil), override.FFmpegArgs...),
 			ABAV1Args:          append([]string(nil), override.ABAV1Args...),
 		})
@@ -603,7 +607,7 @@ func preflightDolbyVisionOverride(profile domain.Profile) (domain.VideoOverride,
 
 func preflightSearch(flow domain.Flow, profile domain.Profile) preflightSearchPolicy {
 	searchEnabled := flowHasStep(flow, "crf-search")
-	if !searchEnabled {
+	if !searchEnabled || profile.Video.SkipEncode {
 		return preflightSearchPolicy{Enabled: false, FlowCanFallbackToRemux: flowHasStep(flow, "encode")}
 	}
 	var dolbyVisionArgs []string
@@ -640,6 +644,13 @@ func preflightEncodePlan(flow domain.Flow, profile domain.Profile, outputPath st
 		SubtitleAction: "copy/remux after configured subtitle cleanup selections",
 		MetadataAction: fmt.Sprintf("apply metadata=%s, track_titles=%s, attachments=%s, chapters=%s, and Anvil marker policies", profile.Metadata.Mode, profile.Metadata.TrackTitles, profile.Attachments.Mode, profile.Chapters.Mode),
 		CustomArgs:     append([]string(nil), profile.Video.FFmpegArgs...),
+	}
+	if profile.Video.SkipEncode {
+		encode.VideoAction = "copy/remux video because encoding is disabled by profile"
+		encode.Codec = ""
+		encode.CRFSource = ""
+		encode.CustomArgs = nil
+		return encode
 	}
 	if override, ok := preflightDolbyVisionOverride(profile); ok {
 		dolbyVisionAccelerator := profile.Video.Accelerator
@@ -811,12 +822,13 @@ func writePreflightReport(out io.Writer, report preflightReport) error {
 				w.Printf("  job: %s (id=%d) state=%s attempt=%s\n", item.Status.ExistingJobSlug, item.Status.ExistingJobID, item.Status.ExistingJobState, item.Status.ExistingAttemptHint)
 			}
 			w.Printf("  flow: %s [%s]\n", item.Flow.Name, strings.Join(item.Flow.Steps, " -> "))
-			w.Printf("  profile: %s container=%s codec=%s accelerator=%s bit_depth=%d\n",
+			w.Printf("  profile: %s container=%s codec=%s accelerator=%s bit_depth=%d skip_encode=%t\n",
 				item.Profile.Name,
 				item.Profile.Container,
 				item.Profile.VideoCodec,
 				item.Profile.VideoAccelerator,
 				item.Profile.VideoBitDepth,
+				item.Profile.SkipEncode,
 			)
 			if item.Profile.DolbyVision.Mode != "" {
 				w.Printf("  dolby-vision: mode=%s remove_hdr10plus=%t\n",
@@ -900,6 +912,9 @@ func preflightVideoOverrideFields(override preflightVideoOverride) []string {
 	}
 	if override.ForceEncodeOnNoFit != nil {
 		fields = append(fields, fmt.Sprintf("force_encode_on_no_fit=%t", *override.ForceEncodeOnNoFit))
+	}
+	if override.SkipEncode != nil {
+		fields = append(fields, fmt.Sprintf("skip_encode=%t", *override.SkipEncode))
 	}
 	if len(override.FFmpegArgs) > 0 {
 		fields = append(fields, fmt.Sprintf("ffmpeg_args=%v", override.FFmpegArgs))

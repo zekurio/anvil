@@ -98,6 +98,7 @@ type VideoConfig struct {
 	TargetVMAF         float64                        `toml:"target_vmaf"`
 	MinSavingsPercent  float64                        `toml:"min_savings_percent"`
 	ForceEncodeOnNoFit bool                           `toml:"force_encode_on_no_fit"`
+	SkipEncode         bool                           `toml:"skip_encode"`
 	FFmpegArgs         []string                       `toml:"ffmpeg_args"`
 	ABAV1Args          []string                       `toml:"ab_av1_args"`
 	Overrides          map[string]VideoOverrideConfig `toml:"overrides"`
@@ -117,6 +118,7 @@ type VideoOverrideConfig struct {
 	TargetVMAF         *float64 `toml:"target_vmaf"`
 	MinSavingsPercent  *float64 `toml:"min_savings_percent"`
 	ForceEncodeOnNoFit *bool    `toml:"force_encode_on_no_fit"`
+	SkipEncode         *bool    `toml:"skip_encode"`
 	FFmpegArgs         []string `toml:"ffmpeg_args"`
 	ABAV1Args          []string `toml:"ab_av1_args"`
 }

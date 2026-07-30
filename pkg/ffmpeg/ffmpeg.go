@@ -81,9 +81,12 @@ func BuildPlanFromRequest(request BuildPlanRequest) (domain.EncodePlan, error) {
 	if err := request.validate(); err != nil {
 		return domain.EncodePlan{}, err
 	}
-	videoCopy, videoCopyReason := videoCopyState(request.Metadata, request.Search)
 	inputVideo, inputVideoFound := primaryInputVideo(request.Probe)
+	if !inputVideoFound && len(request.Profile.Video.Overrides) > 0 {
+		return domain.EncodePlan{}, errors.New("source video stream is required to apply video overrides")
+	}
 	video := domain.EffectiveVideoProfile(request.Profile, request.Metadata, inputVideo.Codec)
+	videoCopy, videoCopyReason := videoCopyState(video, request.Metadata, request.Search)
 	crf := selectedCRF(video, videoCopy, request.Search)
 	plan := domain.EncodePlan{
 		InputPath:          request.InputPath,
@@ -138,11 +141,15 @@ func (request BuildPlanRequest) validate() error {
 	return nil
 }
 
-func videoCopyState(metadata domain.JobMetadata, search *domain.SearchResult) (bool, string) {
+func videoCopyState(video domain.VideoProfile, metadata domain.JobMetadata, search *domain.SearchResult) (bool, string) {
 	videoCopy := metadata.VideoAlreadyEncoded
 	videoCopyReason := ""
 	if videoCopy {
 		videoCopyReason = "compatible Anvil video marker"
+	}
+	if video.SkipEncode {
+		videoCopy = true
+		videoCopyReason = "video encoding disabled by profile"
 	}
 	if search != nil && search.SkipVideoEncode {
 		videoCopy = true
