@@ -158,8 +158,8 @@ func (b Block) Run(ctx context.Context, job *pipeline.JobContext) error {
 }
 
 func searchPlan(job *pipeline.JobContext) domain.EncodePlan {
-	video := domain.EffectiveVideoProfile(job.Profile, job.Metadata)
 	inputVideoCodec, inputWidth, inputHeight := inputVideo(job.Probe)
+	video := domain.EffectiveVideoProfile(job.Profile, job.Metadata, inputVideoCodec)
 	return domain.EncodePlan{
 		InputPath:          job.InputPath,
 		OutputPath:         job.OutputPath,
