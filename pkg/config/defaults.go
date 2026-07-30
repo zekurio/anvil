@@ -192,11 +192,26 @@ func applyProfileDefaults(profile *ProfileConfig) {
 		profile.Video.DolbyVision.Mode = DefaultDolbyVisionMode
 	}
 	profile.Video.DolbyVision.Mode = strings.ToLower(strings.TrimSpace(profile.Video.DolbyVision.Mode))
-	if strings.TrimSpace(profile.Video.DolbyVision.Codec) != "" {
-		profile.Video.DolbyVision.Codec = normalizeConfigVideoCodec(profile.Video.DolbyVision.Codec)
-	}
-	if strings.TrimSpace(profile.Video.DolbyVision.Accelerator) != "" {
-		profile.Video.DolbyVision.Accelerator = video.NormalizeAccelerator(profile.Video.DolbyVision.Accelerator)
+	if profile.Video.Overrides != nil {
+		overrides := make(map[string]VideoOverrideConfig, len(profile.Video.Overrides))
+		for _, key := range sortedKeys(profile.Video.Overrides) {
+			override := profile.Video.Overrides[key]
+			if override.Codec != nil && strings.TrimSpace(*override.Codec) != "" {
+				codec := normalizeConfigVideoCodec(*override.Codec)
+				override.Codec = &codec
+			}
+			if override.Accelerator != nil {
+				accelerator := video.NormalizeAccelerator(*override.Accelerator)
+				override.Accelerator = &accelerator
+			}
+
+			key = canonicalVideoOverrideKey(key)
+			if _, exists := overrides[key]; exists {
+				continue
+			}
+			overrides[key] = override
+		}
+		profile.Video.Overrides = overrides
 	}
 	if strings.TrimSpace(profile.Audio.Fallback) == "" {
 		profile.Audio.Fallback = DefaultStreamFallback
@@ -218,6 +233,14 @@ func applyProfileDefaults(profile *ProfileConfig) {
 	if strings.TrimSpace(profile.Chapters.Mode) == "" {
 		profile.Chapters.Mode = DefaultMetadataMode
 	}
+}
+
+func canonicalVideoOverrideKey(key string) string {
+	key = strings.ToLower(strings.TrimSpace(key))
+	if key == "" || key == "dolby_vision" {
+		return key
+	}
+	return video.CanonicalCodec(key)
 }
 
 func applyLibraryPolicyDefaults(library *LibraryConfig) {

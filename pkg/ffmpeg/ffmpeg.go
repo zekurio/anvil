@@ -82,8 +82,8 @@ func BuildPlanFromRequest(request BuildPlanRequest) (domain.EncodePlan, error) {
 		return domain.EncodePlan{}, err
 	}
 	videoCopy, videoCopyReason := videoCopyState(request.Metadata, request.Search)
-	video := domain.EffectiveVideoProfile(request.Profile, request.Metadata)
 	inputVideo, inputVideoFound := primaryInputVideo(request.Probe)
+	video := domain.EffectiveVideoProfile(request.Profile, request.Metadata, inputVideo.Codec)
 	crf := selectedCRF(video, videoCopy, request.Search)
 	plan := domain.EncodePlan{
 		InputPath:          request.InputPath,
@@ -295,7 +295,9 @@ func (b DolbyVisionBlock) Run(ctx context.Context, job *pipeline.JobContext) err
 	}
 	codec := job.EncodePlan.VideoCodec
 	if strings.TrimSpace(codec) == "" {
-		codec = job.Profile.Video.DolbyVision.Codec
+		if override, ok := job.Profile.Video.Overrides[domain.VideoOverrideDolbyVision]; ok && override.Codec != nil {
+			codec = *override.Codec
+		}
 	}
 	if !hevcEncoder(codec) {
 		return fmt.Errorf("dolby vision fix requires HEVC output, got encoder %q", codec)

@@ -43,6 +43,24 @@ let
     "cleanup"
   ];
 
+  videoOverrideToToml =
+    _key: videoOverride:
+    optionalAttrs (videoOverride.codec != null) { inherit (videoOverride) codec; }
+    // optionalAttrs (videoOverride.accelerator != null) { inherit (videoOverride) accelerator; }
+    // optionalAttrs (videoOverride.preset != null) { inherit (videoOverride) preset; }
+    // optionalAttrs (videoOverride.bitDepth != null) { bit_depth = videoOverride.bitDepth; }
+    // optionalAttrs (videoOverride.crfMin != null) { crf_min = videoOverride.crfMin; }
+    // optionalAttrs (videoOverride.crfMax != null) { crf_max = videoOverride.crfMax; }
+    // optionalAttrs (videoOverride.targetVmaf != null) { target_vmaf = videoOverride.targetVmaf; }
+    // optionalAttrs (videoOverride.minSavingsPercent != null) {
+      min_savings_percent = videoOverride.minSavingsPercent;
+    }
+    // optionalAttrs (videoOverride.forceEncodeOnNoFit != null) {
+      force_encode_on_no_fit = videoOverride.forceEncodeOnNoFit;
+    }
+    // optionalAttrs (videoOverride.ffmpegArgs != [ ]) { ffmpeg_args = videoOverride.ffmpegArgs; }
+    // optionalAttrs (videoOverride.abAv1Args != [ ]) { ab_av1_args = videoOverride.abAv1Args; };
+
   profileToToml =
     _name: profile:
     {
@@ -57,16 +75,13 @@ let
         force_encode_on_no_fit = profile.video.forceEncodeOnNoFit;
         ffmpeg_args = profile.video.ffmpegArgs;
         ab_av1_args = profile.video.abAv1Args;
-        dolby_vision =
-          {
-            inherit (profile.video.dolbyVision) mode codec accelerator preset;
-            ffmpeg_args = profile.video.dolbyVision.ffmpegArgs;
-            ab_av1_args = profile.video.dolbyVision.abAv1Args;
-            remove_hdr10plus = profile.video.dolbyVision.removeHDR10Plus;
-          }
-          // optionalAttrs (profile.video.dolbyVision.bitDepth != null) {
-            bit_depth = profile.video.dolbyVision.bitDepth;
-          };
+        dolby_vision = {
+          inherit (profile.video.dolbyVision) mode;
+          remove_hdr10plus = profile.video.dolbyVision.removeHDR10Plus;
+        };
+      }
+      // optionalAttrs (profile.video.overrides != { }) {
+        overrides = lib.mapAttrs videoOverrideToToml profile.video.overrides;
       };
       audio = {
         languages_to_keep = profile.audio.languagesToKeep;
@@ -340,6 +355,106 @@ let
           ];
           description = "Extra ab-av1 crf-search arguments appended to Anvil's generated search command.";
         };
+        overrides = mkOption {
+          type = types.attrsOf (types.submodule {
+            options = {
+              codec = mkOption {
+                type = types.nullOr (types.enum [
+                  "av1"
+                  "hevc"
+                  "h265"
+                  "h264"
+                  "avc"
+                ]);
+                default = null;
+                example = "hevc";
+                description = "Target video bitstream codec for this source condition. Null inherits the base video codec. For dolby_vision, this must be set for Dolby Vision handling to activate.";
+              };
+              accelerator = mkOption {
+                type = types.nullOr (types.enum [
+                  "software"
+                  "qsv"
+                  "vaapi"
+                  "amf"
+                ]);
+                default = null;
+                example = "qsv";
+                description = "Hardware encoder/acceleration backend for this source condition. Null inherits the base video accelerator.";
+              };
+              preset = mkOption {
+                type = types.nullOr types.str;
+                default = null;
+                example = "6";
+                description = "Encoder preset for this source condition. Null inherits the base video preset.";
+              };
+              bitDepth = mkOption {
+                type = types.nullOr (types.enum [
+                  8
+                  10
+                ]);
+                default = null;
+                example = 10;
+                description = "Output video bit depth for this source condition. Null inherits the base video bit depth.";
+              };
+              crfMin = mkOption {
+                type = types.nullOr types.int;
+                default = null;
+                example = 18;
+                description = "Minimum CRF for this source condition. Null inherits the base video minimum CRF.";
+              };
+              crfMax = mkOption {
+                type = types.nullOr types.int;
+                default = null;
+                example = 45;
+                description = "Maximum CRF for this source condition. Null inherits the base video maximum CRF.";
+              };
+              targetVmaf = mkOption {
+                type = types.nullOr types.number;
+                default = null;
+                example = 96;
+                description = "Target VMAF from 0 to 100 for this source condition. Null inherits the base video target VMAF.";
+              };
+              minSavingsPercent = mkOption {
+                type = types.nullOr types.number;
+                default = null;
+                example = 40;
+                description = "Minimum input-size savings percentage from 0 to 100 for this source condition. Null inherits the base video minimum savings percentage.";
+              };
+              forceEncodeOnNoFit = mkOption {
+                type = types.nullOr types.bool;
+                default = null;
+                example = true;
+                description = "Whether to force an encode when CRF search finds no fit for this source condition. Null inherits the base video setting.";
+              };
+              ffmpegArgs = mkOption {
+                type = types.listOf types.str;
+                default = [ ];
+                example = [
+                  "-global_quality"
+                  "24"
+                ];
+                description = "Extra ffmpeg video encoder arguments appended to the base arguments for this source condition. An empty list emits no override field.";
+              };
+              abAv1Args = mkOption {
+                type = types.listOf types.str;
+                default = [ ];
+                example = [
+                  "--enc"
+                  "low_power=1"
+                ];
+                description = "Extra ab-av1 crf-search arguments appended to the base arguments for this source condition. An empty list emits no override field.";
+              };
+            };
+          });
+          default = { };
+          description = ''
+            Per-source video overrides keyed by canonical source codec family,
+            such as hevc, h264, or av1, or by the reserved dolby_vision key.
+            Unset nullable fields inherit their base video settings; argument
+            lists append to the base arguments and are omitted when empty.
+            Dolby Vision handling requires overrides.dolby_vision.codec to be set.
+          '';
+        };
         dolbyVision = {
           mode = mkOption {
             type = types.enum [
@@ -348,69 +463,17 @@ let
               "require"
             ];
             default = "auto";
-            description = "How to handle Dolby Vision sources. Auto uses this override only when Dolby Vision is detected and dovi_tool is available.";
-          };
-          codec = mkOption {
-            type = types.enum [
-              ""
-              "av1"
-              "hevc"
-              "h265"
-              "h264"
-              "avc"
-            ];
-            default = "";
-            example = "hevc";
-            description = "Target video bitstream codec for Dolby Vision sources. Empty keeps the normal video codec unless mode is require.";
-          };
-          accelerator = mkOption {
-            type = types.enum [
-              ""
-              "software"
-              "qsv"
-              "vaapi"
-              "amf"
-            ];
-            default = "";
-            example = "qsv";
-            description = "Hardware encoder/acceleration backend for Dolby Vision sources. Empty keeps the normal video accelerator.";
-          };
-          preset = mkOption {
-            type = types.str;
-            default = "";
-            description = "Dolby Vision encoder preset. Empty keeps the normal video preset.";
-          };
-          bitDepth = mkOption {
-            type = types.nullOr (types.enum [
-              8
-              10
-            ]);
-            default = null;
-            example = 10;
-            description = "Dolby Vision output bit depth. Null keeps the normal video bit depth.";
-          };
-          ffmpegArgs = mkOption {
-            type = types.listOf types.str;
-            default = [ ];
-            example = [
-              "-global_quality"
-              "24"
-            ];
-            description = "Extra ffmpeg video encoder arguments appended only when the Dolby Vision override is selected.";
-          };
-          abAv1Args = mkOption {
-            type = types.listOf types.str;
-            default = [ ];
-            example = [
-              "--enc"
-              "low_power=1"
-            ];
-            description = "Extra ab-av1 crf-search arguments appended only when the Dolby Vision override is selected.";
+            description = ''
+              How to handle Dolby Vision sources. Encoder settings belong in
+              video.overrides.dolby_vision, and Dolby Vision handling activates
+              only when that override's codec is set. Auto uses the override
+              when Dolby Vision is detected and dovi_tool is available.
+            '';
           };
           removeHDR10Plus = mkOption {
             type = types.bool;
             default = false;
-            description = "Pass dovi_tool --drop-hdr10plus during Dolby Vision RPU extraction/injection.";
+            description = "Pass dovi_tool --drop-hdr10plus during Dolby Vision RPU extraction/injection. Encoder settings belong in video.overrides.dolby_vision.";
           };
         };
       };
