@@ -100,17 +100,58 @@ func (c Config) Validate() error {
 		if !validDolbyVisionMode(profile.Video.DolbyVision.Mode) {
 			problems = append(problems, fmt.Sprintf("profile %q video.dolby_vision.mode %q is invalid", name, profile.Video.DolbyVision.Mode))
 		}
-		if strings.TrimSpace(profile.Video.DolbyVision.Codec) != "" && !validVideoCodec(profile.Video.DolbyVision.Codec) {
-			problems = append(problems, fmt.Sprintf("profile %q video.dolby_vision.codec %q is invalid (must be av1, hevc, h265, h264, or avc)", name, profile.Video.DolbyVision.Codec))
+
+		problems = append(problems, videoOverrideKeyProblems(name, profile.Video.Overrides)...)
+		var dolbyVisionOverride VideoOverrideConfig
+		var hasDolbyVisionOverride bool
+		for _, key := range sortedKeys(profile.Video.Overrides) {
+			override := profile.Video.Overrides[key]
+			canonicalKey := canonicalVideoOverrideKey(key)
+			if canonicalKey == "dolby_vision" && !hasDolbyVisionOverride {
+				dolbyVisionOverride = override
+				hasDolbyVisionOverride = true
+			}
+
+			prefix := fmt.Sprintf("profile %q video.overrides.%s", name, key)
+			if override.Codec != nil {
+				if strings.TrimSpace(*override.Codec) == "" {
+					problems = append(problems, prefix+".codec must not be empty")
+				} else if !validVideoCodec(*override.Codec) {
+					problems = append(problems, fmt.Sprintf("%s.codec %q is invalid (must be av1, hevc, h265, h264, or avc)", prefix, *override.Codec))
+				}
+			}
+			if override.Accelerator != nil && !validAccelerator(*override.Accelerator) {
+				problems = append(problems, fmt.Sprintf("%s.accelerator %q is invalid (must be software, qsv, vaapi, or amf)", prefix, *override.Accelerator))
+			}
+			if override.BitDepth != nil && !video.ValidBitDepth(*override.BitDepth) {
+				problems = append(problems, fmt.Sprintf("%s.bit_depth %d is invalid (must be 8 or 10)", prefix, *override.BitDepth))
+			}
+			if override.TargetVMAF != nil && (*override.TargetVMAF < 0 || *override.TargetVMAF > 100) {
+				problems = append(problems, prefix+".target_vmaf must be between 0 and 100")
+			}
+			if override.MinSavingsPercent != nil && (*override.MinSavingsPercent < 0 || *override.MinSavingsPercent > 100) {
+				problems = append(problems, prefix+".min_savings_percent must be between 0 and 100")
+			}
+			if override.CRFMin != nil && *override.CRFMin < 0 {
+				problems = append(problems, prefix+".crf_min must be non-negative")
+			}
+			if override.CRFMax != nil && *override.CRFMax < 0 {
+				problems = append(problems, prefix+".crf_max must be non-negative")
+			}
+			effectiveCRFMin := profile.Video.CRFMin
+			if override.CRFMin != nil {
+				effectiveCRFMin = *override.CRFMin
+			}
+			effectiveCRFMax := profile.Video.CRFMax
+			if override.CRFMax != nil {
+				effectiveCRFMax = *override.CRFMax
+			}
+			if effectiveCRFMin > effectiveCRFMax {
+				problems = append(problems, prefix+" effective crf_min must be less than or equal to crf_max")
+			}
 		}
-		if strings.TrimSpace(profile.Video.DolbyVision.Accelerator) != "" && !validAccelerator(profile.Video.DolbyVision.Accelerator) {
-			problems = append(problems, fmt.Sprintf("profile %q video.dolby_vision.accelerator %q is invalid (must be software, qsv, vaapi, or amf)", name, profile.Video.DolbyVision.Accelerator))
-		}
-		if profile.Video.DolbyVision.BitDepth != 0 && !video.ValidBitDepth(profile.Video.DolbyVision.BitDepth) {
-			problems = append(problems, fmt.Sprintf("profile %q video.dolby_vision.bit_depth %d is invalid (must be 8 or 10)", name, profile.Video.DolbyVision.BitDepth))
-		}
-		if profile.Video.DolbyVision.Mode == DolbyVisionModeRequire && strings.TrimSpace(profile.Video.DolbyVision.Codec) == "" {
-			problems = append(problems, fmt.Sprintf("profile %q video.dolby_vision.codec is required when mode is require", name))
+		if profile.Video.DolbyVision.Mode == DolbyVisionModeRequire && (!hasDolbyVisionOverride || dolbyVisionOverride.Codec == nil || strings.TrimSpace(*dolbyVisionOverride.Codec) == "") {
+			problems = append(problems, fmt.Sprintf("profile %q video.dolby_vision.mode is %q but video.overrides.dolby_vision.codec is not set", name, DolbyVisionModeRequire))
 		}
 		if !validStreamFallback(profile.Audio.Fallback) {
 			problems = append(problems, fmt.Sprintf("profile %q audio.fallback %q is invalid", name, profile.Audio.Fallback))
@@ -228,6 +269,24 @@ func (c Config) Validate() error {
 	}
 
 	return nil
+}
+
+func videoOverrideKeyProblems(profileName string, overrides map[string]VideoOverrideConfig) []string {
+	var problems []string
+	canonicalKeys := make(map[string]string, len(overrides))
+	for _, key := range sortedKeys(overrides) {
+		canonicalKey := canonicalVideoOverrideKey(key)
+		if strings.TrimSpace(key) == "" {
+			problems = append(problems, fmt.Sprintf("profile %q video.overrides key must not be empty", profileName))
+			continue
+		}
+		if previousKey, exists := canonicalKeys[canonicalKey]; exists {
+			problems = append(problems, fmt.Sprintf("profile %q video.overrides.%s collides with video.overrides.%s after canonicalization to %q", profileName, key, previousKey, canonicalKey))
+			continue
+		}
+		canonicalKeys[canonicalKey] = key
+	}
+	return problems
 }
 
 func validLibraryKind(kind string) bool {

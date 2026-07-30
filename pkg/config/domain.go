@@ -151,6 +151,27 @@ func (f FlowConfig) ToDomain() domain.Flow {
 }
 
 func (p ProfileConfig) ToDomain() domain.Profile {
+	var videoOverrides map[string]domain.VideoOverride
+	if p.Video.Overrides != nil {
+		videoOverrides = make(map[string]domain.VideoOverride, len(p.Video.Overrides))
+		for key, override := range p.Video.Overrides {
+			videoOverrides[key] = domain.VideoOverride{
+				Codec:              clonePointer(override.Codec),
+				Accelerator:        clonePointer(override.Accelerator),
+				Preset:             clonePointer(override.Preset),
+				BitDepth:           clonePointer(override.BitDepth),
+				CRFMin:             clonePointer(override.CRFMin),
+				CRFMax:             clonePointer(override.CRFMax),
+				TargetVMAF:         clonePointer(override.TargetVMAF),
+				MinSavingsPercent:  clonePointer(override.MinSavingsPercent),
+				ForceEncodeOnNoFit: clonePointer(override.ForceEncodeOnNoFit),
+				SkipEncode:         clonePointer(override.SkipEncode),
+				FFmpegArgs:         append([]string(nil), override.FFmpegArgs...),
+				ABAV1Args:          append([]string(nil), override.ABAV1Args...),
+			}
+		}
+	}
+
 	return domain.Profile{
 		Name:      domain.ProfileName(p.Name),
 		Container: p.Container,
@@ -164,16 +185,12 @@ func (p ProfileConfig) ToDomain() domain.Profile {
 			TargetVMAF:         p.Video.TargetVMAF,
 			MinSavingsPercent:  p.Video.MinSavingsPercent,
 			ForceEncodeOnNoFit: p.Video.ForceEncodeOnNoFit,
+			SkipEncode:         p.Video.SkipEncode,
 			FFmpegArgs:         append([]string(nil), p.Video.FFmpegArgs...),
 			ABAV1Args:          append([]string(nil), p.Video.ABAV1Args...),
-			DolbyVision: domain.DolbyVisionProfile{
+			Overrides:          videoOverrides,
+			DolbyVision: domain.DolbyVisionPolicy{
 				Mode:            domain.DolbyVisionMode(p.Video.DolbyVision.Mode),
-				Codec:           p.Video.DolbyVision.Codec,
-				Accelerator:     strings.ToLower(strings.TrimSpace(p.Video.DolbyVision.Accelerator)),
-				Preset:          p.Video.DolbyVision.Preset,
-				BitDepth:        p.Video.DolbyVision.BitDepth,
-				FFmpegArgs:      append([]string(nil), p.Video.DolbyVision.FFmpegArgs...),
-				ABAV1Args:       append([]string(nil), p.Video.DolbyVision.ABAV1Args...),
 				RemoveHDR10Plus: p.Video.DolbyVision.RemoveHDR10Plus,
 			},
 		},
@@ -205,6 +222,14 @@ func (p ProfileConfig) ToDomain() domain.Profile {
 			Mode: domain.MetadataMode(p.Chapters.Mode),
 		},
 	}
+}
+
+func clonePointer[T any](value *T) *T {
+	if value == nil {
+		return nil
+	}
+	cloned := *value
+	return &cloned
 }
 
 func mustDuration(value string) time.Duration {

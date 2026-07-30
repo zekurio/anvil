@@ -73,7 +73,11 @@ func (b Block) Run(ctx context.Context, job *pipeline.JobContext) error {
 	if err := b.RefreshDolbyVision(ctx, job); err != nil {
 		return err
 	}
-	video := domain.EffectiveVideoProfile(job.Profile, job.Metadata)
+	sourceCodec := ""
+	if stream, ok := domain.PrimaryVideoStream(result.Streams); ok {
+		sourceCodec = stream.Codec
+	}
+	video := domain.EffectiveVideoProfile(job.Profile, job.Metadata, sourceCodec)
 	match := marker.DetectVideo(result, job.Profile.Name, video.Codec, videocodec.SoftwarePixelFormat(video.BitDepth))
 	if match.Compatible {
 		job.Metadata.VideoAlreadyEncoded = true
@@ -232,8 +236,9 @@ func (b Block) configureDolbyVision(ctx context.Context, job *pipeline.JobContex
 		job.Metadata.HDR.DolbyVisionReason = "source Dolby Vision detected, but Dolby Vision override mode is invalid"
 		return nil
 	}
-	if strings.TrimSpace(policy.Codec) == "" {
-		job.Metadata.HDR.DolbyVisionReason = "source Dolby Vision detected, but video.dolby_vision.codec is not configured"
+	override, hasOverride := job.Profile.Video.Overrides[domain.VideoOverrideDolbyVision]
+	if !hasOverride || override.Codec == nil || strings.TrimSpace(*override.Codec) == "" {
+		job.Metadata.HDR.DolbyVisionReason = "source Dolby Vision detected, but video.overrides.dolby_vision.codec is not configured"
 		if policy.Mode == domain.DolbyVisionModeRequire {
 			return errors.New(job.Metadata.HDR.DolbyVisionReason)
 		}
