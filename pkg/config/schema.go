@@ -89,30 +89,45 @@ type ProfileConfig struct {
 
 // VideoConfig contains the initial video settings shape for AV1 search work.
 type VideoConfig struct {
-	Codec              string            `toml:"codec"`
-	Accelerator        string            `toml:"accelerator"`
-	Preset             string            `toml:"preset"`
-	BitDepth           int               `toml:"bit_depth"`
-	CRFMin             int               `toml:"crf_min"`
-	CRFMax             int               `toml:"crf_max"`
-	TargetVMAF         float64           `toml:"target_vmaf"`
-	MinSavingsPercent  float64           `toml:"min_savings_percent"`
-	ForceEncodeOnNoFit bool              `toml:"force_encode_on_no_fit"`
-	FFmpegArgs         []string          `toml:"ffmpeg_args"`
-	ABAV1Args          []string          `toml:"ab_av1_args"`
-	DolbyVision        DolbyVisionConfig `toml:"dolby_vision"`
+	Codec              string                         `toml:"codec"`
+	Accelerator        string                         `toml:"accelerator"`
+	Preset             string                         `toml:"preset"`
+	BitDepth           int                            `toml:"bit_depth"`
+	CRFMin             int                            `toml:"crf_min"`
+	CRFMax             int                            `toml:"crf_max"`
+	TargetVMAF         float64                        `toml:"target_vmaf"`
+	MinSavingsPercent  float64                        `toml:"min_savings_percent"`
+	ForceEncodeOnNoFit bool                           `toml:"force_encode_on_no_fit"`
+	SkipEncode         bool                           `toml:"skip_encode"`
+	FFmpegArgs         []string                       `toml:"ffmpeg_args"`
+	ABAV1Args          []string                       `toml:"ab_av1_args"`
+	Overrides          map[string]VideoOverrideConfig `toml:"overrides"`
+	DolbyVision        DolbyVisionConfig              `toml:"dolby_vision"`
 }
 
-// DolbyVisionConfig overrides normal video settings for Dolby Vision sources.
+// VideoOverrideConfig adjusts video settings for canonical source codec family
+// keys (hevc, h264, av1, ...) or the reserved dolby_vision key. Absent fields
+// inherit base video settings; ffmpeg_args and ab_av1_args append to the base args.
+type VideoOverrideConfig struct {
+	Codec              *string  `toml:"codec"`
+	Accelerator        *string  `toml:"accelerator"`
+	Preset             *string  `toml:"preset"`
+	BitDepth           *int     `toml:"bit_depth"`
+	CRFMin             *int     `toml:"crf_min"`
+	CRFMax             *int     `toml:"crf_max"`
+	TargetVMAF         *float64 `toml:"target_vmaf"`
+	MinSavingsPercent  *float64 `toml:"min_savings_percent"`
+	ForceEncodeOnNoFit *bool    `toml:"force_encode_on_no_fit"`
+	SkipEncode         *bool    `toml:"skip_encode"`
+	FFmpegArgs         []string `toml:"ffmpeg_args"`
+	ABAV1Args          []string `toml:"ab_av1_args"`
+}
+
+// DolbyVisionConfig gates Dolby Vision handling. Encoder settings for Dolby
+// Vision sources live in [profiles.X.video.overrides.dolby_vision].
 type DolbyVisionConfig struct {
-	Mode            string   `toml:"mode"`
-	Codec           string   `toml:"codec"`
-	Accelerator     string   `toml:"accelerator"`
-	Preset          string   `toml:"preset"`
-	BitDepth        int      `toml:"bit_depth"`
-	FFmpegArgs      []string `toml:"ffmpeg_args"`
-	ABAV1Args       []string `toml:"ab_av1_args"`
-	RemoveHDR10Plus bool     `toml:"remove_hdr10plus"`
+	Mode            string `toml:"mode"`
+	RemoveHDR10Plus bool   `toml:"remove_hdr10plus"`
 }
 
 // AudioConfig declares track retention intent. It is conservative by default.

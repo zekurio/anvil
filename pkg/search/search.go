@@ -144,6 +144,20 @@ func (b Block) Run(ctx context.Context, job *pipeline.JobContext) error {
 		job.Search = &result
 		return nil
 	}
+	video, codec := effectiveVideo(job)
+	if codec == "" && len(job.Profile.Video.Overrides) > 0 {
+		return errors.New("source video codec is required to apply video overrides")
+	}
+	if video.SkipEncode {
+		reason := skipEncodeReason(codec)
+		result := domain.SearchResult{
+			SkipVideoEncode:       true,
+			VideoEncodeSkipReason: reason,
+			RawOutput:             "skipped: " + reason,
+		}
+		job.Search = &result
+		return nil
+	}
 	searcher := b.Searcher
 	if searcher == nil {
 		searcher = ABAV1{}
@@ -157,9 +171,22 @@ func (b Block) Run(ctx context.Context, job *pipeline.JobContext) error {
 	return nil
 }
 
+func effectiveVideo(job *pipeline.JobContext) (domain.VideoProfile, string) {
+	inputVideoCodec, _, _ := inputVideo(job.Probe)
+	return domain.EffectiveVideoProfile(job.Profile, job.Metadata, inputVideoCodec), inputVideoCodec
+}
+
+func skipEncodeReason(sourceCodec string) string {
+	sourceCodec = strings.ToLower(strings.TrimSpace(sourceCodec))
+	if sourceCodec == "" {
+		return "video encoding disabled by profile"
+	}
+	return fmt.Sprintf("video encoding disabled by profile for %s source", sourceCodec)
+}
+
 func searchPlan(job *pipeline.JobContext) domain.EncodePlan {
-	video := domain.EffectiveVideoProfile(job.Profile, job.Metadata)
 	inputVideoCodec, inputWidth, inputHeight := inputVideo(job.Probe)
+	video := domain.EffectiveVideoProfile(job.Profile, job.Metadata, inputVideoCodec)
 	return domain.EncodePlan{
 		InputPath:          job.InputPath,
 		OutputPath:         job.OutputPath,

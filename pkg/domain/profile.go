@@ -31,9 +31,34 @@ type VideoProfile struct {
 	TargetVMAF         float64
 	MinSavingsPercent  float64
 	ForceEncodeOnNoFit bool
+	SkipEncode         bool
 	FFmpegArgs         []string
 	ABAV1Args          []string
-	DolbyVision        DolbyVisionProfile
+	Overrides          map[string]VideoOverride
+	DolbyVision        DolbyVisionPolicy
+}
+
+// VideoOverrideDolbyVision is the reserved Overrides key applied when the
+// Dolby Vision encoder is selected for a job. Every other key matches the
+// canonical source video codec family (hevc, h264, av1, ...).
+const VideoOverrideDolbyVision = "dolby_vision"
+
+// VideoOverride adjusts the base video settings when its condition matches.
+// Nil fields inherit the base value; set fields replace it, even when zero.
+// FFmpegArgs and ABAV1Args append to the base args instead of replacing.
+type VideoOverride struct {
+	Codec              *string
+	Accelerator        *string
+	Preset             *string
+	BitDepth           *int
+	CRFMin             *int
+	CRFMax             *int
+	TargetVMAF         *float64
+	MinSavingsPercent  *float64
+	ForceEncodeOnNoFit *bool
+	SkipEncode         *bool
+	FFmpegArgs         []string
+	ABAV1Args          []string
 }
 
 type DolbyVisionMode string
@@ -44,14 +69,10 @@ const (
 	DolbyVisionModeRequire DolbyVisionMode = "require"
 )
 
-type DolbyVisionProfile struct {
+// DolbyVisionPolicy gates Dolby Vision handling. Encoder settings for
+// Dolby Vision sources live in Overrides[VideoOverrideDolbyVision].
+type DolbyVisionPolicy struct {
 	Mode            DolbyVisionMode
-	Codec           string
-	Accelerator     string
-	Preset          string
-	BitDepth        int
-	FFmpegArgs      []string
-	ABAV1Args       []string
 	RemoveHDR10Plus bool
 }
 
