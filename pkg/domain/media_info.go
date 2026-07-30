@@ -235,6 +235,9 @@ func applyVideoOverride(video VideoProfile, override VideoOverride) VideoProfile
 	if override.ForceEncodeOnNoFit != nil {
 		video.ForceEncodeOnNoFit = *override.ForceEncodeOnNoFit
 	}
+	if override.SkipEncode != nil {
+		video.SkipEncode = *override.SkipEncode
+	}
 	video.FFmpegArgs = append(append([]string(nil), video.FFmpegArgs...), override.FFmpegArgs...)
 	video.ABAV1Args = append(append([]string(nil), video.ABAV1Args...), override.ABAV1Args...)
 	return video
