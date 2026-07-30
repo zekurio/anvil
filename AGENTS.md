@@ -1,95 +1,177 @@
 # Repository Guidelines
 
-## Project Overview
+- Anvil is a Linux-first Go daemon that orchestrates AV1 encodes across
+  user-defined media libraries. `anvild` (`cmd/anvild`) owns config, the SQLite
+  store, scanning, scheduling, encoding, and publication; `anvilctl`
+  (`cmd/anvilctl`) is the operator client and talks to the daemon over a Unix
+  socket. Orchestration packages live under `pkg/*`; `internal/textout` holds
+  shared operator output helpers.
+- Data flow: `pkg/scanner` enqueues jobs into `pkg/store`, `pkg/scheduler`
+  leases them under a thread budget (`pkg/resources`), `pkg/worker` runs a
+  `pkg/pipeline` of named blocks (`probe`, `crop-detect`, `audio-cleanup`,
+  `subtitle-cleanup`, `stage`, `crf-search`, `encode`, `dovi-fix`,
+  `track-stats`, `validate`, `replace`/`handoff`, `cleanup`). Each block lives
+  in its own package and registers itself in `worker.DefaultPipeline`.
+- The default branch is `main` and it is the only long-lived branch; use `main`
+  or `origin/main` for diffs.
+- Go `1.26.4` with a deliberately small dependency set (`BurntSushi/toml`,
+  `doublestar/v4`, `fsnotify`, `charm.land/log/v2`, `modernc.org/sqlite`).
+  SQLite must stay pure-Go: no CGo, ever. No CLI framework — stdlib `flag`
+  parsing in both binaries.
+- `make fmt` (`go fmt ./...`) and `make lint` (`golangci-lint run ./...` inside
+  `nix develop`) must pass before a coding task is complete. Add `make build`
+  (`bin/anvild`, `bin/anvilctl`) when entrypoints, package wiring, command
+  construction, or build tags changed. `make lint-fix` applies autofixes.
+- Lint policy is `.golangci.yml`: `errcheck` (including blank assignments),
+  `govet`, `ineffassign`, `staticcheck`, `unused`. Format with `gofmt` only;
+  never hand-format.
+- External tools (`ffmpeg`/`ffprobe`, `ab-av1`, `dovi_tool`, `mkvtoolnix`) are
+  provided by the Nix dev shell (`flake.nix`, `devenv.nix`, `direnv allow`).
+  Bump `vendorHash` in `flake.nix` whenever Go dependencies change.
+- There is no automated test suite. Verification is `gofmt`, `golangci-lint`,
+  building both binaries, and reading the code paths you touched.
+- Early WIP; sweeping changes that improve long-term maintainability are
+  encouraged. Priorities in order: reliability, data safety (replace, handoff,
+  cleanup), predictable behavior under cancellation and retries, then
+  performance. Prefer correctness, debuggability, and operator trust.
 
-Anvil is a Linux-first Go daemon that orchestrates AV1 encodes across user-defined media libraries. It delegates quality search to `ab-av1 crf-search` but owns final `ffmpeg` command construction and the full scan → schedule → stage → encode → validate → replace/handoff workflow. External tools: `ffmpeg`/`ffprobe`, `ab-av1`, `dovi_tool`, `mkvtoolnix`.
+## Branch Names
 
-Early WIP. Priorities, in order: reliability, data safety (especially replace/handoff/cleanup paths), predictable behavior under cancellation/retries/partial progress, then performance. When in doubt choose correctness, debuggability, and operator trust.
+Use a short branch name of at most three words, separated by hyphens. Do not use slashes or type prefixes such as `feat/` or `fix/`.
 
-## Architecture & Data Flow
+Examples: `session-recovery`, `fix-scroll-state`, `publish-journal`.
 
+## Commits and PR Titles
+
+Use conventional commit-style messages and PR titles: `type(scope): summary`.
+
+Valid types are `feat`, `fix`, `docs`, `chore`, `refactor`, and `test`. Scopes are optional; use the affected package or area, e.g. `cmd`, `config`, `store`, `scanner`, `scheduler`, `worker`, `pipeline`, `ffmpeg`, `control`, `nix`, or `docs`.
+
+Examples: `fix(worker): tolerate a raced cancel`, `feat(control): expose stream selection`, `docs(nix): clarify control client installation`.
+
+## Style Guide
+
+### General Principles
+
+- Early returns, no unnecessary `else`. `switch` over long if-chains.
+- Inline single-use logic instead of extracting a helper preemptively; extract
+  only when the name describes a real concept or the logic is genuinely reused.
+- Keep the exported surface minimal. Grouped imports, no dot imports, no
+  aliased imports except to disambiguate a real collision (`replacepkg`).
+- No goroutines unless the operation is genuinely concurrent.
+- Comment non-obvious constraints and surprising behavior, not obvious control
+  flow. Every package carries a `doc.go` where the package name alone is not
+  self-explanatory.
+- Prefer changing existing code over bolting a local fix onto it; extract
+  shared logic into the owning package rather than duplicating it.
+
+### Errors
+
+Wrap with `%w`, lowercase, no trailing punctuation. Use sentinels for expected conditions and check them with `errors.Is`; merge cleanup failures with `errors.Join`.
+
+```go
+// Good
+if err := s.publish(ctx, job); err != nil {
+    return fmt.Errorf("publish job %d: %w", job.ID, err)
+}
+
+// Bad
+if err := s.publish(ctx, job); err != nil {
+    slog.Error("Publish failed.", "error", err)
+    return err
+}
 ```
-scanner ──enqueue──▶ store (SQLite) ◀──lease── scheduler ──dispatch──▶ worker ──▶ pipeline blocks
-                                                                          │
-                     probe → crop-detect → audio-cleanup → subtitle-cleanup → stage
-                     → crf-search → encode → dovi-fix → track-stats → validate → replace|handoff → cleanup
+
+Log **or** return, never both. Logging happens at process and job boundaries (`cmd/*`, `pkg/worker`, `pkg/scheduler`), not in leaf packages.
+
+### Context
+
+`ctx context.Context` is the first parameter on anything that blocks, spawns a process, or touches the store. Never store a context in a struct. Use `context.WithoutCancel(ctx)` deliberately where cleanup must outlive cancellation, and say why.
+
+```go
+// Good — the lease must be released even though ctx is already canceled
+releaseErr := s.releaseLeased(context.WithoutCancel(ctx), leased)
 ```
 
-- **Scan** — `pkg/scanner` (`Scanner.Scan`/`ScanLibrary`) discovers candidates, upserts `domain.MediaSource`/`MediaAsset`, enqueues `domain.Job` through a consumer-side `Store` interface. `monitor.go` adds fsnotify-driven rescans with debounce.
-- **Persist** — `pkg/store` is SQLite via `modernc.org/sqlite` (CGo-free), `SetMaxOpenConns(1)`, WAL + `foreign_keys` pragmas, versioned in-code migrations (`pkg/store/migrations.go`). Job states: `pending → leased → running → validating → replacing → complete` (plus `failed`, `retrying`, `skipped`) defined in `pkg/domain/job.go`.
-- **Schedule** — `pkg/scheduler` leases jobs in priority order (`LeaseNextJobForLibraries`), enforces library concurrency and thread budgets (`pkg/resources.Allocator`), one goroutine per assignment.
-- **Execute** — `pkg/worker.Runner.Run` resolves library/flow/profile (`cfg.ResolveForLibrary`), starts an attempt, builds `pipeline.JobContext`, runs the pipeline, records sizes, transitions the job. `worker.DefaultPipeline(tempDir)` in `pkg/worker/worker.go` is the composition root that registers every block.
-- **Pipeline** — `pkg/pipeline.Runner` executes `job.Flow.Steps` by name from a `Registry`; step order comes from config flows (`pkg/config/defaults.go`), not code. Emits `block_started`/`block_finished`/`block_failed` attempt events.
-- **Resume** — `pkg/worker/resume.go` checkpoints reusable steps only (`probe`, `audio-cleanup`, `crop-detect`, `crf-search`) as JSON in `jobs.pipeline_context_json`; resume validity is fingerprint-checked (input path, source/asset, resolved config).
-- **Validate is observational** — `validate.Block.Run` logs a warning and returns `nil` even on `ErrValidationFailed`; it records `domain.ValidationResult` but does not gate. `pkg/replace.Manager` sets `job.FinalPath` only after safe file operations succeed.
-- **Control** — `pkg/controlapi` is the daemon-owned operator surface: `Service` holds every live operation (status, job list/show/cancel/retry/prune/recover, library scan/stats, occurrence force, staging cleanup, store backup), `Server` speaks a private length-prefixed JSON protocol over the Unix socket, and `Client` is what `cmd/anvilctl` uses. One command per connection, `ProtocolVersion` on every frame, structured `*controlapi.Error` codes. No HTTP, JSON-RPC, or `net/rpc`.
-- **Ownership** — `anvild` takes an exclusive `flock` on `<store_path>.lock`, then claims the control socket, and only then opens the store, recovers stale jobs, and sweeps staging. Nothing with a side effect may move ahead of those two claims.
+### Dependency Injection
 
-## Key Directories
+Constructors return concrete structs; behavior is injected through fields. No functional-options APIs. A nil dependency field falls back to the real implementation so the zero value is usable.
 
-- `cmd/anvild` — the service binary: default `run` mode plus `check-config` and `preflight`, the only two commands that are local, read-only, and useful before a daemon exists. Every live operation moved to `anvilctl`; the old names are recognized and answered with their replacement, never executed.
-- `cmd/anvilctl` — the operator client. Opens no SQLite, runs no media tools, needs no config file. Noun/verb tree (`job`, `library`, `occurrence`, `staging`, `store`) with the old `anvild` subcommand names kept as aliases.
-- `internal/textout` — shared operator-output helpers (error-carrying writer, tables, JSON, byte/percent formatting) used by both binaries.
-- `pkg/domain` — core job/attempt/media/profile/flow/encode types. Must stay free of persistence, ffmpeg, and CLI concerns.
-- `pkg/config` — TOML loading, defaults, validation. Downstream packages receive resolved settings; never reparse raw config elsewhere.
-- `pkg/store` — SQLite persistence (split into `sqlite_*.go` by concern: lifecycle, attempts, queries, media, scan, job context).
-- `pkg/scanner`, `pkg/scheduler`, `pkg/worker`, `pkg/pipeline` — orchestration layers as described above.
-- `pkg/probe`, `pkg/crop`, `pkg/audio`, `pkg/subtitle`, `pkg/search`, `pkg/ffmpeg`, `pkg/trackstats`, `pkg/validate`, `pkg/replace`, `pkg/staging` — the pipeline blocks (ffprobe/DV detection, cropdetect, stream selection, ab-av1 search, encode plan + execution + Dolby Vision repair, Matroska statistics tags, output validation, safe replace/handoff, staging dirs).
-- `pkg/process` — the only place external commands run (`Command` + `OSRunner` via `exec.CommandContext`, captured stdout/stderr/exit code); `context.go` carries process logger/step metadata.
-- `pkg/control` — dependency-light private socket protocol, typed request/response models, and the client used by `anvilctl`.
-- `pkg/controlapi` — daemon-side control service and socket server.
-- `pkg/marker`, `pkg/metadata`, `pkg/language`, `pkg/video`, `pkg/resources` — Anvil output tags, Arr metadata resolution, language normalization, codec/crop helpers, thread budgeting.
-- `nix/`, `flake.nix`, `devenv.nix` — packaging, NixOS module (`services.anvil`), dev shell.
+```go
+// Good
+type FFProbe struct {
+    Runner process.Runner
+}
 
-## Development Commands
+func (p FFProbe) Probe(ctx context.Context, path string) (domain.ProbeResult, error) {
+    runner := p.Runner
+    if runner == nil {
+        runner = process.OSRunner{}
+    }
+    ...
+}
 
-```sh
-make fmt                # go fmt ./...
-make lint               # golangci-lint run ./... (wrapped in `nix develop`)
-make lint-fix           # golangci-lint run --fix ./...
-make build              # go build bin/anvild and bin/anvilctl
+// Bad
+func NewFFProbe(opts ...Option) *FFProbe { ... }
 ```
 
-**Task completion requirements** for any Go change: `make fmt && make lint`. Add `make build` when entrypoints, package wiring, command construction, or build tags changed.
+### Interfaces
 
-## Code Conventions & Common Patterns
+Interfaces are defined consumer-side, in the package that needs them, and stay as small as that consumer requires (`scheduler.Store`, `worker.Store`, `scanner.Store`, `pipeline.EventRecorder`, `probe.Prober`). Concrete persistence lives only in `pkg/store`.
 
-- **Formatting**: `gofmt` only; never hand-format. Grouped imports, no dot imports. Minimal exported surface.
-- **Commits/PRs**: conventional style `type(scope): summary`; types `feat|fix|docs|chore|refactor|test`; useful scopes: `cmd`, `config`, `store`, `scanner`, `scheduler`, `worker`, `pipeline`, `ffmpeg`, `nix`, `docs`. Branches: ≤3 hyphenated words, no slashes or type prefixes (`session-recovery`, `fix-scroll-state`).
-- **Errors**: wrap with `%w`, lowercase, no trailing punctuation. Sentinels for expected conditions (`store.ErrNotFound`, `validate.ErrValidationFailed`) checked via `errors.Is`; `errors.Join` for merged cleanup failures. Log **or** return, never both — log at process/job boundaries.
-- **Context**: `ctx context.Context` first param on anything that blocks, spawns processes, or touches the store. Never stored in structs. `context.WithoutCancel(ctx)` is used deliberately where cleanup must outlive cancellation (lease release in `pkg/scheduler`, process-output events in `pkg/worker/process_logs.go`).
-- **Logging**: `log/slog` structured logging with stable messages and variable data as attributes. Large process output goes to per-attempt log files + artifact events (`pkg/worker/process_logs.go`), never dumped into logs.
-- **Interfaces are consumer-side**: each consumer defines the contract it needs (`scheduler.Store`/`Worker`, `worker.Store`/`MetadataResolver`, `scanner.Store`, `pipeline.EventRecorder`/`StepPersistence`, `probe.Prober`). Concrete persistence lives in `pkg/store`.
-- **DI is struct composition**: constructors return concrete structs; behavior is injected via fields (`probe.FFProbe{Runner: ...}`, `search.ABAV1{Runner: ...}`, `ffmpeg.Encoder{Runner: ...}`). No functional-options APIs.
-- **External processes**: build commands separately from execution so builders are testable without spawning; always respect ctx cancellation; capture enough metadata to diagnose failures.
-- **Filesystem mutation**: be conservative around replace/handoff/cleanup — explicit safety checks and clear logs over implicit behavior.
-- **General style**: early returns, no unnecessary `else`; `switch` over long if-chains; inline single-use logic instead of premature helpers; no goroutines unless the operation is genuinely concurrent; comments for non-obvious constraints only.
-- **Maintainability**: prefer extracting shared logic to the owning package over duplicating locally; changing existing code beats bolt-on local fixes.
+### External Processes
 
-## Important Files
+`pkg/process` is the only place external commands run. Build the argument list in a pure function and execute it separately, so command construction is inspectable without spawning anything.
 
-- `cmd/anvild/main.go` — CLI entrypoint: config load, logging setup, subcommand dispatch, moved-command migration errors; daemon mode claims ownership and the socket first, then splits service vs worker cancellation contexts and runs scan/reload/recovery/scheduler loops with configurable drain/cancel shutdown.
-- `cmd/anvild/ownership_unix.go` — the daemon singleton guard.
-- `cmd/anvild/preflight.go` — read-only planner: reports candidate/staging/publish plans and warnings without mutating anything.
-- `pkg/control/protocol.go`, `client.go`, `types*.go` — dependency-light framing, wire contract, and userspace client. `pkg/controlapi/server.go` and `service*.go` own daemon-side dispatch and operations.
-- `pkg/store/protection.go` — the jobs maintenance must not disturb (active, or holding an unresolved publish journal). Staging cleanup and job pruning both depend on it.
-- `pkg/worker/worker.go` — `DefaultPipeline`, attempt lifecycle, job transitions.
-- `pkg/config/defaults.go` — default daemon settings, flows, profiles (canonical step order lives here).
-- `pkg/config/schema.go` — typed TOML schema.
-- `pkg/store/migrations.go` — versioned schema migrations and pragmas.
-- `examples/anvil.toml` — reference config: `[daemon]`, `[flows.*]` (named `steps` arrays), `[profiles.*]` (video/audio/subtitles/validation/metadata subtrees), `[arrs.*]`, `[libraries.*]` (media vs download kinds).
-- `nix/modules/anvil.nix` — NixOS module: renders `/etc/anvil/anvil.toml`, hardened systemd unit.
-- `Makefile`, `.golangci.yml` — dev commands and lint policy.
+```go
+// Good
+func Args(plan domain.EncodePlan) []string { ... }
+result, err := runner.Run(ctx, process.Command{Name: "ffmpeg", Args: Args(plan)})
+```
 
-## Runtime/Tooling Preferences
+Always respect `ctx` cancellation, and capture enough metadata (command, exit code, duration, byte counts) to diagnose a failure after the fact.
 
-- Go `1.26.4` (`go.mod`). Small dependency set: `BurntSushi/toml`, `bmatcuk/doublestar/v4`, `fsnotify`, `modernc.org/sqlite` (pure-Go, no CGo). No CLI framework — stdlib flag parsing in both `cmd/anvild` and `cmd/anvilctl`.
-- Dev environment is Nix/devenv: `.envrc`/`devenv.yaml` use `use flake . --impure`. The shell provides `go`, `golangci-lint`, `gopls`, `ffmpeg` (jellyfin-ffmpeg on Linux), `ab-av1`, `dovi-tool`, `mkvtoolnix`, `sqlite`. `make lint` wraps golangci-lint in `nix develop --no-pure-eval --command`.
-- Flake outputs: `packages.default`/`packages.anvil` (all binaries, `anvild` wrapped with the runtime tool PATH), `packages.anvild`, `packages.anvilctl` (standalone, deliberately unwrapped), `apps.*`, `nixosModules.anvil`, dev shell. Bump `vendorHash` in `flake.nix` when Go deps change.
-- Default branch is `main`; use `main`/`origin/main` for diffs.
+### Logging
 
-## Verification
+`log/slog` with stable messages and variable data as attributes; `charm.land/log/v2` is only the handler installed in `cmd/anvild`. Large process output goes to per-attempt log files plus artifact events (`pkg/worker/process_logs.go`), never into the log stream.
 
-- Use `gofmt` for formatting and `golangci-lint` for static analysis.
-- Build both entrypoints after changes to command parsing, package wiring, process execution, or build tags.
-- The repository does not carry an automated test or smoke-test suite.
+## Repo Patterns
+
+- `pkg/domain` holds core job/attempt/media/profile/flow/encode types and must
+  stay free of persistence, ffmpeg, and CLI concerns.
+- `pkg/config` is the only place raw TOML is parsed. Downstream code receives
+  resolved values via `cfg.ResolveForLibrary`; never reparse config elsewhere.
+  Canonical defaults, flows, and profiles live in `pkg/config/defaults.go` and
+  are mirrored in `nix/modules/anvil.nix` and `examples/anvil.toml`.
+- Pipeline step order comes from config flows, not code. A block's `Name()` is
+  its config step name; adding a step means a block plus registration in
+  `worker.DefaultPipeline`, plus the default flow lists in config and Nix.
+- `pkg/store` is SQLite via `modernc.org/sqlite` with `SetMaxOpenConns(1)`, WAL,
+  and `foreign_keys` pragmas, split into `sqlite_*.go` by concern. Schema
+  changes are versioned in-code migrations in `pkg/store/migrations.go`; bump
+  `currentSchemaVersion` and add a migration entry, never edit an old one.
+- `pkg/worker/resume.go` checkpoints only reusable steps (`probe`,
+  `audio-cleanup`, `crop-detect`, `crf-search`) as JSON in
+  `jobs.pipeline_context_json`, guarded by an input/config fingerprint.
+  Attempt-local staging output is never resumed except through the publish
+  journal.
+- `validate` is observational: `validate.Block.Run` logs and returns `nil` even
+  on `ErrValidationFailed`. `ab-av1` search is the encode acceptance authority.
+- Publication (`pkg/replace`) goes through a durable journal
+  (`prepared → published → source_cleaned → committed`, or `conflict`). Never
+  overwrite an existing destination, and record intent before mutating the
+  filesystem. `pkg/store/protection.go` defines the jobs maintenance must not
+  disturb; staging cleanup and job pruning both depend on it.
+- `anvild` takes an exclusive `flock` on `<store_path>.lock`, then claims the
+  control socket, and only then opens the store, recovers jobs, and sweeps
+  staging. Nothing with a side effect may run ahead of those two claims.
+- The control protocol (`pkg/control`) is private and versioned per frame; the
+  stable contract is `anvilctl` syntax, `--json` shapes, error codes, and exit
+  status (`0` ok, `1` failed, `2` usage, `3` unreachable, `4` not found). No
+  HTTP, JSON-RPC, or `net/rpc`. Operator commands that mutate live state belong
+  in `anvilctl`; only local read-only commands (`check-config`, `preflight`)
+  stay on `anvild`.
+- Operator output goes through `internal/textout` (error-carrying writer,
+  tables, JSON, byte/percent formatting) so both binaries stay consistent.
+- Filesystem mutation is conservative by default: explicit safety checks and
+  clear logs over implicit behavior.
