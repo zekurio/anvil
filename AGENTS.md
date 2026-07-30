@@ -12,7 +12,7 @@ Early WIP. Priorities, in order: reliability, data safety (especially replace/ha
 scanner ──enqueue──▶ store (SQLite) ◀──lease── scheduler ──dispatch──▶ worker ──▶ pipeline blocks
                                                                           │
                      probe → crop-detect → audio-cleanup → subtitle-cleanup → stage
-                     → crf-search → encode → dovi-fix → validate → replace|handoff → cleanup
+                     → crf-search → encode → dovi-fix → track-stats → validate → replace|handoff → cleanup
 ```
 
 - **Scan** — `pkg/scanner` (`Scanner.Scan`/`ScanLibrary`) discovers candidates, upserts `domain.MediaSource`/`MediaAsset`, enqueues `domain.Job` through a consumer-side `Store` interface. `monitor.go` adds fsnotify-driven rescans with debounce.
@@ -34,7 +34,7 @@ scanner ──enqueue──▶ store (SQLite) ◀──lease── scheduler ─
 - `pkg/config` — TOML loading, defaults, validation. Downstream packages receive resolved settings; never reparse raw config elsewhere.
 - `pkg/store` — SQLite persistence (split into `sqlite_*.go` by concern: lifecycle, attempts, queries, media, scan, job context).
 - `pkg/scanner`, `pkg/scheduler`, `pkg/worker`, `pkg/pipeline` — orchestration layers as described above.
-- `pkg/probe`, `pkg/crop`, `pkg/audio`, `pkg/subtitle`, `pkg/search`, `pkg/ffmpeg`, `pkg/validate`, `pkg/replace`, `pkg/staging` — the pipeline blocks (ffprobe/DV detection, cropdetect, stream selection, ab-av1 search, encode plan + execution + Dolby Vision repair, output validation, safe replace/handoff, staging dirs).
+- `pkg/probe`, `pkg/crop`, `pkg/audio`, `pkg/subtitle`, `pkg/search`, `pkg/ffmpeg`, `pkg/trackstats`, `pkg/validate`, `pkg/replace`, `pkg/staging` — the pipeline blocks (ffprobe/DV detection, cropdetect, stream selection, ab-av1 search, encode plan + execution + Dolby Vision repair, Matroska statistics tags, output validation, safe replace/handoff, staging dirs).
 - `pkg/process` — the only place external commands run (`Command` + `OSRunner` via `exec.CommandContext`, captured stdout/stderr/exit code); `context.go` carries process logger/step metadata.
 - `pkg/control` — dependency-light private socket protocol, typed request/response models, and the client used by `anvilctl`.
 - `pkg/controlapi` — daemon-side control service and socket server.

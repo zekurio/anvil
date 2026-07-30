@@ -32,10 +32,10 @@ func Default() Config {
 		},
 		Flows: map[string]FlowConfig{
 			DefaultFlowName: {
-				Steps: []string{"probe", "crop-detect", "audio-cleanup", "subtitle-cleanup", "stage", "crf-search", "encode", "dovi-fix", "validate", "replace", "cleanup"},
+				Steps: []string{"probe", "crop-detect", "audio-cleanup", "subtitle-cleanup", "stage", "crf-search", "encode", "dovi-fix", "track-stats", "validate", "replace", "cleanup"},
 			},
 			DefaultDownloadFlowName: {
-				Steps: []string{"probe", "crop-detect", "audio-cleanup", "subtitle-cleanup", "stage", "crf-search", "encode", "dovi-fix", "validate", "handoff", "cleanup"},
+				Steps: []string{"probe", "crop-detect", "audio-cleanup", "subtitle-cleanup", "stage", "crf-search", "encode", "dovi-fix", "track-stats", "validate", "handoff", "cleanup"},
 			},
 		},
 		Profiles: map[string]ProfileConfig{
