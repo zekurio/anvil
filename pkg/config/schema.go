@@ -27,6 +27,8 @@ const (
 	DefaultMinSavingsPct    = 20
 )
 
+// DefaultIgnorableGlobs are excluded from download-package discovery and stability handling.
+// External subtitle sidecars are intentionally preserved by default.
 var DefaultIgnorableGlobs = []string{
 	"**/samples/**",
 	"**/sample*/**",
@@ -193,12 +195,16 @@ type MediaLibraryConfig struct {
 
 // DownloadLibraryConfig controls intake and handoff behavior for completed downloads.
 type DownloadLibraryConfig struct {
-	HandoffPath          string   `toml:"handoff_path"`
-	StableFor            string   `toml:"stable_for"`
-	PackageMode          string   `toml:"package_mode"`
-	HandoffMode          string   `toml:"handoff_mode"`
-	PreserveRelativePath bool     `toml:"preserve_relative_path"`
-	CleanupSourceMedia   bool     `toml:"cleanup_source_media"`
-	PruneEmptyDirs       bool     `toml:"prune_empty_dirs"`
-	IgnorableGlobs       []string `toml:"ignorable_globs"`
+	HandoffPath          string `toml:"handoff_path"`
+	StableFor            string `toml:"stable_for"`
+	PackageMode          string `toml:"package_mode"`
+	HandoffMode          string `toml:"handoff_mode"`
+	PreserveRelativePath bool   `toml:"preserve_relative_path"`
+	CleanupSourceMedia   bool   `toml:"cleanup_source_media"`
+	PruneEmptyDirs       bool   `toml:"prune_empty_dirs"`
+	// IgnorableGlobs are excluded from download-package discovery and stability handling.
+	// During successful handoff source cleanup, matching paths may be deleted when
+	// CleanupSourceMedia and PruneEmptyDirs are enabled. A non-empty configured list
+	// replaces DefaultIgnorableGlobs.
+	IgnorableGlobs []string `toml:"ignorable_globs"`
 }

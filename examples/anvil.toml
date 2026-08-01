@@ -132,3 +132,23 @@ handoff_mode = "move"
 preserve_relative_path = true
 cleanup_source_media = true
 prune_empty_dirs = true
+# Ignorable globs are excluded from download-package discovery and stability
+# handling. During successful handoff source cleanup, matching paths may be
+# deleted when both cleanup_source_media and prune_empty_dirs are true.
+# External subtitle sidecars are preserved by default. A non-empty
+# ignorable_globs setting replaces the built-in list, so retain these defaults
+# when opting in to clean release-provided Subs/ directories.
+ignorable_globs = [
+  "**/samples/**",
+  "**/sample*/**",
+  "**/*sample*",
+  "**/*.txt",
+  "**/*.url",
+  "**/*.sfv",
+  "**/*.srr",
+  "**/*.nzb",
+  "**/__MACOSX/**",
+  "**/.DS_Store",
+  "**/.nfs*",
+  "**/[Ss][Uu][Bb][Ss]/**",
+]
