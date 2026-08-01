@@ -132,15 +132,20 @@ func publishOperationDetail(operation replacepkg.PublishOperation) control.Publi
 		ConflictDescription: operation.ConflictDescription,
 		UpdatedAt:           operation.UpdatedAt,
 	}
-	if len(operation.CleanupEntries) == 0 {
-		return detail
+	if len(operation.CleanupEntries) > 0 {
+		detail.CleanupEntries = make([]control.CleanupEntryDetail, 0, len(operation.CleanupEntries))
+		for _, entry := range operation.CleanupEntries {
+			detail.CleanupEntries = append(detail.CleanupEntries, control.CleanupEntryDetail{
+				Path:      entry.Path,
+				SizeBytes: entry.Identity.SizeBytes,
+			})
+		}
 	}
-	detail.CleanupEntries = make([]control.CleanupEntryDetail, 0, len(operation.CleanupEntries))
-	for _, entry := range operation.CleanupEntries {
-		detail.CleanupEntries = append(detail.CleanupEntries, control.CleanupEntryDetail{
-			Path:      entry.Path,
-			SizeBytes: entry.Identity.SizeBytes,
-		})
+	if len(operation.CleanupDirectories) > 0 {
+		detail.CleanupDirectories = make([]string, 0, len(operation.CleanupDirectories))
+		for _, directory := range operation.CleanupDirectories {
+			detail.CleanupDirectories = append(detail.CleanupDirectories, directory.Path)
+		}
 	}
 	return detail
 }

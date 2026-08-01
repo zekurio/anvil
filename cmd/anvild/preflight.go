@@ -213,6 +213,7 @@ type preflightCleanup struct {
 	DownloadSourceMediaPath  string                      `json:"download_source_media_path,omitempty"`
 	DownloadPruneStart       string                      `json:"download_prune_start,omitempty"`
 	DownloadCleanupEntries   []replacepkg.CleanupEntry   `json:"download_cleanup_entries,omitempty"`
+	DownloadCleanupDirs      []replacepkg.CleanupEntry   `json:"download_cleanup_directories,omitempty"`
 	DownloadCleanupBlockers  []replacepkg.CleanupBlocker `json:"download_cleanup_blockers,omitempty"`
 	DownloadCleanupPlanError string                      `json:"download_cleanup_plan_error,omitempty"`
 	DownloadCleanupTriggered bool                        `json:"download_cleanup_triggered_by_handoff"`
@@ -541,6 +542,7 @@ func preflightCleanupPlan(flow domain.Flow, library domain.Library, job *pipelin
 	}
 	cleanup.DownloadPruneStart = plan.Start
 	cleanup.DownloadCleanupEntries = append([]replacepkg.CleanupEntry(nil), plan.Entries...)
+	cleanup.DownloadCleanupDirs = append([]replacepkg.CleanupEntry(nil), plan.Directories...)
 	cleanup.DownloadCleanupBlockers = append([]replacepkg.CleanupBlocker(nil), plan.Blockers...)
 	return cleanup
 }
@@ -908,6 +910,9 @@ func writePreflightReport(out io.Writer, report preflightReport) error {
 			}
 			for _, entry := range item.Cleanup.DownloadCleanupEntries {
 				w.Printf("  download residue cleanup planned: %s\n", entry.Path)
+			}
+			for _, directory := range item.Cleanup.DownloadCleanupDirs {
+				w.Printf("  download empty directory cleanup planned: %s\n", directory.Path)
 			}
 			for _, blocker := range item.Cleanup.DownloadCleanupBlockers {
 				w.Printf("  download residue cleanup blocker: %s: %s\n", blocker.Path, blocker.Reason)
