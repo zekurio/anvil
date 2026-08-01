@@ -64,6 +64,7 @@ type PublishOperationDetail struct {
 	DestinationPath     string               `json:"destination_path"`
 	CleanupSourcePath   string               `json:"cleanup_source_path,omitempty"`
 	CleanupEntries      []CleanupEntryDetail `json:"cleanup_entries,omitempty"`
+	CleanupDirectories  []string             `json:"cleanup_directories,omitempty"`
 	BackupPath          string               `json:"backup_path,omitempty"`
 	ArtifactSizeBytes   int64                `json:"artifact_size_bytes"`
 	DigestAlgorithm     string               `json:"digest_algorithm,omitempty"`

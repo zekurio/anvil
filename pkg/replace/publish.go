@@ -63,6 +63,7 @@ type PublishOperation struct {
 	PruneStart          string         `json:"prune_start,omitempty"`
 	IgnorableGlobs      []string       `json:"ignorable_globs,omitempty"`
 	CleanupEntries      []CleanupEntry `json:"cleanup_entries,omitempty"`
+	CleanupDirectories  []CleanupEntry `json:"cleanup_directories,omitempty"`
 	ArtifactIdentity    FileIdentity   `json:"artifact_identity"`
 	CleanupIdentity     *FileIdentity  `json:"cleanup_identity,omitempty"`
 	DigestAlgorithm     string         `json:"digest_algorithm,omitempty"`
@@ -425,7 +426,7 @@ func (m Manager) cleanup(ctx context.Context, op *PublishOperation) error {
 		return err
 	}
 	if op.PruneEmptyDirs {
-		if err := pruneEmptyDirectories(op.PruneRoot, op.PruneStart); err != nil {
+		if err := m.cleanupDirectories(ctx, op); err != nil {
 			return err
 		}
 		if err := m.boundary(BoundaryDirectoriesPruned); err != nil {
@@ -538,6 +539,7 @@ func (m Manager) handoffOperation(job *pipeline.JobContext) (PublishOperation, e
 			return op, nil
 		}
 		op.CleanupEntries = append([]CleanupEntry(nil), cleanupPlan.Entries...)
+		op.CleanupDirectories = append([]CleanupEntry(nil), cleanupPlan.Directories...)
 	}
 	return op, nil
 }
