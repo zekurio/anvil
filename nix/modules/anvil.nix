@@ -738,7 +738,15 @@ let
             "**/.DS_Store"
             "**/.nfs*"
           ];
-          description = "Globs ignored while handling download packages.";
+          description = ''
+            Globs excluded from download-package discovery and stability
+            handling. Setting this option replaces the default list. During
+            successful handoff source cleanup, matching paths may be deleted
+            when cleanupSourceMedia and pruneEmptyDirs are enabled. External
+            subtitle sidecars are preserved by default; add
+            **/[Ss][Uu][Bb][Ss]/** alongside the defaults to opt in to cleaning
+            release-provided Subs/ directories.
+          '';
         };
       };
     };
