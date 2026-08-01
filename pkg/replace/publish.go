@@ -44,32 +44,38 @@ type FileIdentity struct {
 	Inode     uint64 `json:"inode"`
 }
 
+type CleanupEntry struct {
+	Path     string       `json:"path"`
+	Identity FileIdentity `json:"identity"`
+}
+
 type PublishOperation struct {
-	JobID               domain.JobID  `json:"job_id"`
-	Kind                string        `json:"kind"`
-	Mode                string        `json:"mode"`
-	Stage               PublishStage  `json:"stage"`
-	ArtifactPath        string        `json:"artifact_path"`
-	ArtifactStagingDir  string        `json:"artifact_staging_dir,omitempty"`
-	DestinationPath     string        `json:"destination_path"`
-	BackupPath          string        `json:"backup_path,omitempty"`
-	CleanupSourcePath   string        `json:"cleanup_source_path,omitempty"`
-	PruneRoot           string        `json:"prune_root,omitempty"`
-	PruneStart          string        `json:"prune_start,omitempty"`
-	IgnorableGlobs      []string      `json:"ignorable_globs,omitempty"`
-	ArtifactIdentity    FileIdentity  `json:"artifact_identity"`
-	CleanupIdentity     *FileIdentity `json:"cleanup_identity,omitempty"`
-	DigestAlgorithm     string        `json:"digest_algorithm,omitempty"`
-	DigestValue         string        `json:"digest_value,omitempty"`
-	CleanupArtifact     bool          `json:"cleanup_artifact"`
-	CleanupSource       bool          `json:"cleanup_source"`
-	CleanupBackup       bool          `json:"cleanup_backup"`
-	PruneEmptyDirs      bool          `json:"prune_empty_dirs"`
-	SetHandoffModes     bool          `json:"set_handoff_modes"`
-	HandoffRoot         string        `json:"handoff_root,omitempty"`
-	ConflictDescription string        `json:"conflict_description,omitempty"`
-	CreatedAt           time.Time     `json:"created_at"`
-	UpdatedAt           time.Time     `json:"updated_at"`
+	JobID               domain.JobID   `json:"job_id"`
+	Kind                string         `json:"kind"`
+	Mode                string         `json:"mode"`
+	Stage               PublishStage   `json:"stage"`
+	ArtifactPath        string         `json:"artifact_path"`
+	ArtifactStagingDir  string         `json:"artifact_staging_dir,omitempty"`
+	DestinationPath     string         `json:"destination_path"`
+	BackupPath          string         `json:"backup_path,omitempty"`
+	CleanupSourcePath   string         `json:"cleanup_source_path,omitempty"`
+	PruneRoot           string         `json:"prune_root,omitempty"`
+	PruneStart          string         `json:"prune_start,omitempty"`
+	IgnorableGlobs      []string       `json:"ignorable_globs,omitempty"`
+	CleanupEntries      []CleanupEntry `json:"cleanup_entries,omitempty"`
+	ArtifactIdentity    FileIdentity   `json:"artifact_identity"`
+	CleanupIdentity     *FileIdentity  `json:"cleanup_identity,omitempty"`
+	DigestAlgorithm     string         `json:"digest_algorithm,omitempty"`
+	DigestValue         string         `json:"digest_value,omitempty"`
+	CleanupArtifact     bool           `json:"cleanup_artifact"`
+	CleanupSource       bool           `json:"cleanup_source"`
+	CleanupBackup       bool           `json:"cleanup_backup"`
+	PruneEmptyDirs      bool           `json:"prune_empty_dirs"`
+	SetHandoffModes     bool           `json:"set_handoff_modes"`
+	HandoffRoot         string         `json:"handoff_root,omitempty"`
+	ConflictDescription string         `json:"conflict_description,omitempty"`
+	CreatedAt           time.Time      `json:"created_at"`
+	UpdatedAt           time.Time      `json:"updated_at"`
 }
 
 type PublishJournal interface {
@@ -141,6 +147,15 @@ func (m Manager) Replace(ctx context.Context, job *pipeline.JobContext) (string,
 }
 
 func (m Manager) Handoff(ctx context.Context, job *pipeline.JobContext) (string, error) {
+	// The journal is authoritative after preparation. In particular, cleanup
+	// may already have removed the source or some residue before a retry.
+	recovered, err := m.Recover(ctx, job)
+	if err != nil {
+		return "", err
+	}
+	if recovered {
+		return job.FinalPath, nil
+	}
 	op, err := m.handoffOperation(job)
 	if err != nil {
 		return "", err
@@ -406,8 +421,11 @@ func (m Manager) cleanup(ctx context.Context, op *PublishOperation) error {
 			return err
 		}
 	}
+	if err := m.cleanupEntries(ctx, op); err != nil {
+		return err
+	}
 	if op.PruneEmptyDirs {
-		if err := PruneEmptyDirs(op.PruneRoot, op.PruneStart, op.IgnorableGlobs); err != nil {
+		if err := pruneEmptyDirectories(op.PruneRoot, op.PruneStart); err != nil {
 			return err
 		}
 		if err := m.boundary(BoundaryDirectoriesPruned); err != nil {
@@ -505,6 +523,21 @@ func (m Manager) handoffOperation(job *pipeline.JobContext) (PublishOperation, e
 			return PublishOperation{}, fmt.Errorf("identify handoff cleanup source: %w", err)
 		}
 		op.CleanupIdentity = &sourceIdentity
+	}
+	if op.PruneEmptyDirs {
+		cleanupPlan, err := PlanResidueCleanup(op.PruneRoot, op.CleanupSourcePath, op.IgnorableGlobs)
+		if err != nil {
+			return PublishOperation{}, fmt.Errorf("plan handoff residue cleanup: %w", err)
+		}
+		op.PruneRoot = cleanupPlan.Root
+		op.PruneStart = cleanupPlan.Start
+		if len(cleanupPlan.Blockers) > 0 {
+			// A blocker means no package residue, including empty directories,
+			// is scheduled for deletion.
+			op.PruneEmptyDirs = false
+			return op, nil
+		}
+		op.CleanupEntries = append([]CleanupEntry(nil), cleanupPlan.Entries...)
 	}
 	return op, nil
 }

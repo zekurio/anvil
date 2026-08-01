@@ -206,13 +206,16 @@ type preflightPublish struct {
 }
 
 type preflightCleanup struct {
-	StagingCleanupStep       bool   `json:"staging_cleanup_step"`
-	StagingCleanupAction     string `json:"staging_cleanup_action"`
-	DownloadCleanupSource    bool   `json:"download_cleanup_source_media"`
-	DownloadPruneEmptyDirs   bool   `json:"download_prune_empty_dirs"`
-	DownloadSourceMediaPath  string `json:"download_source_media_path,omitempty"`
-	DownloadPruneStart       string `json:"download_prune_start,omitempty"`
-	DownloadCleanupTriggered bool   `json:"download_cleanup_triggered_by_handoff"`
+	StagingCleanupStep       bool                        `json:"staging_cleanup_step"`
+	StagingCleanupAction     string                      `json:"staging_cleanup_action"`
+	DownloadCleanupSource    bool                        `json:"download_cleanup_source_media"`
+	DownloadPruneEmptyDirs   bool                        `json:"download_prune_empty_dirs"`
+	DownloadSourceMediaPath  string                      `json:"download_source_media_path,omitempty"`
+	DownloadPruneStart       string                      `json:"download_prune_start,omitempty"`
+	DownloadCleanupEntries   []replacepkg.CleanupEntry   `json:"download_cleanup_entries,omitempty"`
+	DownloadCleanupBlockers  []replacepkg.CleanupBlocker `json:"download_cleanup_blockers,omitempty"`
+	DownloadCleanupPlanError string                      `json:"download_cleanup_plan_error,omitempty"`
+	DownloadCleanupTriggered bool                        `json:"download_cleanup_triggered_by_handoff"`
 }
 
 func runPreflightCommand(ctx context.Context, cfg config.Config, opts options) error {
@@ -459,7 +462,17 @@ func buildPreflightCandidate(ctx context.Context, cfg config.Config, state prefl
 		item.Warnings = append(item.Warnings, "download cleanup_source_media=true would remove source media after handoff")
 	}
 	if item.Cleanup.DownloadCleanupSource && item.Cleanup.DownloadPruneEmptyDirs {
-		item.Warnings = append(item.Warnings, "download prune_empty_dirs=true would prune empty parent directories after source cleanup")
+		switch {
+		case item.Cleanup.DownloadCleanupPlanError != "":
+			item.Warnings = append(item.Warnings, "download residue cleanup planning failed: "+item.Cleanup.DownloadCleanupPlanError)
+		case len(item.Cleanup.DownloadCleanupBlockers) > 0:
+			item.Warnings = append(item.Warnings, fmt.Sprintf("download residue cleanup is blocked by %d unignorable or unsafe package entries; no package residue or directories would be removed", len(item.Cleanup.DownloadCleanupBlockers)))
+		default:
+			item.Warnings = append(item.Warnings, "download prune_empty_dirs=true would prune empty parent directories after journaled source and residue cleanup")
+			if len(item.Cleanup.DownloadCleanupEntries) > 0 {
+				item.Warnings = append(item.Warnings, fmt.Sprintf("download residue cleanup would journal and remove %d explicitly ignorable package files", len(item.Cleanup.DownloadCleanupEntries)))
+			}
+		}
 	}
 	item.Warnings = append(item.Warnings, preflightExcludeWarnings(candidate)...)
 	item.Description = preflightDescription(item.Status)
@@ -510,13 +523,25 @@ func preflightCleanupPlan(flow domain.Flow, library domain.Library, job *pipelin
 	if cleanup.StagingCleanupStep {
 		cleanup.StagingCleanupAction = "remove staging dir after configured cleanup step"
 	}
-	if library.Kind == domain.LibraryKindDownload && flowHasStep(flow, "handoff") {
-		cleanup.DownloadCleanupTriggered = true
-		cleanup.DownloadCleanupSource = library.Download.CleanupSourceMedia
-		cleanup.DownloadPruneEmptyDirs = library.Download.PruneEmptyDirs
-		cleanup.DownloadSourceMediaPath = job.InputPath
-		cleanup.DownloadPruneStart = filepath.Dir(job.InputPath)
+	if library.Kind != domain.LibraryKindDownload || !flowHasStep(flow, "handoff") {
+		return cleanup
 	}
+	cleanup.DownloadCleanupTriggered = true
+	cleanup.DownloadCleanupSource = library.Download.CleanupSourceMedia
+	cleanup.DownloadPruneEmptyDirs = library.Download.PruneEmptyDirs
+	cleanup.DownloadSourceMediaPath = job.InputPath
+	cleanup.DownloadPruneStart = filepath.Dir(job.InputPath)
+	if !cleanup.DownloadCleanupSource || !cleanup.DownloadPruneEmptyDirs {
+		return cleanup
+	}
+	plan, err := replacepkg.PlanResidueCleanup(library.Path, job.InputPath, library.Download.IgnorableGlobs)
+	if err != nil {
+		cleanup.DownloadCleanupPlanError = err.Error()
+		return cleanup
+	}
+	cleanup.DownloadPruneStart = plan.Start
+	cleanup.DownloadCleanupEntries = append([]replacepkg.CleanupEntry(nil), plan.Entries...)
+	cleanup.DownloadCleanupBlockers = append([]replacepkg.CleanupBlocker(nil), plan.Blockers...)
 	return cleanup
 }
 
@@ -875,6 +900,18 @@ func writePreflightReport(out io.Writer, report preflightReport) error {
 				item.Cleanup.DownloadCleanupSource,
 				item.Cleanup.DownloadPruneEmptyDirs,
 			)
+			if item.Cleanup.DownloadCleanupTriggered {
+				w.Printf("  download cleanup: source=%s prune_start=%s\n", item.Cleanup.DownloadSourceMediaPath, item.Cleanup.DownloadPruneStart)
+			}
+			if item.Cleanup.DownloadCleanupPlanError != "" {
+				w.Printf("  download residue cleanup planning error: %s\n", item.Cleanup.DownloadCleanupPlanError)
+			}
+			for _, entry := range item.Cleanup.DownloadCleanupEntries {
+				w.Printf("  download residue cleanup planned: %s\n", entry.Path)
+			}
+			for _, blocker := range item.Cleanup.DownloadCleanupBlockers {
+				w.Printf("  download residue cleanup blocker: %s: %s\n", blocker.Path, blocker.Reason)
+			}
 			for _, warning := range item.Warnings {
 				w.Printf("  warning: %s\n", warning)
 			}
