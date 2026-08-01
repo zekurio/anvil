@@ -119,7 +119,7 @@ func streamSelections(a control.AttemptDetail) []control.AttemptStreamSelection 
 }
 
 func publishOperationDetail(operation replacepkg.PublishOperation) control.PublishOperationDetail {
-	return control.PublishOperationDetail{
+	detail := control.PublishOperationDetail{
 		Kind:                operation.Kind,
 		Mode:                operation.Mode,
 		Stage:               string(operation.Stage),
@@ -132,6 +132,17 @@ func publishOperationDetail(operation replacepkg.PublishOperation) control.Publi
 		ConflictDescription: operation.ConflictDescription,
 		UpdatedAt:           operation.UpdatedAt,
 	}
+	if len(operation.CleanupEntries) == 0 {
+		return detail
+	}
+	detail.CleanupEntries = make([]control.CleanupEntryDetail, 0, len(operation.CleanupEntries))
+	for _, entry := range operation.CleanupEntries {
+		detail.CleanupEntries = append(detail.CleanupEntries, control.CleanupEntryDetail{
+			Path:      entry.Path,
+			SizeBytes: entry.Identity.SizeBytes,
+		})
+	}
+	return detail
 }
 
 func jobDetailFromSummary(summary store.JobSummary) control.JobDetail {
