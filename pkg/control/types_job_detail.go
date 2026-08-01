@@ -57,17 +57,25 @@ type AttemptStreamSelection struct {
 }
 
 type PublishOperationDetail struct {
-	Kind                string    `json:"kind"`
-	Mode                string    `json:"mode"`
-	Stage               string    `json:"stage"`
-	ArtifactPath        string    `json:"artifact_path"`
-	DestinationPath     string    `json:"destination_path"`
-	CleanupSourcePath   string    `json:"cleanup_source_path,omitempty"`
-	BackupPath          string    `json:"backup_path,omitempty"`
-	ArtifactSizeBytes   int64     `json:"artifact_size_bytes"`
-	DigestAlgorithm     string    `json:"digest_algorithm,omitempty"`
-	ConflictDescription string    `json:"conflict_description,omitempty"`
-	UpdatedAt           time.Time `json:"updated_at"`
+	Kind                string               `json:"kind"`
+	Mode                string               `json:"mode"`
+	Stage               string               `json:"stage"`
+	ArtifactPath        string               `json:"artifact_path"`
+	DestinationPath     string               `json:"destination_path"`
+	CleanupSourcePath   string               `json:"cleanup_source_path,omitempty"`
+	CleanupEntries      []CleanupEntryDetail `json:"cleanup_entries,omitempty"`
+	BackupPath          string               `json:"backup_path,omitempty"`
+	ArtifactSizeBytes   int64                `json:"artifact_size_bytes"`
+	DigestAlgorithm     string               `json:"digest_algorithm,omitempty"`
+	ConflictDescription string               `json:"conflict_description,omitempty"`
+	UpdatedAt           time.Time            `json:"updated_at"`
+}
+
+// CleanupEntryDetail identifies package residue the publish journal will
+// remove after publication.
+type CleanupEntryDetail struct {
+	Path      string `json:"path"`
+	SizeBytes int64  `json:"size_bytes"`
 }
 
 type AttemptDetail struct {

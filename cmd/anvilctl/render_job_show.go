@@ -42,6 +42,12 @@ func writeJobShow(out io.Writer, report control.JobShowResponse) error {
 			w.Printf("  Artifact: %s\n", operation.ArtifactPath)
 			w.Printf("  Destination: %s\n", operation.DestinationPath)
 			w.Printf("  Cleanup source: %s\n", textout.OrNone(operation.CleanupSourcePath))
+			if len(operation.CleanupEntries) > 0 {
+				w.Printf("  Cleanup entries:\n")
+				for _, entry := range operation.CleanupEntries {
+					w.Printf("    %s (%d bytes)\n", textout.OrNone(entry.Path), entry.SizeBytes)
+				}
+			}
 			w.Printf("  Backup: %s\n", textout.OrNone(operation.BackupPath))
 			w.Printf("  Artifact size: %d bytes\n", operation.ArtifactSizeBytes)
 			w.Printf("  Digest: %s\n", textout.OrNone(strings.TrimSpace(operation.DigestAlgorithm)))
