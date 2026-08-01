@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+
+	"github.com/bmatcuk/doublestar/v4"
 )
 
 // CleanupBlocker identifies an entry that prevents package residue cleanup.
@@ -20,12 +22,13 @@ type CleanupBlocker struct {
 
 // ResidueCleanupPlan is the conservative cleanup manifest for one download
 // package. Root and Start are resolved paths suitable for the journaled prune
-// operation; Entries is empty when Blockers is non-empty.
+// operation; Entries and Directories are empty when Blockers is non-empty.
 type ResidueCleanupPlan struct {
-	Root     string
-	Start    string
-	Entries  []CleanupEntry
-	Blockers []CleanupBlocker
+	Root        string
+	Start       string
+	Entries     []CleanupEntry
+	Directories []CleanupEntry
+	Blockers    []CleanupBlocker
 }
 
 // PlanResidueCleanup inspects the source file's containing directory as though
@@ -33,6 +36,12 @@ type ResidueCleanupPlan struct {
 // ignorableGlobs, does not follow symlinks, and refuses the entire residue
 // cleanup when any remaining file is not explicitly eligible.
 func PlanResidueCleanup(root string, sourcePath string, ignorableGlobs []string) (ResidueCleanupPlan, error) {
+	for _, pattern := range ignorableGlobs {
+		pattern = strings.TrimSpace(filepath.ToSlash(pattern))
+		if pattern != "" && !doublestar.ValidatePattern(pattern) {
+			return ResidueCleanupPlan{}, fmt.Errorf("invalid download ignorable glob %q", pattern)
+		}
+	}
 	root, start, err := cleanupScopePaths(root, sourcePath)
 	if err != nil {
 		return ResidueCleanupPlan{}, err
@@ -42,8 +51,23 @@ func PlanResidueCleanup(root string, sourcePath string, ignorableGlobs []string)
 	if err := discoverResidueCleanup(&plan, root, start, sourceName, false, ignorableGlobs); err != nil {
 		return ResidueCleanupPlan{}, err
 	}
+	if start != root {
+		identity, err := cleanupDirectoryIdentity(root, start)
+		if err != nil {
+			return ResidueCleanupPlan{}, fmt.Errorf("identify cleanup start %q: %w", start, err)
+		}
+		plan.Directories = append(plan.Directories, CleanupEntry{Path: start, Identity: identity})
+		for dir := filepath.Dir(start); dir != root; dir = filepath.Dir(dir) {
+			identity, err := cleanupDirectoryIdentity(root, dir)
+			if err != nil {
+				return ResidueCleanupPlan{}, fmt.Errorf("identify cleanup ancestor %q: %w", dir, err)
+			}
+			plan.Directories = append(plan.Directories, CleanupEntry{Path: dir, Identity: identity})
+		}
+	}
 	if len(plan.Blockers) > 0 {
 		plan.Entries = nil
+		plan.Directories = nil
 	}
 	return plan, nil
 }
@@ -76,6 +100,9 @@ func cleanupScopePaths(root string, sourcePath string) (string, string, error) {
 	}
 	resolvedRoot = filepath.Clean(resolvedRoot)
 	resolvedStart = filepath.Clean(resolvedStart)
+	if resolvedRoot == string(filepath.Separator) {
+		return "", "", errors.New("refusing to plan cleanup under filesystem root")
+	}
 	if !inside(resolvedRoot, resolvedStart) {
 		return "", "", fmt.Errorf("cleanup source directory %q resolves outside library root %q", filepath.Dir(sourcePath), root)
 	}
@@ -118,6 +145,14 @@ func discoverResidueCleanup(plan *ResidueCleanupPlan, root string, dir string, s
 			if err := discoverResidueCleanup(plan, root, path, sourceName, directoryEligible, patterns); err != nil {
 				return err
 			}
+			identity, err := cleanupDirectoryIdentity(root, path)
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			if err != nil {
+				return fmt.Errorf("identify cleanup directory %q: %w", path, err)
+			}
+			plan.Directories = append(plan.Directories, CleanupEntry{Path: path, Identity: identity})
 		case info.Mode().IsRegular():
 			if !parentEligible && !ignorable(root, path, false, patterns) {
 				plan.Blockers = append(plan.Blockers, CleanupBlocker{Path: path, Reason: "not matched by download ignorable globs"})
@@ -163,6 +198,34 @@ func (m Manager) cleanupEntries(ctx context.Context, op *PublishOperation) error
 	return nil
 }
 
+func (m Manager) cleanupDirectories(ctx context.Context, op *PublishOperation) error {
+	for _, entry := range op.CleanupDirectories {
+		if err := validCleanupDirectoryPath(op.PruneRoot, entry.Path); err != nil {
+			return m.conflict(ctx, op, fmt.Sprintf("cleanup directory path is unsafe: %v", err))
+		}
+		identity, err := cleanupDirectoryIdentity(op.PruneRoot, entry.Path)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return m.conflict(ctx, op, fmt.Sprintf("cleanup directory changed: %v", err))
+		}
+		if identity.Device == 0 || identity.Inode == 0 || identity.Device != entry.Identity.Device || identity.Inode != entry.Identity.Inode {
+			return m.conflict(ctx, op, fmt.Sprintf("cleanup directory identity changed: %q", entry.Path))
+		}
+		if err := os.Remove(entry.Path); err != nil {
+			if errors.Is(err, os.ErrNotExist) || errors.Is(err, syscall.ENOTEMPTY) || errors.Is(err, syscall.EEXIST) {
+				continue
+			}
+			return fmt.Errorf("remove journaled cleanup directory %q: %w", entry.Path, err)
+		}
+		if err := syncDir(filepath.Dir(entry.Path)); err != nil {
+			return fmt.Errorf("sync cleanup directory parent %q: %w", filepath.Dir(entry.Path), err)
+		}
+	}
+	return nil
+}
+
 func validCleanupEntryPath(scope string, path string) error {
 	scope = filepath.Clean(scope)
 	path = filepath.Clean(path)
@@ -171,6 +234,18 @@ func validCleanupEntryPath(scope string, path string) error {
 	}
 	if path == scope || !inside(scope, path) {
 		return fmt.Errorf("entry %q is outside cleanup scope %q", path, scope)
+	}
+	return nil
+}
+
+func validCleanupDirectoryPath(root string, path string) error {
+	root = filepath.Clean(root)
+	path = filepath.Clean(path)
+	if !filepath.IsAbs(root) || !filepath.IsAbs(path) {
+		return errors.New("cleanup root and directory path must be absolute")
+	}
+	if path == root || !inside(root, path) {
+		return fmt.Errorf("directory %q is outside cleanup root %q", path, root)
 	}
 	return nil
 }
@@ -210,6 +285,27 @@ func cleanupEntryIdentity(root string, scope string, path string) (FileIdentity,
 		return fileIdentity(info), nil
 	}
 	return FileIdentity{}, fmt.Errorf("cleanup entry %q has no path components", path)
+}
+
+func cleanupDirectoryIdentity(root string, path string) (FileIdentity, error) {
+	if err := validCleanupDirectoryPath(root, path); err != nil {
+		return FileIdentity{}, err
+	}
+	exists, err := cleanupDirectory(root, path)
+	if err != nil {
+		return FileIdentity{}, err
+	}
+	if !exists {
+		return FileIdentity{}, os.ErrNotExist
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		return FileIdentity{}, err
+	}
+	if !info.IsDir() {
+		return FileIdentity{}, fmt.Errorf("cleanup directory %q is not a directory", path)
+	}
+	return fileIdentity(info), nil
 }
 
 func fileIdentity(info os.FileInfo) FileIdentity {
@@ -259,113 +355,4 @@ func cleanupDirectory(root string, path string) (bool, error) {
 		}
 	}
 	return true, nil
-}
-
-func pruneEmptyDirectories(root string, start string) error {
-	root, start, err := pruneCleanupPaths(root, start)
-	if err != nil {
-		return err
-	}
-	removed, err := pruneEmptyDirectoryTree(root, start)
-	if err != nil {
-		return err
-	}
-	if !removed {
-		return nil
-	}
-	for dir := filepath.Dir(start); dir != root; dir = filepath.Dir(dir) {
-		removed, err := removeEmptyCleanupDirectory(root, dir)
-		if err != nil {
-			return err
-		}
-		if !removed {
-			return nil
-		}
-	}
-	return nil
-}
-
-func pruneEmptyDirectoryTree(root string, dir string) (bool, error) {
-	exists, err := cleanupDirectory(root, dir)
-	if err != nil {
-		return false, fmt.Errorf("inspect cleanup directory %q: %w", dir, err)
-	}
-	if !exists {
-		return true, nil
-	}
-	entries, err := os.ReadDir(dir)
-	if errors.Is(err, os.ErrNotExist) {
-		return true, nil
-	}
-	if err != nil {
-		return false, fmt.Errorf("read cleanup directory %q: %w", dir, err)
-	}
-	for _, entry := range entries {
-		path := filepath.Join(dir, entry.Name())
-		info, err := os.Lstat(path)
-		if errors.Is(err, os.ErrNotExist) {
-			continue
-		}
-		if err != nil {
-			return false, fmt.Errorf("inspect cleanup directory entry %q: %w", path, err)
-		}
-		if !info.IsDir() {
-			continue
-		}
-		if _, err := pruneEmptyDirectoryTree(root, path); err != nil {
-			return false, err
-		}
-	}
-	return removeEmptyCleanupDirectory(root, dir)
-}
-
-func removeEmptyCleanupDirectory(root string, dir string) (bool, error) {
-	exists, err := cleanupDirectory(root, dir)
-	if err != nil {
-		return false, fmt.Errorf("inspect cleanup directory %q: %w", dir, err)
-	}
-	if !exists {
-		return true, nil
-	}
-	if err := os.Remove(dir); err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return true, nil
-		}
-		if errors.Is(err, syscall.ENOTEMPTY) || errors.Is(err, syscall.EEXIST) {
-			return false, nil
-		}
-		return false, fmt.Errorf("remove empty cleanup directory %q: %w", dir, err)
-	}
-	if err := syncDir(filepath.Dir(dir)); err != nil {
-		return false, fmt.Errorf("sync cleanup directory parent %q: %w", filepath.Dir(dir), err)
-	}
-	return true, nil
-}
-
-func pruneCleanupPaths(root string, start string) (string, string, error) {
-	root = strings.TrimSpace(root)
-	start = strings.TrimSpace(start)
-	if root == "" || start == "" {
-		return "", "", errors.New("cleanup root and start are required")
-	}
-	rootPath, err := filepath.Abs(root)
-	if err != nil {
-		return "", "", fmt.Errorf("resolve cleanup root %q: %w", root, err)
-	}
-	startPath, err := filepath.Abs(start)
-	if err != nil {
-		return "", "", fmt.Errorf("resolve cleanup start %q: %w", start, err)
-	}
-	if !inside(rootPath, startPath) {
-		return "", "", fmt.Errorf("cleanup start %q is outside root %q", start, root)
-	}
-	resolvedRoot, err := filepath.EvalSymlinks(rootPath)
-	if err != nil {
-		return "", "", fmt.Errorf("resolve cleanup root %q: %w", root, err)
-	}
-	rel, err := filepath.Rel(rootPath, startPath)
-	if err != nil {
-		return "", "", fmt.Errorf("resolve cleanup start %q: %w", start, err)
-	}
-	return filepath.Clean(resolvedRoot), filepath.Join(filepath.Clean(resolvedRoot), rel), nil
 }

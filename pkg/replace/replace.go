@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 
@@ -231,7 +232,7 @@ func ignorable(root string, path string, isDir bool, patterns []string) bool {
 		if pattern == "" {
 			continue
 		}
-		if pathMatches(pattern, rel) {
+		if pathOrBaseMatches(pattern, rel) {
 			return true
 		}
 		if isDir {
@@ -247,6 +248,13 @@ func ignorable(root string, path string, isDir bool, patterns []string) bool {
 		}
 	}
 	return false
+}
+
+func pathOrBaseMatches(pattern string, rel string) bool {
+	if pathMatches(pattern, rel) {
+		return true
+	}
+	return !strings.Contains(pattern, "/") && pathMatches(pattern, path.Base(strings.TrimSuffix(rel, "/")))
 }
 
 func pathMatches(pattern string, rel string) bool {
