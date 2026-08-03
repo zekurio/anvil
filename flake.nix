@@ -34,7 +34,7 @@
         { pkgs, ... }:
         let
           version = "0.1.0";
-          vendorHash = "sha256-0j1IhNahvM035aJzfog14r2RVWS7i1LQb/1MQ9/tIog=";
+          vendorHash = "sha256-2t1fWqyDaO+AjQi0gRDxXGUbVfDMj+BimCXRi2GTSMQ=";
           ldflags = [
             "-s"
             "-w"
