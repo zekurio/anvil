@@ -278,6 +278,27 @@ let
     ) cfg.libraries
   );
 
+  profileAssertions = lib.flatten (
+    lib.mapAttrsToList (
+      name: profile:
+      let
+        # Go defaults an unset metric to vmaf, so a null base metric is vmaf
+        # for the override comparison below.
+        baseMetric = if profile.video.metric == null then "vmaf" else profile.video.metric;
+      in
+      [
+        {
+          assertion = profile.video.metric != "xpsnr" || profile.video.target != null;
+          message = "services.anvil.profiles.${name}.video.target must be set when video.metric is \"xpsnr\" (typical targets are 35-50).";
+        }
+      ]
+      ++ lib.mapAttrsToList (overrideName: override: {
+        assertion = override.metric == null || override.metric == baseMetric || override.target != null;
+        message = "services.anvil.profiles.${name}.video.overrides.${overrideName}.metric changes the quality metric, so its target must be set too.";
+      }) profile.video.overrides
+    ) cfg.profiles
+  );
+
   arrModule = types.submodule {
     options = {
       type = mkOption {
@@ -365,7 +386,7 @@ let
       target = mkOption {
         type = types.nullOr types.number;
         default = null;
-        description = "Quality target for this source condition. Null inherits the base target.";
+        description = "Quality target for this source condition. Null inherits the base target; required when this override switches the metric.";
       };
       minSavingsPercent = mkOption {
         type = types.nullOr types.number;
@@ -459,7 +480,7 @@ let
         target = mkOption {
           type = types.nullOr types.number;
           default = null;
-          description = "Quality target. VMAF uses 0-100; typical XPSNR targets are 35-50. Null defers to Anvil's default.";
+          description = "Quality target. VMAF uses 0-100; typical XPSNR targets are 35-50. Null defers to Anvil's VMAF default (95); a target is required when metric is \"xpsnr\".";
         };
         minSavingsPercent = mkOption {
           type = types.nullOr types.number;
@@ -1031,7 +1052,7 @@ in
         assertion = !cfg.createGroup || cfg.group != null;
         message = "services.anvil.createGroup requires services.anvil.group to name the group to create.";
       }
-    ] ++ arrAssertions ++ libraryAssertions;
+    ] ++ arrAssertions ++ libraryAssertions ++ profileAssertions;
 
     environment.etc."anvil/anvil.toml".source = cfg.configFile;
     environment.systemPackages = optional cfg.controlClient.install controlClientPackage;
