@@ -76,7 +76,7 @@ anvilctl version                                 client, daemon, and protocol ve
 anvilctl jobs [SELECTORS]                        list jobs
 anvilctl show JOB                                show one job
 anvilctl cancel [JOB...] [SELECTORS]             cancel jobs
-anvilctl retry [JOB...] | --failed [--library N] requeue failed jobs
+anvilctl retry [JOB...] [--failed [--library N]] requeue failed jobs
 anvilctl prune [--library N] [--state S,...] [--apply]
 anvilctl recover
 anvilctl scan [LIBRARY]

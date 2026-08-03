@@ -68,8 +68,9 @@ var frameMagic = [4]byte{'A', 'N', 'V', 'L'}
 // as opposed to one speaking an incompatible version of it.
 var ErrMalformedFrame = errors.New("control socket peer did not send an Anvil control frame")
 
-// Command names one daemon operation. Names are noun.verb so the client command
-// tree and the protocol stay recognizably the same surface.
+// Command names one daemon operation. Names are noun.verb to group operations
+// by the resource they touch; they are private wire identifiers and stay
+// stable regardless of how anvilctl spells its commands.
 type Command string
 
 const (

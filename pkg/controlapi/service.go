@@ -262,7 +262,7 @@ func (s Service) attachStreamSelections(ctx context.Context, jobs []control.JobR
 	return nil
 }
 
-// CancelJobs cancels every job the equivalent job list would return. It
+// CancelJobs cancels every job the equivalent jobs listing would return. It
 // requires an explicit selector, and is idempotent for already terminal jobs.
 func (s Service) CancelJobs(ctx context.Context, request control.JobCancelRequest) (control.JobCancelResponse, error) {
 	if err := s.requireStore(); err != nil {

@@ -230,7 +230,7 @@ func CleanRelativePath(value string) (string, error) {
 }
 
 // JobCancelRequest reuses the JobQuery selector vocabulary so a cancel can
-// never target a broader set than the equivalent job list. IDs narrow the
+// never target a broader set than the equivalent jobs listing. IDs narrow the
 // selection further; they never widen it.
 type JobCancelRequest struct {
 	Library      string   `json:"library,omitempty"`
