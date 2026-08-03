@@ -68,37 +68,40 @@ restart.
 
 ```
 anvilctl status                                  daemon state, workers, queue counts
-anvilctl job list|show|cancel|retry|prune|recover
-anvilctl library scan|stats
-anvilctl occurrence force --library NAME PATH
-anvilctl staging cleanup
-anvilctl store backup DESTINATION
+anvilctl version                                 client, daemon, and protocol versions
+anvilctl jobs [SELECTORS]                        list jobs
+anvilctl show JOB                                show one job
+anvilctl cancel [JOB...] [SELECTORS]             cancel jobs
+anvilctl retry [JOB...] | --failed [--library N] requeue failed jobs
+anvilctl prune [--library N] [--state S,...] [--apply]
+anvilctl recover
+anvilctl scan [LIBRARY]
+anvilctl stats [LIBRARY]
+anvilctl requeue --library NAME PATH
+anvilctl staging cleanup [--older-than D] [--dry-run]
+anvilctl backup DESTINATION
+anvilctl help [COMMAND]
 ```
 
-Jobs are addressed by numeric id or slug. `--json` works globally and per
-command. Exit status is `0` success, `1` command failed, `2` usage error, `3`
+Jobs are addressed by numeric id or slug. `--json` (or `-j`) works globally
+and per command. Exit status is `0` success, `1` command failed, `2` usage error, `3`
 daemon unreachable or protocol mismatch, `4` not found. `--socket` or
 `ANVIL_CONTROL_SOCKET` overrides the default `/run/anvil/anvild.sock`.
 
 ```sh
-anvilctl job list --state pending,failed --json
-anvilctl job list --absolute-path '/mnt/media/converted/Release/Episode.mkv'
-anvilctl job cancel --library usenet-tv --state pending,running
-anvilctl job retry --failed --library movies
-anvilctl job prune --library movies --state complete,failed,canceled --apply
+anvilctl jobs --state pending,failed --json
+anvilctl jobs --absolute-path '/mnt/media/converted/Release/Episode.mkv'
+anvilctl cancel --library usenet-tv --state pending,running
+anvilctl retry --failed --library movies
+anvilctl prune --library movies --state complete,failed,canceled --apply
 anvilctl staging cleanup --older-than 24h --dry-run
-anvilctl store backup /srv/backups/anvil-$(date +%F).db
+anvilctl backup /srv/backups/anvil-$(date +%F).db
 ```
 
-`job cancel` requires a narrowing selector, and refuses a job whose publish is
+`cancel` requires a narrowing selector, and refuses a job whose publish is
 already journaled — only the daemon can finish that destination safely. Job
 pruning and staging cleanup likewise skip anything active or holding an
 unresolved publish journal, and report it under `protected_jobs`.
-
-The old `anvild` subcommands (`scan`, `jobs`, `stats`, `inspect`, `retry`,
-`recover`, `cleanup-staging`, `backup`, `prune-jobs`, `force-occurrence`) still
-work as `anvilctl` aliases and no longer take `--config`: they act on the
-configuration the daemon actually accepted.
 
 ### Development
 

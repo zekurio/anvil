@@ -231,7 +231,7 @@ func writeLibraryStats(out io.Writer, response control.LibraryStatsResponse) err
 	})
 }
 
-func writeForcedOccurrence(out io.Writer, response control.ForceOccurrenceResponse) error {
+func writeRequeuedOccurrence(out io.Writer, response control.ForceOccurrenceResponse) error {
 	return textout.Write(out, func(w *textout.Writer) {
 		w.Printf("library=%s path=%s source_id=%d source_generation=%d asset_id=%d asset_generation=%d job=%s id=%d state=%s\n",
 			response.Library, response.Path,
