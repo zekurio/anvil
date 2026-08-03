@@ -44,16 +44,16 @@ const (
 // who types the old form is told exactly what to run, instead of getting
 // "unknown command" or, far worse, a second writer on a live database.
 var movedCommands = map[string]string{
-	"scan":             "anvilctl library scan [--library NAME]",
-	"jobs":             "anvilctl job list [--library NAME] [--state STATE,...]",
-	"stats":            "anvilctl library stats [--library NAME]",
-	"inspect":          "anvilctl job show JOB_ID_OR_SLUG",
-	"retry":            "anvilctl job retry JOB_ID_OR_SLUG... | anvilctl job retry --failed",
-	"recover":          "anvilctl job recover",
+	"scan":             "anvilctl scan [LIBRARY]",
+	"jobs":             "anvilctl jobs [--library NAME] [--state STATE,...]",
+	"stats":            "anvilctl stats [LIBRARY]",
+	"inspect":          "anvilctl show JOB_ID_OR_SLUG",
+	"retry":            "anvilctl retry JOB_ID_OR_SLUG... | anvilctl retry --failed",
+	"recover":          "anvilctl recover",
 	"cleanup-staging":  "anvilctl staging cleanup [--older-than DURATION] [--dry-run]",
-	"backup":           "anvilctl store backup DESTINATION",
-	"prune-jobs":       "anvilctl job prune [--library NAME] [--state STATE,...] [--apply]",
-	"force-occurrence": "anvilctl occurrence force --library NAME RELATIVE_PATH",
+	"backup":           "anvilctl backup DESTINATION",
+	"prune-jobs":       "anvilctl prune [--library NAME] [--state STATE,...] [--apply]",
+	"force-occurrence": "anvilctl requeue --library NAME RELATIVE_PATH",
 }
 
 var activeLogLevel slog.LevelVar
@@ -68,6 +68,7 @@ type options struct {
 	libraryName     string
 	preflightLimit  int
 	jsonOutput      bool
+	showConfig      bool
 }
 
 type runtimeConfig struct {
@@ -147,6 +148,10 @@ func movedCommandError(command string, replacement string) error {
 
 func parseOptions(args []string) (options, error) {
 	opts := options{command: commandRun}
+	if len(args) == 1 && (args[0] == "-h" || args[0] == "--help") {
+		opts.command = commandHelp
+		return opts, nil
+	}
 
 	globals := flag.NewFlagSet("anvild", flag.ContinueOnError)
 	globals.SetOutput(os.Stderr)
@@ -186,6 +191,7 @@ func parseCommandOptions(opts options, args []string) (options, error) {
 		flags.BoolVar(&opts.daemonMode, "daemon", opts.daemonMode, "run in daemon mode")
 		addShutdownFlags(flags, &opts)
 	case commandCheckConfig:
+		flags.BoolVar(&opts.showConfig, "show", false, "write the effective config as TOML")
 	case commandPreflight:
 		flags.StringVar(&opts.libraryName, "library", "", "preflight one configured library")
 		flags.IntVar(&opts.preflightLimit, "limit", 0, "maximum candidates to show; 0 means no limit")
@@ -403,11 +409,6 @@ func waitForShutdown(done <-chan struct{}, signals <-chan os.Signal, timeout tim
 			timeoutC = nil
 		}
 	}
-}
-
-func runCheckConfig(cfg config.Config, opts options) error {
-	slog.Info("config ok", "config", configPathLabel(opts.configPath), "libraries", len(cfg.Libraries), "flows", len(cfg.Flows), "profiles", len(cfg.Profiles), "control_socket", cfg.Daemon.ControlSocket, "log_level", cfg.Daemon.LogLevel)
-	return nil
 }
 
 func openStore(ctx context.Context, cfg config.Config) (*store.SQLiteStore, error) {
@@ -699,7 +700,7 @@ func writeUsage(out io.Writer) error {
 		w.Println(`Usage:
   anvild [--config PATH] [--daemon] [--shutdown-policy drain|cancel] [--shutdown-timeout DURATION]
   anvild run [--config PATH] [--daemon] [--shutdown-policy drain|cancel] [--shutdown-timeout DURATION]
-  anvild check-config [--config PATH]
+  anvild check-config [--config PATH] [--show]
   anvild preflight [--config PATH] [--library NAME] [--limit N] [--json]
 
 anvild is the service binary: it owns the config it is running, the SQLite
@@ -709,11 +710,19 @@ both are local, read-only, and useful before a daemon exists.
 Every live operation is asked of the running daemon with anvilctl:
 
   anvilctl status
-  anvilctl job list|show|cancel|retry|prune|recover
-  anvilctl library scan|stats
-  anvilctl occurrence force --library NAME RELATIVE_PATH
-  anvilctl staging cleanup
-  anvilctl store backup DESTINATION
+  anvilctl version
+  anvilctl jobs
+  anvilctl show JOB_ID_OR_SLUG
+  anvilctl cancel [JOB_ID_OR_SLUG...]
+  anvilctl retry JOB_ID_OR_SLUG... | anvilctl retry --failed
+  anvilctl prune [--library NAME] [--state STATE,...] [--apply]
+  anvilctl recover
+  anvilctl scan [LIBRARY]
+  anvilctl stats [LIBRARY]
+  anvilctl requeue --library NAME RELATIVE_PATH
+  anvilctl staging cleanup [--older-than DURATION] [--dry-run]
+  anvilctl backup DESTINATION
+  anvilctl help [COMMAND]
 
 Legacy --check-config is still accepted.`)
 	})

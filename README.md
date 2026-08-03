@@ -49,15 +49,19 @@ the control socket from `RuntimeDirectory`, and adds Jellyfin ffmpeg, `ab-av1`,
 having `anvilctl` installed — is what grants operator access.
 
 Without Nix, install `ffmpeg`/`ffprobe`, `ab-av1`, `dovi_tool`, and MKVToolNix,
-then run `anvild --config /etc/anvil/anvil.toml`. See
-[`examples/anvil.toml`](examples/anvil.toml) for the full reference config:
-`[daemon]`, `[flows.*]`, `[profiles.*]`, `[arrs.*]`, and `[libraries.*]` for
-media and download libraries. Validate a config before starting anything:
+then run `anvild --config /etc/anvil/anvil.toml`.
+[`examples/anvil.toml`](examples/anvil.toml) is the minimal quick-start;
+[`examples/anvil-reference.toml`](examples/anvil-reference.toml) documents every
+setting, including daemon, flows, profiles, Arrs, and media and download
+libraries. Validate a config before starting anything:
 
 ```sh
 anvild check-config --config examples/anvil.toml
 anvild preflight --config examples/anvil.toml --library movies --limit 20
 ```
+
+`anvild check-config --config PATH --show` prints the effective config with
+defaults applied and secrets redacted.
 
 Both are local and read-only; every command that touches live state lives in
 `anvilctl`. `SIGHUP` reloads libraries, flows, profiles, and most daemon
