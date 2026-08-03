@@ -84,10 +84,9 @@ func isMovedDolbyVisionField(field string) bool {
 }
 
 func qualityTargetMigrationHint(keys []toml.Key) string {
-	legacyKey := "target_" + "vmaf"
 	for _, key := range keys {
-		if len(key) >= 4 && key[0] == "profiles" && key[2] == "video" && key[len(key)-1] == legacyKey {
-			return legacyKey + " was replaced by metric and target; use metric = \"vmaf\" and target = 95"
+		if len(key) >= 4 && key[0] == "profiles" && key[2] == "video" && key[len(key)-1] == "target_vmaf" {
+			return "target_vmaf was replaced by metric and target; use metric = \"vmaf\" and target = 95"
 		}
 	}
 	return ""
