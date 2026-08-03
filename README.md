@@ -1,9 +1,12 @@
 # Anvil
 
-A Linux-first daemon that keeps media libraries encoded in AV1. Anvil scans
-configured libraries, delegates quality search to `ab-av1 crf-search`, owns the
-final `ffmpeg` command, and publishes results by replacing the source in place
-or handing off finished downloads to an import directory.
+A Linux-only daemon that keeps media libraries encoded in AV1. Anvil relies on
+Linux inotify, `flock`, Unix-domain sockets, and POSIX process groups for safe
+filesystem monitoring, singleton ownership, operator control, and process-tree
+cancellation. It scans configured libraries, delegates quality search to
+`ab-av1 crf-search`, owns the final `ffmpeg` command, and publishes results by
+replacing the source in place or handing off finished downloads to an import
+directory.
 
 `anvild` is the service; `anvilctl` is the operator client, the way `systemctl`
 is for systemd. It opens no database and runs no media tools — it asks the
@@ -109,7 +112,8 @@ unresolved publish journal, and report it under `protected_jobs`.
 
 ### Development
 
-With [Nix](https://nixos.org/) and [direnv](https://direnv.net/) (provides Go,
+Linux is required for development and deployment. With
+[Nix](https://nixos.org/) and [direnv](https://direnv.net/) (provides Go,
 `golangci-lint`, `gopls`, ffmpeg, `ab-av1`, `dovi-tool`, MKVToolNix, and
 SQLite):
 
