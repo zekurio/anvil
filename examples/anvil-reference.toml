@@ -1,0 +1,158 @@
+# Complete Anvil configuration reference. Copy only the settings your deployment needs.
+# Names after flows, profiles, arrs, and libraries are your own non-empty names.
+
+[daemon]
+temp_dir = "/var/lib/anvil/tmp" # Work and staging directory; default is the OS temp directory plus /anvil; any non-empty path.
+store_path = "/var/lib/anvil/anvil.db" # SQLite state path; default is temp_dir/anvil.db; any non-empty path.
+control_socket = "/run/anvil/anvild.sock" # Daemon Unix socket; default is temp_dir/anvild.sock; must be absolute.
+worker_count = 2 # Simultaneous jobs; default is the CPU count; integer >= 1.
+total_threads = 8 # Shared encode-thread budget; default is the CPU count; integer >= 0.
+max_attempts = 3 # Retries before a job stays failed; default 3; integer >= 1.
+scan_interval = "30m" # Full-library scan cadence; default "30m"; duration > 0.
+filesystem_event_debounce = "2s" # Coalesce filesystem events before scanning; default "2s"; duration >= 0.
+scheduler_interval = "5s" # Queue planning cadence; default "5s"; duration > 0.
+lease_duration = "30m" # Time before an abandoned job lease is recoverable; default "30m"; duration > 0.
+shutdown_policy = "drain" # Let active jobs finish or cancel them; default "drain"; "drain" or "cancel".
+shutdown_timeout = "0s" # Force cancellation after this graceful wait; default "0s" means wait indefinitely; duration >= 0.
+staging_cleanup_age = "0s" # Remove abandoned staging only when wanted; default "0s" disables it; duration >= 0.
+log_level = "info" # Keep logs useful without excessive detail; default "info"; "debug", "info", "warn", or "error".
+
+# Media libraries replace in place, so their flow ends in replace.
+[flows.av1-crf-search]
+steps = ["probe", "crop-detect", "audio-cleanup", "subtitle-cleanup", "stage", "crf-search", "encode", "dovi-fix", "track-stats", "validate", "replace", "cleanup"] # Default media flow; non-empty ordered pipeline block names.
+
+# Download libraries must hand off rather than replace their downloader-owned source.
+[flows.download-av1-handoff]
+steps = ["probe", "crop-detect", "audio-cleanup", "subtitle-cleanup", "stage", "crf-search", "encode", "dovi-fix", "track-stats", "validate", "handoff", "cleanup"] # Default download flow; non-empty ordered pipeline block names.
+
+[profiles.default-av1]
+container = "mkv" # Output container; default "mkv"; only "mkv".
+
+[profiles.default-av1.video]
+codec = "av1" # Output video codec; default "av1"; "av1", "hevc"/"h265", or "h264"/"avc".
+accelerator = "software" # Encoder backend; default "software"; "software", "qsv", "vaapi", or "amf".
+preset = "6" # Trade speed for compression to match the selected encoder; default "6"; any encoder-supported string.
+bit_depth = 10 # Preserve more tonal detail when the encoder supports it; default 10; 8 or 10.
+crf_min = 18 # Lowest search CRF; default 18; integer >= 0 and no greater than crf_max.
+crf_max = 40 # Highest search CRF; default 40; integer >= 0 and no lower than crf_min.
+metric = "vmaf" # Quality metric passed to ab-av1; default "vmaf"; "vmaf" or "xpsnr".
+target = 95.0 # Minimum score for metric; default 95; number from 0 through 100 (typical XPSNR target: 35-50).
+min_savings_percent = 20 # Skip a result that saves too little space; default 20; number from 0 through 100.
+force_encode_on_no_fit = false # Encode at the lowest observed CRF instead of preserving video when search finds no fit; default false; boolean.
+skip_encode = false # Copy video instead of searching and encoding when policy requires it; default false; boolean.
+ffmpeg_args = [] # Extra ffmpeg arguments appended to Anvil's command; default []; any argument strings.
+ab_av1_args = [] # Extra ab-av1 arguments appended to the search command; default []; any argument strings.
+
+[profiles.default-av1.video.dolby_vision]
+mode = "auto" # Preserve, disable, or require Dolby Vision handling; default "auto"; "auto", "off", or "require".
+remove_hdr10plus = false # Strip HDR10+ metadata when it conflicts with the chosen Dolby Vision policy; default false; boolean.
+
+# These names match a canonical source codec family, or the reserved dolby_vision key.
+# Each field is optional here: omit it to inherit video settings; argument lists append.
+[profiles.default-av1.video.overrides.hevc]
+codec = "av1" # Override output codec for HEVC sources; default inherits; "av1", "hevc"/"h265", or "h264"/"avc".
+accelerator = "software" # Override encoder backend for HEVC sources; default inherits; "software", "qsv", "vaapi", or "amf".
+preset = "6" # Override encoder preset for HEVC sources; default inherits; any encoder-supported string.
+bit_depth = 10 # Override output bit depth for HEVC sources; default inherits; 8 or 10.
+crf_min = 18 # Override lowest CRF for HEVC sources; default inherits; integer >= 0 and <= effective crf_max.
+crf_max = 40 # Override highest CRF for HEVC sources; default inherits; integer >= 0 and >= effective crf_min.
+metric = "vmaf" # Override search metric for HEVC sources; default inherits; "vmaf" or "xpsnr".
+target = 96.0 # Override the metric target for HEVC sources; default inherits; number from 0 through 100.
+min_savings_percent = 40 # Demand more savings from HEVC sources; default inherits; number from 0 through 100.
+force_encode_on_no_fit = false # Override no-fit behavior for HEVC sources; default inherits; boolean.
+skip_encode = false # Copy HEVC video instead of encoding only when explicitly needed; default inherits; boolean.
+ffmpeg_args = [] # Append source-specific ffmpeg arguments; default []; any argument strings.
+ab_av1_args = [] # Append source-specific ab-av1 arguments; default []; any argument strings.
+
+[profiles.default-av1.video.overrides.dolby_vision]
+codec = "hevc" # Use a Dolby Vision-capable output codec; default inherits; "av1", "hevc"/"h265", or "h264"/"avc".
+accelerator = "qsv" # Select a Dolby Vision encoder backend; default inherits; "software", "qsv", "vaapi", or "amf".
+preset = "medium" # Override the Dolby Vision encoder preset; default inherits; any encoder-supported string.
+bit_depth = 10 # Override Dolby Vision output depth; default inherits; 8 or 10.
+crf_min = 18 # Override Dolby Vision minimum CRF; default inherits; integer >= 0 and <= effective crf_max.
+crf_max = 40 # Override Dolby Vision maximum CRF; default inherits; integer >= 0 and >= effective crf_min.
+metric = "vmaf" # Override Dolby Vision search metric; default inherits; "vmaf" or "xpsnr".
+target = 95.0 # Override the Dolby Vision metric target; default inherits; number from 0 through 100.
+min_savings_percent = 20 # Override Dolby Vision required savings; default inherits; number from 0 through 100.
+force_encode_on_no_fit = false # Override Dolby Vision no-fit behavior; default inherits; boolean.
+skip_encode = false # Copy Dolby Vision video instead of encoding only when explicitly needed; default inherits; boolean.
+ffmpeg_args = ["-global_quality", "24"] # Append Dolby Vision ffmpeg arguments; default []; any argument strings.
+ab_av1_args = ["--enc", "low_power=1"] # Append Dolby Vision ab-av1 arguments; default []; any argument strings.
+
+[profiles.default-av1.audio]
+languages_to_keep = ["orig", "deu"] # Retain original language plus chosen tags; default []; language tags and "orig".
+keep_commentary = false # Drop commentary unless it matters to your library; default false; boolean.
+fallback = "keep_first" # Keep something when no requested audio matches; default "keep_all"; "keep_all", "keep_first", or "fail_job".
+unknown_as_original = true # Treat unlabeled streams as original when metadata supplies one; default false; boolean.
+
+[profiles.default-av1.subtitles]
+languages_to_keep = ["orig", "deu"] # Retain original language plus chosen tags; default []; language tags and "orig".
+keep_forced = true # Retain forced subtitles even when filtering; default false; boolean.
+keep_sdh = false # Drop SDH subtitles unless accessibility policy needs them; default false; boolean.
+keep_commentary = false # Drop commentary subtitles unless wanted; default false; boolean.
+fallback = "keep_all" # Keep something when no requested subtitle matches; default "keep_all"; "keep_all", "keep_first", or "fail_job".
+unknown_as_original = true # Treat unlabeled subtitles as original when metadata supplies one; default false; boolean.
+
+[profiles.default-av1.validation]
+duration_tolerance_seconds = 2 # Flag duration drift beyond this tolerance without failing the job; default 0; number >= 0.
+
+[profiles.default-av1.metadata]
+mode = "preserve" # Preserve or strip container metadata; default "preserve"; "preserve" or "strip".
+track_titles = "strip" # Preserve, clear, or standardize stream titles; default "strip"; "preserve", "strip", or "standardize".
+
+[profiles.default-av1.attachments]
+mode = "preserve" # Preserve or strip attachments such as fonts; default "preserve"; "preserve" or "strip".
+track_titles = "" # Accepted for the shared metadata shape but currently unused for attachments; default ""; any string.
+
+[profiles.default-av1.chapters]
+mode = "preserve" # Preserve or strip chapters; default "preserve"; "preserve" or "strip".
+track_titles = "" # Accepted for the shared metadata shape but currently unused for chapters; default ""; any string.
+
+[arrs.movies]
+type = "radarr" # Metadata provider kind; no default; "radarr" or "sonarr".
+base_url = "http://radarr:7878" # Provider URL used for original-language lookup; no default; non-empty URL string.
+api_key_file = "/run/secrets/radarr-api-key" # Preferred secret-file credential; default ""; set this or api_key to a non-empty path.
+
+[arrs.tv]
+type = "sonarr" # Metadata provider kind; no default; "radarr" or "sonarr".
+base_url = "http://sonarr:8989" # Provider URL used for original-language lookup; no default; non-empty URL string.
+api_key = "replace-with-a-secret" # Literal credential (redacted by --show); default ""; set this or api_key_file to a non-empty value.
+
+[libraries.movies]
+kind = "media" # Replace media in place or process downloader output; default "media"; "media" or "download".
+path = "/srv/media/movies" # Root scanned for source files; no default; non-empty path.
+flow = "av1-crf-search" # Named flow for this library; default "av1-crf-search" for media; existing flow name.
+profile = "default-av1" # Named encoding policy; default "default-av1"; existing profile name.
+scan_interval = "1h" # Override daemon scan cadence for this library; default "" uses daemon.scan_interval; duration > 0 when set.
+priority = 0 # Prefer higher-priority libraries when work competes; default 0; integer.
+include = ["*.mkv", "*.mp4"] # Limit candidates to matching paths; default [] matches all; doublestar glob patterns.
+exclude = ["**/.staging/**"] # Skip paths before candidate discovery; default []; doublestar glob patterns.
+ignore_regex = ["(?i)/sample/"] # Record matching media as ignored; default []; valid Go regular expressions.
+concurrency_limit = 0 # Cap active jobs from this library; default 0 means no per-library cap; integer >= 0.
+arr = "movies" # Use this Arr instance for metadata; default "" disables lookup; existing arr name.
+
+[libraries.movies.media]
+replacement_mode = "replace" # Replace source files or publish a copy beside them; default "replace"; "replace" or "copy".
+
+[libraries.downloads]
+kind = "download" # Use downloader-safe handoff semantics; default "media"; "media" or "download".
+path = "/srv/downloads/complete/tv" # Root scanned for stable completed downloads; no default; non-empty path.
+flow = "download-av1-handoff" # Named flow must contain handoff and not replace; default "download-av1-handoff" for downloads; existing flow name.
+profile = "default-av1" # Named encoding policy; default "default-av1"; existing profile name.
+scan_interval = "5m" # Check completed downloads more often when needed; default "" uses daemon.scan_interval; duration > 0 when set.
+priority = 10 # Prefer completed downloads over lower-priority libraries; default 0; integer.
+include = ["*.mkv", "*.mp4"] # Limit candidates to matching paths; default [] matches all; doublestar glob patterns.
+exclude = ["**/sample*/**", "**/*sample*"] # Skip known unwanted release content; default []; doublestar glob patterns.
+ignore_regex = [] # Record matching media as ignored; default []; valid Go regular expressions.
+concurrency_limit = 1 # Cap simultaneous jobs for this library; default 0 means no cap; integer >= 0.
+arr = "tv" # Use this Arr instance for metadata; default "" disables lookup; existing arr name.
+
+[libraries.downloads.download]
+handoff_path = "/srv/imports/tv" # Destination watched by the importer; no default; non-empty path for download libraries.
+stable_for = "5m" # Wait for files to stop changing before encoding; default "5m"; duration >= 0.
+package_mode = "auto" # Treat a download as a file or directory; default "auto"; "auto", "directory", or "file".
+handoff_mode = "move" # Copy for safety or move when the downloader no longer needs it; default "copy"; "move" or "copy".
+preserve_relative_path = true # Keep the package-relative directory structure below handoff_path; default false; boolean.
+cleanup_source_media = true # Delete source media only after a successful handoff; default false; boolean.
+prune_empty_dirs = true # Remove empty release directories only with source cleanup; default false; boolean.
+ignorable_globs = ["**/samples/**", "**/sample*/**", "**/*sample*", "**/*.txt", "**/*.url", "**/*.sfv", "**/*.srr", "**/*.nzb", "**/__MACOSX/**", "**/.DS_Store", "**/.nfs*"] # Replaces the built-in list shown here; doublestar glob patterns.
