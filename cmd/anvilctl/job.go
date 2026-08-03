@@ -8,33 +8,8 @@ import (
 	"github.com/zekurio/anvil/pkg/control"
 )
 
-func runJob(ctx context.Context, e *env, args []string) error {
-	if len(args) == 0 {
-		return writeJobUsage(e.out)
-	}
-	verb, rest := args[0], args[1:]
-	switch verb {
-	case "help":
-		return writeJobUsage(e.out)
-	case "list":
-		return runJobList(ctx, e, rest)
-	case "show":
-		return runJobShow(ctx, e, rest)
-	case "cancel":
-		return runJobCancel(ctx, e, rest)
-	case "retry":
-		return runJobRetry(ctx, e, rest)
-	case "prune":
-		return runJobPrune(ctx, e, rest)
-	case "recover":
-		return runJobRecover(ctx, e, rest)
-	default:
-		return usagef("unknown job command %q", verb)
-	}
-}
-
 func runStatus(ctx context.Context, e *env, args []string) error {
-	flags, positional, err := e.subcommand("status", args, nil)
+	flags, positional, err := e.subcommand(statusHelp, args, nil)
 	if flags == nil {
 		return err
 	}
@@ -51,11 +26,11 @@ func runStatus(ctx context.Context, e *env, args []string) error {
 	return writeStatus(e.out, response)
 }
 
-func runJobList(ctx context.Context, e *env, args []string) error {
+func runJobs(ctx context.Context, e *env, args []string) error {
 	var library, path, absolutePath, states string
 	var currentOnly, withSelection bool
 	var limit int
-	flags, positional, err := e.subcommand("job list", args, func(f *flag.FlagSet) {
+	flags, positional, err := e.subcommand(jobsHelp, args, func(f *flag.FlagSet) {
 		f.StringVar(&library, "library", "", "filter by configured library")
 		f.StringVar(&path, "path", "", "exact library-relative source or media path")
 		f.StringVar(&absolutePath, "absolute-path", "", "exact absolute source, asset, or destination path")
@@ -67,7 +42,7 @@ func runJobList(ctx context.Context, e *env, args []string) error {
 	if flags == nil {
 		return err
 	}
-	if err := noArguments("job list", positional); err != nil {
+	if err := noArguments("jobs", positional); err != nil {
 		return err
 	}
 	limitSet := false
@@ -96,13 +71,13 @@ func runJobList(ctx context.Context, e *env, args []string) error {
 	return writeJobs(e.out, response)
 }
 
-func runJobShow(ctx context.Context, e *env, args []string) error {
-	flags, positional, err := e.subcommand("job show", args, nil)
+func runShow(ctx context.Context, e *env, args []string) error {
+	flags, positional, err := e.subcommand(showHelp, args, nil)
 	if flags == nil {
 		return err
 	}
 	if len(positional) != 1 {
-		return usagef("job show requires exactly one job id or slug")
+		return usagef("show requires exactly one job id or slug")
 	}
 	response, err := e.client.ShowJob(ctx, control.JobShowRequest{Reference: positional[0]})
 	if err != nil {
@@ -114,10 +89,10 @@ func runJobShow(ctx context.Context, e *env, args []string) error {
 	return writeJobShow(e.out, response)
 }
 
-func runJobCancel(ctx context.Context, e *env, args []string) error {
+func runCancel(ctx context.Context, e *env, args []string) error {
 	var library, path, absolutePath, states, reason string
 	var currentOnly bool
-	flags, positional, err := e.subcommand("job cancel", args, func(f *flag.FlagSet) {
+	flags, positional, err := e.subcommand(cancelHelp, args, func(f *flag.FlagSet) {
 		f.StringVar(&library, "library", "", "filter by configured library")
 		f.StringVar(&path, "path", "", "exact library-relative source or media path")
 		f.StringVar(&absolutePath, "absolute-path", "", "exact absolute source, asset, or destination path")
@@ -128,11 +103,15 @@ func runJobCancel(ctx context.Context, e *env, args []string) error {
 	if flags == nil {
 		return err
 	}
-	response, err := e.client.CancelJobs(ctx, control.JobCancelRequest{
+	request := control.JobCancelRequest{
 		Library: library, Path: path, AbsolutePath: absolutePath,
 		States: splitStates(states), CurrentOnly: currentOnly,
 		References: positional, Reason: reason,
-	})
+	}
+	if !request.HasSelector() {
+		return usagef("cancel requires at least one job or narrowing selector")
+	}
+	response, err := e.client.CancelJobs(ctx, request)
 	if err != nil {
 		return err
 	}
@@ -142,10 +121,10 @@ func runJobCancel(ctx context.Context, e *env, args []string) error {
 	return writeCanceledJobs(e.out, response)
 }
 
-func runJobRetry(ctx context.Context, e *env, args []string) error {
+func runRetry(ctx context.Context, e *env, args []string) error {
 	var library string
 	var failed bool
-	flags, positional, err := e.subcommand("job retry", args, func(f *flag.FlagSet) {
+	flags, positional, err := e.subcommand(retryHelp, args, func(f *flag.FlagSet) {
 		f.BoolVar(&failed, "failed", false, "retry every failed job")
 		f.StringVar(&library, "library", "", "limit --failed to one library")
 	})
@@ -153,7 +132,7 @@ func runJobRetry(ctx context.Context, e *env, args []string) error {
 		return err
 	}
 	if !failed && len(positional) == 0 {
-		return usagef("job retry requires job ids or slugs, or --failed")
+		return usagef("retry requires job ids or slugs, or --failed")
 	}
 	response, err := e.client.RetryJobs(ctx, control.JobRetryRequest{
 		References: positional, Failed: failed, Library: library,
@@ -167,10 +146,10 @@ func runJobRetry(ctx context.Context, e *env, args []string) error {
 	return writeRetriedJobs(e.out, response)
 }
 
-func runJobPrune(ctx context.Context, e *env, args []string) error {
+func runPrune(ctx context.Context, e *env, args []string) error {
 	var library, states string
 	var apply bool
-	flags, positional, err := e.subcommand("job prune", args, func(f *flag.FlagSet) {
+	flags, positional, err := e.subcommand(pruneHelp, args, func(f *flag.FlagSet) {
 		f.StringVar(&library, "library", "", "limit pruning to one library")
 		f.StringVar(&states, "state", "", "comma-separated terminal job states; defaults to complete,failed,skipped,canceled")
 		f.BoolVar(&apply, "apply", false, "delete matching jobs; without this flag the command is a dry run")
@@ -178,7 +157,7 @@ func runJobPrune(ctx context.Context, e *env, args []string) error {
 	if flags == nil {
 		return err
 	}
-	if err := noArguments("job prune", positional); err != nil {
+	if err := noArguments("prune", positional); err != nil {
 		return err
 	}
 	response, err := e.client.PruneJobs(ctx, control.JobPruneRequest{
@@ -193,12 +172,12 @@ func runJobPrune(ctx context.Context, e *env, args []string) error {
 	return writePrunedJobs(e.out, response)
 }
 
-func runJobRecover(ctx context.Context, e *env, args []string) error {
-	flags, positional, err := e.subcommand("job recover", args, nil)
+func runRecover(ctx context.Context, e *env, args []string) error {
+	flags, positional, err := e.subcommand(recoverHelp, args, nil)
 	if flags == nil {
 		return err
 	}
-	if err := noArguments("job recover", positional); err != nil {
+	if err := noArguments("recover", positional); err != nil {
 		return err
 	}
 	response, err := e.client.RecoverJobs(ctx)
