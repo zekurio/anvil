@@ -12,8 +12,6 @@
       systems = [
         "x86_64-linux"
         "aarch64-linux"
-        "x86_64-darwin"
-        "aarch64-darwin"
       ];
 
       forEachSystem =
@@ -34,17 +32,13 @@
         { pkgs, ... }:
         let
           version = "0.1.0";
-          vendorHash = "sha256-0j1IhNahvM035aJzfog14r2RVWS7i1LQb/1MQ9/tIog=";
+          vendorHash = "sha256-2t1fWqyDaO+AjQi0gRDxXGUbVfDMj+BimCXRi2GTSMQ=";
           ldflags = [
             "-s"
             "-w"
             "-X github.com/zekurio/anvil/pkg/control.BuildVersion=${version}"
           ];
-          ffmpegPackage =
-            if pkgs.stdenv.isLinux then
-              (pkgs.jellyfin-ffmpeg or pkgs.ffmpeg)
-            else
-              pkgs.ffmpeg;
+          ffmpegPackage = pkgs.jellyfin-ffmpeg or pkgs.ffmpeg;
           runtimePackages = [
             ffmpegPackage
             pkgs.ab-av1
@@ -78,7 +72,7 @@
             meta = {
               description = "Media-library AV1 encoding daemon";
               mainProgram = "anvild";
-              platforms = pkgs.lib.platforms.unix;
+              platforms = pkgs.lib.platforms.linux;
             };
           };
 
@@ -99,7 +93,7 @@
             meta = {
               description = "Anvil AV1 encoding daemon";
               mainProgram = "anvild";
-              platforms = pkgs.lib.platforms.unix;
+              platforms = pkgs.lib.platforms.linux;
             };
           };
 
@@ -116,7 +110,7 @@
             meta = {
               description = "Operator control client for the Anvil daemon";
               mainProgram = "anvilctl";
-              platforms = pkgs.lib.platforms.unix;
+              platforms = pkgs.lib.platforms.linux;
             };
           };
         }
