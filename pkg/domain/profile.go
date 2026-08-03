@@ -21,6 +21,13 @@ type Profile struct {
 	Chapters    ChapterPolicy
 }
 
+type QualityMetric string
+
+const (
+	QualityMetricVMAF  QualityMetric = "vmaf"
+	QualityMetricXPSNR QualityMetric = "xpsnr"
+)
+
 type VideoProfile struct {
 	Codec              string
 	Accelerator        string
@@ -28,7 +35,8 @@ type VideoProfile struct {
 	BitDepth           int
 	CRFMin             int
 	CRFMax             int
-	TargetVMAF         float64
+	Metric             QualityMetric
+	Target             float64
 	MinSavingsPercent  float64
 	ForceEncodeOnNoFit bool
 	SkipEncode         bool
@@ -53,7 +61,8 @@ type VideoOverride struct {
 	BitDepth           *int
 	CRFMin             *int
 	CRFMax             *int
-	TargetVMAF         *float64
+	Metric             *QualityMetric
+	Target             *float64
 	MinSavingsPercent  *float64
 	ForceEncodeOnNoFit *bool
 	SkipEncode         *bool
