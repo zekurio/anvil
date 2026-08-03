@@ -147,7 +147,7 @@ arr = "tv" # Use this Arr instance for metadata; default "" disables lookup; exi
 
 [libraries.downloads.download]
 handoff_path = "/srv/imports/tv" # Destination watched by the importer; no default; non-empty path for download libraries.
-stable_for = "5m" # Wait for files to stop changing before encoding; default "5m"; duration >= 0.
+stable_for = "5m" # Fallback quiet period when no completion event is observed; close-write and moved-in transfers enqueue after debounce; default "5m"; duration >= 0.
 package_mode = "auto" # Treat a download as a file or directory; default "auto"; "auto", "directory", or "file".
 handoff_mode = "move" # Copy for safety or move when the downloader no longer needs it; default "copy"; "move" or "copy".
 preserve_relative_path = true # Keep the package-relative directory structure below handoff_path; default false; boolean.
