@@ -15,7 +15,7 @@ type JobShowRequest struct {
 }
 
 // JobShowResponse is the full recorded history of a job. Its JSON shape is the
-// contract `anvilctl job show --json` publishes.
+// contract `anvilctl show --json` publishes.
 type JobShowResponse struct {
 	APIVersion       string                   `json:"api_version"`
 	ServerTime       time.Time                `json:"server_time"`
