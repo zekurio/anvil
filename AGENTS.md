@@ -1,11 +1,12 @@
 # Repository Guidelines
 
-- Anvil is a Linux-first Go daemon that orchestrates AV1 encodes across
+- Anvil is a Linux-only Go daemon that orchestrates AV1 encodes across
   user-defined media libraries. `anvild` (`cmd/anvild`) owns config, the SQLite
   store, scanning, scheduling, encoding, and publication; `anvilctl`
   (`cmd/anvilctl`) is the operator client and talks to the daemon over a Unix
-  socket. Orchestration packages live under `pkg/*`; `internal/textout` holds
-  shared operator output helpers.
+  socket. The scanner uses recursive inotify watches, including close-write and
+  moved-in completion signals for download libraries. Orchestration packages
+  live under `pkg/*`; `internal/textout` holds shared operator output helpers.
 - Data flow: `pkg/scanner` enqueues jobs into `pkg/store`, `pkg/scheduler`
   leases them under a thread budget (`pkg/resources`), `pkg/worker` runs a
   `pkg/pipeline` of named blocks (`probe`, `crop-detect`, `audio-cleanup`,
@@ -15,7 +16,7 @@
 - The default branch is `main` and it is the only long-lived branch; use `main`
   or `origin/main` for diffs.
 - Go `1.26.4` with a deliberately small dependency set (`BurntSushi/toml`,
-  `doublestar/v4`, `fsnotify`, `charm.land/log/v2`, `golang.org/x/sys`,
+  `doublestar/v4`, `charm.land/log/v2`, `golang.org/x/sys`,
   `modernc.org/sqlite`).
   SQLite must stay pure-Go: no CGo, ever. No CLI framework — stdlib `flag`
   parsing in both binaries.
