@@ -44,23 +44,6 @@ type options struct {
 	json       bool
 }
 
-// aliases keep the command forms operators already type working after the noun
-// and verb tree landed. The left side is what anvild's old subcommands were
-// called; the right side is where that work lives now.
-var aliases = map[string][]string{
-	"jobs":             {"job", "list"},
-	"inspect":          {"job", "show"},
-	"cancel":           {"job", "cancel"},
-	"retry":            {"job", "retry"},
-	"recover":          {"job", "recover"},
-	"prune-jobs":       {"job", "prune"},
-	"scan":             {"library", "scan"},
-	"stats":            {"library", "stats"},
-	"force-occurrence": {"occurrence", "force"},
-	"cleanup-staging":  {"staging", "cleanup"},
-	"backup":           {"store", "backup"},
-}
-
 func main() {
 	err := run(context.Background(), os.Args[1:], os.Stdout, os.Stderr)
 	if err == nil {
@@ -119,11 +102,11 @@ func run(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer)
 	if err != nil {
 		return usageError{err: err}
 	}
-	if len(remaining) == 0 || remaining[0] == "help" {
+	if len(remaining) == 0 {
 		return writeUsage(stdout)
 	}
-	if expanded, ok := aliases[remaining[0]]; ok {
-		remaining = append(append([]string(nil), expanded...), remaining[1:]...)
+	if remaining[0] == "help" {
+		return runHelp(remaining[1:], stdout)
 	}
 
 	client, err := control.NewClient(opts.socketPath)
@@ -139,16 +122,28 @@ func run(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer)
 		return runStatus(ctx, environment, rest)
 	case "version":
 		return runVersion(ctx, environment, rest)
-	case "job":
-		return runJob(ctx, environment, rest)
-	case "library":
-		return runLibrary(ctx, environment, rest)
-	case "occurrence":
-		return runOccurrence(ctx, environment, rest)
+	case "jobs":
+		return runJobs(ctx, environment, rest)
+	case "show":
+		return runShow(ctx, environment, rest)
+	case "cancel":
+		return runCancel(ctx, environment, rest)
+	case "retry":
+		return runRetry(ctx, environment, rest)
+	case "prune":
+		return runPrune(ctx, environment, rest)
+	case "recover":
+		return runRecover(ctx, environment, rest)
+	case "scan":
+		return runScan(ctx, environment, rest)
+	case "stats":
+		return runStats(ctx, environment, rest)
+	case "requeue":
+		return runRequeue(ctx, environment, rest)
 	case "staging":
 		return runStaging(ctx, environment, rest)
-	case "store":
-		return runStore(ctx, environment, rest)
+	case "backup":
+		return runBackup(ctx, environment, rest)
 	default:
 		return usagef("unknown command %q; run \"anvilctl help\"", command)
 	}
@@ -161,6 +156,8 @@ func parseGlobal(args []string, stderr io.Writer) (options, []string, error) {
 	flags.StringVar(&opts.socketPath, "socket", opts.socketPath, "path to the anvild control socket")
 	flags.DurationVar(&opts.timeout, "timeout", 0, "override the per-command deadline; 0 uses the command's own default")
 	flags.BoolVar(&opts.json, "json", false, "write JSON output")
+	flags.BoolVar(&opts.json, "j", false, "write JSON output")
+	flags.Usage = func() {}
 	if err := flags.Parse(args); err != nil {
 		return options{}, nil, err
 	}
@@ -171,21 +168,23 @@ func parseGlobal(args []string, stderr io.Writer) (options, []string, error) {
 }
 
 // subcommand parses one leaf command's flags and returns its positional
-// arguments. Every leaf gets --json from the same place, so the flag exists
-// everywhere and means the same thing.
+// arguments. Every leaf gets --json and -j from the same place, so the flags
+// exist everywhere and mean the same thing.
 //
-// Flags may follow positional arguments: "job show 42 --json" is what an
-// operator types, and stdlib flag parsing would otherwise stop at 42 and report
-// the flag as a stray argument.
+// Flags may follow positional arguments: "show 42 --json" is what an operator
+// types, and stdlib flag parsing would otherwise stop at 42 and report the flag
+// as a stray argument.
 //
 // A bare "--" still ends flag parsing for good. Anvil's arguments are file
 // paths, job slugs, and library names, and any of them can legitimately begin
 // with a dash; without an escape, such a name could only be passed by renaming
 // the file.
-func (e *env) subcommand(name string, args []string, register func(*flag.FlagSet)) (*flag.FlagSet, []string, error) {
-	flags := flag.NewFlagSet("anvilctl "+name, flag.ContinueOnError)
+func (e *env) subcommand(help commandHelp, args []string, register func(*flag.FlagSet)) (*flag.FlagSet, []string, error) {
+	flags := flag.NewFlagSet("anvilctl "+help.name, flag.ContinueOnError)
 	flags.SetOutput(e.errOut)
 	flags.BoolVar(&e.json, "json", e.json, "write JSON output")
+	flags.BoolVar(&e.json, "j", e.json, "write JSON output")
+	flags.Usage = func() {}
 	if register != nil {
 		register(flags)
 	}
@@ -194,7 +193,7 @@ func (e *env) subcommand(name string, args []string, register func(*flag.FlagSet
 	for {
 		if err := flags.Parse(flagArgs); err != nil {
 			if errors.Is(err, flag.ErrHelp) {
-				return nil, nil, writeUsage(e.out)
+				return nil, nil, writeCommandHelp(e.out, help)
 			}
 			return nil, nil, usageError{err: err}
 		}
@@ -237,7 +236,7 @@ func defaultSocketPath() string {
 }
 
 func runVersion(ctx context.Context, e *env, args []string) error {
-	flags, positional, err := e.subcommand("version", args, nil)
+	flags, positional, err := e.subcommand(versionHelp, args, nil)
 	if flags == nil {
 		return err
 	}
