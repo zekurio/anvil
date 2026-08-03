@@ -156,7 +156,9 @@ func (m *Monitor) scheduleTrigger(cfg config.Config, schedules map[domain.Librar
 		reason = "filesystem"
 	}
 	// A weaker event can follow a completion event before the debounced scan.
-	// Keep the stronger reason while retaining the earliest scheduled time.
+	// Keep the stronger reason while retaining the earliest scheduled time. The
+	// reason affects scheduling and reporting only: Scanner still consults the
+	// completion tracker, so a stale completion cannot make a changed file stable.
 	if reasons[trigger.LibraryName] == "transfer-complete" && !trigger.Completed {
 		return
 	}
