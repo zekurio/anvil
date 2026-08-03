@@ -95,6 +95,10 @@ func (c Config) Validate() error {
 			problems = append(problems, fmt.Sprintf("profile %q video.metric %q is invalid (must be vmaf or xpsnr)", name, profile.Video.Metric))
 		} else if !validQualityTarget(profile.Video.Metric, profile.Video.Target) {
 			problems = append(problems, fmt.Sprintf("profile %q video.target must be between 0 and 100 for metric %q", name, profile.Video.Metric))
+		} else if profile.Video.Metric == "xpsnr" && profile.Video.Target == 0 {
+			// There is no sensible XPSNR default: without --min-xpsnr ab-av1
+			// falls back to its VMAF default, silently ignoring the metric.
+			problems = append(problems, fmt.Sprintf("profile %q video.target must be set when metric is \"xpsnr\" (typical targets are 35-50)", name))
 		}
 		if profile.Video.MinSavingsPercent < 0 || profile.Video.MinSavingsPercent > 100 {
 			problems = append(problems, fmt.Sprintf("profile %q min_savings_percent must be between 0 and 100", name))
@@ -133,6 +137,11 @@ func (c Config) Validate() error {
 				effectiveMetric = *override.Metric
 				if !validQualityMetric(effectiveMetric) {
 					problems = append(problems, fmt.Sprintf("%s.metric %q is invalid (must be vmaf or xpsnr)", prefix, effectiveMetric))
+				} else if effectiveMetric != profile.Video.Metric && override.Target == nil {
+					// Inheriting the base target across metrics is never right:
+					// a VMAF 95 becomes an unattainable XPSNR 95 dB, and an
+					// XPSNR 42 becomes a uselessly low VMAF 42.
+					problems = append(problems, fmt.Sprintf("%s.metric changes the quality metric, so its target must be set too", prefix))
 				}
 			}
 			if override.Target != nil && validQualityMetric(effectiveMetric) && !validQualityTarget(effectiveMetric, *override.Target) {
