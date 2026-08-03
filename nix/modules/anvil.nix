@@ -45,94 +45,108 @@ let
     "cleanup"
   ];
 
+  # Module-managed values are compacted by each serializer below. extraConfig
+  # accepts arbitrary future schema, so clean it recursively before merging to
+  # keep nulls and empty structural noise out of TOML.
+  hasTomlValue = value:
+    if value == null then
+      false
+    else if builtins.isAttrs value then
+      value != { }
+    else if builtins.isList value then
+      value != [ ]
+    else
+      true;
+
+  cleanExtraConfig = value:
+    if builtins.isAttrs value then
+      lib.filterAttrs (_name: hasTomlValue) (lib.mapAttrs (_name: cleanExtraConfig) value)
+    else if builtins.isList value then
+      builtins.filter hasTomlValue (map cleanExtraConfig value)
+    else
+      value;
+
+  compact = lib.filterAttrs (_name: hasTomlValue);
+
   videoOverrideToToml =
     _key: videoOverride:
-    optionalAttrs (videoOverride.codec != null) { inherit (videoOverride) codec; }
-    // optionalAttrs (videoOverride.accelerator != null) { inherit (videoOverride) accelerator; }
-    // optionalAttrs (videoOverride.preset != null) { inherit (videoOverride) preset; }
-    // optionalAttrs (videoOverride.bitDepth != null) { bit_depth = videoOverride.bitDepth; }
-    // optionalAttrs (videoOverride.crfMin != null) { crf_min = videoOverride.crfMin; }
-    // optionalAttrs (videoOverride.crfMax != null) { crf_max = videoOverride.crfMax; }
-    // optionalAttrs (videoOverride.metric != null) { inherit (videoOverride) metric; }
-    // optionalAttrs (videoOverride.target != null) { inherit (videoOverride) target; }
-    // optionalAttrs (videoOverride.minSavingsPercent != null) {
+    compact {
+      inherit (videoOverride) codec accelerator preset metric target;
+      bit_depth = videoOverride.bitDepth;
+      crf_min = videoOverride.crfMin;
+      crf_max = videoOverride.crfMax;
       min_savings_percent = videoOverride.minSavingsPercent;
-    }
-    // optionalAttrs (videoOverride.forceEncodeOnNoFit != null) {
       force_encode_on_no_fit = videoOverride.forceEncodeOnNoFit;
-    }
-    // optionalAttrs (videoOverride.skipEncode != null) { skip_encode = videoOverride.skipEncode; }
-    // optionalAttrs (videoOverride.ffmpegArgs != [ ]) { ffmpeg_args = videoOverride.ffmpegArgs; }
-    // optionalAttrs (videoOverride.abAv1Args != [ ]) { ab_av1_args = videoOverride.abAv1Args; };
+      skip_encode = videoOverride.skipEncode;
+      ffmpeg_args = videoOverride.ffmpegArgs;
+      ab_av1_args = videoOverride.abAv1Args;
+    };
 
   profileToToml =
     _name: profile:
-    {
-      inherit (profile) container;
-      video = {
-        inherit (profile.video) codec accelerator preset metric target;
-        bit_depth = profile.video.bitDepth;
-        crf_min = profile.video.crfMin;
-        crf_max = profile.video.crfMax;
-        min_savings_percent = profile.video.minSavingsPercent;
-        force_encode_on_no_fit = profile.video.forceEncodeOnNoFit;
-        skip_encode = profile.video.skipEncode;
-        ffmpeg_args = profile.video.ffmpegArgs;
-        ab_av1_args = profile.video.abAv1Args;
-        dolby_vision = {
-          inherit (profile.video.dolbyVision) mode;
-          remove_hdr10plus = profile.video.dolbyVision.removeHDR10Plus;
-        };
-      }
-      // optionalAttrs (profile.video.overrides != { }) {
-        overrides = lib.mapAttrs videoOverrideToToml profile.video.overrides;
+    let
+      dolbyVision = compact {
+        inherit (profile.video.dolbyVision) mode;
+        remove_hdr10plus = profile.video.dolbyVision.removeHdr10plus;
       };
-      audio = {
+      overrides = compact (lib.mapAttrs videoOverrideToToml profile.video.overrides);
+      video = compact (
+        {
+          inherit (profile.video) codec accelerator preset metric target;
+          bit_depth = profile.video.bitDepth;
+          crf_min = profile.video.crfMin;
+          crf_max = profile.video.crfMax;
+          min_savings_percent = profile.video.minSavingsPercent;
+          force_encode_on_no_fit = profile.video.forceEncodeOnNoFit;
+          skip_encode = profile.video.skipEncode;
+          ffmpeg_args = profile.video.ffmpegArgs;
+          ab_av1_args = profile.video.abAv1Args;
+        }
+        // optionalAttrs (overrides != { }) { inherit overrides; }
+        // optionalAttrs (dolbyVision != { }) { dolby_vision = dolbyVision; }
+      );
+      audio = compact {
         languages_to_keep = profile.audio.languagesToKeep;
         keep_commentary = profile.audio.keepCommentary;
-        fallback = profile.audio.fallback;
+        inherit (profile.audio) fallback;
         unknown_as_original = profile.audio.unknownAsOriginal;
       };
-      subtitles = {
-        fallback = profile.subtitles.fallback;
+      subtitles = compact {
         languages_to_keep = profile.subtitles.languagesToKeep;
         keep_forced = profile.subtitles.keepForced;
         keep_sdh = profile.subtitles.keepSdh;
         keep_commentary = profile.subtitles.keepCommentary;
+        inherit (profile.subtitles) fallback;
         unknown_as_original = profile.subtitles.unknownAsOriginal;
       };
-      validation.duration_tolerance_seconds = profile.validation.durationToleranceSeconds;
-      metadata = {
-        mode = profile.metadataMode;
-        track_titles = profile.trackTitleMode;
+      validation = compact {
+        duration_tolerance_seconds = profile.validation.durationToleranceSeconds;
       };
-      attachments.mode = profile.attachmentsMode;
-      chapters.mode = profile.chaptersMode;
-    };
+      metadata = compact {
+        inherit (profile.metadata) mode;
+        track_titles = profile.metadata.trackTitles;
+      };
+      attachments = compact { inherit (profile.attachments) mode; };
+      chapters = compact { inherit (profile.chapters) mode; };
+    in
+    compact (
+      { inherit (profile) container; }
+      // optionalAttrs (video != { }) { inherit video; }
+      // optionalAttrs (audio != { }) { inherit audio; }
+      // optionalAttrs (subtitles != { }) { inherit subtitles; }
+      // optionalAttrs (validation != { }) { inherit validation; }
+      // optionalAttrs (metadata != { }) { inherit metadata; }
+      // optionalAttrs (attachments != { }) { inherit attachments; }
+      // optionalAttrs (chapters != { }) { inherit chapters; }
+    );
 
   libraryToToml =
     _name: library:
-    {
-      inherit (library) kind path profile priority include exclude;
-      flow =
-        if library.flow != "" then
-          library.flow
-        else if library.kind == "download" then
-          "download-av1-handoff"
-        else
-          "av1-crf-search";
-      scan_interval = library.scanInterval;
-      ignore_regex = library.ignoreRegex;
-      concurrency_limit = library.concurrencyLimit;
-    }
-    // optionalAttrs (library.arr != null) {
-      arr = library.arr;
-    }
-    // optionalAttrs (library.kind == "media") {
-      media.replacement_mode = library.media.replacementMode;
-    }
-    // optionalAttrs (library.kind == "download") {
-      download = {
+    let
+      media = compact {
+        replacement_mode = library.media.replacementMode;
+      };
+      download = compact {
         handoff_path = library.download.handoffPath;
         stable_for = library.download.stableFor;
         package_mode = library.download.packageMode;
@@ -142,48 +156,61 @@ let
         prune_empty_dirs = library.download.pruneEmptyDirs;
         ignorable_globs = library.download.ignorableGlobs;
       };
-    };
+    in
+    compact (
+      {
+        inherit (library) kind path flow profile priority include exclude;
+        scan_interval = library.scanInterval;
+        ignore_regex = library.ignoreRegex;
+        concurrency_limit = library.concurrencyLimit;
+        inherit (library) arr;
+      }
+      // optionalAttrs (library.kind == "media" && media != { }) { inherit media; }
+      // optionalAttrs (library.kind == "download" && download != { }) { inherit download; }
+    );
 
   arrToToml =
     _name: arr:
-    {
-      type = arr.type;
-    }
-    // optionalAttrs (arr.baseUrl != null) { base_url = arr.baseUrl; }
-    // optionalAttrs (arr.apiKeyFile != null) { api_key_file = arr.apiKeyFile; };
-
-  generatedConfig = {
-    daemon = {
-      temp_dir = cfg.daemon.tempDir;
-      store_path = cfg.daemon.storePath;
-      control_socket = cfg.daemon.controlSocket;
-      worker_count = cfg.daemon.workerCount;
-      total_threads = cfg.daemon.totalThreads;
-      max_attempts = cfg.daemon.maxAttempts;
-      scan_interval = cfg.daemon.scanInterval;
-      filesystem_event_debounce = cfg.daemon.filesystemEventDebounce;
-      scheduler_interval = cfg.daemon.schedulerInterval;
-      lease_duration = cfg.daemon.leaseDuration;
-      shutdown_policy = cfg.daemon.shutdownPolicy;
-      shutdown_timeout = cfg.daemon.shutdownTimeout;
-      staging_cleanup_age = cfg.daemon.stagingCleanupAge;
-      log_level = cfg.daemon.logLevel;
+    compact {
+      inherit (arr) type;
+      base_url = arr.baseUrl;
+      api_key_file = arr.apiKeyFile;
     };
-    arrs = lib.mapAttrs arrToToml cfg.arrs;
-    flows = lib.mapAttrs (_name: flow: { inherit (flow) steps; }) cfg.flows;
-    profiles = lib.mapAttrs profileToToml cfg.profiles;
-    libraries = lib.mapAttrs libraryToToml cfg.libraries;
+
+  daemonToToml = compact {
+    temp_dir = cfg.daemon.tempDir;
+    store_path = cfg.daemon.storePath;
+    control_socket = cfg.daemon.controlSocket;
+    worker_count = cfg.daemon.workerCount;
+    total_threads = cfg.daemon.totalThreads;
+    max_attempts = cfg.daemon.maxAttempts;
+    scan_interval = cfg.daemon.scanInterval;
+    filesystem_event_debounce = cfg.daemon.filesystemEventDebounce;
+    scheduler_interval = cfg.daemon.schedulerInterval;
+    lease_duration = cfg.daemon.leaseDuration;
+    shutdown_policy = cfg.daemon.shutdownPolicy;
+    shutdown_timeout = cfg.daemon.shutdownTimeout;
+    staging_cleanup_age = cfg.daemon.stagingCleanupAge;
+    log_level = cfg.daemon.logLevel;
   };
 
+  moduleConfig =
+    { daemon = daemonToToml; }
+    // optionalAttrs (cfg.arrs != { }) { arrs = lib.mapAttrs arrToToml cfg.arrs; }
+    // optionalAttrs (cfg.flows != { }) {
+      flows = lib.mapAttrs (_name: flow: { inherit (flow) steps; }) cfg.flows;
+    }
+    // optionalAttrs (cfg.profiles != { }) { profiles = lib.mapAttrs profileToToml cfg.profiles; }
+    // optionalAttrs (cfg.libraries != { }) { libraries = lib.mapAttrs libraryToToml cfg.libraries; };
+
+  generatedConfig = lib.recursiveUpdate moduleConfig (cleanExtraConfig cfg.extraConfig);
   configFile = format.generate "anvil.toml" generatedConfig;
+
   packageExe = if cfg.package == null then "${pkgs.coreutils}/bin/false" else lib.getExe cfg.package;
   # The control client is a separate package on purpose: it speaks to the daemon
   # over the control socket and needs none of the media toolchain, so installing
   # it system-wide must not drag ffmpeg into every user's profile. There is
-  # deliberately no fallback to services.anvil.package: that package wraps
-  # anvild with ffmpeg, ab-av1, dovi_tool, and MKVToolNix, and installing it as
-  # "the lightweight client" is exactly the mistake this option exists to avoid.
-  # The assertion below asks for the choice rather than guessing at it.
+  # deliberately no fallback to services.anvil.package.
   controlClientPackage = cfg.controlClient.package;
   ffmpegPackage =
     if pkgs.stdenv.isLinux then
@@ -203,7 +230,11 @@ let
   handoffWritePaths = lib.flatten (
     lib.mapAttrsToList (
       _name: library:
-      optional (library.kind == "download" && library.download.handoffPath != "") library.download.handoffPath
+      optional (
+        library.kind == "download"
+        && library.download.handoffPath != null
+        && library.download.handoffPath != ""
+      ) library.download.handoffPath
     ) cfg.libraries
   );
   readWritePaths = lib.unique (
@@ -241,7 +272,7 @@ let
         message = "services.anvil.libraries.${name}.arr references unknown arr ${library.arr}.";
       })
       ++ (optional (library.kind == "download") {
-        assertion = library.download.handoffPath != "";
+        assertion = library.download.handoffPath != null && library.download.handoffPath != "";
         message = "services.anvil.libraries.${name}.download.handoffPath is required for download libraries.";
       })
     ) cfg.libraries
@@ -268,7 +299,98 @@ let
         type = types.nullOr types.str;
         default = null;
         example = literalExpression "config.sops.secrets.radarr-api-key.path";
-        description = "Runtime file containing this Arr instance's API key.";
+        description = ''
+          Runtime file containing this Arr instance's API key. The apiKey TOML
+          field is deliberately not exposed because secrets do not belong in
+          the Nix store; use a runtime secret path here instead.
+        '';
+      };
+    };
+  };
+
+  videoOverrideModule = types.submodule {
+    options = {
+      codec = mkOption {
+        type = types.nullOr (types.enum [
+          "av1"
+          "hevc"
+          "h265"
+          "h264"
+          "avc"
+        ]);
+        default = null;
+        description = "Target codec for this source condition. Null inherits the base video codec.";
+      };
+      accelerator = mkOption {
+        type = types.nullOr (types.enum [
+          "software"
+          "qsv"
+          "vaapi"
+          "amf"
+        ]);
+        default = null;
+        description = "Acceleration backend for this source condition. Null inherits the base setting.";
+      };
+      preset = mkOption {
+        type = types.nullOr types.str;
+        default = null;
+        description = "Encoder preset for this source condition. Null inherits the base setting.";
+      };
+      bitDepth = mkOption {
+        type = types.nullOr (types.enum [
+          8
+          10
+        ]);
+        default = null;
+        description = "Output bit depth for this source condition. Null inherits the base setting.";
+      };
+      crfMin = mkOption {
+        type = types.nullOr types.int;
+        default = null;
+        description = "Minimum CRF for this source condition. Null inherits the base setting.";
+      };
+      crfMax = mkOption {
+        type = types.nullOr types.int;
+        default = null;
+        description = "Maximum CRF for this source condition. Null inherits the base setting.";
+      };
+      metric = mkOption {
+        type = types.nullOr (types.enum [
+          "vmaf"
+          "xpsnr"
+        ]);
+        default = null;
+        description = "Quality metric for this source condition. Null inherits the base metric.";
+      };
+      target = mkOption {
+        type = types.nullOr types.number;
+        default = null;
+        description = "Quality target for this source condition. Null inherits the base target.";
+      };
+      minSavingsPercent = mkOption {
+        type = types.nullOr types.number;
+        default = null;
+        description = "Minimum input-size savings percentage. Null inherits the base setting.";
+      };
+      forceEncodeOnNoFit = mkOption {
+        type = types.nullOr types.bool;
+        default = null;
+        description = "Whether to encode when CRF search finds no fit. Null inherits the base setting.";
+      };
+      skipEncode = mkOption {
+        type = types.nullOr types.bool;
+        default = null;
+        description = "Whether to copy video instead of searching and encoding. Null inherits the base setting.";
+      };
+      ffmpegArgs = mkOption {
+        type = types.listOf types.str;
+        default = [ ];
+        description = "ffmpeg arguments appended to the base arguments. An empty list is omitted.";
+      };
+      abAv1Args = mkOption {
+        type = types.listOf types.str;
+        default = [ ];
+        description = "ab-av1 arguments appended to the base arguments. An empty list is omitted.";
       };
     };
   };
@@ -276,236 +398,117 @@ let
   profileModule = types.submodule {
     options = {
       container = mkOption {
-        type = types.enum [ "mkv" ];
-        default = "mkv";
-        description = "Output container extension. Anvil outputs MKV only.";
+        type = types.nullOr (types.enum [ "mkv" ]);
+        default = null;
+        description = "Output container. Null defers to Anvil's default.";
       };
 
       video = {
         codec = mkOption {
-          type = types.enum [
+          type = types.nullOr (types.enum [
             "av1"
             "hevc"
             "h265"
             "h264"
             "avc"
-          ];
-          default = "av1";
-          description = "Target video bitstream codec. Anvil maps this with accelerator to a concrete ffmpeg encoder.";
+          ]);
+          default = null;
+          description = "Target video codec. Null defers to Anvil's default.";
         };
         accelerator = mkOption {
-          type = types.enum [
+          type = types.nullOr (types.enum [
             "software"
             "qsv"
             "vaapi"
             "amf"
-          ];
-          default = "software";
-          description = "Hardware encoder/acceleration backend. Codec selects the target bitstream; this selects the implementation family.";
+          ]);
+          default = null;
+          description = "Encoder acceleration backend. Null defers to Anvil's default.";
         };
         preset = mkOption {
-          type = types.str;
-          default = "6";
-          description = "Encoder preset.";
+          type = types.nullOr types.str;
+          default = null;
+          description = "Encoder preset. Null defers to Anvil's default.";
         };
         bitDepth = mkOption {
-          type = types.enum [
+          type = types.nullOr (types.enum [
             8
             10
-          ];
-          default = 10;
-          description = "Output video bit depth. Anvil maps this to backend-specific pixel formats.";
+          ]);
+          default = null;
+          description = "Output video bit depth. Null defers to Anvil's default.";
         };
         crfMin = mkOption {
-          type = types.int;
-          default = 18;
-          description = "Minimum CRF to test during CRF search.";
+          type = types.nullOr types.int;
+          default = null;
+          description = "Minimum CRF to test. Null defers to Anvil's default.";
         };
         crfMax = mkOption {
-          type = types.int;
-          default = 40;
-          description = "Maximum CRF to test during CRF search.";
+          type = types.nullOr types.int;
+          default = null;
+          description = "Maximum CRF to test. Null defers to Anvil's default.";
         };
         metric = mkOption {
-          type = types.enum [
+          type = types.nullOr (types.enum [
             "vmaf"
             "xpsnr"
-          ];
-          default = "vmaf";
-          description = "Quality metric for CRF search.";
+          ]);
+          default = null;
+          description = "CRF-search quality metric. Null defers to Anvil's default.";
         };
         target = mkOption {
-          type = types.number;
-          default = 95;
-          description = "Target quality score for CRF search. VMAF uses 0 to 100; typical XPSNR targets are 35 to 50.";
+          type = types.nullOr types.number;
+          default = null;
+          description = "Quality target. VMAF uses 0-100; typical XPSNR targets are 35-50. Null defers to Anvil's default.";
         };
         minSavingsPercent = mkOption {
-          type = types.number;
-          default = 20;
-          description = "Minimum input-size savings percentage required during CRF search. Written as ab-av1 --max-encoded-percent = 100 - this value.";
+          type = types.nullOr types.number;
+          default = null;
+          description = "Minimum input-size savings percentage. Null defers to Anvil's default.";
         };
         forceEncodeOnNoFit = mkOption {
-          type = types.bool;
-          default = false;
-          description = "When ab-av1 cannot find a CRF satisfying search constraints, force an encode with the lowest tested CRF instead of falling back to video-copy/remux.";
+          type = types.nullOr types.bool;
+          default = null;
+          description = "Force an encode when CRF search finds no fit. Null defers to Anvil's default.";
         };
         skipEncode = mkOption {
-          type = types.bool;
-          default = false;
-          description = "Skip CRF search and video encoding entirely and copy the video stream. Audio, subtitle, metadata, and publish handling still run. Usually set through video.overrides.<codec>.skipEncode to exempt specific source codecs.";
+          type = types.nullOr types.bool;
+          default = null;
+          description = "Copy video instead of searching and encoding. Null defers to Anvil's default.";
         };
         ffmpegArgs = mkOption {
           type = types.listOf types.str;
           default = [ ];
-          example = [
-            "-svtav1-params"
-            "film-grain=8"
-          ];
-          description = "Extra ffmpeg video encoder arguments appended to Anvil's generated ffmpeg command.";
+          description = "Extra ffmpeg encoder arguments. An empty list is omitted.";
         };
         abAv1Args = mkOption {
           type = types.listOf types.str;
           default = [ ];
-          example = [
-            "--enc"
-            "lookahead=120"
-          ];
-          description = "Extra ab-av1 crf-search arguments appended to Anvil's generated search command.";
+          description = "Extra ab-av1 CRF-search arguments. An empty list is omitted.";
         };
         overrides = mkOption {
-          type = types.attrsOf (types.submodule {
-            options = {
-              codec = mkOption {
-                type = types.nullOr (types.enum [
-                  "av1"
-                  "hevc"
-                  "h265"
-                  "h264"
-                  "avc"
-                ]);
-                default = null;
-                example = "hevc";
-                description = "Target video bitstream codec for this source condition. Null inherits the base video codec. For dolby_vision, this must be set for Dolby Vision handling to activate.";
-              };
-              accelerator = mkOption {
-                type = types.nullOr (types.enum [
-                  "software"
-                  "qsv"
-                  "vaapi"
-                  "amf"
-                ]);
-                default = null;
-                example = "qsv";
-                description = "Hardware encoder/acceleration backend for this source condition. Null inherits the base video accelerator.";
-              };
-              preset = mkOption {
-                type = types.nullOr types.str;
-                default = null;
-                example = "6";
-                description = "Encoder preset for this source condition. Null inherits the base video preset.";
-              };
-              bitDepth = mkOption {
-                type = types.nullOr (types.enum [
-                  8
-                  10
-                ]);
-                default = null;
-                example = 10;
-                description = "Output video bit depth for this source condition. Null inherits the base video bit depth.";
-              };
-              crfMin = mkOption {
-                type = types.nullOr types.int;
-                default = null;
-                example = 18;
-                description = "Minimum CRF for this source condition. Null inherits the base video minimum CRF.";
-              };
-              crfMax = mkOption {
-                type = types.nullOr types.int;
-                default = null;
-                example = 45;
-                description = "Maximum CRF for this source condition. Null inherits the base video maximum CRF.";
-              };
-              metric = mkOption {
-                type = types.nullOr (types.enum [
-                  "vmaf"
-                  "xpsnr"
-                ]);
-                default = null;
-                example = "xpsnr";
-                description = "Quality metric for this source condition. Null inherits the base video metric.";
-              };
-              target = mkOption {
-                type = types.nullOr types.number;
-                default = null;
-                example = 96;
-                description = "Target quality score from 0 to 100 for this source condition. Null inherits the base video target.";
-              };
-              minSavingsPercent = mkOption {
-                type = types.nullOr types.number;
-                default = null;
-                example = 40;
-                description = "Minimum input-size savings percentage from 0 to 100 for this source condition. Null inherits the base video minimum savings percentage.";
-              };
-              forceEncodeOnNoFit = mkOption {
-                type = types.nullOr types.bool;
-                default = null;
-                example = true;
-                description = "Whether to force an encode when CRF search finds no fit for this source condition. Null inherits the base video setting.";
-              };
-              skipEncode = mkOption {
-                type = types.nullOr types.bool;
-                default = null;
-                example = true;
-                description = "Whether to skip CRF search and video encoding entirely for this source condition and copy the video stream instead. Audio, subtitle, metadata, and publish handling still run. Null inherits the base video setting.";
-              };
-              ffmpegArgs = mkOption {
-                type = types.listOf types.str;
-                default = [ ];
-                example = [
-                  "-global_quality"
-                  "24"
-                ];
-                description = "Extra ffmpeg video encoder arguments appended to the base arguments for this source condition. An empty list emits no override field.";
-              };
-              abAv1Args = mkOption {
-                type = types.listOf types.str;
-                default = [ ];
-                example = [
-                  "--enc"
-                  "low_power=1"
-                ];
-                description = "Extra ab-av1 crf-search arguments appended to the base arguments for this source condition. An empty list emits no override field.";
-              };
-            };
-          });
+          type = types.attrsOf videoOverrideModule;
           default = { };
           description = ''
-            Per-source video overrides keyed by canonical source codec family,
-            such as hevc, h264, or av1, or by the reserved dolby_vision key.
-            Unset nullable fields inherit their base video settings; argument
-            lists append to the base arguments and are omitted when empty.
-            Dolby Vision handling requires overrides.dolby_vision.codec to be set.
+            Per-source overrides keyed by a canonical codec family or
+            dolby_vision. Nullable fields inherit base video settings; argument
+            lists append and are omitted when empty.
           '';
         };
         dolbyVision = {
           mode = mkOption {
-            type = types.enum [
+            type = types.nullOr (types.enum [
               "auto"
               "off"
               "require"
-            ];
-            default = "auto";
-            description = ''
-              How to handle Dolby Vision sources. Encoder settings belong in
-              video.overrides.dolby_vision, and Dolby Vision handling activates
-              only when that override's codec is set. Auto uses the override
-              when Dolby Vision is detected and dovi_tool is available.
-            '';
+            ]);
+            default = null;
+            description = "Dolby Vision handling policy. Null defers to Anvil's default.";
           };
-          removeHDR10Plus = mkOption {
-            type = types.bool;
-            default = false;
-            description = "Pass dovi_tool --drop-hdr10plus during Dolby Vision RPU extraction/injection. Encoder settings belong in video.overrides.dolby_vision.";
+          removeHdr10plus = mkOption {
+            type = types.nullOr types.bool;
+            default = null;
+            description = "Pass dovi_tool --drop-hdr10plus during RPU extraction and injection.";
           };
         };
       };
@@ -514,30 +517,26 @@ let
         languagesToKeep = mkOption {
           type = types.listOf types.str;
           default = [ ];
-          example = [
-            "orig"
-            "deu"
-          ];
-          description = "Audio languages to keep. The special value \"orig\" uses Arr-derived original language.";
+          description = "Audio languages to keep. The special value orig uses Arr-derived original language.";
         };
         keepCommentary = mkOption {
-          type = types.bool;
-          default = false;
-          description = "Keep audio tracks detected as commentary.";
+          type = types.nullOr types.bool;
+          default = null;
+          description = "Whether to keep commentary audio. Null defers to Anvil's default.";
         };
         fallback = mkOption {
-          type = types.enum [
+          type = types.nullOr (types.enum [
             "keep_all"
             "keep_first"
             "fail_job"
-          ];
-          default = "keep_all";
-          description = "Fallback when no audio stream matches the configured policy.";
+          ]);
+          default = null;
+          description = "Behavior when no audio stream matches. Null defers to Anvil's default.";
         };
         unknownAsOriginal = mkOption {
-          type = types.bool;
-          default = false;
-          description = "Treat und/unknown track language as the original language.";
+          type = types.nullOr types.bool;
+          default = null;
+          description = "Treat unknown audio language as original. Null defers to Anvil's default.";
         };
       };
 
@@ -545,83 +544,81 @@ let
         languagesToKeep = mkOption {
           type = types.listOf types.str;
           default = [ ];
-          example = [
-            "orig"
-            "deu"
-          ];
-          description = "Subtitle languages to keep. The special value \"orig\" uses Arr-derived original language.";
+          description = "Subtitle languages to keep. The special value orig uses Arr-derived original language.";
         };
         keepForced = mkOption {
-          type = types.bool;
-          default = false;
-          description = "Keep forced subtitles.";
+          type = types.nullOr types.bool;
+          default = null;
+          description = "Whether to keep forced subtitles. Null defers to Anvil's default.";
         };
         keepSdh = mkOption {
-          type = types.bool;
-          default = false;
-          description = "Keep SDH subtitles.";
+          type = types.nullOr types.bool;
+          default = null;
+          description = "Whether to keep SDH subtitles. Null defers to Anvil's default.";
         };
         keepCommentary = mkOption {
-          type = types.bool;
-          default = false;
-          description = "Keep commentary subtitles.";
+          type = types.nullOr types.bool;
+          default = null;
+          description = "Whether to keep commentary subtitles. Null defers to Anvil's default.";
         };
         fallback = mkOption {
-          type = types.enum [
+          type = types.nullOr (types.enum [
             "keep_all"
             "keep_first"
             "fail_job"
-          ];
-          default = "keep_all";
-          description = "Fallback when no subtitle stream matches the configured policy.";
+          ]);
+          default = null;
+          description = "Behavior when no subtitle stream matches. Null defers to Anvil's default.";
         };
         unknownAsOriginal = mkOption {
-          type = types.bool;
-          default = false;
-          description = "Treat und/unknown subtitle language as the original language.";
+          type = types.nullOr types.bool;
+          default = null;
+          description = "Treat unknown subtitle language as original. Null defers to Anvil's default.";
         };
       };
 
-      validation = {
-        durationToleranceSeconds = mkOption {
-          type = types.number;
-          default = 0;
-          description = "Allowed source/output duration delta in seconds before validation fails. Zero uses Anvil's default.";
+      validation.durationToleranceSeconds = mkOption {
+        type = types.nullOr types.number;
+        default = null;
+        description = "Allowed source/output duration delta in seconds. Null defers to Anvil's default.";
+      };
+
+      metadata = {
+        mode = mkOption {
+          type = types.nullOr (types.enum [
+            "preserve"
+            "strip"
+          ]);
+          default = null;
+          description = "Metadata retention policy. Null defers to Anvil's default.";
+        };
+        trackTitles = mkOption {
+          type = types.nullOr (types.enum [
+            "preserve"
+            "strip"
+            "standardize"
+          ]);
+          default = null;
+          description = "Stream-title metadata policy. Null defers to Anvil's default.";
         };
       };
 
-      metadataMode = mkOption {
-        type = types.enum [
+      attachments.mode = mkOption {
+        type = types.nullOr (types.enum [
           "preserve"
           "strip"
-        ];
-        default = "preserve";
-        description = "Metadata retention policy.";
+        ]);
+        default = null;
+        description = "Attachment retention policy. Null defers to Anvil's default.";
       };
-      trackTitleMode = mkOption {
-        type = types.enum [
+
+      chapters.mode = mkOption {
+        type = types.nullOr (types.enum [
           "preserve"
           "strip"
-          "standardize"
-        ];
-        default = "strip";
-        description = "Stream title metadata policy.";
-      };
-      attachmentsMode = mkOption {
-        type = types.enum [
-          "preserve"
-          "strip"
-        ];
-        default = "preserve";
-        description = "Attachment retention policy.";
-      };
-      chaptersMode = mkOption {
-        type = types.enum [
-          "preserve"
-          "strip"
-        ];
-        default = "preserve";
-        description = "Chapter retention policy.";
+        ]);
+        default = null;
+        description = "Chapter retention policy. Null defers to Anvil's default.";
       };
     };
   };
@@ -642,9 +639,7 @@ let
       };
       flow = mkOption {
         type = types.str;
-        default = "";
-        example = "av1-crf-search";
-        description = "Flow name used for this library. Empty uses the kind-specific default.";
+        description = "Flow name. The module selects a kind-specific default when unset.";
       };
       profile = mkOption {
         type = types.str;
@@ -652,117 +647,98 @@ let
         description = "Profile name used for this library.";
       };
       priority = mkOption {
-        type = types.int;
-        default = 0;
-        description = "Job priority for this library.";
+        type = types.nullOr types.int;
+        default = null;
+        description = "Job priority. Null defers to Anvil's default.";
       };
       scanInterval = mkOption {
-        type = types.str;
-        default = "";
-        example = "5m";
-        description = "Optional scan interval for this library. Empty falls back to services.anvil.daemon.scanInterval.";
+        type = types.nullOr types.str;
+        default = null;
+        description = "Library-specific scan interval. Null uses the daemon interval.";
       };
       include = mkOption {
         type = types.listOf types.str;
         default = [ ];
-        description = "Include glob patterns.";
+        description = "Include glob patterns. An empty list is omitted.";
       };
       exclude = mkOption {
         type = types.listOf types.str;
         default = [ ];
-        description = "Exclude glob patterns.";
+        description = "Exclude glob patterns. An empty list is omitted.";
       };
       ignoreRegex = mkOption {
         type = types.listOf types.str;
         default = [ ];
-        example = [ "(^|/)_UNPACK[^/]*(/|$)" ];
-        description = "Regular expressions matched against slash-normalized library-relative paths. Matching directories are skipped recursively before stability checks.";
+        description = "Regular expressions matched against slash-normalized library-relative paths.";
       };
       concurrencyLimit = mkOption {
-        type = types.int;
-        default = 0;
-        description = "Maximum active jobs for this library. Zero means unlimited.";
+        type = types.nullOr types.int;
+        default = null;
+        description = "Maximum active jobs for this library. Null defers to Anvil's default.";
       };
       arr = mkOption {
         type = types.nullOr types.str;
         default = null;
-        example = "main-radarr";
-        description = "Name of the Arr instance used to derive metadata for this library.";
+        description = "Arr instance used to derive metadata for this library.";
       };
       media.replacementMode = mkOption {
-        type = types.enum [
+        type = types.nullOr (types.enum [
           "replace"
           "copy"
-        ];
-        default = "replace";
-        description = "Completion behavior for media libraries.";
+        ]);
+        default = null;
+        description = "Media-library completion behavior. Null defers to Anvil's default.";
       };
       download = {
         handoffPath = mkOption {
-          type = types.str;
-          default = "";
+          type = types.nullOr types.str;
+          default = null;
           description = "Destination path for completed download-library encodes.";
         };
         stableFor = mkOption {
-          type = types.str;
-          default = "5m";
-          description = "How long a download must be unchanged before scanning.";
+          type = types.nullOr types.str;
+          default = null;
+          description = "Required unchanged duration before scanning. Null defers to Anvil's default.";
         };
         packageMode = mkOption {
-          type = types.enum [
+          type = types.nullOr (types.enum [
             "auto"
             "directory"
             "file"
-          ];
-          default = "auto";
-          description = "How download packages are grouped.";
+          ]);
+          default = null;
+          description = "Download package grouping policy. Null defers to Anvil's default.";
         };
         handoffMode = mkOption {
-          type = types.enum [
+          type = types.nullOr (types.enum [
             "move"
             "copy"
-          ];
-          default = "copy";
-          description = "How completed encodes are handed off.";
+          ]);
+          default = null;
+          description = "Completed encode handoff behavior. Null defers to Anvil's default.";
         };
         preserveRelativePath = mkOption {
-          type = types.bool;
-          default = false;
-          description = "Preserve source relative path under the handoff path.";
+          type = types.nullOr types.bool;
+          default = null;
+          description = "Preserve source-relative paths at handoff. Null defers to Anvil's default.";
         };
         cleanupSourceMedia = mkOption {
-          type = types.bool;
-          default = false;
-          description = "Remove source media after successful handoff.";
+          type = types.nullOr types.bool;
+          default = null;
+          description = "Remove source media after handoff. Null defers to Anvil's default.";
         };
         pruneEmptyDirs = mkOption {
-          type = types.bool;
-          default = false;
-          description = "Prune empty source directories after handoff cleanup.";
+          type = types.nullOr types.bool;
+          default = null;
+          description = "Prune empty source directories after cleanup. Null defers to Anvil's default.";
         };
         ignorableGlobs = mkOption {
           type = types.listOf types.str;
-          default = [
-            "**/samples/**"
-            "**/sample*/**"
-            "**/*sample*"
-            "**/*.txt"
-            "**/*.url"
-            "**/*.sfv"
-            "**/*.srr"
-            "**/*.nzb"
-            "**/__MACOSX/**"
-            "**/.DS_Store"
-            "**/.nfs*"
-          ];
+          default = [ ];
           description = ''
             Globs excluded from download-package discovery and stability
-            handling. Setting this option replaces the default list. During
-            successful handoff source cleanup, matching paths may be deleted
-            when cleanupSourceMedia and pruneEmptyDirs are enabled. External
-            subtitle sidecars are preserved by default; add
-            **/[Ss][Uu][Bb][Ss]/** alongside the defaults to opt in to cleaning
-            release-provided Subs/ directories.
+            handling. An empty list is omitted, causing Anvil to apply its
+            canonical default list. A non-empty list replaces that default.
           '';
         };
       };
@@ -792,16 +768,8 @@ in
         default = false;
         description = ''
           Install the anvilctl control client into environment.systemPackages.
-
-          anvilctl is a userspace client: it talks to the daemon over
-          daemon.control_socket and never opens the SQLite store or runs
-          ffmpeg. Access is granted by socket permissions, not by installing
-          the binary, so installing it is safe and being able to run it is not
-          the same as being allowed to use it.
-
-          It is off by default because installing it requires naming a package,
-          and the only right answer is the standalone anvilctl build. Enable it
-          together with services.anvil.controlClient.package.
+          Access is granted by control-socket permissions, not by installing
+          the client. Enable this together with controlClient.package.
         '';
       };
 
@@ -810,23 +778,16 @@ in
         default = null;
         example = literalExpression "inputs.anvil.packages.\${pkgs.system}.anvilctl";
         description = ''
-          Package providing anvilctl. Required when controlClient.install is
-          true; there is no fallback to services.anvil.package.
-
-          Use the standalone anvilctl package. services.anvil.package wraps
-          anvild with ffmpeg, ab-av1, dovi_tool, and MKVToolNix, none of which
-          an operator's shell has any use for, and installing it system-wide
-          puts that entire toolchain in every user's PATH.
+          Standalone package providing anvilctl. Required when install is true;
+          services.anvil.package is deliberately not used as a fallback because
+          it includes the daemon's media toolchain.
         '';
       };
 
       setEnvironment = mkOption {
         type = types.bool;
         default = true;
-        description = ''
-          Set ANVIL_CONTROL_SOCKET system-wide so anvilctl finds a socket at a
-          non-default path without --socket on every invocation.
-        '';
+        description = "Set ANVIL_CONTROL_SOCKET system-wide when installing anvilctl.";
       };
     };
 
@@ -838,7 +799,7 @@ in
         pkgs.dovi-tool
         pkgs.mkvtoolnix
       ];
-      description = "Packages added to the Anvil service PATH for probe, crop detection, CRF search, Dolby Vision checks/repair, MKV remuxing, and encoding.";
+      description = "Packages added to the service PATH for media inspection, search, repair, remuxing, and encoding.";
     };
 
     user = mkOption {
@@ -852,25 +813,16 @@ in
       default = null;
       example = "anvil";
       description = ''
-        Group to run the daemon as. Null leaves systemd's default group.
-
-        This group is the operator access boundary: the control socket is
-        created 0660 inside a 0750 runtime directory, both owned by it, so its
-        members are exactly the users who can run anvilctl.
+        Group to run the daemon as. The control socket and its runtime directory
+        make this group the operator access boundary. Null leaves systemd's
+        default group.
       '';
     };
 
     createGroup = mkOption {
       type = types.bool;
       default = false;
-      description = ''
-        Create services.anvil.group as a system group.
-
-        Leave this off when the group is defined elsewhere, which is the usual
-        case: the group only matters because operators are added to it, and
-        whoever adds them normally declares it. Turning it on is the shortcut
-        for a host where Anvil is the only reason the group exists.
-      '';
+      description = "Create services.anvil.group as a system group.";
     };
 
     configFile = mkOption {
@@ -878,6 +830,17 @@ in
       readOnly = true;
       default = configFile;
       description = "Generated Anvil TOML configuration.";
+    };
+
+    extraConfig = mkOption {
+      type = types.attrsOf types.anything;
+      default = { };
+      description = ''
+        Raw TOML-shaped attributes deep-merged into the generated configuration
+        after all module-managed settings. This can override module-managed
+        keys and is the forward-compatibility escape hatch for schema keys the
+        module does not expose yet. Use TOML snake_case key names.
+      '';
     };
 
     daemon = {
@@ -894,65 +857,65 @@ in
       controlSocket = mkOption {
         type = types.str;
         default = "/run/anvil/anvild.sock";
-        description = "Unix socket anvilctl connects to. It is created 0660, owned by the service user and group, inside a 0750 runtime directory, so group membership is the operator access boundary.";
+        description = "Unix socket used by anvilctl; its group permissions are the operator access boundary.";
       };
       workerCount = mkOption {
-        type = types.int;
-        default = 1;
-        description = "Number of encode workers.";
+        type = types.nullOr types.int;
+        default = null;
+        description = "Encode worker count. Null lets Anvil use the host CPU count.";
       };
       totalThreads = mkOption {
-        type = types.int;
-        default = 0;
-        description = "Total thread budget. Zero lets Anvil use its default.";
+        type = types.nullOr types.int;
+        default = null;
+        description = "Total thread budget. Null lets Anvil use the host CPU count.";
       };
       maxAttempts = mkOption {
-        type = types.int;
-        default = 3;
-        description = "Maximum attempts per job.";
+        type = types.nullOr types.int;
+        default = null;
+        description = "Maximum attempts per job. Null defers to Anvil's default.";
       };
       scanInterval = mkOption {
-        type = types.str;
-        default = "30m";
-        description = "Library scan interval.";
+        type = types.nullOr types.str;
+        default = null;
+        description = "Library scan interval. Null defers to Anvil's default.";
       };
       filesystemEventDebounce = mkOption {
-        type = types.str;
-        default = "2s";
-        description = "Delay used to coalesce filesystem events before scanning a library.";
+        type = types.nullOr types.str;
+        default = null;
+        description = "Filesystem-event coalescing delay. Null defers to Anvil's default.";
       };
       schedulerInterval = mkOption {
-        type = types.str;
-        default = "5s";
-        description = "Scheduler tick interval.";
+        type = types.nullOr types.str;
+        default = null;
+        description = "Scheduler tick interval. Null defers to Anvil's default.";
       };
       leaseDuration = mkOption {
-        type = types.str;
-        default = "30m";
-        description = "Worker job lease duration.";
+        type = types.nullOr types.str;
+        default = null;
+        description = "Worker job lease duration. Null defers to Anvil's default.";
       };
       shutdownPolicy = mkOption {
-        type = types.enum [
+        type = types.nullOr (types.enum [
           "drain"
           "cancel"
-        ];
-        default = "drain";
-        description = "Shutdown behavior after SIGINT or SIGTERM.";
+        ]);
+        default = null;
+        description = "Shutdown behavior after SIGINT or SIGTERM. Null defers to Anvil's default.";
       };
       shutdownTimeout = mkOption {
-        type = types.str;
-        default = "0s";
-        description = "How long drain shutdown waits before canceling active work. Zero waits indefinitely.";
+        type = types.nullOr types.str;
+        default = null;
+        description = "Drain timeout before canceling active work. Null defers to Anvil's default.";
       };
       stagingCleanupAge = mkOption {
-        type = types.str;
-        default = "0s";
-        description = "Age threshold for automatic staging cleanup. Zero disables age-based cleanup.";
+        type = types.nullOr types.str;
+        default = null;
+        description = "Age threshold for staging cleanup. Null defers to Anvil's default.";
       };
       logLevel = mkOption {
-        type = types.str;
-        default = "info";
-        description = "Daemon stderr log level: debug, info, warn, or error.";
+        type = types.nullOr types.str;
+        default = null;
+        description = "Daemon stderr log level. Null defers to Anvil's default.";
       };
     };
 
@@ -960,7 +923,6 @@ in
       type = types.attrsOf (types.submodule {
         options.steps = mkOption {
           type = types.listOf types.str;
-          default = defaultFlowSteps;
           description = "Pipeline block names for this flow.";
         };
       });
@@ -976,7 +938,7 @@ in
       default = {
         default-av1 = { };
       };
-      description = "Named encode profiles.";
+      description = "Named encode profiles. Unset fields are omitted so Anvil applies canonical defaults.";
     };
 
     arrs = mkOption {
@@ -1012,8 +974,7 @@ in
       nice = mkOption {
         type = types.nullOr types.int;
         default = null;
-        example = 10;
-        description = "Optional systemd Nice value for the Anvil service.";
+        description = "Optional systemd Nice value.";
       };
       ioSchedulingClass = mkOption {
         type = types.nullOr (types.enum [
@@ -1022,25 +983,21 @@ in
           "realtime"
         ]);
         default = null;
-        example = "best-effort";
         description = "Optional systemd IOSchedulingClass value.";
       };
       ioSchedulingPriority = mkOption {
         type = types.nullOr types.int;
         default = null;
-        example = 7;
         description = "Optional systemd IOSchedulingPriority value.";
       };
       cpuWeight = mkOption {
         type = types.nullOr types.int;
         default = null;
-        example = 50;
         description = "Optional systemd CPUWeight value.";
       };
       ioWeight = mkOption {
         type = types.nullOr types.int;
         default = null;
-        example = 50;
         description = "Optional systemd IOWeight value.";
       };
       extraReadWritePaths = mkOption {
@@ -1066,9 +1023,8 @@ in
         assertion = !cfg.controlClient.install || controlClientPackage != null;
         message = ''
           services.anvil.controlClient.package must be set when controlClient.install is true.
-          Use the standalone anvilctl package, for example
-          inputs.anvil.packages.''${pkgs.system}.anvilctl. services.anvil.package is not used as a
-          fallback because it wraps anvild with the whole media toolchain.
+          Use the standalone anvilctl package; services.anvil.package is not a fallback because
+          it wraps anvild with the whole media toolchain.
         '';
       }
       {
@@ -1082,27 +1038,17 @@ in
     environment.variables = optionalAttrs (cfg.controlClient.install && cfg.controlClient.setEnvironment) {
       ANVIL_CONTROL_SOCKET = cfg.daemon.controlSocket;
     };
-    # Only when asked for. A group systemd is told to run as has to exist, and
-    # silently creating one that the administrator also declares elsewhere
-    # would make two definitions of the same access boundary.
     users.groups = optionalAttrs (cfg.createGroup && cfg.group != null) {
       ${cfg.group} = { };
     };
-    # The control socket directory keeps mode 0750: the socket itself is 0660,
-    # so its directory group is the access boundary for anvilctl. Widening
-    # either would silently hand queue control to every local user.
+    # The socket is 0660 inside a 0750 directory, making the service group the
+    # access boundary for anvilctl.
     systemd.tmpfiles.rules = map (path: "d ${path} 0750 ${tmpfilesUser} ${tmpfilesGroup} - -") daemonDirectoryPaths;
 
-    # Installing anvilctl does not grant access to the daemon. The socket is
-    # created 0660 owned by the service user and group inside a 0750 directory,
-    # so with no explicit group every non-root operator is locked out, and the
-    # failure looks like a permission error long after deployment.
     warnings = optional (cfg.controlClient.install && cfg.group == null) ''
       services.anvil.controlClient.install is enabled but services.anvil.group is null,
       so the control socket ${cfg.daemon.controlSocket} is owned by the service's default
-      group. Set services.anvil.group, make sure that group exists (declare it yourself or
-      set services.anvil.createGroup), and add operators to it. Otherwise anvilctl is
-      installed but every non-root operator is refused with a permission error.
+      group. Set services.anvil.group, ensure it exists, and add operators to it.
     '';
 
     systemd.services.anvil = {
@@ -1123,8 +1069,6 @@ in
           Restart = "on-failure";
           StateDirectory = [ "anvil" "anvil/tmp" ];
           RuntimeDirectory = "anvil";
-          # 0750 with the socket's own 0660 is the access contract: membership
-          # in the service group is what lets an operator run anvilctl.
           RuntimeDirectoryMode = "0750";
           UMask = "0027";
           ReadWritePaths = readWritePaths;
