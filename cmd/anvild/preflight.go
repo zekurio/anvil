@@ -229,7 +229,14 @@ func runPreflightCommand(ctx context.Context, cfg config.Config, opts options) e
 	}
 	defer closeStore(state)
 
-	report, err := buildPreflightReport(ctx, cfg, opts, state, storeAvailable)
+	// The nil *store.SQLiteStore from the store-not-found path must not enter
+	// the preflightStore interface: a typed nil passes the interface nil check
+	// in buildPreflightCandidate and panics on the first lookup.
+	var lookup preflightStore
+	if storeAvailable {
+		lookup = state
+	}
+	report, err := buildPreflightReport(ctx, cfg, opts, lookup, storeAvailable)
 	if err != nil {
 		return err
 	}
