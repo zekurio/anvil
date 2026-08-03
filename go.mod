@@ -6,7 +6,6 @@ require (
 	charm.land/log/v2 v2.0.0
 	github.com/BurntSushi/toml v1.6.0
 	github.com/bmatcuk/doublestar/v4 v4.10.0
-	github.com/fsnotify/fsnotify v1.10.1
 	golang.org/x/sys v0.44.0
 	modernc.org/sqlite v1.53.0
 )
