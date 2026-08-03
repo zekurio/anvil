@@ -33,8 +33,8 @@ codec = "av1" # Output video codec; default "av1"; "av1", "hevc"/"h265", or "h26
 accelerator = "software" # Encoder backend; default "software"; "software", "qsv", "vaapi", or "amf".
 preset = "6" # Trade speed for compression to match the selected encoder; default "6"; any encoder-supported string.
 bit_depth = 10 # Preserve more tonal detail when the encoder supports it; default 10; 8 or 10.
-crf_min = 18 # Lowest search CRF; default 18; integer >= 0 and no greater than crf_max.
-crf_max = 40 # Highest search CRF; default 40; integer >= 0 and no lower than crf_min.
+crf_min = 18 # Lowest search CRF; 0 or omitted uses the default 18; integer no greater than crf_max.
+crf_max = 40 # Highest search CRF; 0 or omitted uses the default 40; integer no lower than crf_min.
 metric = "vmaf" # Quality metric passed to ab-av1; default "vmaf"; "vmaf" or "xpsnr".
 target = 95.0 # Minimum score for metric; default 95 for vmaf, required for xpsnr; number from 0 through 100 (typical XPSNR target: 35-50).
 min_savings_percent = 20 # Skip a result that saves too little space; default 20; number from 0 through 100.
@@ -102,11 +102,9 @@ track_titles = "strip" # Preserve, clear, or standardize stream titles; default 
 
 [profiles.default-av1.attachments]
 mode = "preserve" # Preserve or strip attachments such as fonts; default "preserve"; "preserve" or "strip".
-track_titles = "" # Accepted for the shared metadata shape but currently unused for attachments; default ""; any string.
 
 [profiles.default-av1.chapters]
 mode = "preserve" # Preserve or strip chapters; default "preserve"; "preserve" or "strip".
-track_titles = "" # Accepted for the shared metadata shape but currently unused for chapters; default ""; any string.
 
 [arrs.movies]
 type = "radarr" # Metadata provider kind; no default; "radarr" or "sonarr".
