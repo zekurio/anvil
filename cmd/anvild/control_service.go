@@ -25,6 +25,7 @@ type controlServiceDeps struct {
 	startedAt     time.Time
 	activeWorkers func() int
 	cancelJob     func(domain.JobID) bool
+	completion    *scanner.CompletionTracker
 }
 
 // startControlService answers control commands on an already-claimed listener.
@@ -33,7 +34,7 @@ type controlServiceDeps struct {
 func startControlService(ctx context.Context, wg *sync.WaitGroup, listener net.Listener, deps controlServiceDeps) <-chan error {
 	server := controlapi.Server{Service: controlapi.Service{
 		Store:            deps.store,
-		Scanner:          scanner.Scanner{Store: deps.store},
+		Scanner:          scanner.Scanner{Store: deps.store, Completion: deps.completion},
 		Config:           deps.config,
 		ActiveWorkers:    deps.activeWorkers,
 		CancelRunningJob: deps.cancelJob,

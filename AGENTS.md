@@ -15,7 +15,8 @@
 - The default branch is `main` and it is the only long-lived branch; use `main`
   or `origin/main` for diffs.
 - Go `1.26.4` with a deliberately small dependency set (`BurntSushi/toml`,
-  `doublestar/v4`, `fsnotify`, `charm.land/log/v2`, `modernc.org/sqlite`).
+  `doublestar/v4`, `fsnotify`, `charm.land/log/v2`, `golang.org/x/sys`,
+  `modernc.org/sqlite`).
   SQLite must stay pure-Go: no CGo, ever. No CLI framework — stdlib `flag`
   parsing in both binaries.
 - `make fmt` (`go fmt ./...`) and `make lint` (`golangci-lint run ./...` inside
