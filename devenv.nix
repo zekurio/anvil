@@ -2,11 +2,7 @@
 
 let
   goPackage = pkgs.go;
-  ffmpegPackage =
-    if pkgs.stdenv.isLinux then
-      (pkgs.jellyfin-ffmpeg or pkgs.ffmpeg)
-    else
-      pkgs.ffmpeg;
+  ffmpegPackage = pkgs.jellyfin-ffmpeg or pkgs.ffmpeg;
   devPackages =
     with pkgs;
     [
