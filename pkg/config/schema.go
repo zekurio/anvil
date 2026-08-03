@@ -88,8 +88,8 @@ type ProfileConfig struct {
 	Subtitles   SubtitleConfig   `toml:"subtitles"`
 	Validation  ValidationConfig `toml:"validation"`
 	Metadata    MetadataConfig   `toml:"metadata"`
-	Attachments MetadataConfig   `toml:"attachments"`
-	Chapters    MetadataConfig   `toml:"chapters"`
+	Attachments ModeConfig       `toml:"attachments"`
+	Chapters    ModeConfig       `toml:"chapters"`
 }
 
 // VideoConfig contains the initial video settings shape for AV1 search work.
@@ -164,6 +164,12 @@ type ValidationConfig struct {
 type MetadataConfig struct {
 	Mode        string `toml:"mode"`
 	TrackTitles string `toml:"track_titles"`
+}
+
+// ModeConfig declares a preserve-or-strip policy for attachments and chapters,
+// which have no per-track titles to manage.
+type ModeConfig struct {
+	Mode string `toml:"mode"`
 }
 
 // LibraryConfig describes a user-defined media library.

@@ -65,10 +65,10 @@ func Default() Config {
 					Mode:        DefaultMetadataMode,
 					TrackTitles: DefaultTrackTitleMode,
 				},
-				Attachments: MetadataConfig{
+				Attachments: ModeConfig{
 					Mode: DefaultMetadataMode,
 				},
-				Chapters: MetadataConfig{
+				Chapters: ModeConfig{
 					Mode: DefaultMetadataMode,
 				},
 			},
