@@ -128,7 +128,9 @@ type PipelineContextDetail struct {
 	Steps            []PipelineStepDetail `json:"steps"`
 	CropFilter       string               `json:"crop_filter,omitempty"`
 	SearchCRF        int                  `json:"search_crf,omitempty"`
+	SearchMetric     string               `json:"search_metric,omitempty"`
 	SearchVMAF       float64              `json:"search_vmaf,omitempty"`
+	SearchXPSNR      float64              `json:"search_xpsnr,omitempty"`
 	SearchSkipReason string               `json:"search_skip_reason,omitempty"`
 	EncodeVideoCodec string               `json:"encode_video_codec,omitempty"`
 	EncodeCRF        int                  `json:"encode_crf,omitempty"`

@@ -123,7 +123,8 @@ type preflightProfile struct {
 	VideoBitDepth      int                      `json:"video_bit_depth"`
 	CRFMin             int                      `json:"crf_min"`
 	CRFMax             int                      `json:"crf_max"`
-	TargetVMAF         float64                  `json:"target_vmaf"`
+	Metric             domain.QualityMetric     `json:"metric"`
+	Target             float64                  `json:"target"`
 	ForceEncodeOnNoFit bool                     `json:"force_encode_on_no_fit"`
 	SkipEncode         bool                     `json:"skip_encode"`
 	FFmpegArgs         []string                 `json:"ffmpeg_args,omitempty"`
@@ -143,19 +144,20 @@ type preflightDolbyVision struct {
 // preflightVideoOverride mirrors domain.VideoOverride so that a field the
 // operator never configured stays absent instead of being reported as a zero.
 type preflightVideoOverride struct {
-	Key                string   `json:"key"`
-	Codec              *string  `json:"codec,omitempty"`
-	Accelerator        *string  `json:"accelerator,omitempty"`
-	Preset             *string  `json:"preset,omitempty"`
-	BitDepth           *int     `json:"bit_depth,omitempty"`
-	CRFMin             *int     `json:"crf_min,omitempty"`
-	CRFMax             *int     `json:"crf_max,omitempty"`
-	TargetVMAF         *float64 `json:"target_vmaf,omitempty"`
-	MinSavingsPercent  *float64 `json:"min_savings_percent,omitempty"`
-	ForceEncodeOnNoFit *bool    `json:"force_encode_on_no_fit,omitempty"`
-	SkipEncode         *bool    `json:"skip_encode,omitempty"`
-	FFmpegArgs         []string `json:"ffmpeg_args,omitempty"`
-	ABAV1Args          []string `json:"ab_av1_args,omitempty"`
+	Key                string                `json:"key"`
+	Codec              *string               `json:"codec,omitempty"`
+	Accelerator        *string               `json:"accelerator,omitempty"`
+	Preset             *string               `json:"preset,omitempty"`
+	BitDepth           *int                  `json:"bit_depth,omitempty"`
+	CRFMin             *int                  `json:"crf_min,omitempty"`
+	CRFMax             *int                  `json:"crf_max,omitempty"`
+	Metric             *domain.QualityMetric `json:"metric,omitempty"`
+	Target             *float64              `json:"target,omitempty"`
+	MinSavingsPercent  *float64              `json:"min_savings_percent,omitempty"`
+	ForceEncodeOnNoFit *bool                 `json:"force_encode_on_no_fit,omitempty"`
+	SkipEncode         *bool                 `json:"skip_encode,omitempty"`
+	FFmpegArgs         []string              `json:"ffmpeg_args,omitempty"`
+	ABAV1Args          []string              `json:"ab_av1_args,omitempty"`
 }
 
 type preflightSearchPolicy struct {
@@ -163,7 +165,8 @@ type preflightSearchPolicy struct {
 	Tool                         string   `json:"tool,omitempty"`
 	CRFMin                       int      `json:"crf_min,omitempty"`
 	CRFMax                       int      `json:"crf_max,omitempty"`
-	TargetVMAF                   string   `json:"target_vmaf,omitempty"`
+	Metric                       string   `json:"metric,omitempty"`
+	Target                       string   `json:"target,omitempty"`
 	SavingsPolicy                string   `json:"savings_policy,omitempty"`
 	ForceEncodeOnNoFit           bool     `json:"force_encode_on_no_fit"`
 	CustomArgs                   []string `json:"custom_args,omitempty"`
@@ -556,7 +559,8 @@ func preflightProfileFromDomain(profile domain.Profile) preflightProfile {
 		VideoBitDepth:      profile.Video.BitDepth,
 		CRFMin:             profile.Video.CRFMin,
 		CRFMax:             profile.Video.CRFMax,
-		TargetVMAF:         profile.Video.TargetVMAF,
+		Metric:             profile.Video.Metric,
+		Target:             profile.Video.Target,
 		ForceEncodeOnNoFit: profile.Video.ForceEncodeOnNoFit,
 		SkipEncode:         profile.Video.SkipEncode,
 		FFmpegArgs:         append([]string(nil), profile.Video.FFmpegArgs...),
@@ -598,7 +602,8 @@ func preflightVideoOverrides(video domain.VideoProfile) []preflightVideoOverride
 			BitDepth:           clonePreflightValue(override.BitDepth),
 			CRFMin:             clonePreflightValue(override.CRFMin),
 			CRFMax:             clonePreflightValue(override.CRFMax),
-			TargetVMAF:         clonePreflightValue(override.TargetVMAF),
+			Metric:             clonePreflightValue(override.Metric),
+			Target:             clonePreflightValue(override.Target),
 			MinSavingsPercent:  clonePreflightValue(override.MinSavingsPercent),
 			ForceEncodeOnNoFit: clonePreflightValue(override.ForceEncodeOnNoFit),
 			SkipEncode:         clonePreflightValue(override.SkipEncode),
@@ -646,7 +651,8 @@ func preflightSearch(flow domain.Flow, profile domain.Profile) preflightSearchPo
 		Tool:                         "ab-av1 crf-search",
 		CRFMin:                       profile.Video.CRFMin,
 		CRFMax:                       profile.Video.CRFMax,
-		TargetVMAF:                   formatFloat(profile.Video.TargetVMAF),
+		Metric:                       string(profile.Video.Metric),
+		Target:                       formatFloat(profile.Video.Target),
 		SavingsPolicy:                "ab-av1/search policy; explicit min-savings is not configured",
 		ForceEncodeOnNoFit:           profile.Video.ForceEncodeOnNoFit,
 		CustomArgs:                   append([]string(nil), profile.Video.ABAV1Args...),
@@ -872,11 +878,12 @@ func writePreflightReport(out io.Writer, report preflightReport) error {
 				w.Printf("  video override %s: %s\n", override.Key, strings.Join(fields, " "))
 			}
 			if item.Search.Enabled {
-				w.Printf("  search: %s crf=%d..%d target_vmaf=%s savings_policy=%s\n",
+				w.Printf("  search: %s crf=%d..%d metric=%s target=%s savings_policy=%s\n",
 					item.Search.Tool,
 					item.Search.CRFMin,
 					item.Search.CRFMax,
-					item.Search.TargetVMAF,
+					item.Search.Metric,
+					item.Search.Target,
 					item.Search.SavingsPolicy,
 				)
 				if len(item.Search.CustomArgs) > 0 || len(item.Search.DolbyVisionCustomArgs) > 0 {
@@ -946,8 +953,11 @@ func preflightVideoOverrideFields(override preflightVideoOverride) []string {
 	if override.CRFMax != nil {
 		fields = append(fields, fmt.Sprintf("crf_max=%d", *override.CRFMax))
 	}
-	if override.TargetVMAF != nil {
-		fields = append(fields, "target_vmaf="+strconv.FormatFloat(*override.TargetVMAF, 'f', -1, 64))
+	if override.Metric != nil {
+		fields = append(fields, "metric="+string(*override.Metric))
+	}
+	if override.Target != nil {
+		fields = append(fields, "target="+strconv.FormatFloat(*override.Target, 'f', -1, 64))
 	}
 	if override.MinSavingsPercent != nil {
 		fields = append(fields, "min_savings_percent="+strconv.FormatFloat(*override.MinSavingsPercent, 'f', -1, 64))
