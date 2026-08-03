@@ -146,6 +146,10 @@ func (c Config) Validate() error {
 			}
 			if override.Target != nil && validQualityMetric(effectiveMetric) && !validQualityTarget(effectiveMetric, *override.Target) {
 				problems = append(problems, fmt.Sprintf("%s.target must be between 0 and 100 for metric %q", prefix, effectiveMetric))
+			} else if override.Target != nil && *override.Target == 0 && effectiveMetric == "xpsnr" {
+				// A zero target omits --min-xpsnr, so ab-av1 would silently
+				// search against its VMAF default instead of XPSNR.
+				problems = append(problems, fmt.Sprintf("%s.target must be positive for metric \"xpsnr\" (typical targets are 35-50)", prefix))
 			}
 			if override.MinSavingsPercent != nil && (*override.MinSavingsPercent < 0 || *override.MinSavingsPercent > 100) {
 				problems = append(problems, prefix+".min_savings_percent must be between 0 and 100")
