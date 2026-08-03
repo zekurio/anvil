@@ -1,156 +1,34 @@
-[daemon]
-temp_dir = "/var/lib/anvil/tmp"
-store_path = "/var/lib/anvil/anvil.db"
-control_socket = "/run/anvil/anvild.sock"
-worker_count = 2
-total_threads = 8
-max_attempts = 3
-scan_interval = "30m"
-filesystem_event_debounce = "2s"
-scheduler_interval = "5s"
-lease_duration = "30m"
-shutdown_policy = "drain"
-shutdown_timeout = "0s"
-staging_cleanup_age = "0s"
-log_level = "info"
-
-[flows.av1-replace]
-steps = ["probe", "crop-detect", "audio-cleanup", "subtitle-cleanup", "stage", "crf-search", "encode", "dovi-fix", "track-stats", "validate", "replace", "cleanup"]
-
-# Download libraries must publish through handoff flows, not replace flows.
-[flows.download-av1-handoff]
-steps = ["probe", "crop-detect", "audio-cleanup", "subtitle-cleanup", "stage", "crf-search", "encode", "dovi-fix", "track-stats", "validate", "handoff", "cleanup"]
-
-[profiles.default-av1]
-container = "mkv"
-
-[profiles.default-av1.video]
-codec = "av1"
-accelerator = "software"
-preset = "6"
-bit_depth = 10
-crf_min = 18
-crf_max = 40
-metric = "vmaf"
-target = 95
-# metric = "xpsnr" with a typical target like 42 uses ab-av1 --min-xpsnr.
-min_savings_percent = 20
-force_encode_on_no_fit = false
-ffmpeg_args = []
-ab_av1_args = []
-
-[profiles.default-av1.video.dolby_vision]
-mode = "auto"
-remove_hdr10plus = false
-
-[profiles.default-av1.video.overrides.dolby_vision]
-codec = "hevc"
-accelerator = "qsv"
-preset = "medium"
-bit_depth = 10
-ffmpeg_args = ["-global_quality", "24"]
-ab_av1_args = ["--enc", "low_power=1"]
-
-# Per-source-codec overrides: absent fields inherit the base [video] values.
-# [profiles.default-av1.video.overrides.hevc]
-# # HEVC sources are already compressed: demand more quality and bigger savings.
-# target = 96
-# min_savings_percent = 40
-# [profiles.default-av1.video.overrides.h264]
-# # H.264 sources are usually near-source quality: be more lenient.
-# target = 93
-# [profiles.default-av1.video.overrides.av1]
-# # AV1 sources are already in the target codec: copy the video stream and
-# # skip CRF search entirely. Audio/subtitle cleanup and publish still run.
-# skip_encode = true
-
-[profiles.default-av1.audio]
-languages_to_keep = ["orig", "deu"]
-fallback = "keep_first"
-keep_commentary = false
-unknown_as_original = true
-
-[profiles.default-av1.subtitles]
-languages_to_keep = ["orig", "deu"]
-fallback = "keep_all"
-keep_forced = true
-keep_sdh = false
-keep_commentary = false
-unknown_as_original = true
-
-[profiles.default-av1.validation]
-duration_tolerance_seconds = 2
-
-[profiles.default-av1.metadata]
-mode = "preserve"
-track_titles = "strip"
-
-[profiles.default-av1.attachments]
-mode = "preserve"
-
-[profiles.default-av1.chapters]
-mode = "preserve"
-
-[arrs.movies]
+# Start with one library; the built-in AV1 profile and replace flow are safe defaults.
+[arrs.radarr]
 type = "radarr"
-base_url = "http://radarr:7878"
+base_url = "http://localhost:7878"
+# Keep credentials out of a broadly readable config file.
 api_key_file = "/run/secrets/radarr-api-key"
 
-[arrs.tv]
-type = "sonarr"
-base_url = "http://sonarr:8989"
-api_key_file = "/run/secrets/sonarr-api-key"
-
 [libraries.movies]
-kind = "media"
 path = "/srv/media/movies"
-arr = "movies"
-flow = "av1-replace"
-profile = "default-av1"
-scan_interval = "1h"
-priority = 0
-include = ["*.mkv", "*.mp4"]
-exclude = ["**/.staging/**"]
+arr = "radarr"
 
-[libraries.movies.media]
-replacement_mode = "replace"
+# Use download mode when another service should import completed downloads.
+# [libraries.downloads]
+# kind = "download"
+# path = "/srv/downloads/complete"
+# arr = "radarr"
+#
+# [libraries.downloads.download]
+# handoff_path = "/srv/imports/movies"
+# stable_for = "5m" # Wait for the downloader to finish writing before encoding.
+# handoff_mode = "move" # Choose move only when the downloader no longer needs its copy.
+# cleanup_source_media = true # Remove the source only after a successful handoff.
+# prune_empty_dirs = true # Clean release directories only when source cleanup is enabled.
 
-[libraries.usenet-tv]
-kind = "download"
-path = "/downloads/complete/tv"
-arr = "tv"
-flow = "download-av1-handoff"
-profile = "default-av1"
-scan_interval = "5m"
-priority = 10
-include = ["*.mkv", "*.mp4"]
-exclude = ["**/sample*/**", "**/*sample*"]
+# Switch the search metric only when XPSNR better fits your quality policy.
+# [profiles.default-av1.video]
+# metric = "xpsnr" # Typical XPSNR targets are 35-50.
+# target = 42.0
+#
+# [profiles.default-av1.video.overrides.hevc]
+# metric = "vmaf" # Let already-compressed HEVC use a stricter source-specific rule.
+# target = 96.0
 
-[libraries.usenet-tv.download]
-handoff_path = "/imports/tv"
-stable_for = "5m"
-package_mode = "auto"
-handoff_mode = "move"
-preserve_relative_path = true
-cleanup_source_media = true
-prune_empty_dirs = true
-# Ignorable globs are excluded from download-package discovery and stability
-# handling. During successful handoff source cleanup, matching paths may be
-# deleted when both cleanup_source_media and prune_empty_dirs are true.
-# External subtitle sidecars are preserved by default. A non-empty
-# ignorable_globs setting replaces the built-in list, so retain these defaults
-# when opting in to clean release-provided Subs/ directories.
-ignorable_globs = [
-  "**/samples/**",
-  "**/sample*/**",
-  "**/*sample*",
-  "**/*.txt",
-  "**/*.url",
-  "**/*.sfv",
-  "**/*.srr",
-  "**/*.nzb",
-  "**/__MACOSX/**",
-  "**/.DS_Store",
-  "**/.nfs*",
-  "**/[Ss][Uu][Bb][Ss]/**",
-]
+# Every supported setting and its default: examples/anvil-reference.toml
