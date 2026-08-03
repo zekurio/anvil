@@ -119,7 +119,7 @@ var retryHelp = commandHelp{
 		{flag: "--library NAME", description: "limit --failed to one configured library", defaultValue: `""`},
 	},
 	notes: []string{
-		"JOB is a numeric id or job slug. Use either JOB arguments or --failed.",
+		"JOB is a numeric id or job slug. JOB arguments and --failed combine: the named jobs are retried in addition to every failed job.",
 	},
 	examples: []string{
 		"anvilctl retry 42 sleepy-otter",
