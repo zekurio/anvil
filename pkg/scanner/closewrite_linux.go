@@ -78,13 +78,18 @@ func runCloseWriteWatcher(ctx context.Context, cfgProvider ConfigProvider, trigg
 	for {
 		select {
 		case <-ctx.Done():
-			// Closing the inotify descriptor makes the read loop's next read
-			// return EBADF. The pipe releases its blocking poll because Linux
-			// does not reliably wake a read when another goroutine closes it.
-			closeErr := closeInotifyFD(fd)
+			// Wake the reader through the pipe and wait for it to exit before
+			// closing the inotify descriptor. Closing first would race another
+			// goroutine reusing the descriptor number while the reader still
+			// reads it, and poll is not reliably woken by a cross-thread close.
 			wakeErr := wakeInotifyReader(wakeFDs[1])
+			if wakeErr != nil {
+				// A failed wake must not hang shutdown; closing the descriptor
+				// is the only remaining chance to unblock the reader.
+				wakeErr = errors.Join(wakeErr, closeInotifyFD(fd))
+			}
 			readErr := <-readDone
-			return errors.Join(ctx.Err(), closeErr, wakeErr, readErr)
+			return errors.Join(ctx.Err(), wakeErr, closeInotifyFD(fd), readErr)
 		case readErr := <-readDone:
 			return errors.Join(readErr, closeInotifyFD(fd))
 		case <-reconcileTimer.C:
@@ -129,10 +134,10 @@ func (w *closeWriteWatcher) readEvents(ctx context.Context) error {
 			return fmt.Errorf("poll close-write events: %w", err)
 		}
 		if pollFDs[1].Revents != 0 {
-			if _, err := unix.Read(w.fd, buffer); ctx.Err() != nil && errors.Is(err, unix.EBADF) {
-				return nil
-			}
-			return fmt.Errorf("close-write wake did not close inotify descriptor")
+			// The wake byte means shutdown was requested. Leave the inotify
+			// descriptor untouched: the parent closes it only after this loop
+			// has exited, so a reused descriptor number is never read.
+			return nil
 		}
 
 		n, err := unix.Read(w.fd, buffer)
