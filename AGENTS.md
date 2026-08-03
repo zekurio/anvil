@@ -141,8 +141,10 @@ Always respect `ctx` cancellation, and capture enough metadata (command, exit co
   stay free of persistence, ffmpeg, and CLI concerns.
 - `pkg/config` is the only place raw TOML is parsed. Downstream code receives
   resolved values via `cfg.ResolveForLibrary`; never reparse config elsewhere.
-  Canonical defaults, flows, and profiles live in `pkg/config/defaults.go` and
-  are mirrored in `nix/modules/anvil.nix` and `examples/anvil.toml`.
+  Canonical defaults, flows, and profiles live in `pkg/config/defaults.go`;
+  the Nix module mirrors the schema structure and defers values to Go (unset
+  options are omitted from the generated TOML), while
+  `examples/anvil-reference.toml` documents the defaults.
 - Pipeline step order comes from config flows, not code. A block's `Name()` is
   its config step name; adding a step means a block plus registration in
   `worker.DefaultPipeline`, plus the default flow lists in config and Nix.
