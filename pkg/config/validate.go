@@ -91,8 +91,10 @@ func (c Config) Validate() error {
 		if profile.Video.CRFMin > profile.Video.CRFMax {
 			problems = append(problems, fmt.Sprintf("profile %q crf_min must be less than or equal to crf_max", name))
 		}
-		if profile.Video.TargetVMAF < 0 || profile.Video.TargetVMAF > 100 {
-			problems = append(problems, fmt.Sprintf("profile %q target_vmaf must be between 0 and 100", name))
+		if !validQualityMetric(profile.Video.Metric) {
+			problems = append(problems, fmt.Sprintf("profile %q video.metric %q is invalid (must be vmaf or xpsnr)", name, profile.Video.Metric))
+		} else if !validQualityTarget(profile.Video.Metric, profile.Video.Target) {
+			problems = append(problems, fmt.Sprintf("profile %q video.target must be between 0 and 100 for metric %q", name, profile.Video.Metric))
 		}
 		if profile.Video.MinSavingsPercent < 0 || profile.Video.MinSavingsPercent > 100 {
 			problems = append(problems, fmt.Sprintf("profile %q min_savings_percent must be between 0 and 100", name))
@@ -126,8 +128,15 @@ func (c Config) Validate() error {
 			if override.BitDepth != nil && !video.ValidBitDepth(*override.BitDepth) {
 				problems = append(problems, fmt.Sprintf("%s.bit_depth %d is invalid (must be 8 or 10)", prefix, *override.BitDepth))
 			}
-			if override.TargetVMAF != nil && (*override.TargetVMAF < 0 || *override.TargetVMAF > 100) {
-				problems = append(problems, prefix+".target_vmaf must be between 0 and 100")
+			effectiveMetric := profile.Video.Metric
+			if override.Metric != nil {
+				effectiveMetric = *override.Metric
+				if !validQualityMetric(effectiveMetric) {
+					problems = append(problems, fmt.Sprintf("%s.metric %q is invalid (must be vmaf or xpsnr)", prefix, effectiveMetric))
+				}
+			}
+			if override.Target != nil && validQualityMetric(effectiveMetric) && !validQualityTarget(effectiveMetric, *override.Target) {
+				problems = append(problems, fmt.Sprintf("%s.target must be between 0 and 100 for metric %q", prefix, effectiveMetric))
 			}
 			if override.MinSavingsPercent != nil && (*override.MinSavingsPercent < 0 || *override.MinSavingsPercent > 100) {
 				problems = append(problems, prefix+".min_savings_percent must be between 0 and 100")
@@ -379,6 +388,19 @@ func sortedKeys[V any](values map[string]V) []string {
 	}
 	sort.Strings(keys)
 	return keys
+}
+
+func validQualityMetric(metric string) bool {
+	return metric == "vmaf" || metric == "xpsnr"
+}
+
+func validQualityTarget(metric string, target float64) bool {
+	switch metric {
+	case "vmaf", "xpsnr":
+		return target >= 0 && target <= 100
+	default:
+		return false
+	}
 }
 
 func validDolbyVisionMode(mode string) bool {

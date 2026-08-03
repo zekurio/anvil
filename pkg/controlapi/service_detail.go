@@ -284,7 +284,9 @@ func pipelineContextDetail(snapshot domain.JobPipelineContext) control.PipelineC
 	}
 	if snapshot.Search != nil {
 		result.SearchCRF = snapshot.Search.CRF
+		result.SearchMetric = string(snapshot.Search.Metric)
 		result.SearchVMAF = snapshot.Search.VMAF
+		result.SearchXPSNR = snapshot.Search.XPSNR
 		result.SearchSkipReason = snapshot.Search.VideoEncodeSkipReason
 	}
 	if snapshot.EncodePlan != nil {

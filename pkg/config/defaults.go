@@ -48,7 +48,8 @@ func Default() Config {
 					BitDepth:          video.DefaultBitDepth,
 					CRFMin:            18,
 					CRFMax:            40,
-					TargetVMAF:        95,
+					Metric:            "vmaf",
+					Target:            95,
 					MinSavingsPercent: DefaultMinSavingsPct,
 					DolbyVision: DolbyVisionConfig{
 						Mode: DefaultDolbyVisionMode,
@@ -188,6 +189,10 @@ func applyProfileDefaults(profile *ProfileConfig) {
 	if profile.Video.BitDepth == 0 {
 		profile.Video.BitDepth = video.DefaultBitDepth
 	}
+	if strings.TrimSpace(profile.Video.Metric) == "" {
+		profile.Video.Metric = "vmaf"
+	}
+	profile.Video.Metric = strings.ToLower(strings.TrimSpace(profile.Video.Metric))
 	if strings.TrimSpace(profile.Video.DolbyVision.Mode) == "" {
 		profile.Video.DolbyVision.Mode = DefaultDolbyVisionMode
 	}
@@ -203,6 +208,10 @@ func applyProfileDefaults(profile *ProfileConfig) {
 			if override.Accelerator != nil {
 				accelerator := video.NormalizeAccelerator(*override.Accelerator)
 				override.Accelerator = &accelerator
+			}
+			if override.Metric != nil {
+				metric := strings.ToLower(strings.TrimSpace(*override.Metric))
+				override.Metric = &metric
 			}
 
 			key = canonicalVideoOverrideKey(key)

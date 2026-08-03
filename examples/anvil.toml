@@ -31,7 +31,9 @@ preset = "6"
 bit_depth = 10
 crf_min = 18
 crf_max = 40
-target_vmaf = 95
+metric = "vmaf"
+target = 95
+# metric = "xpsnr" with a typical target like 42 uses ab-av1 --min-xpsnr.
 min_savings_percent = 20
 force_encode_on_no_fit = false
 ffmpeg_args = []
@@ -52,11 +54,11 @@ ab_av1_args = ["--enc", "low_power=1"]
 # Per-source-codec overrides: absent fields inherit the base [video] values.
 # [profiles.default-av1.video.overrides.hevc]
 # # HEVC sources are already compressed: demand more quality and bigger savings.
-# target_vmaf = 96
+# target = 96
 # min_savings_percent = 40
 # [profiles.default-av1.video.overrides.h264]
 # # H.264 sources are usually near-source quality: be more lenient.
-# target_vmaf = 93
+# target = 93
 # [profiles.default-av1.video.overrides.av1]
 # # AV1 sources are already in the target codec: copy the video stream and
 # # skip CRF search entirely. Audio/subtitle cleanup and publish still run.

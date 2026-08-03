@@ -94,8 +94,12 @@ func SearchArgs(plan domain.EncodePlan) []string {
 		"--min-crf", strconv.Itoa(crfMin(plan)),
 		"--max-crf", strconv.Itoa(crfMax(plan)),
 	}
-	if plan.TargetVMAF > 0 {
-		args = append(args, "--min-vmaf", strconv.FormatFloat(plan.TargetVMAF, 'f', -1, 64))
+	if plan.Target > 0 {
+		qualityArg := "--min-vmaf"
+		if plan.Metric == domain.QualityMetricXPSNR {
+			qualityArg = "--min-xpsnr"
+		}
+		args = append(args, qualityArg, strconv.FormatFloat(plan.Target, 'f', -1, 64))
 	}
 	if plan.MinSavingsPercent > 0 {
 		maxEncodedPercent := 100 - plan.MinSavingsPercent
@@ -135,8 +139,10 @@ func (Block) Name() string {
 }
 
 func (b Block) Run(ctx context.Context, job *pipeline.JobContext) error {
+	video, codec := effectiveVideo(job)
 	if job.Metadata.VideoAlreadyEncoded {
 		result := domain.SearchResult{
+			Metric:                video.Metric,
 			SkipVideoEncode:       true,
 			VideoEncodeSkipReason: "compatible Anvil video marker",
 			RawOutput:             "skipped: compatible Anvil video marker",
@@ -144,13 +150,13 @@ func (b Block) Run(ctx context.Context, job *pipeline.JobContext) error {
 		job.Search = &result
 		return nil
 	}
-	video, codec := effectiveVideo(job)
 	if codec == "" && len(job.Profile.Video.Overrides) > 0 {
 		return errors.New("source video codec is required to apply video overrides")
 	}
 	if video.SkipEncode {
 		reason := skipEncodeReason(codec)
 		result := domain.SearchResult{
+			Metric:                video.Metric,
 			SkipVideoEncode:       true,
 			VideoEncodeSkipReason: reason,
 			RawOutput:             "skipped: " + reason,
@@ -201,7 +207,8 @@ func searchPlan(job *pipeline.JobContext) domain.EncodePlan {
 		PixelFormat:        videocodec.SoftwarePixelFormat(video.BitDepth),
 		CRFMin:             video.CRFMin,
 		CRFMax:             video.CRFMax,
-		TargetVMAF:         video.TargetVMAF,
+		Metric:             video.Metric,
+		Target:             video.Target,
 		MinSavingsPercent:  video.MinSavingsPercent,
 		ForceEncodeOnNoFit: video.ForceEncodeOnNoFit,
 		Threads:            job.Resources.Threads,
@@ -254,6 +261,7 @@ func crfMax(plan domain.EncodePlan) int {
 var (
 	crfPattern         = regexp.MustCompile(`(?i)\bcrf\b[^0-9]*(\d{1,3})`)
 	vmafPattern        = regexp.MustCompile(`(?i)\bvmaf\b[^0-9]*(\d+(?:\.\d+)?)`)
+	xpsnrPattern       = regexp.MustCompile(`(?i)\bxpsnr\b[^0-9-]*(-?\d+(?:\.\d+)?)`)
 	noGoodCRFPattern   = regexp.MustCompile(`(?i)(failed to find a suitable crf|no suitable crf|no good crf|not worth (?:av1 )?encoding)`)
 	fatalSearchPattern = regexp.MustCompile(`(?i)(panicked at|failed to create temp-dir|permission denied|invalid value|unknown option|unrecognized option)`)
 )
@@ -271,11 +279,9 @@ func ParseResultForPlan(output []byte, plan domain.EncodePlan) (domain.SearchRes
 	if !ok {
 		return domain.SearchResult{}, fmt.Errorf("parse ab-av1 output: CRF not found")
 	}
-	vmaf, _ := lastFloatMatch(vmafPattern, text)
-	return domain.SearchResult{
-		CRF:  crf,
-		VMAF: vmaf,
-	}, nil
+	result := qualityResult(text, plan.Metric)
+	result.CRF = crf
+	return result, nil
 }
 
 func ParseSkipResult(text string) (domain.SearchResult, bool) {
@@ -286,20 +292,21 @@ func ParseNoFitResult(text string, plan domain.EncodePlan) (domain.SearchResult,
 	if !noGoodCRFPattern.MatchString(text) {
 		return domain.SearchResult{}, false
 	}
+	metric := activeMetric(plan.Metric)
 	if plan.ForceEncodeOnNoFit {
-		crf, vmaf, ok := lowestCRFObservation(text)
+		crf, score, ok := lowestCRFObservation(text, metric)
 		if !ok {
 			crf = crfMin(plan)
 		}
 		if crf > 0 {
-			return domain.SearchResult{
-				CRF:                     crf,
-				VMAF:                    vmaf,
-				ForcedVideoEncodeReason: forceNoGoodCRFReason(text, crf),
-			}, true
+			result := searchResultForScore(metric, score)
+			result.CRF = crf
+			result.ForcedVideoEncodeReason = forceNoGoodCRFReason(text, crf)
+			return result, true
 		}
 	}
 	return domain.SearchResult{
+		Metric:                metric,
 		SkipVideoEncode:       true,
 		VideoEncodeSkipReason: noGoodCRFReason(text),
 	}, true
@@ -327,16 +334,54 @@ func lastFloatMatch(pattern *regexp.Regexp, text string) (float64, bool) {
 	return value, err == nil
 }
 
-func lowestCRFObservation(text string) (int, float64, bool) {
+func qualityResult(text string, preferred domain.QualityMetric) domain.SearchResult {
+	vmaf, hasVMAF := lastFloatMatch(vmafPattern, text)
+	xpsnr, hasXPSNR := lastFloatMatch(xpsnrPattern, text)
+	switch {
+	case preferred == domain.QualityMetricXPSNR && hasXPSNR:
+		return searchResultForScore(domain.QualityMetricXPSNR, xpsnr)
+	case preferred != domain.QualityMetricXPSNR && hasVMAF:
+		return searchResultForScore(domain.QualityMetricVMAF, vmaf)
+	case hasXPSNR:
+		return searchResultForScore(domain.QualityMetricXPSNR, xpsnr)
+	case hasVMAF:
+		return searchResultForScore(domain.QualityMetricVMAF, vmaf)
+	default:
+		return domain.SearchResult{Metric: activeMetric(preferred)}
+	}
+}
+
+func activeMetric(metric domain.QualityMetric) domain.QualityMetric {
+	if metric == domain.QualityMetricXPSNR {
+		return domain.QualityMetricXPSNR
+	}
+	return domain.QualityMetricVMAF
+}
+
+func searchResultForScore(metric domain.QualityMetric, score float64) domain.SearchResult {
+	result := domain.SearchResult{Metric: metric}
+	if metric == domain.QualityMetricXPSNR {
+		result.XPSNR = score
+		return result
+	}
+	result.VMAF = score
+	return result
+}
+
+func lowestCRFObservation(text string, metric domain.QualityMetric) (int, float64, bool) {
 	bestCRF := 0
-	bestVMAF := 0.0
+	bestScore := 0.0
 	found := false
+	scorePattern := vmafPattern
+	if metric == domain.QualityMetricXPSNR {
+		scorePattern = xpsnrPattern
+	}
 	for _, line := range strings.Split(text, "\n") {
 		matches := crfPattern.FindAllStringSubmatch(line, -1)
 		if len(matches) == 0 {
 			continue
 		}
-		lineVMAF, _ := lastFloatMatch(vmafPattern, line)
+		lineScore, _ := lastFloatMatch(scorePattern, line)
 		for _, match := range matches {
 			value, err := strconv.Atoi(match[1])
 			if err != nil {
@@ -344,22 +389,22 @@ func lowestCRFObservation(text string) (int, float64, bool) {
 			}
 			if !found || value < bestCRF {
 				bestCRF = value
-				bestVMAF = lineVMAF
+				bestScore = lineScore
 				found = true
 			}
 		}
 	}
-	return bestCRF, bestVMAF, found
+	return bestCRF, bestScore, found
 }
 
 func noGoodCRFReason(text string) string {
 	for _, line := range strings.Split(text, "\n") {
 		line = strings.TrimSpace(line)
 		if noGoodCRFPattern.MatchString(line) {
-			return "ab-av1 did not find a CRF satisfying VMAF/size constraints: " + line
+			return "ab-av1 did not find a CRF satisfying quality/size constraints: " + line
 		}
 	}
-	return "ab-av1 did not find a CRF satisfying VMAF/size constraints"
+	return "ab-av1 did not find a CRF satisfying quality/size constraints"
 }
 
 func forceNoGoodCRFReason(text string, crf int) string {

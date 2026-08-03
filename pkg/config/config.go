@@ -18,8 +18,15 @@ func Load(path string) (Config, error) {
 			return Config{}, fmt.Errorf("load config %q: %w", path, err)
 		}
 		if undecoded := meta.Undecoded(); len(undecoded) > 0 {
+			var hints []string
 			if hint := dolbyVisionMigrationHint(undecoded); hint != "" {
-				return Config{}, fmt.Errorf("load config %q: unknown config keys: %s; %s", path, formatUndecodedKeys(undecoded), hint)
+				hints = append(hints, hint)
+			}
+			if hint := qualityTargetMigrationHint(undecoded); hint != "" {
+				hints = append(hints, hint)
+			}
+			if len(hints) > 0 {
+				return Config{}, fmt.Errorf("load config %q: unknown config keys: %s; %s", path, formatUndecodedKeys(undecoded), strings.Join(hints, "; "))
 			}
 			return Config{}, fmt.Errorf("load config %q: unknown config keys: %s", path, formatUndecodedKeys(undecoded))
 		}
@@ -74,6 +81,16 @@ func isMovedDolbyVisionField(field string) bool {
 	default:
 		return false
 	}
+}
+
+func qualityTargetMigrationHint(keys []toml.Key) string {
+	legacyKey := "target_" + "vmaf"
+	for _, key := range keys {
+		if len(key) >= 4 && key[0] == "profiles" && key[2] == "video" && key[len(key)-1] == legacyKey {
+			return legacyKey + " was replaced by metric and target; use metric = \"vmaf\" and target = 95"
+		}
+	}
+	return ""
 }
 
 func formatUndecodedKeys(keys []toml.Key) string {
