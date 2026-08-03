@@ -212,11 +212,7 @@ let
   # it system-wide must not drag ffmpeg into every user's profile. There is
   # deliberately no fallback to services.anvil.package.
   controlClientPackage = cfg.controlClient.package;
-  ffmpegPackage =
-    if pkgs.stdenv.isLinux then
-      (pkgs.jellyfin-ffmpeg or pkgs.ffmpeg)
-    else
-      pkgs.ffmpeg;
+  ffmpegPackage = pkgs.jellyfin-ffmpeg or pkgs.ffmpeg;
   storeDirectory = builtins.dirOf cfg.daemon.storePath;
   controlSocketDirectory = builtins.dirOf cfg.daemon.controlSocket;
   daemonDirectoryPaths = lib.unique [
