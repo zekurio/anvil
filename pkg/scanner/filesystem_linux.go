@@ -45,26 +45,40 @@ type filesystemLibrary struct {
 	download bool
 }
 
-type filesystemWatch struct {
+type filesystemWatchAlias struct {
 	path   string
 	device uint64
 	inode  uint64
 }
 
-type inotifyFilesystemWatcher struct {
-	fd         int
-	wakeRead   int
-	completion *CompletionTracker
-	triggers   chan<- ScanTrigger
+type filesystemWatch struct {
+	device  uint64
+	inode   uint64
+	aliases map[string]filesystemWatchAlias
+}
 
-	mu        sync.Mutex
-	wdToWatch map[int]filesystemWatch
-	dirToWD   map[string]int
-	libraries map[domain.LibraryName]filesystemLibrary
+type filesystemTriggerBatch map[domain.LibraryName]ScanTrigger
+
+type inotifyFilesystemWatcher struct {
+	fd                int
+	wakeRead          int
+	completion        *CompletionTracker
+	triggers          chan<- ScanTrigger
+	reconcileRequests chan<- struct{}
+	triggerReady      chan struct{}
+
+	mu             sync.Mutex
+	wdToWatch      map[int]*filesystemWatch
+	dirToWD        map[string]int
+	ignoredPending map[int]int
+	libraries      map[domain.LibraryName]filesystemLibrary
+
+	triggerMu       sync.Mutex
+	pendingTriggers map[domain.LibraryName]ScanTrigger
 }
 
 func (s FilesystemEventSource) Run(ctx context.Context, cfgProvider ConfigProvider, triggers chan<- ScanTrigger) (runErr error) {
-	fd, err := unix.InotifyInit1(unix.IN_CLOEXEC)
+	fd, err := unix.InotifyInit1(unix.IN_CLOEXEC | unix.IN_NONBLOCK)
 	if err != nil {
 		return fmt.Errorf("initialize filesystem watcher: %w", err)
 	}
@@ -76,20 +90,34 @@ func (s FilesystemEventSource) Run(ctx context.Context, cfgProvider ConfigProvid
 		runErr = errors.Join(runErr, closeFilesystemWakeFD(wakeFDs[0]), closeFilesystemWakeFD(wakeFDs[1]))
 	}()
 
+	reconcileRequests := make(chan struct{}, 1)
 	watcher := &inotifyFilesystemWatcher{
-		fd:         fd,
-		wakeRead:   wakeFDs[0],
-		completion: s.Completion,
-		triggers:   triggers,
-		wdToWatch:  make(map[int]filesystemWatch),
-		dirToWD:    make(map[string]int),
-		libraries:  make(map[domain.LibraryName]filesystemLibrary),
+		fd:                fd,
+		wakeRead:          wakeFDs[0],
+		completion:        s.Completion,
+		triggers:          triggers,
+		reconcileRequests: reconcileRequests,
+		triggerReady:      make(chan struct{}, 1),
+		wdToWatch:         make(map[int]*filesystemWatch),
+		dirToWD:           make(map[string]int),
+		ignoredPending:    make(map[int]int),
+		libraries:         make(map[domain.LibraryName]filesystemLibrary),
+		pendingTriggers:   make(map[domain.LibraryName]ScanTrigger),
 	}
-	watcher.reconcile(ctx, cfgProvider())
+
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	watcher.reconcile(runCtx, cfgProvider())
+
+	dispatchDone := make(chan struct{})
+	go func() {
+		defer close(dispatchDone)
+		watcher.dispatchTriggers(runCtx)
+	}()
 
 	readDone := make(chan error, 1)
 	go func() {
-		readDone <- watcher.readEvents(ctx)
+		readDone <- watcher.readEvents(runCtx)
 	}()
 
 	interval := s.ReconcileInterval
@@ -102,6 +130,7 @@ func (s FilesystemEventSource) Run(ctx context.Context, cfgProvider ConfigProvid
 	for {
 		select {
 		case <-ctx.Done():
+			cancel()
 			// Wake the reader through the pipe and wait for it to exit before
 			// closing the inotify descriptor. Closing first could let another
 			// goroutine reuse the descriptor number while the reader still has it.
@@ -112,14 +141,21 @@ func (s FilesystemEventSource) Run(ctx context.Context, cfgProvider ConfigProvid
 				wakeErr = errors.Join(wakeErr, closeFilesystemInotifyFD(fd))
 			}
 			readErr := <-readDone
+			<-dispatchDone
 			return errors.Join(ctx.Err(), wakeErr, closeFilesystemInotifyFD(fd), readErr)
 		case readErr := <-readDone:
+			cancel()
+			<-dispatchDone
 			if readErr == nil {
 				readErr = errors.New("filesystem event reader stopped")
 			}
 			return errors.Join(readErr, closeFilesystemInotifyFD(fd))
+		case <-reconcileRequests:
+			stopTimer(reconcileTimer)
+			watcher.reconcile(runCtx, cfgProvider())
+			reconcileTimer.Reset(interval)
 		case <-reconcileTimer.C:
-			watcher.reconcile(ctx, cfgProvider())
+			watcher.reconcile(runCtx, cfgProvider())
 			reconcileTimer.Reset(interval)
 		}
 	}
@@ -168,26 +204,43 @@ func (w *inotifyFilesystemWatcher) readEvents(ctx context.Context) error {
 			return fmt.Errorf("poll filesystem events returned flags %#x", pollFDs[0].Revents)
 		}
 
-		n, err := unix.Read(w.fd, buffer)
-		if err != nil {
+		batch := make(filesystemTriggerBatch)
+		for {
+			// A continuously busy inotify fd may never reach EAGAIN. Check
+			// cancellation between reads so shutdown cannot be starved by an
+			// event producer that fills the queue as quickly as it is drained.
+			if ctx.Err() != nil {
+				return nil
+			}
+			n, err := unix.Read(w.fd, buffer)
 			if errors.Is(err, unix.EINTR) {
 				continue
 			}
-			if ctx.Err() != nil && (errors.Is(err, unix.EBADF) || errors.Is(err, unix.EINVAL)) {
-				return nil
+			if errors.Is(err, unix.EAGAIN) {
+				break
 			}
-			return fmt.Errorf("read filesystem events: %w", err)
+			if err != nil {
+				if ctx.Err() != nil && (errors.Is(err, unix.EBADF) || errors.Is(err, unix.EINVAL)) {
+					return nil
+				}
+				return fmt.Errorf("read filesystem events: %w", err)
+			}
+			if n == 0 {
+				return errors.New("filesystem event stream closed")
+			}
+			if err := w.parseEvents(ctx, buffer[:n], batch); err != nil {
+				w.publishTriggers(batch)
+				return err
+			}
 		}
-		if n == 0 {
-			return errors.New("filesystem event stream closed")
-		}
-		if err := w.parseEvents(ctx, buffer[:n]); err != nil {
-			return err
-		}
+		// Publish only after draining events already queued in the kernel. This
+		// lets a later mutation invalidate an earlier close before a scan can use
+		// the completion confidence, while dispatch remains free to block.
+		w.publishTriggers(batch)
 	}
 }
 
-func (w *inotifyFilesystemWatcher) parseEvents(ctx context.Context, buffer []byte) error {
+func (w *inotifyFilesystemWatcher) parseEvents(ctx context.Context, buffer []byte, batch filesystemTriggerBatch) error {
 	offset := 0
 	for offset+unix.SizeofInotifyEvent <= len(buffer) {
 		event := (*unix.InotifyEvent)(unsafe.Pointer(&buffer[offset]))
@@ -198,9 +251,7 @@ func (w *inotifyFilesystemWatcher) parseEvents(ctx context.Context, buffer []byt
 		}
 		name := string(bytes.TrimRight(buffer[offset:nameEnd], "\x00"))
 		offset = nameEnd
-		if !w.handleEvent(ctx, int(event.Wd), event.Mask, name) {
-			return ctx.Err()
-		}
+		w.handleEvent(ctx, int(event.Wd), event.Mask, name, batch)
 	}
 	if offset != len(buffer) {
 		return errors.New("parse filesystem event: truncated event")
@@ -208,76 +259,89 @@ func (w *inotifyFilesystemWatcher) parseEvents(ctx context.Context, buffer []byt
 	return nil
 }
 
-func (w *inotifyFilesystemWatcher) handleEvent(ctx context.Context, wd int, mask uint32, name string) bool {
+func (w *inotifyFilesystemWatcher) handleEvent(ctx context.Context, wd int, mask uint32, name string, batch filesystemTriggerBatch) {
 	if mask&unix.IN_Q_OVERFLOW != 0 {
+		slog.Warn("filesystem event queue overflow", "action", "clear completion confidence and reconcile watches")
+		w.completion.Reset()
+		w.clearPendingTriggers()
+		w.requestReconcile()
 		for _, libraryName := range w.libraryNames() {
-			if !w.emit(ctx, ScanTrigger{LibraryName: libraryName, Reason: "filesystem"}) {
-				return false
-			}
+			// Ordering was lost, so replace stronger completion events from this
+			// batch with a full-library scan that cannot bypass stability.
+			batch[libraryName] = ScanTrigger{LibraryName: libraryName, Reason: "filesystem"}
 		}
-		return true
+		return
 	}
-
-	watch, ok := w.watchForDescriptor(wd)
 	if mask&unix.IN_IGNORED != 0 {
-		w.dropWatch(wd)
-		return true
-	}
-	if !ok {
-		return true
+		w.handleIgnored(wd)
+		return
 	}
 
-	absPath := watch.path
-	if name != "" {
-		absPath = filepath.Join(watch.path, name)
+	aliases := w.aliasesForDescriptor(wd)
+	if len(aliases) == 0 {
+		return
 	}
-	absPath = filepath.Clean(absPath)
+	targets := filesystemEventPaths(aliases, name)
 	isDir := mask&unix.IN_ISDIR != 0
 
+	// Mutation events are ordered after close events on the same inotify fd.
+	// Invalidate every lexical alias before any trigger from this event can be
+	// published; a later close will establish confidence again.
+	if !isDir && mask&(unix.IN_CREATE|unix.IN_MODIFY|unix.IN_MOVED_FROM) != 0 {
+		for _, path := range targets {
+			w.completion.Invalidate(path)
+		}
+	}
+
 	if mask&unix.IN_DELETE_SELF != 0 {
-		w.dropWatch(wd)
-		return true
+		w.pruneStaleAliases(aliases)
+		return
 	}
 	if mask&unix.IN_MOVE_SELF != 0 {
-		w.refreshMovedWatch(wd)
+		w.pruneStaleAliases(aliases)
 	}
 
 	if isDir && mask&(unix.IN_CREATE|unix.IN_MOVED_TO) != 0 {
-		if _, err := w.addRecursive(ctx, absPath); err != nil && ctx.Err() == nil && !errors.Is(err, fs.ErrNotExist) {
-			slog.Warn("add filesystem watches for new directory", "path", absPath, "error", err)
-		}
-	}
-	if isDir && mask&unix.IN_MOVED_TO != 0 {
-		return w.handleMovedInDirectory(ctx, absPath)
-	}
-	if mask&filesystemTriggerMask == 0 {
-		return true
-	}
-
-	libraries := w.librariesFor(absPath)
-	completionEvent := !isDir && mask&(unix.IN_CLOSE_WRITE|unix.IN_MOVED_TO) != 0
-	if completionEvent && w.completion != nil {
-		for _, library := range libraries {
-			if library.download {
-				w.completion.Mark(absPath, time.Now().UTC())
-				break
+		for _, path := range targets {
+			if _, err := w.addRecursive(ctx, path); err != nil && ctx.Err() == nil && !errors.Is(err, fs.ErrNotExist) {
+				slog.Warn("add filesystem watches for new directory", "path", path, "error", err)
 			}
 		}
 	}
-	for _, library := range libraries {
-		trigger := ScanTrigger{LibraryName: library.name, Reason: "filesystem", Path: absPath}
-		if completionEvent && library.download && w.completion != nil {
-			trigger.Reason = "transfer-complete"
-			trigger.Completed = true
+	if isDir && mask&unix.IN_MOVED_TO != 0 {
+		for _, path := range targets {
+			w.handleMovedInDirectory(ctx, path, batch)
 		}
-		if !w.emit(ctx, trigger) {
-			return false
+		return
+	}
+	if mask&filesystemTriggerMask == 0 {
+		return
+	}
+
+	completionEvent := !isDir && mask&(unix.IN_CLOSE_WRITE|unix.IN_MOVED_TO) != 0
+	markedAt := time.Now().UTC()
+	for _, path := range targets {
+		libraries := w.librariesFor(path)
+		if completionEvent {
+			for _, library := range libraries {
+				if library.download {
+					w.completion.Mark(path, markedAt)
+					break
+				}
+			}
+		}
+		for _, library := range libraries {
+			trigger := ScanTrigger{LibraryName: library.name, Reason: "filesystem", Path: path}
+			if completionEvent && library.download && w.completion != nil {
+				trigger.Reason = "transfer-complete"
+				trigger.Completed = true
+			}
+			queueFilesystemTrigger(batch, trigger)
 		}
 	}
-	return true
 }
 
-func (w *inotifyFilesystemWatcher) handleMovedInDirectory(ctx context.Context, path string) bool {
+func (w *inotifyFilesystemWatcher) handleMovedInDirectory(ctx context.Context, path string, batch filesystemTriggerBatch) {
 	libraries := w.librariesForMovedDirectory(path)
 	if w.completion != nil {
 		markRoots := make(map[string]struct{})
@@ -310,11 +374,8 @@ func (w *inotifyFilesystemWatcher) handleMovedInDirectory(ctx context.Context, p
 			trigger.Reason = "transfer-complete"
 			trigger.Completed = true
 		}
-		if !w.emit(ctx, trigger) {
-			return false
-		}
+		queueFilesystemTrigger(batch, trigger)
 	}
-	return true
 }
 
 func (w *inotifyFilesystemWatcher) reconcile(ctx context.Context, cfg config.Config) {
@@ -343,9 +404,7 @@ func (w *inotifyFilesystemWatcher) reconcile(ctx context.Context, cfg config.Con
 		next[configured.name] = configured
 	}
 
-	w.mu.Lock()
-	w.libraries = next
-	w.mu.Unlock()
+	w.replaceLibraries(next)
 	w.removeUnneededWatches(next)
 
 	seenRoots := make(map[string]struct{}, len(next))
@@ -371,6 +430,20 @@ func (w *inotifyFilesystemWatcher) reconcile(ctx context.Context, cfg config.Con
 	}
 }
 
+func (w *inotifyFilesystemWatcher) replaceLibraries(libraries map[domain.LibraryName]filesystemLibrary) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.triggerMu.Lock()
+	defer w.triggerMu.Unlock()
+
+	w.libraries = libraries
+	for name := range w.pendingTriggers {
+		if _, ok := libraries[name]; !ok {
+			delete(w.pendingTriggers, name)
+		}
+	}
+}
+
 func (w *inotifyFilesystemWatcher) removeUnneededWatches(libraries map[domain.LibraryName]filesystemLibrary) {
 	roots := make([]string, 0, len(libraries))
 	for _, library := range libraries {
@@ -378,23 +451,31 @@ func (w *inotifyFilesystemWatcher) removeUnneededWatches(libraries map[domain.Li
 			roots = append(roots, library.root)
 		}
 	}
+	sort.Strings(roots)
 
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	for wd, watch := range w.wdToWatch {
-		keep := false
-		for _, root := range roots {
-			if pathWithinRoot(watch.path, root) && filesystemWatchIdentityMatches(watch) {
-				keep = true
-				break
+	for _, wd := range sortedWatchDescriptors(w.wdToWatch) {
+		watch := w.wdToWatch[wd]
+		for _, alias := range sortedWatchAliases(watch) {
+			keep := filesystemWatchIdentityMatches(alias)
+			if keep {
+				keep = false
+				for _, root := range roots {
+					if pathWithinRoot(alias.path, root) {
+						keep = true
+						break
+					}
+				}
+			}
+			if !keep {
+				w.deleteAliasLocked(wd, alias.path)
 			}
 		}
-		if keep {
-			continue
-		}
-		w.deleteWatchLocked(wd, watch)
-		if _, err := unix.InotifyRmWatch(w.fd, uint32(wd)); err != nil && !errors.Is(err, unix.EINVAL) && !errors.Is(err, unix.EBADF) {
-			slog.Debug("remove filesystem watch", "path", watch.path, "error", err)
+		if len(watch.aliases) == 0 {
+			if err := w.removeEmptyWatchLocked(wd); err != nil {
+				slog.Debug("remove unneeded filesystem watch", "wd", wd, "error", err)
+			}
 		}
 	}
 }
@@ -446,29 +527,57 @@ func (w *inotifyFilesystemWatcher) addWatch(dir string) error {
 	if err := unix.Stat(dir, &stat); err != nil {
 		return err
 	}
+	alias := filesystemWatchAlias{path: dir, device: stat.Dev, inode: stat.Ino}
 
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	oldWD := -1
 	if wd, ok := w.dirToWD[dir]; ok {
 		watch := w.wdToWatch[wd]
-		if watch.device == stat.Dev && watch.inode == stat.Ino {
-			return nil
+		if watch != nil {
+			if current, exists := watch.aliases[dir]; exists && current.device == stat.Dev && current.inode == stat.Ino {
+				return nil
+			}
+			w.deleteAliasLocked(wd, dir)
+		} else {
+			delete(w.dirToWD, dir)
 		}
-		w.deleteWatchLocked(wd, watch)
-		if _, err := unix.InotifyRmWatch(w.fd, uint32(wd)); err != nil && !errors.Is(err, unix.EINVAL) && !errors.Is(err, unix.EBADF) {
-			return fmt.Errorf("replace stale filesystem watch: %w", err)
-		}
+		oldWD = wd
 	}
 
 	wd, err := unix.InotifyAddWatch(w.fd, dir, filesystemWatchMask)
 	if err != nil {
+		if oldWD >= 0 {
+			err = errors.Join(err, w.removeEmptyWatchLocked(oldWD))
+		}
 		return err
 	}
-	if old, ok := w.wdToWatch[wd]; ok && old.path != dir {
-		delete(w.dirToWD, old.path)
+
+	watch := w.wdToWatch[wd]
+	if watch != nil && (watch.device != stat.Dev || watch.inode != stat.Ino) {
+		// The kernel reused a descriptor whose automatic IN_IGNORED is still
+		// queued. Retire only the stale userspace aliases and consume that old
+		// notification without dropping the newly installed watch.
+		w.deleteWatchStateLocked(wd)
+		w.ignoredPending[wd]++
+		watch = nil
 	}
-	w.wdToWatch[wd] = filesystemWatch{path: dir, device: stat.Dev, inode: stat.Ino}
+	if watch == nil {
+		watch = &filesystemWatch{
+			device:  stat.Dev,
+			inode:   stat.Ino,
+			aliases: make(map[string]filesystemWatchAlias),
+		}
+		w.wdToWatch[wd] = watch
+	}
+	watch.aliases[dir] = alias
 	w.dirToWD[dir] = wd
+
+	if oldWD >= 0 && oldWD != wd {
+		if err := w.removeEmptyWatchLocked(oldWD); err != nil {
+			return fmt.Errorf("remove replaced filesystem watch: %w", err)
+		}
+	}
 	return nil
 }
 
@@ -494,46 +603,147 @@ func (w *inotifyFilesystemWatcher) markRegularFiles(ctx context.Context, root st
 	})
 }
 
-func (w *inotifyFilesystemWatcher) watchForDescriptor(wd int) (filesystemWatch, bool) {
+func (w *inotifyFilesystemWatcher) aliasesForDescriptor(wd int) []filesystemWatchAlias {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	watch, ok := w.wdToWatch[wd]
-	return watch, ok
+	return sortedWatchAliases(w.wdToWatch[wd])
 }
 
-func (w *inotifyFilesystemWatcher) dropWatch(wd int) {
+func (w *inotifyFilesystemWatcher) handleIgnored(wd int) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	watch, ok := w.wdToWatch[wd]
-	if !ok {
+	if pending := w.ignoredPending[wd]; pending > 0 {
+		if pending == 1 {
+			delete(w.ignoredPending, wd)
+		} else {
+			w.ignoredPending[wd] = pending - 1
+		}
 		return
 	}
-	w.deleteWatchLocked(wd, watch)
+	w.deleteWatchStateLocked(wd)
 }
 
-func (w *inotifyFilesystemWatcher) refreshMovedWatch(wd int) {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	watch, ok := w.wdToWatch[wd]
-	if !ok || filesystemWatchIdentityMatches(watch) {
+func (w *inotifyFilesystemWatcher) pruneStaleAliases(eventAliases []filesystemWatchAlias) {
+	staleRoots := make([]string, 0, len(eventAliases))
+	for _, alias := range eventAliases {
+		if !filesystemWatchIdentityMatches(alias) {
+			staleRoots = append(staleRoots, alias.path)
+		}
+	}
+	if len(staleRoots) == 0 {
 		return
 	}
-	w.deleteWatchLocked(wd, watch)
-	if _, err := unix.InotifyRmWatch(w.fd, uint32(wd)); err != nil && !errors.Is(err, unix.EINVAL) && !errors.Is(err, unix.EBADF) {
-		slog.Debug("remove moved filesystem watch", "path", watch.path, "error", err)
+	sort.Strings(staleRoots)
+
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	for _, wd := range sortedWatchDescriptors(w.wdToWatch) {
+		watch := w.wdToWatch[wd]
+		for _, alias := range sortedWatchAliases(watch) {
+			underStaleRoot := false
+			for _, root := range staleRoots {
+				if pathWithinRoot(alias.path, root) {
+					underStaleRoot = true
+					break
+				}
+			}
+			if underStaleRoot && !filesystemWatchIdentityMatches(alias) {
+				w.deleteAliasLocked(wd, alias.path)
+			}
+		}
+		if len(watch.aliases) == 0 {
+			if err := w.removeEmptyWatchLocked(wd); err != nil {
+				slog.Debug("remove stale moved filesystem watch", "wd", wd, "error", err)
+			}
+		}
 	}
 }
 
-func (w *inotifyFilesystemWatcher) deleteWatchLocked(wd int, watch filesystemWatch) {
+func (w *inotifyFilesystemWatcher) deleteAliasLocked(wd int, path string) {
+	watch := w.wdToWatch[wd]
+	if watch != nil {
+		delete(watch.aliases, path)
+	}
+	if currentWD, ok := w.dirToWD[path]; ok && currentWD == wd {
+		delete(w.dirToWD, path)
+	}
+}
+
+func (w *inotifyFilesystemWatcher) deleteWatchStateLocked(wd int) {
+	watch := w.wdToWatch[wd]
+	if watch == nil {
+		return
+	}
+	for path := range watch.aliases {
+		if currentWD, ok := w.dirToWD[path]; ok && currentWD == wd {
+			delete(w.dirToWD, path)
+		}
+	}
 	delete(w.wdToWatch, wd)
-	if currentWD, ok := w.dirToWD[watch.path]; ok && currentWD == wd {
-		delete(w.dirToWD, watch.path)
-	}
 }
 
-func filesystemWatchIdentityMatches(watch filesystemWatch) bool {
+func (w *inotifyFilesystemWatcher) removeEmptyWatchLocked(wd int) error {
+	watch := w.wdToWatch[wd]
+	if watch == nil || len(watch.aliases) != 0 {
+		return nil
+	}
+	delete(w.wdToWatch, wd)
+	_, err := unix.InotifyRmWatch(w.fd, uint32(wd))
+	if err == nil || errors.Is(err, unix.EINVAL) {
+		// IN_IGNORED is queued by both explicit and automatic removal. Remember
+		// it in case the kernel reuses wd before the reader reaches that event.
+		w.ignoredPending[wd]++
+		return nil
+	}
+	if errors.Is(err, unix.EBADF) {
+		return nil
+	}
+	return err
+}
+
+func filesystemWatchIdentityMatches(alias filesystemWatchAlias) bool {
 	var stat unix.Stat_t
-	return unix.Stat(watch.path, &stat) == nil && watch.device == stat.Dev && watch.inode == stat.Ino
+	return unix.Stat(alias.path, &stat) == nil && alias.device == stat.Dev && alias.inode == stat.Ino
+}
+
+func sortedWatchDescriptors(watches map[int]*filesystemWatch) []int {
+	wds := make([]int, 0, len(watches))
+	for wd := range watches {
+		wds = append(wds, wd)
+	}
+	sort.Ints(wds)
+	return wds
+}
+
+func sortedWatchAliases(watch *filesystemWatch) []filesystemWatchAlias {
+	if watch == nil {
+		return nil
+	}
+	aliases := make([]filesystemWatchAlias, 0, len(watch.aliases))
+	for _, alias := range watch.aliases {
+		aliases = append(aliases, alias)
+	}
+	sort.Slice(aliases, func(i, j int) bool {
+		return aliases[i].path < aliases[j].path
+	})
+	return aliases
+}
+
+func filesystemEventPaths(aliases []filesystemWatchAlias, name string) []string {
+	unique := make(map[string]struct{}, len(aliases))
+	for _, alias := range aliases {
+		path := alias.path
+		if name != "" {
+			path = filepath.Join(path, name)
+		}
+		unique[filepath.Clean(path)] = struct{}{}
+	}
+	paths := make([]string, 0, len(unique))
+	for path := range unique {
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+	return paths
 }
 
 func (w *inotifyFilesystemWatcher) librariesFor(path string) []filesystemLibrary {
@@ -587,11 +797,116 @@ func (w *inotifyFilesystemWatcher) libraryNames() []domain.LibraryName {
 	return names
 }
 
-func (w *inotifyFilesystemWatcher) emit(ctx context.Context, trigger ScanTrigger) bool {
+func queueFilesystemTrigger(batch filesystemTriggerBatch, trigger ScanTrigger) {
+	if trigger.LibraryName == "" {
+		return
+	}
+	current, exists := batch[trigger.LibraryName]
+	if !exists {
+		batch[trigger.LibraryName] = trigger
+		return
+	}
+	batch[trigger.LibraryName] = strongerFilesystemTrigger(current, trigger)
+}
+
+func strongerFilesystemTrigger(current ScanTrigger, next ScanTrigger) ScanTrigger {
+	if current.Completed != next.Completed {
+		if next.Completed {
+			return next
+		}
+		return current
+	}
+	// A pathless trigger requests a whole-library scan (not a stability delay),
+	// so it is stronger than a path-specific ordinary event after overflow.
+	if !current.Completed && (current.Path == "") != (next.Path == "") {
+		if next.Path == "" {
+			return next
+		}
+		return current
+	}
+	if next.Path < current.Path {
+		return next
+	}
+	return current
+}
+
+func (w *inotifyFilesystemWatcher) publishTriggers(batch filesystemTriggerBatch) {
+	if len(batch) == 0 {
+		return
+	}
+
+	w.mu.Lock()
+	w.triggerMu.Lock()
+	published := false
+	for name, trigger := range batch {
+		if _, configured := w.libraries[name]; !configured {
+			continue
+		}
+		current, exists := w.pendingTriggers[name]
+		if exists {
+			trigger = strongerFilesystemTrigger(current, trigger)
+		}
+		w.pendingTriggers[name] = trigger
+		published = true
+	}
+	w.triggerMu.Unlock()
+	w.mu.Unlock()
+	if !published {
+		return
+	}
 	select {
-	case w.triggers <- trigger:
-		return true
-	case <-ctx.Done():
-		return false
+	case w.triggerReady <- struct{}{}:
+	default:
+	}
+}
+
+func (w *inotifyFilesystemWatcher) dispatchTriggers(ctx context.Context) {
+	for {
+		trigger, ok := w.takePendingTrigger()
+		if !ok {
+			select {
+			case <-ctx.Done():
+				return
+			case <-w.triggerReady:
+			}
+			continue
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case w.triggers <- trigger:
+		}
+	}
+}
+
+func (w *inotifyFilesystemWatcher) takePendingTrigger() (ScanTrigger, bool) {
+	w.triggerMu.Lock()
+	defer w.triggerMu.Unlock()
+	if len(w.pendingTriggers) == 0 {
+		return ScanTrigger{}, false
+	}
+	names := make([]domain.LibraryName, 0, len(w.pendingTriggers))
+	for name := range w.pendingTriggers {
+		names = append(names, name)
+	}
+	sort.Slice(names, func(i, j int) bool {
+		return names[i] < names[j]
+	})
+	name := names[0]
+	trigger := w.pendingTriggers[name]
+	delete(w.pendingTriggers, name)
+	return trigger, true
+}
+
+func (w *inotifyFilesystemWatcher) clearPendingTriggers() {
+	w.triggerMu.Lock()
+	defer w.triggerMu.Unlock()
+	clear(w.pendingTriggers)
+}
+
+func (w *inotifyFilesystemWatcher) requestReconcile() {
+	select {
+	case w.reconcileRequests <- struct{}{}:
+	default:
 	}
 }

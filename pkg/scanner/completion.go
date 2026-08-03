@@ -21,14 +21,10 @@ type CompletionTracker struct {
 
 // Mark records that a writer completed or moved path into a watched library.
 func (t *CompletionTracker) Mark(path string, at time.Time) {
-	if t == nil || path == "" {
+	absPath, ok := completionPath(path)
+	if t == nil || !ok {
 		return
 	}
-	absPath, err := filepath.Abs(path)
-	if err != nil {
-		return
-	}
-	absPath = filepath.Clean(absPath)
 
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -69,21 +65,54 @@ func (t *CompletionTracker) Mark(path string, at time.Time) {
 	}
 }
 
-// CompletedSince reports whether path has a completion mark at or after its
-// current modification time. A later write therefore invalidates an earlier
-// close signal.
-func (t *CompletionTracker) CompletedSince(path string, modTime time.Time) bool {
-	if t == nil || path == "" {
-		return false
+// Invalidate removes the completion confidence for path. Filesystem event
+// processing calls it in event-sequence order when a new write may have begun.
+func (t *CompletionTracker) Invalidate(path string) {
+	absPath, ok := completionPath(path)
+	if t == nil || !ok {
+		return
 	}
-	absPath, err := filepath.Abs(path)
-	if err != nil {
-		return false
-	}
-	absPath = filepath.Clean(absPath)
 
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	markedAt, ok := t.marks[absPath]
-	return ok && !modTime.After(markedAt)
+	delete(t.marks, absPath)
+}
+
+// Reset removes all completion confidence after filesystem event ordering is
+// lost, such as when the inotify queue overflows.
+func (t *CompletionTracker) Reset() {
+	if t == nil {
+		return
+	}
+
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.marks = nil
+	t.pruneAt = time.Time{}
+}
+
+// CompletedSince reports whether path has a completion mark at or after its
+// current modification time. Explicit mutation invalidation preserves event
+// ordering; the modification-time check is an additional defense.
+func (t *CompletionTracker) CompletedSince(path string, modTime time.Time) bool {
+	absPath, pathOK := completionPath(path)
+	if t == nil || !pathOK {
+		return false
+	}
+
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	markedAt, marked := t.marks[absPath]
+	return marked && !modTime.After(markedAt)
+}
+
+func completionPath(path string) (string, bool) {
+	if path == "" {
+		return "", false
+	}
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return "", false
+	}
+	return filepath.Clean(absPath), true
 }
