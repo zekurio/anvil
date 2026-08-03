@@ -121,7 +121,12 @@ func writePipelineContext(w *textout.Writer, context control.PipelineContextDeta
 			w.Printf("  Search: skipped video encode (%s)\n", context.SearchSkipReason)
 		} else {
 			w.Printf("  Search: CRF %d", context.SearchCRF)
-			if context.SearchVMAF > 0 {
+			// XPSNR scores can be zero or negative, so the metric label — not
+			// the value — decides which score is shown. A missing metric means
+			// the checkpoint predates XPSNR support and only VMAF can be present.
+			if context.SearchMetric == string(domain.QualityMetricXPSNR) {
+				w.Printf(" XPSNR %.2f", context.SearchXPSNR)
+			} else if context.SearchVMAF > 0 {
 				w.Printf(" VMAF %.2f", context.SearchVMAF)
 			}
 			w.Printf("\n")
