@@ -46,10 +46,10 @@ func Default() Config {
 					Accelerator:       "software",
 					Preset:            "6",
 					BitDepth:          video.DefaultBitDepth,
-					CRFMin:            18,
-					CRFMax:            40,
+					CRFMin:            DefaultCRFMin,
+					CRFMax:            DefaultCRFMax,
 					Metric:            "vmaf",
-					Target:            95,
+					Target:            DefaultTargetVMAF,
 					MinSavingsPercent: DefaultMinSavingsPct,
 					DolbyVision: DolbyVisionConfig{
 						Mode: DefaultDolbyVisionMode,
@@ -193,6 +193,22 @@ func applyProfileDefaults(profile *ProfileConfig) {
 		profile.Video.Metric = "vmaf"
 	}
 	profile.Video.Metric = strings.ToLower(strings.TrimSpace(profile.Video.Metric))
+	// A user-defined profile replaces the built-in default-av1 wholesale, so a
+	// partial [profiles.X.video] table would otherwise search crf 0..0. Zero
+	// values fall back to the canonical search range.
+	if profile.Video.CRFMin == 0 {
+		profile.Video.CRFMin = DefaultCRFMin
+	}
+	if profile.Video.CRFMax == 0 {
+		profile.Video.CRFMax = DefaultCRFMax
+	}
+	// An unset VMAF target means ab-av1's own 95 default anyway; making it
+	// explicit keeps the effective config honest. An unset XPSNR target stays
+	// zero so validation can demand one instead of silently searching at the
+	// VMAF default.
+	if profile.Video.Target == 0 && profile.Video.Metric == "vmaf" {
+		profile.Video.Target = DefaultTargetVMAF
+	}
 	if strings.TrimSpace(profile.Video.DolbyVision.Mode) == "" {
 		profile.Video.DolbyVision.Mode = DefaultDolbyVisionMode
 	}

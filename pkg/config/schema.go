@@ -25,6 +25,9 @@ const (
 	DolbyVisionModeOff      = "off"
 	DolbyVisionModeRequire  = "require"
 	DefaultMinSavingsPct    = 20
+	DefaultCRFMin           = 18
+	DefaultCRFMax           = 40
+	DefaultTargetVMAF       = 95
 )
 
 // DefaultIgnorableGlobs are excluded from download-package discovery and stability handling.
