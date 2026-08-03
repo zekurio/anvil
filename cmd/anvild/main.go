@@ -68,6 +68,7 @@ type options struct {
 	libraryName     string
 	preflightLimit  int
 	jsonOutput      bool
+	showConfig      bool
 }
 
 type runtimeConfig struct {
@@ -186,6 +187,7 @@ func parseCommandOptions(opts options, args []string) (options, error) {
 		flags.BoolVar(&opts.daemonMode, "daemon", opts.daemonMode, "run in daemon mode")
 		addShutdownFlags(flags, &opts)
 	case commandCheckConfig:
+		flags.BoolVar(&opts.showConfig, "show", false, "write the effective config as TOML")
 	case commandPreflight:
 		flags.StringVar(&opts.libraryName, "library", "", "preflight one configured library")
 		flags.IntVar(&opts.preflightLimit, "limit", 0, "maximum candidates to show; 0 means no limit")
@@ -403,11 +405,6 @@ func waitForShutdown(done <-chan struct{}, signals <-chan os.Signal, timeout tim
 			timeoutC = nil
 		}
 	}
-}
-
-func runCheckConfig(cfg config.Config, opts options) error {
-	slog.Info("config ok", "config", configPathLabel(opts.configPath), "libraries", len(cfg.Libraries), "flows", len(cfg.Flows), "profiles", len(cfg.Profiles), "control_socket", cfg.Daemon.ControlSocket, "log_level", cfg.Daemon.LogLevel)
-	return nil
 }
 
 func openStore(ctx context.Context, cfg config.Config) (*store.SQLiteStore, error) {
