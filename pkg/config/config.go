@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -29,6 +30,18 @@ func Load(path string) (Config, error) {
 				return Config{}, fmt.Errorf("load config %q: unknown config keys: %s; %s", path, formatUndecodedKeys(undecoded), strings.Join(hints, "; "))
 			}
 			return Config{}, fmt.Errorf("load config %q: unknown config keys: %s", path, formatUndecodedKeys(undecoded))
+		}
+		// Load starts from Default(), which already derived store_path and
+		// control_socket from the default temp_dir. A file that sets only
+		// temp_dir would otherwise keep those stale derivations, silently
+		// ignoring the documented "defaults to temp_dir/..." cascade.
+		if meta.IsDefined("daemon", "temp_dir") {
+			if !meta.IsDefined("daemon", "store_path") {
+				cfg.Daemon.StorePath = filepath.Join(cfg.Daemon.TempDir, "anvil.db")
+			}
+			if !meta.IsDefined("daemon", "control_socket") {
+				cfg.Daemon.ControlSocket = filepath.Join(cfg.Daemon.TempDir, "anvild.sock")
+			}
 		}
 	}
 
