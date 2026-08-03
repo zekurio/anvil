@@ -309,10 +309,12 @@ func runDaemon(ctx context.Context, cfg config.Config, opts options) error {
 
 	var wg sync.WaitGroup
 	var plannerRef atomic.Pointer[scheduler.Scheduler]
+	completion := &scanner.CompletionTracker{}
 	control := startControlService(serviceCtx, &wg, listener, controlServiceDeps{
-		store:     state,
-		config:    runtimeCfg.Get,
-		startedAt: startedAt,
+		store:      state,
+		config:     runtimeCfg.Get,
+		startedAt:  startedAt,
+		completion: completion,
 		activeWorkers: func() int {
 			planner := plannerRef.Load()
 			if planner == nil {
@@ -329,11 +331,11 @@ func runDaemon(ctx context.Context, cfg config.Config, opts options) error {
 		},
 	})
 	startReloadLoop(serviceCtx, &wg, opts, runtimeCfg, reloadSignals)
-	runInitialScan(serviceCtx, runtimeCfg.Get(), state)
+	runInitialScan(serviceCtx, runtimeCfg.Get(), state, completion)
 	startRecoveryLoop(serviceCtx, &wg, runtimeCfg.Get, state)
 	planner := startSchedulerLoop(serviceCtx, workerCtx, &wg, runtimeCfg.Get, state)
 	plannerRef.Store(planner)
-	startScannerLoop(serviceCtx, &wg, runtimeCfg.Get, state, planner.ActiveCount)
+	startScannerLoop(serviceCtx, &wg, runtimeCfg.Get, state, completion, planner.ActiveCount)
 
 	var request shutdownRequest
 	select {
@@ -433,8 +435,8 @@ func logConfiguredWork(cfg config.Config) {
 	slog.Info("scanner, scheduler, worker, and built-in media pipeline are enabled")
 }
 
-func runInitialScan(ctx context.Context, cfg config.Config, state *store.SQLiteStore) {
-	result, err := scanner.Scanner{Store: state}.Scan(ctx, cfg)
+func runInitialScan(ctx context.Context, cfg config.Config, state *store.SQLiteStore, completion *scanner.CompletionTracker) {
+	result, err := scanner.Scanner{Store: state, Completion: completion}.Scan(ctx, cfg)
 	if err != nil {
 		slog.Error("initial scan failed", "error", err)
 		return
@@ -553,10 +555,11 @@ func parseLogLevel(logLevel string) (slog.Level, string, error) {
 	}
 }
 
-func startScannerLoop(ctx context.Context, wg *sync.WaitGroup, cfgProvider func() config.Config, state *store.SQLiteStore, activeWorkers func() int) {
+func startScannerLoop(ctx context.Context, wg *sync.WaitGroup, cfgProvider func() config.Config, state *store.SQLiteStore, completion *scanner.CompletionTracker, activeWorkers func() int) {
 	monitor := &scanner.Monitor{
-		Scanner:        scanner.Scanner{Store: state},
+		Scanner:        scanner.Scanner{Store: state, Completion: completion},
 		ConfigProvider: cfgProvider,
+		EventSource:    &scanner.FilesystemEventSource{Completion: completion},
 		OnScan: func(library config.LibraryConfig, reason string, result scanner.ScanResult, err error) {
 			if err != nil {
 				slog.Error("scan failed", "library", library.Name, "reason", reason, "error", err)

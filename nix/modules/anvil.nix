@@ -719,7 +719,7 @@ let
         stableFor = mkOption {
           type = types.nullOr types.str;
           default = null;
-          description = "Required unchanged duration before scanning. Null defers to Anvil's default.";
+          description = "Fallback quiet period for files without an observed close-write or moved-in completion. Null defers to Anvil's default.";
         };
         packageMode = mkOption {
           type = types.nullOr (types.enum [

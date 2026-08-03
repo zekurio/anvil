@@ -17,7 +17,7 @@ arr = "radarr"
 #
 # [libraries.downloads.download]
 # handoff_path = "/srv/imports/movies"
-# stable_for = "5m" # Wait for the downloader to finish writing before encoding.
+# stable_for = "5m" # Fallback quiet period when no close-write or moved-in completion is observed.
 # handoff_mode = "move" # Choose move only when the downloader no longer needs its copy.
 # cleanup_source_media = true # Remove the source only after a successful handoff.
 # prune_empty_dirs = true # Clean release directories only when source cleanup is enabled.
