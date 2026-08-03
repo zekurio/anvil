@@ -33,6 +33,7 @@ type ScanTrigger struct {
 	LibraryName domain.LibraryName
 	Reason      string
 	Path        string
+	Completed   bool
 }
 
 type EventSource interface {
@@ -157,6 +158,11 @@ func (m *Monitor) scheduleTrigger(cfg config.Config, schedules map[domain.Librar
 	if reason == "" {
 		reason = "filesystem"
 	}
+	// fsnotify may report the same write after inotify's completion event.
+	// Keep the stronger reason when that duplicate cannot make the scan earlier.
+	if reasons[trigger.LibraryName] == "transfer-complete" && !trigger.Completed && exists && !current.After(due) {
+		return
+	}
 	reasons[trigger.LibraryName] = reason
 }
 
@@ -216,6 +222,9 @@ func (m *Monitor) scanDue(ctx context.Context, cfg config.Config, schedules map[
 func (m *Monitor) triggerDue(cfg config.Config, library config.LibraryConfig, trigger ScanTrigger) time.Time {
 	now := m.now()
 	due := now.Add(m.debounce(cfg))
+	if trigger.Completed {
+		return due
+	}
 	if library.Kind != "download" {
 		return due
 	}
@@ -316,6 +325,7 @@ func (m *Monitor) eventError(err error) {
 
 type FilesystemEventSource struct {
 	ReconcileInterval time.Duration
+	Completion        *CompletionTracker
 }
 
 func (s FilesystemEventSource) Run(ctx context.Context, cfgProvider ConfigProvider, triggers chan<- ScanTrigger) error {
@@ -329,27 +339,49 @@ func (s FilesystemEventSource) Run(ctx context.Context, cfgProvider ConfigProvid
 		}
 	}()
 
-	roots := make(map[domain.LibraryName]string)
-	watched := make(map[string]map[domain.LibraryName]struct{})
-	cfg := cfgProvider()
-	reconcileFilesystemWatches(ctx, watcher, watched, roots, cfg)
-
 	interval := s.ReconcileInterval
 	if interval <= 0 {
 		interval = DefaultConfigReconcileInterval
 	}
+	watcherCtx, stopWatchers := context.WithCancel(ctx)
+	var closeWriteWG sync.WaitGroup
+	var closeWriteErrors <-chan error
+	if s.Completion != nil {
+		errors := make(chan error, 1)
+		closeWriteErrors = errors
+		closeWriteWG.Add(1)
+		go func() {
+			defer closeWriteWG.Done()
+			errors <- runCloseWriteWatcher(watcherCtx, cfgProvider, triggers, s.Completion, interval)
+		}()
+	}
+	defer func() {
+		stopWatchers()
+		closeWriteWG.Wait()
+	}()
+
+	roots := make(map[domain.LibraryName]string)
+	watched := make(map[string]map[domain.LibraryName]struct{})
+	cfg := cfgProvider()
+	reconcileFilesystemWatches(watcherCtx, watcher, watched, roots, cfg)
+
 	reconcileTimer := time.NewTimer(interval)
 	defer reconcileTimer.Stop()
 
 	for {
 		select {
-		case <-ctx.Done():
-			return ctx.Err()
+		case <-watcherCtx.Done():
+			return watcherCtx.Err()
+		case closeWriteErr := <-closeWriteErrors:
+			if closeWriteErr != nil {
+				return fmt.Errorf("close-write watcher stopped: %w", closeWriteErr)
+			}
+			return errors.New("close-write watcher stopped")
 		case event, ok := <-watcher.Events:
 			if !ok {
 				return nil
 			}
-			handleFilesystemEvent(ctx, watcher, watched, roots, event, triggers)
+			handleFilesystemEvent(watcherCtx, watcher, watched, roots, event, triggers)
 		case err, ok := <-watcher.Errors:
 			if !ok {
 				return nil
@@ -359,7 +391,7 @@ func (s FilesystemEventSource) Run(ctx context.Context, cfgProvider ConfigProvid
 			}
 		case <-reconcileTimer.C:
 			cfg = cfgProvider()
-			reconcileFilesystemWatches(ctx, watcher, watched, roots, cfg)
+			reconcileFilesystemWatches(watcherCtx, watcher, watched, roots, cfg)
 			reconcileTimer.Reset(interval)
 		}
 	}

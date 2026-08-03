@@ -23,8 +23,9 @@ type Store interface {
 }
 
 type Scanner struct {
-	Store Store
-	Now   func() time.Time
+	Store      Store
+	Now        func() time.Time
+	Completion *CompletionTracker
 }
 
 type ScanResult struct {
@@ -106,7 +107,7 @@ func (s Scanner) PlanLibrary(ctx context.Context, library config.LibraryConfig) 
 	}
 
 	now := s.now()
-	candidates, sourceStats, skipped, err := discoverCandidates(ctx, root, library)
+	candidates, sourceStats, skipped, err := discoverCandidates(ctx, root, library, s.Completion)
 	if err != nil {
 		return LibraryPlan{}, err
 	}
@@ -125,15 +126,18 @@ func (s Scanner) PlanLibrary(ctx context.Context, library config.LibraryConfig) 
 		if stat.modTime.IsZero() {
 			stat.sizeBytes = candidate.info.Size()
 			stat.modTime = candidate.info.ModTime()
+			if !s.Completion.CompletedSince(candidate.absolutePath, candidate.info.ModTime()) {
+				stat.pendingModTime = candidate.info.ModTime()
+			}
 		}
-		unstable := library.Kind == "download" && !stable(stat.modTime, now, stableFor)
+		unstable := library.Kind == "download" && !stable(stat.pendingModTime, now, stableFor)
 		if candidate.ignored {
 			unstable = false
 		}
 		enqueueable := !candidate.ignored && !unstable && enqueueableRole(candidate.role)
 		if unstable {
 			plan.SkippedUnstable++
-			stableAt := stat.modTime.Add(stableFor).UTC()
+			stableAt := stat.pendingModTime.Add(stableFor).UTC()
 			if plan.NextStableAt.IsZero() || stableAt.Before(plan.NextStableAt) {
 				plan.NextStableAt = stableAt
 			}
@@ -214,6 +218,7 @@ func (r *ScanResult) add(other ScanResult) {
 }
 
 type candidate struct {
+	absolutePath        string
 	libraryRelativePath string
 	assetRelativePath   string
 	sourceRelativePath  string
@@ -225,11 +230,12 @@ type candidate struct {
 }
 
 type sourceStat struct {
-	sizeBytes int64
-	modTime   time.Time
+	sizeBytes      int64
+	modTime        time.Time
+	pendingModTime time.Time
 }
 
-func discoverCandidates(ctx context.Context, root string, library config.LibraryConfig) ([]candidate, map[string]sourceStat, int, error) {
+func discoverCandidates(ctx context.Context, root string, library config.LibraryConfig, completion *CompletionTracker) ([]candidate, map[string]sourceStat, int, error) {
 	var candidates []candidate
 	sourceStats := make(map[string]sourceStat)
 	var skipped int
@@ -267,7 +273,7 @@ func discoverCandidates(ctx context.Context, root string, library config.Library
 				return err
 			}
 			if likelyMediaFile(rel) {
-				candidates = append(candidates, buildCandidate(library, rel, info, true, "ignore_regex"))
+				candidates = append(candidates, buildCandidate(library, absPath, rel, info, true, "ignore_regex"))
 			}
 			return nil
 		}
@@ -285,7 +291,7 @@ func discoverCandidates(ctx context.Context, root string, library config.Library
 				return err
 			}
 			if likelyMediaFile(rel) {
-				candidates = append(candidates, buildCandidate(library, rel, info, true, "excluded"))
+				candidates = append(candidates, buildCandidate(library, absPath, rel, info, true, "excluded"))
 			}
 			skipped++
 			return nil
@@ -310,34 +316,34 @@ func discoverCandidates(ctx context.Context, root string, library config.Library
 		}
 
 		if !likelyMediaFile(rel) {
-			recordSourceStat(sourceStats, library, rel, info)
+			recordSourceStat(sourceStats, library, absPath, rel, info, completion)
 			return nil
 		}
 		if replacepkg.IsAnvilCopyOutputPath(rel) {
-			candidates = append(candidates, buildCandidate(library, rel, info, true, "anvil_output"))
+			candidates = append(candidates, buildCandidate(library, absPath, rel, info, true, "anvil_output"))
 			skipped++
 			return nil
 		}
-		recordSourceStat(sourceStats, library, rel, info)
+		recordSourceStat(sourceStats, library, absPath, rel, info, completion)
 
 		included, err := includedBy(library.Include, rel)
 		if err != nil {
 			return err
 		}
 		if !included {
-			candidates = append(candidates, buildCandidate(library, rel, info, true, "not_included"))
+			candidates = append(candidates, buildCandidate(library, absPath, rel, info, true, "not_included"))
 			skipped++
 			return nil
 		}
 
 		role := classifyMediaAsset(rel)
 		if role == domain.MediaAssetRoleSample {
-			candidates = append(candidates, buildCandidate(library, rel, info, true, "sample"))
+			candidates = append(candidates, buildCandidate(library, absPath, rel, info, true, "sample"))
 			skipped++
 			return nil
 		}
 
-		candidates = append(candidates, buildCandidate(library, rel, info, false, ""))
+		candidates = append(candidates, buildCandidate(library, absPath, rel, info, false, ""))
 		return nil
 	})
 	if err != nil {
@@ -379,9 +385,10 @@ func ignoredByRegex(patterns []*regexp.Regexp, rel string, isDir bool) bool {
 	return false
 }
 
-func buildCandidate(library config.LibraryConfig, rel string, info fs.FileInfo, ignored bool, ignoreReason string) candidate {
+func buildCandidate(library config.LibraryConfig, absPath string, rel string, info fs.FileInfo, ignored bool, ignoreReason string) candidate {
 	sourceRel, assetRel, sourceKind := sourceFor(library, rel)
 	return candidate{
+		absolutePath:        absPath,
 		libraryRelativePath: rel,
 		assetRelativePath:   assetRel,
 		sourceRelativePath:  sourceRel,
@@ -401,13 +408,16 @@ func effectiveExcludeGlobs(library config.LibraryConfig) []string {
 	return exclude
 }
 
-func recordSourceStat(stats map[string]sourceStat, library config.LibraryConfig, rel string, info fs.FileInfo) {
+func recordSourceStat(stats map[string]sourceStat, library config.LibraryConfig, absPath string, rel string, info fs.FileInfo, completion *CompletionTracker) {
 	sourceRel, _, sourceKind := sourceFor(library, rel)
 	key := sourceKey(sourceKind, sourceRel)
 	stat := stats[key]
 	stat.sizeBytes += info.Size()
 	if info.ModTime().After(stat.modTime) {
 		stat.modTime = info.ModTime()
+	}
+	if !completion.CompletedSince(absPath, info.ModTime()) && info.ModTime().After(stat.pendingModTime) {
+		stat.pendingModTime = info.ModTime()
 	}
 	stats[key] = stat
 }
