@@ -53,7 +53,8 @@ let
     // optionalAttrs (videoOverride.bitDepth != null) { bit_depth = videoOverride.bitDepth; }
     // optionalAttrs (videoOverride.crfMin != null) { crf_min = videoOverride.crfMin; }
     // optionalAttrs (videoOverride.crfMax != null) { crf_max = videoOverride.crfMax; }
-    // optionalAttrs (videoOverride.targetVmaf != null) { target_vmaf = videoOverride.targetVmaf; }
+    // optionalAttrs (videoOverride.metric != null) { inherit (videoOverride) metric; }
+    // optionalAttrs (videoOverride.target != null) { inherit (videoOverride) target; }
     // optionalAttrs (videoOverride.minSavingsPercent != null) {
       min_savings_percent = videoOverride.minSavingsPercent;
     }
@@ -69,11 +70,10 @@ let
     {
       inherit (profile) container;
       video = {
-        inherit (profile.video) codec accelerator preset;
+        inherit (profile.video) codec accelerator preset metric target;
         bit_depth = profile.video.bitDepth;
         crf_min = profile.video.crfMin;
         crf_max = profile.video.crfMax;
-        target_vmaf = profile.video.targetVmaf;
         min_savings_percent = profile.video.minSavingsPercent;
         force_encode_on_no_fit = profile.video.forceEncodeOnNoFit;
         skip_encode = profile.video.skipEncode;
@@ -326,10 +326,18 @@ let
           default = 40;
           description = "Maximum CRF to test during CRF search.";
         };
-        targetVmaf = mkOption {
+        metric = mkOption {
+          type = types.enum [
+            "vmaf"
+            "xpsnr"
+          ];
+          default = "vmaf";
+          description = "Quality metric for CRF search.";
+        };
+        target = mkOption {
           type = types.number;
           default = 95;
-          description = "Target VMAF for CRF search.";
+          description = "Target quality score for CRF search. VMAF uses 0 to 100; typical XPSNR targets are 35 to 50.";
         };
         minSavingsPercent = mkOption {
           type = types.number;
@@ -417,11 +425,20 @@ let
                 example = 45;
                 description = "Maximum CRF for this source condition. Null inherits the base video maximum CRF.";
               };
-              targetVmaf = mkOption {
+              metric = mkOption {
+                type = types.nullOr (types.enum [
+                  "vmaf"
+                  "xpsnr"
+                ]);
+                default = null;
+                example = "xpsnr";
+                description = "Quality metric for this source condition. Null inherits the base video metric.";
+              };
+              target = mkOption {
                 type = types.nullOr types.number;
                 default = null;
                 example = 96;
-                description = "Target VMAF from 0 to 100 for this source condition. Null inherits the base video target VMAF.";
+                description = "Target quality score from 0 to 100 for this source condition. Null inherits the base video target.";
               };
               minSavingsPercent = mkOption {
                 type = types.nullOr types.number;

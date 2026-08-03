@@ -61,7 +61,9 @@ type ProbeResult struct {
 
 type SearchResult struct {
 	CRF                     int
+	Metric                  QualityMetric
 	VMAF                    float64
+	XPSNR                   float64
 	SkipVideoEncode         bool
 	VideoEncodeSkipReason   string
 	ForcedVideoEncodeReason string
@@ -107,7 +109,8 @@ type EncodePlan struct {
 	CRF                      int
 	CRFMin                   int
 	CRFMax                   int
-	TargetVMAF               float64
+	Metric                   QualityMetric
+	Target                   float64
 	MinSavingsPercent        float64
 	ForceEncodeOnNoFit       bool
 	Threads                  int
@@ -226,8 +229,11 @@ func applyVideoOverride(video VideoProfile, override VideoOverride) VideoProfile
 	if override.CRFMax != nil {
 		video.CRFMax = *override.CRFMax
 	}
-	if override.TargetVMAF != nil {
-		video.TargetVMAF = *override.TargetVMAF
+	if override.Metric != nil {
+		video.Metric = *override.Metric
+	}
+	if override.Target != nil {
+		video.Target = *override.Target
 	}
 	if override.MinSavingsPercent != nil {
 		video.MinSavingsPercent = *override.MinSavingsPercent
