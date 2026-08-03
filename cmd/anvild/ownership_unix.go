@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -35,6 +36,12 @@ func acquireDaemonOwnership(storePath string) (*daemonOwnership, error) {
 		// A store with no filesystem identity cannot be shared with another
 		// daemon in a way this lock could describe.
 		return &daemonOwnership{}, nil
+	}
+	// The lock lives beside the store, so creating its directory here also
+	// provisions the store directory a fresh install has not created yet.
+	// This is the operator's explicitly configured state path, not a guess.
+	if err := os.MkdirAll(filepath.Dir(lockPath), 0o750); err != nil {
+		return nil, fmt.Errorf("create store directory for %q: %w", lockPath, err)
 	}
 	file, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o640)
 	if err != nil {
