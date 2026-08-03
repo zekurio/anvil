@@ -162,7 +162,8 @@ func (p ProfileConfig) ToDomain() domain.Profile {
 				BitDepth:           clonePointer(override.BitDepth),
 				CRFMin:             clonePointer(override.CRFMin),
 				CRFMax:             clonePointer(override.CRFMax),
-				TargetVMAF:         clonePointer(override.TargetVMAF),
+				Metric:             qualityMetricPointer(override.Metric),
+				Target:             clonePointer(override.Target),
 				MinSavingsPercent:  clonePointer(override.MinSavingsPercent),
 				ForceEncodeOnNoFit: clonePointer(override.ForceEncodeOnNoFit),
 				SkipEncode:         clonePointer(override.SkipEncode),
@@ -182,7 +183,8 @@ func (p ProfileConfig) ToDomain() domain.Profile {
 			BitDepth:           p.Video.BitDepth,
 			CRFMin:             p.Video.CRFMin,
 			CRFMax:             p.Video.CRFMax,
-			TargetVMAF:         p.Video.TargetVMAF,
+			Metric:             domain.QualityMetric(p.Video.Metric),
+			Target:             p.Video.Target,
 			MinSavingsPercent:  p.Video.MinSavingsPercent,
 			ForceEncodeOnNoFit: p.Video.ForceEncodeOnNoFit,
 			SkipEncode:         p.Video.SkipEncode,
@@ -222,6 +224,14 @@ func (p ProfileConfig) ToDomain() domain.Profile {
 			Mode: domain.MetadataMode(p.Chapters.Mode),
 		},
 	}
+}
+
+func qualityMetricPointer(value *string) *domain.QualityMetric {
+	if value == nil {
+		return nil
+	}
+	metric := domain.QualityMetric(*value)
+	return &metric
 }
 
 func clonePointer[T any](value *T) *T {
