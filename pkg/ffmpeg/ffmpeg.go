@@ -882,7 +882,6 @@ func audioTrackTitle(stream domain.MediaStream) string {
 		languageLabel(stream.Language),
 		codecLabel(stream.Codec),
 		channelLabel(stream),
-		bitRateLabel(stream.BitRate),
 	)
 }
 
@@ -973,20 +972,6 @@ func channelLabel(stream domain.MediaStream) string {
 		return ""
 	}
 	return strings.ReplaceAll(layout, "(side)", "")
-}
-
-func bitRateLabel(bitRate int64) string {
-	if bitRate <= 0 {
-		return ""
-	}
-	if bitRate >= 1_000_000 {
-		value := float64(bitRate) / 1_000_000
-		if bitRate%1_000_000 == 0 {
-			return strconv.FormatInt(bitRate/1_000_000, 10) + " Mb/s"
-		}
-		return strconv.FormatFloat(value, 'f', 1, 64) + " Mb/s"
-	}
-	return strconv.FormatInt((bitRate+500)/1000, 10) + " kb/s"
 }
 
 func subtitleScopeLabel(stream domain.MediaStream) string {
