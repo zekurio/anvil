@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/zekurio/anvil/pkg/domain"
@@ -20,9 +21,14 @@ import (
 const PartSuffix = ".anvil-part"
 
 // PartPath returns the working path for the artifact that will be published
-// to destination.
-func PartPath(destination string) string {
-	return destination + PartSuffix
+// to destination. The job label keeps the path unique per job: two jobs can
+// resolve to the same destination (same input basename handed off with
+// preserve_relative_path disabled, say), and a shared part path would let one
+// encoder truncate the other's artifact — or keep writing through the inode
+// after it was linked under the final name. The publish step's no-clobber
+// link then decides which job wins the destination.
+func PartPath(destination string, jobLabel string) string {
+	return fmt.Sprintf("%s.job-%s%s", destination, jobLabel, PartSuffix)
 }
 
 // IsAnvilPartPath reports whether path is an unpublished Anvil artifact.
@@ -65,6 +71,9 @@ func PrepareDestination(job *pipeline.JobContext) error {
 	if job == nil {
 		return errors.New("destination job context is required")
 	}
+	if job.Job.ID == 0 {
+		return errors.New("destination planning requires a persisted job")
+	}
 	destination, err := PlanDestination(job)
 	if err != nil {
 		return err
@@ -77,24 +86,30 @@ func PrepareDestination(job *pipeline.JobContext) error {
 	} else if err := os.MkdirAll(dir, 0o750); err != nil {
 		return fmt.Errorf("create destination dir: %w", err)
 	}
-	if err := CleanupPartFiles(destination); err != nil {
+	jobLabel := PartJobLabel(job.Job.ID)
+	if err := CleanupPartFiles(destination, jobLabel); err != nil {
 		return fmt.Errorf("remove stale artifact parts: %w", err)
 	}
 	job.DestinationPath = destination
-	job.OutputPath = PartPath(destination)
+	job.OutputPath = PartPath(destination, jobLabel)
 	return nil
 }
 
-// CleanupPartFiles removes the unpublished artifact and its Dolby Vision work
-// variants for a destination. Anything matching the part namespace is Anvil's
-// own residue from a failed attempt; the published destination itself is
-// never touched.
-func CleanupPartFiles(destination string) error {
+// PartJobLabel is the part-path label for a persisted job.
+func PartJobLabel(id domain.JobID) string {
+	return strconv.FormatInt(int64(id), 10)
+}
+
+// CleanupPartFiles removes the job's unpublished artifact and its Dolby
+// Vision work variants for a destination. Anything matching the part
+// namespace is Anvil's own residue from a failed attempt; the published
+// destination itself and other jobs' parts are never touched.
+func CleanupPartFiles(destination string, jobLabel string) error {
 	destination = strings.TrimSpace(destination)
-	if destination == "" {
+	if destination == "" || strings.TrimSpace(jobLabel) == "" {
 		return nil
 	}
-	part := PartPath(destination)
+	part := PartPath(destination, jobLabel)
 	paths := []string{part}
 	variants, err := filepath.Glob(part + ".*")
 	if err != nil {
