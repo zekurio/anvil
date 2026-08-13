@@ -188,7 +188,7 @@ func (m Manager) cleanupEntries(ctx context.Context, op *PublishOperation) error
 		if err != nil {
 			return m.conflict(ctx, op, fmt.Sprintf("cleanup entry changed: %v", err))
 		}
-		if identity.SizeBytes != entry.Identity.SizeBytes || !sameFileIdentity(identity, entry.Identity) {
+		if identity.SizeBytes != entry.Identity.SizeBytes || !SameFileIdentity(identity, entry.Identity) {
 			return m.conflict(ctx, op, fmt.Sprintf("cleanup entry identity changed: %q", entry.Path))
 		}
 		if err := removeAndSync(entry.Path); err != nil {

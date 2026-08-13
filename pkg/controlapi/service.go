@@ -33,6 +33,7 @@ type Store interface {
 	GetMediaSource(context.Context, domain.MediaSourceID) (domain.MediaSource, error)
 	GetMediaAsset(context.Context, domain.MediaAssetID) (domain.MediaAsset, error)
 	GetPublishOperation(context.Context, domain.JobID) (replacepkg.PublishOperation, bool, error)
+	PublishArtifactProtected(context.Context, string) (bool, error)
 	CountJobsByState(context.Context) (map[domain.JobState]int64, error)
 	CancelJobs(context.Context, store.CancelJobsInput) ([]store.CancelJobResult, error)
 	LatestAttemptArtifacts(context.Context, string, []domain.JobID) (map[domain.JobID][]domain.AttemptEvent, error)
@@ -383,6 +384,9 @@ func (s Service) cleanupOrphanedPart(ctx context.Context, jobID domain.JobID) {
 	for _, destination := range destinations {
 		if err := replacepkg.CleanupPartFiles(destination, replacepkg.PartJobLabel(jobID)); err != nil {
 			log("remove part files", err)
+		}
+		if err := replacepkg.CleanupLegacyPartFiles(ctx, s.Store, destination); err != nil {
+			log("remove legacy part files", err)
 		}
 	}
 }
