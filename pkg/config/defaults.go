@@ -32,10 +32,10 @@ func Default() Config {
 		},
 		Flows: map[string]FlowConfig{
 			DefaultFlowName: {
-				Steps: []string{"probe", "crop-detect", "audio-cleanup", "subtitle-cleanup", "stage", "crf-search", "encode", "dovi-fix", "track-stats", "validate", "replace", "cleanup"},
+				Steps: []string{"probe", "crop-detect", "audio-cleanup", "subtitle-cleanup", "stage", "crf-search", "encode", "validate", "replace", "cleanup"},
 			},
 			DefaultDownloadFlowName: {
-				Steps: []string{"probe", "crop-detect", "audio-cleanup", "subtitle-cleanup", "stage", "crf-search", "encode", "dovi-fix", "track-stats", "validate", "handoff", "cleanup"},
+				Steps: []string{"probe", "crop-detect", "audio-cleanup", "subtitle-cleanup", "stage", "crf-search", "encode", "validate", "handoff", "cleanup"},
 			},
 		},
 		Profiles: map[string]ProfileConfig{
@@ -51,9 +51,6 @@ func Default() Config {
 					Metric:            "vmaf",
 					Target:            DefaultTargetVMAF,
 					MinSavingsPercent: DefaultMinSavingsPct,
-					DolbyVision: DolbyVisionConfig{
-						Mode: DefaultDolbyVisionMode,
-					},
 				},
 				Audio: AudioConfig{
 					Fallback: DefaultStreamFallback,
@@ -209,10 +206,6 @@ func applyProfileDefaults(profile *ProfileConfig) {
 	if profile.Video.Target == 0 && profile.Video.Metric == "vmaf" {
 		profile.Video.Target = DefaultTargetVMAF
 	}
-	if strings.TrimSpace(profile.Video.DolbyVision.Mode) == "" {
-		profile.Video.DolbyVision.Mode = DefaultDolbyVisionMode
-	}
-	profile.Video.DolbyVision.Mode = strings.ToLower(strings.TrimSpace(profile.Video.DolbyVision.Mode))
 	if profile.Video.Overrides != nil {
 		overrides := make(map[string]VideoOverrideConfig, len(profile.Video.Overrides))
 		for _, key := range sortedKeys(profile.Video.Overrides) {
@@ -262,7 +255,7 @@ func applyProfileDefaults(profile *ProfileConfig) {
 
 func canonicalVideoOverrideKey(key string) string {
 	key = strings.ToLower(strings.TrimSpace(key))
-	if key == "" || key == "dolby_vision" {
+	if key == "" {
 		return key
 	}
 	return video.CanonicalCodec(key)

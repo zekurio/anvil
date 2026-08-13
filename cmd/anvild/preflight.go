@@ -129,16 +129,7 @@ type preflightProfile struct {
 	SkipEncode         bool                     `json:"skip_encode"`
 	FFmpegArgs         []string                 `json:"ffmpeg_args,omitempty"`
 	ABAV1Args          []string                 `json:"ab_av1_args,omitempty"`
-	DolbyVision        preflightDolbyVision     `json:"dolby_vision"`
 	VideoOverrides     []preflightVideoOverride `json:"video_overrides,omitempty"`
-}
-
-// preflightDolbyVision reports the Dolby Vision policy only; the encoder
-// settings used for Dolby Vision sources live in the dolby_vision entry of
-// VideoOverrides.
-type preflightDolbyVision struct {
-	Mode            domain.DolbyVisionMode `json:"mode,omitempty"`
-	RemoveHDR10Plus bool                   `json:"remove_hdr10plus"`
 }
 
 // preflightVideoOverride mirrors domain.VideoOverride so that a field the
@@ -170,25 +161,22 @@ type preflightSearchPolicy struct {
 	SavingsPolicy                string   `json:"savings_policy,omitempty"`
 	ForceEncodeOnNoFit           bool     `json:"force_encode_on_no_fit"`
 	CustomArgs                   []string `json:"custom_args,omitempty"`
-	DolbyVisionCustomArgs        []string `json:"dolby_vision_custom_args,omitempty"`
 	MayDecideAV1FitNotWorthwhile bool     `json:"may_decide_av1_fit_not_worthwhile"`
 	NoFitBehavior                string   `json:"no_fit_behavior,omitempty"`
 	FlowCanFallbackToRemux       bool     `json:"flow_can_fallback_to_remux"`
 }
 
 type preflightEncode struct {
-	Enabled               bool     `json:"enabled"`
-	VideoAction           string   `json:"video_action"`
-	Codec                 string   `json:"codec,omitempty"`
-	CRFSource             string   `json:"crf_source,omitempty"`
-	Output                string   `json:"output,omitempty"`
-	NoFitAction           string   `json:"no_fit_action,omitempty"`
-	AudioAction           string   `json:"audio_action,omitempty"`
-	SubtitleAction        string   `json:"subtitle_action,omitempty"`
-	MetadataAction        string   `json:"metadata_action,omitempty"`
-	CustomArgs            []string `json:"custom_args,omitempty"`
-	DolbyVisionAction     string   `json:"dolby_vision_action,omitempty"`
-	DolbyVisionCustomArgs []string `json:"dolby_vision_custom_args,omitempty"`
+	Enabled        bool     `json:"enabled"`
+	VideoAction    string   `json:"video_action"`
+	Codec          string   `json:"codec,omitempty"`
+	CRFSource      string   `json:"crf_source,omitempty"`
+	Output         string   `json:"output,omitempty"`
+	NoFitAction    string   `json:"no_fit_action,omitempty"`
+	AudioAction    string   `json:"audio_action,omitempty"`
+	SubtitleAction string   `json:"subtitle_action,omitempty"`
+	MetadataAction string   `json:"metadata_action,omitempty"`
+	CustomArgs     []string `json:"custom_args,omitempty"`
 }
 
 type preflightPaths struct {
@@ -579,32 +567,21 @@ func preflightProfileFromDomain(profile domain.Profile) preflightProfile {
 		SkipEncode:         profile.Video.SkipEncode,
 		FFmpegArgs:         append([]string(nil), profile.Video.FFmpegArgs...),
 		ABAV1Args:          append([]string(nil), profile.Video.ABAV1Args...),
-		DolbyVision: preflightDolbyVision{
-			Mode:            profile.Video.DolbyVision.Mode,
-			RemoveHDR10Plus: profile.Video.DolbyVision.RemoveHDR10Plus,
-		},
-		VideoOverrides: preflightVideoOverrides(profile.Video),
+		VideoOverrides:     preflightVideoOverrides(profile.Video),
 	}
 }
 
 // preflightVideoOverrides lists overrides in the order they would be applied
-// at runtime: source codec families sorted by key, then the reserved
-// dolby_vision override, which applies last.
+// at runtime: source codec families sorted by key.
 func preflightVideoOverrides(video domain.VideoProfile) []preflightVideoOverride {
 	if len(video.Overrides) == 0 {
 		return nil
 	}
 	keys := make([]string, 0, len(video.Overrides))
 	for key := range video.Overrides {
-		if key == domain.VideoOverrideDolbyVision {
-			continue
-		}
 		keys = append(keys, key)
 	}
 	sort.Strings(keys)
-	if _, ok := video.Overrides[domain.VideoOverrideDolbyVision]; ok {
-		keys = append(keys, domain.VideoOverrideDolbyVision)
-	}
 	overrides := make([]preflightVideoOverride, 0, len(keys))
 	for _, key := range keys {
 		override := video.Overrides[key]
@@ -636,29 +613,10 @@ func clonePreflightValue[T any](value *T) *T {
 	return &copied
 }
 
-// preflightDolbyVisionOverride returns the override that would shape a Dolby
-// Vision encode. It reports false when Dolby Vision handling is off or the
-// dolby_vision override has no codec, because the runtime only selects the
-// Dolby Vision encoder when overrides.dolby_vision.codec is configured.
-func preflightDolbyVisionOverride(profile domain.Profile) (domain.VideoOverride, bool) {
-	if profile.Video.DolbyVision.Mode == domain.DolbyVisionModeOff {
-		return domain.VideoOverride{}, false
-	}
-	override, ok := profile.Video.Overrides[domain.VideoOverrideDolbyVision]
-	if !ok || override.Codec == nil || strings.TrimSpace(*override.Codec) == "" {
-		return domain.VideoOverride{}, false
-	}
-	return override, true
-}
-
 func preflightSearch(flow domain.Flow, profile domain.Profile) preflightSearchPolicy {
 	searchEnabled := flowHasStep(flow, "crf-search")
 	if !searchEnabled || profile.Video.SkipEncode {
 		return preflightSearchPolicy{Enabled: false, FlowCanFallbackToRemux: flowHasStep(flow, "encode")}
-	}
-	var dolbyVisionArgs []string
-	if override, ok := preflightDolbyVisionOverride(profile); ok {
-		dolbyVisionArgs = append([]string(nil), override.ABAV1Args...)
 	}
 	return preflightSearchPolicy{
 		Enabled:                      true,
@@ -670,7 +628,6 @@ func preflightSearch(flow domain.Flow, profile domain.Profile) preflightSearchPo
 		SavingsPolicy:                "ab-av1/search policy; explicit min-savings is not configured",
 		ForceEncodeOnNoFit:           profile.Video.ForceEncodeOnNoFit,
 		CustomArgs:                   append([]string(nil), profile.Video.ABAV1Args...),
-		DolbyVisionCustomArgs:        dolbyVisionArgs,
 		MayDecideAV1FitNotWorthwhile: true,
 		NoFitBehavior:                noFitBehavior(profile.Video.ForceEncodeOnNoFit),
 		FlowCanFallbackToRemux:       !profile.Video.ForceEncodeOnNoFit && flowHasStep(flow, "encode"),
@@ -698,14 +655,6 @@ func preflightEncodePlan(flow domain.Flow, profile domain.Profile, outputPath st
 		encode.CRFSource = ""
 		encode.CustomArgs = nil
 		return encode
-	}
-	if override, ok := preflightDolbyVisionOverride(profile); ok {
-		dolbyVisionAccelerator := profile.Video.Accelerator
-		if override.Accelerator != nil {
-			dolbyVisionAccelerator = *override.Accelerator
-		}
-		encode.DolbyVisionAction = fmt.Sprintf("if source has Dolby Vision and dovi_tool is available, use %s/%s instead of %s/%s", *override.Codec, textout.OrNone(dolbyVisionAccelerator), profile.Video.Codec, textout.OrNone(profile.Video.Accelerator))
-		encode.DolbyVisionCustomArgs = append([]string(nil), override.FFmpegArgs...)
 	}
 	if !flowHasStep(flow, "crf-search") {
 		encode.VideoAction = "encode/remux using profile defaults"
@@ -877,12 +826,6 @@ func writePreflightReport(out io.Writer, report preflightReport) error {
 				item.Profile.VideoBitDepth,
 				item.Profile.SkipEncode,
 			)
-			if item.Profile.DolbyVision.Mode != "" {
-				w.Printf("  dolby-vision: mode=%s remove_hdr10plus=%t\n",
-					item.Profile.DolbyVision.Mode,
-					item.Profile.DolbyVision.RemoveHDR10Plus,
-				)
-			}
 			for _, override := range item.Profile.VideoOverrides {
 				fields := preflightVideoOverrideFields(override)
 				if len(fields) == 0 {
@@ -900,17 +843,14 @@ func writePreflightReport(out io.Writer, report preflightReport) error {
 					item.Search.Target,
 					item.Search.SavingsPolicy,
 				)
-				if len(item.Search.CustomArgs) > 0 || len(item.Search.DolbyVisionCustomArgs) > 0 {
-					w.Printf("  search args: custom=%v dolby_vision=%v\n", item.Search.CustomArgs, item.Search.DolbyVisionCustomArgs)
+				if len(item.Search.CustomArgs) > 0 {
+					w.Printf("  search args: custom=%v\n", item.Search.CustomArgs)
 				}
 				w.Printf("  no-fit: %s\n", item.Search.NoFitBehavior)
 			}
 			w.Printf("  encode: enabled=%t video=%s output=%s\n", item.Encode.Enabled, item.Encode.VideoAction, item.Encode.Output)
-			if len(item.Encode.CustomArgs) > 0 || len(item.Encode.DolbyVisionCustomArgs) > 0 {
-				w.Printf("  encode args: custom=%v dolby_vision=%v\n", item.Encode.CustomArgs, item.Encode.DolbyVisionCustomArgs)
-			}
-			if item.Encode.DolbyVisionAction != "" {
-				w.Printf("  encode dolby-vision: %s\n", item.Encode.DolbyVisionAction)
+			if len(item.Encode.CustomArgs) > 0 {
+				w.Printf("  encode args: custom=%v\n", item.Encode.CustomArgs)
 			}
 			if item.Encode.NoFitAction != "" {
 				w.Printf("  encode no-fit: %s\n", item.Encode.NoFitAction)

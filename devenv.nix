@@ -17,7 +17,6 @@ let
       ab-av1
       coreutils
       curl
-      dovi-tool
       ffmpegPackage
       git
       gnumake
@@ -25,7 +24,6 @@ let
       gopls
       gotools
       jq
-      mkvtoolnix
       sqlite-interactive
     ];
 in
