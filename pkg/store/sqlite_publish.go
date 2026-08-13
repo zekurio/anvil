@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -31,6 +32,13 @@ ORDER BY job_id
 	}
 	defer closeRows(rows, &err, "close unresolved publish artifacts")
 	target := filepath.Clean(artifactPath)
+	targetIdentity, err := replacepkg.StatFileIdentity(artifactPath)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("identify publish artifact candidate %q: %w", artifactPath, err)
+	}
 	for rows.Next() {
 		var jobID domain.JobID
 		var stage replacepkg.PublishStage
@@ -51,7 +59,10 @@ ORDER BY job_id
 		if strings.TrimSpace(operation.ArtifactPath) == "" {
 			return false, fmt.Errorf("publish operation for job %d has no artifact path", jobID)
 		}
-		if filepath.Clean(operation.ArtifactPath) == target {
+		if operation.ArtifactIdentity.Device == 0 || operation.ArtifactIdentity.Inode == 0 {
+			return false, fmt.Errorf("publish operation for job %d has no usable artifact identity", jobID)
+		}
+		if filepath.Clean(operation.ArtifactPath) == target || replacepkg.SameFileIdentity(operation.ArtifactIdentity, targetIdentity) {
 			return true, nil
 		}
 	}
