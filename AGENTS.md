@@ -13,6 +13,11 @@
   `subtitle-cleanup`, `stage`, `crf-search`, `encode`, `dovi-fix`,
   `track-stats`, `validate`, `replace`/`handoff`, `cleanup`). Each block lives
   in its own package and registers itself in `worker.DefaultPipeline`.
+- Deployment is Linux-only, but the dev shell and `go build` must keep working
+  on darwin: platform corners carry build tags (`pkg/scanner/filesystem_*`,
+  `pkg/process/kill_unix.go`, `cmd/anvild/ownership_*`), with inotify stubbed
+  out off Linux and `flake.nix` exposing `devShells` for darwin while
+  `packages`/`apps` stay Linux-only.
 - The default branch is `main` and it is the only long-lived branch; use `main`
   or `origin/main` for diffs.
 - Go `1.26.4` with a deliberately small dependency set (`BurntSushi/toml`,

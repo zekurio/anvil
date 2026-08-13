@@ -2,7 +2,14 @@
 
 let
   goPackage = pkgs.go;
-  ffmpegPackage = pkgs.jellyfin-ffmpeg or pkgs.ffmpeg;
+  # jellyfin-ffmpeg does not build on darwin; the dev shell falls back to
+  # plain ffmpeg there. The packaged daemon only ships on Linux and always
+  # gets jellyfin-ffmpeg.
+  ffmpegPackage =
+    if pkgs.stdenv.isLinux then
+      (pkgs.jellyfin-ffmpeg or pkgs.ffmpeg)
+    else
+      pkgs.ffmpeg;
   devPackages =
     with pkgs;
     [

@@ -112,10 +112,11 @@ unresolved publish journal, and report it under `protected_jobs`.
 
 ### Development
 
-Linux is required for development and deployment. With
-[Nix](https://nixos.org/) and [direnv](https://direnv.net/) (provides Go,
-`golangci-lint`, `gopls`, ffmpeg, `ab-av1`, `dovi-tool`, MKVToolNix, and
-SQLite):
+Deployment targets Linux only (the scanner relies on inotify), but day-to-day
+development — building, linting, `gopls`, running `anvilctl` — also works on
+macOS. With [Nix](https://nixos.org/) and [direnv](https://direnv.net/)
+(provides Go, `golangci-lint`, `gopls`, ffmpeg, `ab-av1`, `dovi-tool`,
+MKVToolNix, and SQLite):
 
 ```sh
 direnv allow
