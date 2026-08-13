@@ -6,10 +6,71 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/zekurio/anvil/pkg/domain"
 	replacepkg "github.com/zekurio/anvil/pkg/replace"
 )
+
+// PublishArtifactProtected reports whether an unresolved publish journal owns
+// artifactPath. Callers use it before reclaiming a legacy unscoped part file,
+// whose name cannot identify the owning job.
+func (s *SQLiteStore) PublishArtifactProtected(ctx context.Context, artifactPath string) (protected bool, err error) {
+	if artifactPath == "" {
+		return false, nil
+	}
+	rows, err := s.db.QueryContext(ctx, `
+SELECT job_id, stage, operation_json
+FROM publish_operations
+WHERE stage != ?
+ORDER BY job_id
+`, string(replacepkg.PublishStageCommitted))
+	if err != nil {
+		return false, fmt.Errorf("list unresolved publish artifacts: %w", err)
+	}
+	defer closeRows(rows, &err, "close unresolved publish artifacts")
+	target := filepath.Clean(artifactPath)
+	targetIdentity, err := replacepkg.StatFileIdentity(artifactPath)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("identify publish artifact candidate %q: %w", artifactPath, err)
+	}
+	for rows.Next() {
+		var jobID domain.JobID
+		var stage replacepkg.PublishStage
+		var data []byte
+		if err := rows.Scan(&jobID, &stage, &data); err != nil {
+			return false, fmt.Errorf("scan unresolved publish artifact: %w", err)
+		}
+		var operation replacepkg.PublishOperation
+		if err := json.Unmarshal(data, &operation); err != nil {
+			return false, fmt.Errorf("decode publish operation for job %d: %w", jobID, err)
+		}
+		if operation.JobID != jobID {
+			return false, fmt.Errorf("publish operation job mismatch: row is %d, journal is %d", jobID, operation.JobID)
+		}
+		if operation.Stage != stage {
+			return false, fmt.Errorf("publish operation stage mismatch for job %d: row is %q, journal is %q", jobID, stage, operation.Stage)
+		}
+		if strings.TrimSpace(operation.ArtifactPath) == "" {
+			return false, fmt.Errorf("publish operation for job %d has no artifact path", jobID)
+		}
+		if operation.ArtifactIdentity.Device == 0 || operation.ArtifactIdentity.Inode == 0 {
+			return false, fmt.Errorf("publish operation for job %d has no usable artifact identity", jobID)
+		}
+		if filepath.Clean(operation.ArtifactPath) == target || replacepkg.SameFileObject(operation.ArtifactIdentity, targetIdentity) {
+			return true, nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return false, fmt.Errorf("iterate unresolved publish artifacts: %w", err)
+	}
+	return false, nil
+}
 
 func (s *SQLiteStore) GetPublishOperation(ctx context.Context, jobID domain.JobID) (replacepkg.PublishOperation, bool, error) {
 	var data []byte
