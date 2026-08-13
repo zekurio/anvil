@@ -108,11 +108,24 @@ func CleanupPartFiles(destination string, jobLabel string) error {
 	if destination == "" || strings.TrimSpace(jobLabel) == "" {
 		return nil
 	}
-	part := PartPath(destination, jobLabel)
-	if err := os.Remove(part); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("remove %q: %w", part, err)
+	paths := []string{PartPath(destination, jobLabel)}
+	// The first destination-side layout wrote <destination>.anvil-part (plus
+	// work variants) without a job label; current code never writes that
+	// name, so reclaiming pre-upgrade orphans here is safe.
+	legacy := destination + PartSuffix
+	paths = append(paths, legacy)
+	variants, err := filepath.Glob(legacy + ".*")
+	if err != nil {
+		return fmt.Errorf("match legacy part variants: %w", err)
 	}
-	return nil
+	paths = append(paths, variants...)
+	var removeErrs []error
+	for _, path := range paths {
+		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			removeErrs = append(removeErrs, fmt.Errorf("remove %q: %w", path, err))
+		}
+	}
+	return errors.Join(removeErrs...)
 }
 
 func flowHasHandoff(flow domain.Flow) bool {

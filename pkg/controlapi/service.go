@@ -2,6 +2,7 @@ package controlapi
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -330,7 +331,10 @@ func (s Service) CancelJobs(ctx context.Context, request control.JobCancelReques
 			item.WorkerSignaled = s.CancelRunningJob(result.JobID)
 		}
 		if result.Canceled {
-			s.cleanupOrphanedPart(ctx, result.JobID)
+			// The cleanup must outlive the cancellation it handles: a canceled
+			// job never stages again, so this is the last chance to reclaim a
+			// part file left by a crashed attempt.
+			s.cleanupOrphanedPart(context.WithoutCancel(ctx), result.JobID)
 			response.Canceled++
 		}
 		response.Matched++
@@ -372,14 +376,65 @@ func (s Service) cleanupOrphanedPart(ctx context.Context, jobID domain.JobID) {
 			return
 		}
 	}
-	destination := plannedDestination(s.runtimeConfig(), job, source, asset)
-	if destination == "" {
-		log("destination unresolvable", nil)
-		return
+	destinations, destErr := stagedDestinations(ctx, s.Store, job, source, asset)
+	if destErr != nil {
+		log("resolve some staged destinations", destErr)
 	}
-	if err := replacepkg.CleanupPartFiles(destination, replacepkg.PartJobLabel(jobID)); err != nil {
-		log("remove part files", err)
+	for _, destination := range destinations {
+		if err := replacepkg.CleanupPartFiles(destination, replacepkg.PartJobLabel(jobID)); err != nil {
+			log("remove part files", err)
+		}
 	}
+}
+
+// stagedDestinations reports every destination the job's attempts staged at.
+// The destination is fixed by the stage step under the attempt's resolved
+// config, so the persisted per-attempt snapshots — not the current runtime
+// config, which a reload may have changed or removed since — decide where an
+// orphaned part file can be.
+func stagedDestinations(ctx context.Context, store Store, job domain.Job, source domain.MediaSource, asset domain.MediaAsset) ([]string, error) {
+	attempts, err := store.ListAttemptsForJob(ctx, job.ID)
+	if err != nil {
+		return nil, fmt.Errorf("list attempts: %w", err)
+	}
+	var destinations []string
+	seen := make(map[string]struct{})
+	var errs []error
+	for _, attempt := range attempts {
+		if len(attempt.ResolvedLibrary) == 0 || len(attempt.ResolvedFlow) == 0 || len(attempt.ResolvedProfile) == 0 {
+			continue // config resolution failed before the pipeline ran: never staged
+		}
+		var library domain.Library
+		var flow domain.Flow
+		var profile domain.Profile
+		if err := json.Unmarshal(attempt.ResolvedLibrary, &library); err != nil {
+			errs = append(errs, fmt.Errorf("decode attempt %d resolved library: %w", attempt.Number, err))
+			continue
+		}
+		if err := json.Unmarshal(attempt.ResolvedFlow, &flow); err != nil {
+			errs = append(errs, fmt.Errorf("decode attempt %d resolved flow: %w", attempt.Number, err))
+			continue
+		}
+		if err := json.Unmarshal(attempt.ResolvedProfile, &profile); err != nil {
+			errs = append(errs, fmt.Errorf("decode attempt %d resolved profile: %w", attempt.Number, err))
+			continue
+		}
+		jobContext := &pipeline.JobContext{
+			Job: job, Source: source, Asset: asset,
+			Library: library, Flow: flow, Profile: profile,
+			InputPath: mediapath.Input(library.Path, source, asset),
+		}
+		destination, err := replacepkg.PlanDestination(jobContext)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("plan destination for attempt %d: %w", attempt.Number, err))
+			continue
+		}
+		if _, ok := seen[destination]; !ok {
+			seen[destination] = struct{}{}
+			destinations = append(destinations, destination)
+		}
+	}
+	return destinations, errors.Join(errs...)
 }
 
 // resolveJobReferences turns operator-supplied job references into ids. Both
