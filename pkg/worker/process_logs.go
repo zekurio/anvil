@@ -196,7 +196,7 @@ func (r *processLogRecorder) consumeToolOutput(ctx context.Context, command proc
 
 func shouldLogLiveOutput(command string) bool {
 	switch filepath.Base(command) {
-	case "ab-av1", "dovi_tool", "mkvextract", "mkvmerge", "mkvpropedit":
+	case "ab-av1":
 		return true
 	default:
 		return false
@@ -274,7 +274,7 @@ func shouldCaptureProcess(command process.Command, result process.Result, runErr
 		name = filepath.Base(result.Command[0])
 	}
 	switch name {
-	case "ffmpeg", "ab-av1", "dovi_tool", "mkvextract", "mkvmerge", "mkvinfo", "mkvpropedit":
+	case "ffmpeg", "ab-av1":
 	default:
 		return false
 	}

@@ -16,7 +16,6 @@ type MediaStream struct {
 	ColorSpace     string
 	ColorTransfer  string
 	ColorPrimaries string
-	DolbyVision    *DolbyVisionMetadata
 	Language       string
 	Title          string
 	Tags           map[string]string
@@ -39,16 +38,6 @@ func PrimaryVideoStream(streams []MediaStream) (MediaStream, bool) {
 		}
 	}
 	return MediaStream{}, false
-}
-
-type DolbyVisionMetadata struct {
-	Profile                  int
-	Level                    int
-	RPUPresent               bool
-	ELPresent                bool
-	BLPresent                bool
-	BLSignalCompatibilityID  int
-	ConfigurationRecordFound bool
 }
 
 type ProbeResult struct {
@@ -100,7 +89,6 @@ type EncodePlan struct {
 	InputWidth               int
 	InputHeight              int
 	Accelerator              string
-	VideoSource              string
 	VideoCopy                bool
 	VideoCopyReason          string
 	Preset                   string
@@ -164,8 +152,6 @@ type ValidationResult struct {
 	OutputHDRColorTransfer      string
 	SourceHDRColorPrimaries     string
 	OutputHDRColorPrimaries     string
-	SourceDolbyVisionPresent    bool
-	OutputDolbyVisionPresent    bool
 	Errors                      []string
 }
 
@@ -180,30 +166,20 @@ type JobMetadata struct {
 }
 
 type HDRMetadata struct {
-	ColorRange                 string
-	ColorSpace                 string
-	ColorTransfer              string
-	ColorPrimaries             string
-	DolbyVision                *DolbyVisionMetadata
-	DolbyVisionToolAvailable   bool
-	DolbyVisionEncoderSelected bool
-	DolbyVisionReason          string
+	ColorRange     string
+	ColorSpace     string
+	ColorTransfer  string
+	ColorPrimaries string
 }
 
 // EffectiveVideoProfile returns the video settings for this job after
-// source-dependent overrides are applied, most specific last: the base
-// profile, then the override matching the source video codec family, then
-// the dolby_vision override when the Dolby Vision encoder is selected.
+// source-dependent overrides are applied: the base profile, then the
+// override matching the source video codec family (hevc, h264, av1, ...).
 func EffectiveVideoProfile(profile Profile, metadata JobMetadata, sourceVideoCodec string) VideoProfile {
 	video := profile.Video
 	codec := strings.ToLower(strings.TrimSpace(sourceVideoCodec))
-	if codec != "" && codec != VideoOverrideDolbyVision {
+	if codec != "" {
 		if override, ok := profile.Video.Overrides[codec]; ok {
-			video = applyVideoOverride(video, override)
-		}
-	}
-	if metadata.HDR.DolbyVisionEncoderSelected {
-		if override, ok := profile.Video.Overrides[VideoOverrideDolbyVision]; ok {
 			video = applyVideoOverride(video, override)
 		}
 	}
@@ -247,11 +223,4 @@ func applyVideoOverride(video VideoProfile, override VideoOverride) VideoProfile
 	video.FFmpegArgs = append(append([]string(nil), video.FFmpegArgs...), override.FFmpegArgs...)
 	video.ABAV1Args = append(append([]string(nil), video.ABAV1Args...), override.ABAV1Args...)
 	return video
-}
-
-func EffectiveVideoSource(metadata JobMetadata) string {
-	if metadata.HDR.DolbyVisionEncoderSelected {
-		return VideoSourceDolbyVision
-	}
-	return VideoSourceProfile
 }

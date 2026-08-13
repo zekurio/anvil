@@ -46,12 +46,12 @@ Then import and configure the module:
 ```
 
 The module renders `/etc/anvil/anvil.toml`, creates `/var/lib/anvil`, exposes
-the control socket from `RuntimeDirectory`, and adds Jellyfin ffmpeg, `ab-av1`,
-`dovi-tool`, and MKVToolNix to the service PATH. The socket is `0660` inside a
+the control socket from `RuntimeDirectory`, and adds Jellyfin ffmpeg and
+`ab-av1` to the service PATH. The socket is `0660` inside a
 `0750` directory owned by `services.anvil.group`, so group membership — not
 having `anvilctl` installed — is what grants operator access.
 
-Without Nix, install `ffmpeg`/`ffprobe`, `ab-av1`, `dovi_tool`, and MKVToolNix,
+Without Nix, install `ffmpeg`/`ffprobe` and `ab-av1`,
 then run `anvild --config /etc/anvil/anvil.toml`.
 [`examples/anvil.toml`](examples/anvil.toml) is the minimal quick-start;
 [`examples/anvil-reference.toml`](examples/anvil-reference.toml) documents every
@@ -116,16 +116,14 @@ once validated, so publishing never copies the file across filesystems and
 the destination only ever appears complete. A part file left behind by a
 crashed attempt is removed when the job retries or is canceled; media
 scanners and Arrs ignore the suffix. `temp_dir` only holds scratch that
-never publishes: search samples, Dolby Vision intermediates, and process
-logs.
+never publishes: search samples and process logs.
 
 ### Development
 
 Deployment targets Linux only (the scanner relies on inotify), but day-to-day
 development — building, linting, `gopls`, running `anvilctl` — also works on
 macOS. With [Nix](https://nixos.org/) and [direnv](https://direnv.net/)
-(provides Go, `golangci-lint`, `gopls`, ffmpeg, `ab-av1`, `dovi-tool`,
-MKVToolNix, and SQLite):
+(provides Go, `golangci-lint`, `gopls`, ffmpeg, `ab-av1`, and SQLite):
 
 ```sh
 direnv allow

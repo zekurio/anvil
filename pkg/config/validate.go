@@ -103,21 +103,9 @@ func (c Config) Validate() error {
 		if profile.Video.MinSavingsPercent < 0 || profile.Video.MinSavingsPercent > 100 {
 			problems = append(problems, fmt.Sprintf("profile %q min_savings_percent must be between 0 and 100", name))
 		}
-		if !validDolbyVisionMode(profile.Video.DolbyVision.Mode) {
-			problems = append(problems, fmt.Sprintf("profile %q video.dolby_vision.mode %q is invalid", name, profile.Video.DolbyVision.Mode))
-		}
-
 		problems = append(problems, videoOverrideKeyProblems(name, profile.Video.Overrides)...)
-		var dolbyVisionOverride VideoOverrideConfig
-		var hasDolbyVisionOverride bool
 		for _, key := range sortedKeys(profile.Video.Overrides) {
 			override := profile.Video.Overrides[key]
-			canonicalKey := canonicalVideoOverrideKey(key)
-			if canonicalKey == "dolby_vision" && !hasDolbyVisionOverride {
-				dolbyVisionOverride = override
-				hasDolbyVisionOverride = true
-			}
-
 			prefix := fmt.Sprintf("profile %q video.overrides.%s", name, key)
 			if override.Codec != nil {
 				if strings.TrimSpace(*override.Codec) == "" {
@@ -171,9 +159,6 @@ func (c Config) Validate() error {
 			if effectiveCRFMin > effectiveCRFMax {
 				problems = append(problems, prefix+" effective crf_min must be less than or equal to crf_max")
 			}
-		}
-		if profile.Video.DolbyVision.Mode == DolbyVisionModeRequire && (!hasDolbyVisionOverride || dolbyVisionOverride.Codec == nil || strings.TrimSpace(*dolbyVisionOverride.Codec) == "") {
-			problems = append(problems, fmt.Sprintf("profile %q video.dolby_vision.mode is %q but video.overrides.dolby_vision.codec is not set", name, DolbyVisionModeRequire))
 		}
 		if !validStreamFallback(profile.Audio.Fallback) {
 			problems = append(problems, fmt.Sprintf("profile %q audio.fallback %q is invalid", name, profile.Audio.Fallback))
@@ -302,6 +287,12 @@ func videoOverrideKeyProblems(profileName string, overrides map[string]VideoOver
 			problems = append(problems, fmt.Sprintf("profile %q video.overrides key must not be empty", profileName))
 			continue
 		}
+		// Dolby Vision support was removed; its reserved override key must
+		// fail loudly instead of silently encoding with base settings.
+		if canonicalKey == "dolby-vision" {
+			problems = append(problems, fmt.Sprintf("profile %q video.overrides.%s targets removed Dolby Vision handling; delete the override (and any video.dolby_vision table)", profileName, key))
+			continue
+		}
 		if previousKey, exists := canonicalKeys[canonicalKey]; exists {
 			problems = append(problems, fmt.Sprintf("profile %q video.overrides.%s collides with video.overrides.%s after canonicalization to %q", profileName, key, previousKey, canonicalKey))
 			continue
@@ -414,10 +405,6 @@ func validQualityTarget(metric string, target float64) bool {
 	default:
 		return false
 	}
-}
-
-func validDolbyVisionMode(mode string) bool {
-	return mode == DefaultDolbyVisionMode || mode == DolbyVisionModeOff || mode == DolbyVisionModeRequire
 }
 
 func normalizeContainer(container string) string {

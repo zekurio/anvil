@@ -2,13 +2,9 @@ package ffmpeg
 
 import (
 	"context"
-	"encoding/xml"
 	"errors"
 	"fmt"
 	"log/slog"
-	"os"
-	"path/filepath"
-	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -97,7 +93,6 @@ func BuildPlanFromRequest(request BuildPlanRequest) (domain.EncodePlan, error) {
 		InputWidth:         inputVideo.Width,
 		InputHeight:        inputVideo.Height,
 		Accelerator:        videocodec.ResolveAccelerator(video.Accelerator),
-		VideoSource:        domain.EffectiveVideoSource(request.Metadata),
 		VideoCopy:          videoCopy,
 		VideoCopyReason:    videoCopyReason,
 		Preset:             video.Preset,
@@ -219,6 +214,16 @@ func Args(plan domain.EncodePlan) []string {
 	if plan.ChapterMode == domain.MetadataModeStrip {
 		args = append(args, "-map_chapters", "-1")
 	}
+	// A re-encode invalidates the source video's Matroska statistics tags
+	// (BPS, NUMBER_OF_FRAMES, NUMBER_OF_BYTES), which ffmpeg otherwise copies
+	// verbatim. Clear them so players never show the source's numbers for the
+	// new video; copied streams keep their still-accurate statistics, and
+	// ffmpeg writes a fresh DURATION itself.
+	if !plan.VideoCopy {
+		for _, key := range []string{"BPS", "NUMBER_OF_FRAMES", "NUMBER_OF_BYTES", "_STATISTICS_WRITING_APP", "_STATISTICS_WRITING_DATE_UTC", "_STATISTICS_TAGS"} {
+			args = append(args, "-metadata:s:v", key+"=")
+		}
+	}
 	// The artifact is written under a temporary .anvil-part name, so ffmpeg
 	// cannot infer the muxer from the file extension.
 	args = append(args, "-f", outputFormat(plan.Container))
@@ -287,349 +292,6 @@ func buildPlanRequest(job *pipeline.JobContext) BuildPlanRequest {
 		Metadata:   job.Metadata,
 		Probe:      job.Probe,
 	}
-}
-
-type DolbyVisionBlock struct {
-	Runner      process.Runner
-	DoviTool    string
-	MKVExtract  string
-	MKVMerge    string
-	MKVInfo     string
-	MKVPropEdit string
-	FFmpeg      string
-}
-
-func (DolbyVisionBlock) Name() string {
-	return "dovi-fix"
-}
-
-func (b DolbyVisionBlock) Run(ctx context.Context, job *pipeline.JobContext) error {
-	if !needsDolbyVisionFix(job) {
-		return nil
-	}
-	if strings.TrimSpace(job.OutputPath) == "" {
-		return errors.New("dolby vision fix output path is required")
-	}
-	if !strings.EqualFold(filepath.Ext(job.DestinationPath), ".mkv") {
-		return fmt.Errorf("dolby vision fix requires MKV output, got %q", filepath.Ext(job.DestinationPath))
-	}
-	codec := job.EncodePlan.VideoCodec
-	if strings.TrimSpace(codec) == "" {
-		if override, ok := job.Profile.Video.Overrides[domain.VideoOverrideDolbyVision]; ok && override.Codec != nil {
-			codec = *override.Codec
-		}
-	}
-	if !hevcEncoder(codec) {
-		return fmt.Errorf("dolby vision fix requires HEVC output, got encoder %q", codec)
-	}
-
-	dir := strings.TrimSpace(job.StagingDir)
-	if dir == "" {
-		dir = filepath.Dir(job.OutputPath)
-	}
-	if err := os.MkdirAll(dir, 0o750); err != nil {
-		return fmt.Errorf("create Dolby Vision staging dir: %w", err)
-	}
-
-	paths := doviWorkPaths(dir, job.OutputPath)
-	defer cleanupDoviPaths(paths)
-
-	if err := b.extractDolbyVisionRPU(ctx, job, paths); err != nil {
-		return err
-	}
-	if err := b.injectDolbyVisionRPU(ctx, job, paths); err != nil {
-		return err
-	}
-	if err := b.muxDolbyVisionOutput(ctx, job.OutputPath, paths); err != nil {
-		return err
-	}
-	if err := b.restoreVideoTags(ctx, job, paths); err != nil {
-		return err
-	}
-	if err := replaceOutput(job.OutputPath, paths.fixedMKV); err != nil {
-		return err
-	}
-	return nil
-}
-
-func (b DolbyVisionBlock) extractDolbyVisionRPU(ctx context.Context, job *pipeline.JobContext, paths doviPaths) error {
-	originalForRPU, err := b.originalVideoForRPU(ctx, job.InputPath, paths)
-	if err != nil {
-		return err
-	}
-	extractArgs := doviArgs(
-		job,
-		"--crop", "--mode", "2",
-		"extract-rpu",
-		"-o", paths.originalRPU,
-		originalForRPU,
-	)
-	return b.run(ctx, b.doviTool(), extractArgs...)
-}
-
-func (b DolbyVisionBlock) originalVideoForRPU(ctx context.Context, inputPath string, paths doviPaths) (string, error) {
-	if strings.EqualFold(filepath.Ext(inputPath), ".mkv") {
-		return inputPath, nil
-	}
-	err := b.run(
-		ctx,
-		b.ffmpeg(),
-		"-v", "quiet", "-stats",
-		"-i", inputPath,
-		"-c:v", "copy",
-		paths.originalHEVC,
-	)
-	if err != nil {
-		return "", err
-	}
-	return paths.originalHEVC, nil
-}
-
-func (b DolbyVisionBlock) injectDolbyVisionRPU(ctx context.Context, job *pipeline.JobContext, paths doviPaths) error {
-	if err := b.run(ctx, b.mkvExtract(), "tracks", job.OutputPath, "0:"+paths.convertedHEVC); err != nil {
-		return err
-	}
-	injectArgs := doviArgs(job,
-		"--crop", "--mode", "2",
-		"inject-rpu",
-		"--rpu-in", paths.originalRPU,
-		"--input", paths.convertedHEVC,
-		"--output", paths.fixedHEVC,
-	)
-	return b.run(ctx, b.doviTool(), injectArgs...)
-}
-
-func (b DolbyVisionBlock) muxDolbyVisionOutput(ctx context.Context, outputPath string, paths doviPaths) error {
-	fps, err := b.outputFPS(ctx, outputPath)
-	if err != nil {
-		return err
-	}
-	return b.run(ctx, b.mkvMerge(), doviMuxArgs(outputPath, paths, fps)...)
-}
-
-func (b DolbyVisionBlock) restoreVideoTags(ctx context.Context, job *pipeline.JobContext, paths doviPaths) error {
-	if job == nil || job.EncodePlan == nil {
-		return nil
-	}
-	tags := marker.OutputTags(*job.EncodePlan)
-	if len(tags) == 0 {
-		return nil
-	}
-	if err := writeMatroskaTrackTags(paths.videoTags, tags); err != nil {
-		return err
-	}
-	args := []string{paths.fixedMKV}
-	if title := doviVideoTrackTitle(*job.EncodePlan); title != "" {
-		args = append(args, "--edit", "track:v1", "--set", "name="+title)
-	}
-	args = append(args, "--tags", "track:v1:"+paths.videoTags)
-	return b.run(ctx, b.mkvPropEdit(), args...)
-}
-
-func doviVideoTrackTitle(plan domain.EncodePlan) string {
-	for _, title := range plan.TrackTitles {
-		if title.Type == "v" && title.Index == 0 {
-			return strings.TrimSpace(title.Title)
-		}
-	}
-	return ""
-}
-
-func doviMuxArgs(outputPath string, paths doviPaths, fps string) []string {
-	args := []string{
-		"-o", paths.fixedMKV,
-		paths.fixedHEVC,
-		"-D", outputPath,
-		"--track-order", "1:0",
-	}
-	if fps != "" {
-		args = append(
-			[]string{
-				"--default-duration", "0:" + fps + "fps",
-				"--fix-bitstream-timing-information", "0",
-			},
-			args...,
-		)
-	}
-	return args
-}
-
-type doviPaths struct {
-	originalHEVC  string
-	originalRPU   string
-	convertedHEVC string
-	fixedHEVC     string
-	fixedMKV      string
-	videoTags     string
-}
-
-// doviWorkPaths places the stream-level intermediates in the scratch dir and
-// the remuxed MKV next to the encode output, so installing it over the output
-// is a same-directory rename rather than a cross-device copy.
-func doviWorkPaths(dir string, outputPath string) doviPaths {
-	return doviPaths{
-		originalHEVC:  filepath.Join(dir, "dovi-original.hevc"),
-		originalRPU:   filepath.Join(dir, "dovi-original.rpu"),
-		convertedHEVC: filepath.Join(dir, "dovi-converted.hevc"),
-		fixedHEVC:     filepath.Join(dir, "dovi-fixed.hevc"),
-		fixedMKV:      outputPath + ".dovi-fixed",
-		videoTags:     filepath.Join(dir, "dovi-video-tags.xml"),
-	}
-}
-
-func needsDolbyVisionFix(job *pipeline.JobContext) bool {
-	return job != nil &&
-		job.EncodePlan != nil &&
-		!job.EncodePlan.VideoCopy &&
-		job.Metadata.HDR.DolbyVision != nil &&
-		job.Metadata.HDR.DolbyVisionEncoderSelected &&
-		job.Profile.Video.DolbyVision.Mode != domain.DolbyVisionModeOff
-}
-
-func doviArgs(job *pipeline.JobContext, args ...string) []string {
-	if job.Profile.Video.DolbyVision.RemoveHDR10Plus {
-		return append([]string{"--drop-hdr10plus"}, args...)
-	}
-	return append([]string(nil), args...)
-}
-
-func (b DolbyVisionBlock) outputFPS(ctx context.Context, outputPath string) (string, error) {
-	result, err := b.runner().Run(ctx, process.Command{
-		Name: b.mkvInfo(),
-		Args: []string{"--ui-language", "en_US", outputPath},
-	})
-	if err != nil {
-		return "", fmt.Errorf("mkvinfo Dolby Vision output: %w", err)
-	}
-	matches := fpsPattern.FindStringSubmatch(string(result.Stdout))
-	if len(matches) < 2 {
-		return "", nil
-	}
-	return matches[1], nil
-}
-
-var fpsPattern = regexp.MustCompile(`(?i)([.0-9]+)\s+frames/fields`)
-
-func (b DolbyVisionBlock) run(ctx context.Context, name string, args ...string) error {
-	if _, err := b.runner().Run(ctx, process.Command{Name: name, Args: args}); err != nil {
-		return fmt.Errorf("%s Dolby Vision fix: %w", filepath.Base(name), err)
-	}
-	return nil
-}
-
-func (b DolbyVisionBlock) runner() process.Runner {
-	if b.Runner != nil {
-		return b.Runner
-	}
-	return process.OSRunner{}
-}
-
-func (b DolbyVisionBlock) doviTool() string {
-	return valueOr(b.DoviTool, "dovi_tool")
-}
-
-func (b DolbyVisionBlock) mkvExtract() string {
-	return valueOr(b.MKVExtract, "mkvextract")
-}
-
-func (b DolbyVisionBlock) mkvMerge() string {
-	return valueOr(b.MKVMerge, "mkvmerge")
-}
-
-func (b DolbyVisionBlock) mkvInfo() string {
-	return valueOr(b.MKVInfo, "mkvinfo")
-}
-
-func (b DolbyVisionBlock) mkvPropEdit() string {
-	return valueOr(b.MKVPropEdit, "mkvpropedit")
-}
-
-func (b DolbyVisionBlock) ffmpeg() string {
-	return valueOr(b.FFmpeg, "ffmpeg")
-}
-
-func hevcEncoder(codec string) bool {
-	codec = strings.ToLower(strings.TrimSpace(codec))
-	codec = strings.ReplaceAll(codec, "_", "-")
-	switch codec {
-	case "hevc", "h265", "h.265", "libx265", "x265", "hevc-qsv", "hevc-nvenc", "hevc-amf", "hevc-videotoolbox":
-		return true
-	default:
-		return false
-	}
-}
-
-func replaceOutput(outputPath string, fixedPath string) error {
-	backupPath := outputPath + ".pre-dovi"
-	_ = os.Remove(backupPath) //nolint:errcheck // stale backup removal is best-effort before replacement
-	if err := os.Rename(outputPath, backupPath); err != nil {
-		return fmt.Errorf("backup pre-Dolby Vision output: %w", err)
-	}
-	if err := os.Rename(fixedPath, outputPath); err != nil {
-		_ = os.Rename(backupPath, outputPath) //nolint:errcheck // restore attempt is best-effort; install error is returned
-		return fmt.Errorf("install Dolby Vision fixed output: %w", err)
-	}
-	if err := os.Remove(backupPath); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("remove pre-Dolby Vision output backup: %w", err)
-	}
-	return nil
-}
-
-func cleanupDoviPaths(paths doviPaths) {
-	for _, path := range []string{
-		paths.originalHEVC,
-		paths.originalRPU,
-		paths.convertedHEVC,
-		paths.fixedHEVC,
-		paths.fixedMKV,
-		paths.videoTags,
-	} {
-		_ = os.Remove(path) //nolint:errcheck // temporary Dolby Vision work files are best-effort cleanup
-	}
-}
-
-type matroskaTags struct {
-	XMLName xml.Name      `xml:"Tags"`
-	Tags    []matroskaTag `xml:"Tag"`
-}
-
-type matroskaTag struct {
-	Simple []matroskaSimpleTag `xml:"Simple"`
-}
-
-type matroskaSimpleTag struct {
-	Name   string `xml:"Name"`
-	String string `xml:"String"`
-}
-
-func writeMatroskaTrackTags(path string, tags map[string]string) error {
-	if strings.TrimSpace(path) == "" {
-		return errors.New("matroska tags path is required")
-	}
-	keys := make([]string, 0, len(tags))
-	for key, value := range tags {
-		if strings.TrimSpace(key) != "" && strings.TrimSpace(value) != "" {
-			keys = append(keys, key)
-		}
-	}
-	sort.Strings(keys)
-	document := matroskaTags{Tags: []matroskaTag{{Simple: make([]matroskaSimpleTag, 0, len(keys))}}}
-	for _, key := range keys {
-		document.Tags[0].Simple = append(document.Tags[0].Simple, matroskaSimpleTag{
-			Name:   strings.TrimSpace(key),
-			String: strings.TrimSpace(tags[key]),
-		})
-	}
-	data, err := xml.MarshalIndent(document, "", "  ")
-	if err != nil {
-		return fmt.Errorf("encode matroska video tags: %w", err)
-	}
-	data = append([]byte(xml.Header), data...)
-	data = append(data, '\n')
-	if err := os.WriteFile(path, data, 0o640); err != nil {
-		return fmt.Errorf("write matroska video tags: %w", err)
-	}
-	return nil
 }
 
 func inputArgs(plan domain.EncodePlan) []string {
@@ -951,9 +613,6 @@ func absInt(value int) int {
 }
 
 func dynamicRangeLabel(stream domain.MediaStream) string {
-	if stream.DolbyVision != nil {
-		return "Dolby Vision"
-	}
 	transfer := strings.ToLower(strings.TrimSpace(stream.ColorTransfer))
 	switch transfer {
 	case "":
