@@ -1,8 +1,5 @@
 package domain
 
-const VideoSourceProfile = "profile"
-const VideoSourceDolbyVision = "dolby_vision"
-
 type LibraryName string
 type FlowName string
 type ProfileName string
