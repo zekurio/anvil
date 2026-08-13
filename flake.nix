@@ -49,8 +49,6 @@
           runtimePackages = [
             ffmpegPackage
             pkgs.ab-av1
-            pkgs.dovi-tool
-            pkgs.mkvtoolnix
           ];
         in
         rec {

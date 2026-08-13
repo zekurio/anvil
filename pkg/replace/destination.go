@@ -100,29 +100,19 @@ func PartJobLabel(id domain.JobID) string {
 	return strconv.FormatInt(int64(id), 10)
 }
 
-// CleanupPartFiles removes the job's unpublished artifact and its Dolby
-// Vision work variants for a destination. Anything matching the part
-// namespace is Anvil's own residue from a failed attempt; the published
-// destination itself and other jobs' parts are never touched.
+// CleanupPartFiles removes the job's unpublished artifact beside its
+// destination. The part namespace is Anvil's own; the published destination
+// and other jobs' parts are never touched.
 func CleanupPartFiles(destination string, jobLabel string) error {
 	destination = strings.TrimSpace(destination)
 	if destination == "" || strings.TrimSpace(jobLabel) == "" {
 		return nil
 	}
 	part := PartPath(destination, jobLabel)
-	paths := []string{part}
-	variants, err := filepath.Glob(part + ".*")
-	if err != nil {
-		return fmt.Errorf("match artifact part variants: %w", err)
+	if err := os.Remove(part); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("remove %q: %w", part, err)
 	}
-	paths = append(paths, variants...)
-	var removeErrs []error
-	for _, path := range paths {
-		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
-			removeErrs = append(removeErrs, fmt.Errorf("remove %q: %w", path, err))
-		}
-	}
-	return errors.Join(removeErrs...)
+	return nil
 }
 
 func flowHasHandoff(flow domain.Flow) bool {

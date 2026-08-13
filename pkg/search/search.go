@@ -193,7 +193,6 @@ func searchPlan(job *pipeline.JobContext) domain.EncodePlan {
 		InputWidth:         inputWidth,
 		InputHeight:        inputHeight,
 		Accelerator:        videocodec.ResolveAccelerator(video.Accelerator),
-		VideoSource:        domain.EffectiveVideoSource(job.Metadata),
 		Preset:             video.Preset,
 		BitDepth:           videocodec.NormalizeBitDepth(video.BitDepth),
 		PixelFormat:        videocodec.SoftwarePixelFormat(video.BitDepth),

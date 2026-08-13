@@ -30,7 +30,6 @@ import (
 	"github.com/zekurio/anvil/pkg/staging"
 	"github.com/zekurio/anvil/pkg/store"
 	"github.com/zekurio/anvil/pkg/subtitle"
-	"github.com/zekurio/anvil/pkg/trackstats"
 	"github.com/zekurio/anvil/pkg/validate"
 )
 
@@ -144,7 +143,7 @@ func (r Runner) Run(ctx context.Context, assignment scheduler.Assignment) error 
 		}
 		return nil
 	}
-	contextPersistence := newPipelineContextPersistence(ctx, r.Store, jobContext, resolvedLibrary, resolvedFlow, resolvedProfile, initialMetadata, probeMetadataRefresh(pipelineRunner), r.now)
+	contextPersistence := newPipelineContextPersistence(ctx, r.Store, jobContext, resolvedLibrary, resolvedFlow, resolvedProfile, initialMetadata, r.now)
 	slog.Info("worker pipeline started", "worker", assignment.WorkerID, "job", assignment.Job.Label(), "attempt", attempt.Number, "library", string(library.Name), "flow", string(flow.Name), "profile", string(profile.Name), "input", inputPath)
 
 	if pipelineRunner.Events == nil {
@@ -240,20 +239,6 @@ func (r Runner) verifyCurrentOccurrence(ctx context.Context, job *pipeline.JobCo
 	return r.verifyOccurrenceInput(job.InputPath, source, asset)
 }
 
-type probeMetadataRefresher interface {
-	RefreshDolbyVision(context.Context, *pipeline.JobContext) error
-}
-
-func probeMetadataRefresh(runner pipeline.Runner) resumeProbeMetadataRefresher {
-	block, ok := runner.Registry.Block("probe")
-	if ok {
-		if refresher, ok := block.(probeMetadataRefresher); ok {
-			return refresher.RefreshDolbyVision
-		}
-	}
-	return probe.Block{}.RefreshDolbyVision
-}
-
 func DefaultPipeline(tempDir string, journal replacepkg.PublishJournal) pipeline.Runner {
 	stageManager := staging.Manager{Root: staging.Root(tempDir)}
 	prober := probe.FFProbe{}
@@ -267,8 +252,6 @@ func DefaultPipeline(tempDir string, journal replacepkg.PublishJournal) pipeline
 			staging.StageBlock{Manager: stageManager},
 			search.Block{},
 			ffmpeg.Block{},
-			ffmpeg.DolbyVisionBlock{},
-			trackstats.Block{},
 			validate.Block{Validator: validate.Validator{Prober: prober}},
 			replacepkg.ReplaceBlock{Manager: publishManager},
 			replacepkg.HandoffBlock{Manager: publishManager},

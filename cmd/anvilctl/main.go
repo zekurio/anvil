@@ -1,8 +1,8 @@
 // Command anvilctl is the operator client for a running anvild. It never opens
-// the SQLite store and never runs ffmpeg, ab-av1, dovi_tool, or mkvtoolnix: it
-// asks the daemon that owns them over daemon.control_socket, the way systemctl
-// asks systemd. That boundary is the point — two processes writing Anvil's
-// database while jobs are running is how half-published files happen.
+// the SQLite store and never runs ffmpeg or ab-av1: it asks the daemon that
+// owns them over daemon.control_socket, the way systemctl asks systemd. That
+// boundary is the point — two processes writing Anvil's database while jobs
+// are running is how half-published files happen.
 package main
 
 import (

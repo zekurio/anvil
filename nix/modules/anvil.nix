@@ -23,8 +23,6 @@ let
     "stage"
     "crf-search"
     "encode"
-    "dovi-fix"
-    "track-stats"
     "validate"
     "replace"
     "cleanup"
@@ -38,8 +36,6 @@ let
     "stage"
     "crf-search"
     "encode"
-    "dovi-fix"
-    "track-stats"
     "validate"
     "handoff"
     "cleanup"
@@ -85,10 +81,6 @@ let
   profileToToml =
     _name: profile:
     let
-      dolbyVision = compact {
-        inherit (profile.video.dolbyVision) mode;
-        remove_hdr10plus = profile.video.dolbyVision.removeHdr10plus;
-      };
       overrides = compact (lib.mapAttrs videoOverrideToToml profile.video.overrides);
       video = compact (
         {
@@ -103,7 +95,6 @@ let
           ab_av1_args = profile.video.abAv1Args;
         }
         // optionalAttrs (overrides != { }) { inherit overrides; }
-        // optionalAttrs (dolbyVision != { }) { dolby_vision = dolbyVision; }
       );
       audio = compact {
         languages_to_keep = profile.audio.languagesToKeep;
@@ -507,26 +498,10 @@ let
           type = types.attrsOf videoOverrideModule;
           default = { };
           description = ''
-            Per-source overrides keyed by a canonical codec family or
-            dolby_vision. Nullable fields inherit base video settings; argument
+            Per-source overrides keyed by a canonical codec family.
+            Nullable fields inherit base video settings; argument
             lists append and are omitted when empty.
           '';
-        };
-        dolbyVision = {
-          mode = mkOption {
-            type = types.nullOr (types.enum [
-              "auto"
-              "off"
-              "require"
-            ]);
-            default = null;
-            description = "Dolby Vision handling policy. Null defers to Anvil's default.";
-          };
-          removeHdr10plus = mkOption {
-            type = types.nullOr types.bool;
-            default = null;
-            description = "Pass dovi_tool --drop-hdr10plus during RPU extraction and injection.";
-          };
         };
       };
 
@@ -813,8 +788,6 @@ in
       default = [
         ffmpegPackage
         pkgs.ab-av1
-        pkgs.dovi-tool
-        pkgs.mkvtoolnix
       ];
       description = "Packages added to the service PATH for media inspection, search, repair, remuxing, and encoding.";
     };

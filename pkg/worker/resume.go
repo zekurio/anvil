@@ -19,9 +19,7 @@ type pipelineContextPersistence struct {
 	now     func() time.Time
 }
 
-type resumeProbeMetadataRefresher func(context.Context, *pipeline.JobContext) error
-
-func newPipelineContextPersistence(ctx context.Context, store Store, job *pipeline.JobContext, resolvedLibrary, resolvedFlow, resolvedProfile []byte, initialMetadata domain.JobMetadata, refreshProbeMetadata resumeProbeMetadataRefresher, now func() time.Time) *pipelineContextPersistence {
+func newPipelineContextPersistence(ctx context.Context, store Store, job *pipeline.JobContext, resolvedLibrary, resolvedFlow, resolvedProfile []byte, initialMetadata domain.JobMetadata, now func() time.Time) *pipelineContextPersistence {
 	base := basePipelineContext(job, resolvedLibrary, resolvedFlow, resolvedProfile, initialMetadata)
 	persistence := &pipelineContextPersistence{
 		store:   store,
@@ -43,15 +41,6 @@ func newPipelineContextPersistence(ctx context.Context, store Store, job *pipeli
 	}
 	if !pipelineContextMatches(base, snapshot) {
 		slog.Info("job pipeline context is stale; rebuilding", "job", job.Job.Label())
-		return persistence
-	}
-	probeMetadataCurrent, err := pipelineContextProbeMetadataCurrent(ctx, refreshProbeMetadata, job, snapshot)
-	if err != nil {
-		slog.Info("job pipeline context is stale; rebuilding", "job", job.Job.Label(), "reason", "probe metadata refresh failed", "error", err)
-		return persistence
-	}
-	if !probeMetadataCurrent {
-		slog.Info("job pipeline context is stale; rebuilding", "job", job.Job.Label(), "reason", "probe metadata changed")
 		return persistence
 	}
 	persistence.cached = &snapshot
@@ -175,20 +164,6 @@ func pipelineContextMatches(base domain.JobPipelineContext, cached domain.JobPip
 		cached.ResolvedFlowJSON == base.ResolvedFlowJSON &&
 		cached.ResolvedProfileJSON == base.ResolvedProfileJSON &&
 		reflect.DeepEqual(cached.InitialMetadata, base.InitialMetadata)
-}
-
-func pipelineContextProbeMetadataCurrent(ctx context.Context, refresh resumeProbeMetadataRefresher, job *pipeline.JobContext, cached domain.JobPipelineContext) (bool, error) {
-	if refresh == nil || cached.Probe == nil {
-		return true, nil
-	}
-	probeJob := *job
-	probeJob.Probe = cached.Probe
-	probeJob.Metadata = cached.Metadata
-	if err := refresh(ctx, &probeJob); err != nil {
-		return false, err
-	}
-	return cached.Metadata.HDR.DolbyVisionToolAvailable == probeJob.Metadata.HDR.DolbyVisionToolAvailable &&
-		cached.Metadata.HDR.DolbyVisionEncoderSelected == probeJob.Metadata.HDR.DolbyVisionEncoderSelected, nil
 }
 
 func fingerprintMatches(left domain.FileFingerprint, right domain.FileFingerprint) bool {

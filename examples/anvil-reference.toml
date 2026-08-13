@@ -2,7 +2,7 @@
 # Names after flows, profiles, arrs, and libraries are your own non-empty names.
 
 [daemon]
-temp_dir = "/var/lib/anvil/tmp" # Scratch directory (search samples, Dolby Vision intermediates, process logs); encode artifacts are written next to their publish destination as <name>.job-<id>.anvil-part; default is the OS temp directory plus /anvil; any non-empty path.
+temp_dir = "/var/lib/anvil/tmp" # Scratch directory (search samples, process logs); encode artifacts are written next to their publish destination as <name>.job-<id>.anvil-part; default is the OS temp directory plus /anvil; any non-empty path.
 store_path = "/var/lib/anvil/anvil.db" # SQLite state path; default is temp_dir/anvil.db; any non-empty path.
 control_socket = "/run/anvil/anvild.sock" # Daemon Unix socket; default is temp_dir/anvild.sock; must be absolute.
 worker_count = 2 # Simultaneous jobs; default is the CPU count; integer >= 1.
@@ -19,11 +19,11 @@ log_level = "info" # Keep logs useful without excessive detail; default "info"; 
 
 # Media libraries replace in place, so their flow ends in replace.
 [flows.av1-crf-search]
-steps = ["probe", "crop-detect", "audio-cleanup", "subtitle-cleanup", "stage", "crf-search", "encode", "dovi-fix", "track-stats", "validate", "replace", "cleanup"] # Default media flow; non-empty ordered pipeline block names.
+steps = ["probe", "crop-detect", "audio-cleanup", "subtitle-cleanup", "stage", "crf-search", "encode", "validate", "replace", "cleanup"] # Default media flow; non-empty ordered pipeline block names.
 
 # Download libraries must hand off rather than replace their downloader-owned source.
 [flows.download-av1-handoff]
-steps = ["probe", "crop-detect", "audio-cleanup", "subtitle-cleanup", "stage", "crf-search", "encode", "dovi-fix", "track-stats", "validate", "handoff", "cleanup"] # Default download flow; non-empty ordered pipeline block names.
+steps = ["probe", "crop-detect", "audio-cleanup", "subtitle-cleanup", "stage", "crf-search", "encode", "validate", "handoff", "cleanup"] # Default download flow; non-empty ordered pipeline block names.
 
 [profiles.default-av1]
 container = "mkv" # Output container; default "mkv"; only "mkv".
@@ -43,11 +43,7 @@ skip_encode = false # Copy video instead of searching and encoding when policy r
 ffmpeg_args = [] # Extra ffmpeg arguments appended to Anvil's command; default []; any argument strings.
 ab_av1_args = [] # Extra ab-av1 arguments appended to the search command; default []; any argument strings.
 
-[profiles.default-av1.video.dolby_vision]
-mode = "auto" # Preserve, disable, or require Dolby Vision handling; default "auto"; "auto", "off", or "require".
-remove_hdr10plus = false # Strip HDR10+ metadata when it conflicts with the chosen Dolby Vision policy; default false; boolean.
-
-# These names match a canonical source codec family, or the reserved dolby_vision key.
+# These names match a canonical source codec family.
 # Each field is optional here: omit it to inherit video settings; argument lists append.
 [profiles.default-av1.video.overrides.hevc]
 codec = "av1" # Override output codec for HEVC sources; default inherits; "av1", "hevc"/"h265", or "h264"/"avc".
@@ -63,21 +59,6 @@ force_encode_on_no_fit = false # Override no-fit behavior for HEVC sources; defa
 skip_encode = false # Copy HEVC video instead of encoding only when explicitly needed; default inherits; boolean.
 ffmpeg_args = [] # Append source-specific ffmpeg arguments; default []; any argument strings.
 ab_av1_args = [] # Append source-specific ab-av1 arguments; default []; any argument strings.
-
-[profiles.default-av1.video.overrides.dolby_vision]
-codec = "hevc" # Use a Dolby Vision-capable output codec; default inherits; "av1", "hevc"/"h265", or "h264"/"avc".
-accelerator = "qsv" # Select a Dolby Vision encoder backend; default inherits; "software", "qsv", "vaapi", or "amf".
-preset = "medium" # Override the Dolby Vision encoder preset; default inherits; any encoder-supported string.
-bit_depth = 10 # Override Dolby Vision output depth; default inherits; 8 or 10.
-crf_min = 18 # Override Dolby Vision minimum CRF; default inherits; integer >= 0 and <= effective crf_max.
-crf_max = 40 # Override Dolby Vision maximum CRF; default inherits; integer >= 0 and >= effective crf_min.
-metric = "vmaf" # Override Dolby Vision search metric; default inherits; "vmaf" or "xpsnr".
-target = 95.0 # Override the Dolby Vision metric target; default inherits; number from 0 through 100.
-min_savings_percent = 20 # Override Dolby Vision required savings; default inherits; number from 0 through 100.
-force_encode_on_no_fit = false # Override Dolby Vision no-fit behavior; default inherits; boolean.
-skip_encode = false # Copy Dolby Vision video instead of encoding only when explicitly needed; default inherits; boolean.
-ffmpeg_args = ["-global_quality", "24"] # Append Dolby Vision ffmpeg arguments; default []; any argument strings.
-ab_av1_args = ["--enc", "low_power=1"] # Append Dolby Vision ab-av1 arguments; default []; any argument strings.
 
 [profiles.default-av1.audio]
 languages_to_keep = ["orig", "deu"] # Retain original language plus chosen tags; default []; language tags and "orig".

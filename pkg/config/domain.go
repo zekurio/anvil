@@ -191,10 +191,6 @@ func (p ProfileConfig) ToDomain() domain.Profile {
 			FFmpegArgs:         append([]string(nil), p.Video.FFmpegArgs...),
 			ABAV1Args:          append([]string(nil), p.Video.ABAV1Args...),
 			Overrides:          videoOverrides,
-			DolbyVision: domain.DolbyVisionPolicy{
-				Mode:            domain.DolbyVisionMode(p.Video.DolbyVision.Mode),
-				RemoveHDR10Plus: p.Video.DolbyVision.RemoveHDR10Plus,
-			},
 		},
 		Audio: domain.AudioProfile{
 			LanguagesToKeep:   append([]string(nil), p.Audio.LanguagesToKeep...),

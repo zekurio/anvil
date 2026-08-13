@@ -21,9 +21,6 @@ const (
 	DefaultStreamFallback   = "keep_all"
 	DefaultMetadataMode     = "preserve"
 	DefaultTrackTitleMode   = "strip"
-	DefaultDolbyVisionMode  = "auto"
-	DolbyVisionModeOff      = "off"
-	DolbyVisionModeRequire  = "require"
 	DefaultMinSavingsPct    = 20
 	DefaultCRFMin           = 18
 	DefaultCRFMax           = 40
@@ -108,12 +105,11 @@ type VideoConfig struct {
 	FFmpegArgs         []string                       `toml:"ffmpeg_args"`
 	ABAV1Args          []string                       `toml:"ab_av1_args"`
 	Overrides          map[string]VideoOverrideConfig `toml:"overrides"`
-	DolbyVision        DolbyVisionConfig              `toml:"dolby_vision"`
 }
 
-// VideoOverrideConfig adjusts video settings for canonical source codec family
-// keys (hevc, h264, av1, ...) or the reserved dolby_vision key. Absent fields
-// inherit base video settings; ffmpeg_args and ab_av1_args append to the base args.
+// VideoOverrideConfig adjusts video settings for canonical source codec
+// family keys (hevc, h264, av1, ...). Absent fields inherit base video
+// settings; ffmpeg_args and ab_av1_args append to the base args.
 type VideoOverrideConfig struct {
 	Codec              *string  `toml:"codec"`
 	Accelerator        *string  `toml:"accelerator"`
@@ -128,13 +124,6 @@ type VideoOverrideConfig struct {
 	SkipEncode         *bool    `toml:"skip_encode"`
 	FFmpegArgs         []string `toml:"ffmpeg_args"`
 	ABAV1Args          []string `toml:"ab_av1_args"`
-}
-
-// DolbyVisionConfig gates Dolby Vision handling. Encoder settings for Dolby
-// Vision sources live in [profiles.X.video.overrides.dolby_vision].
-type DolbyVisionConfig struct {
-	Mode            string `toml:"mode"`
-	RemoveHDR10Plus bool   `toml:"remove_hdr10plus"`
 }
 
 // AudioConfig declares track retention intent. It is conservative by default.
