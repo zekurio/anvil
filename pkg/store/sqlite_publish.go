@@ -62,7 +62,7 @@ ORDER BY job_id
 		if operation.ArtifactIdentity.Device == 0 || operation.ArtifactIdentity.Inode == 0 {
 			return false, fmt.Errorf("publish operation for job %d has no usable artifact identity", jobID)
 		}
-		if filepath.Clean(operation.ArtifactPath) == target || replacepkg.SameFileIdentity(operation.ArtifactIdentity, targetIdentity) {
+		if filepath.Clean(operation.ArtifactPath) == target || replacepkg.SameFileObject(operation.ArtifactIdentity, targetIdentity) {
 			return true, nil
 		}
 	}
