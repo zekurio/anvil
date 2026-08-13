@@ -219,8 +219,20 @@ func Args(plan domain.EncodePlan) []string {
 	if plan.ChapterMode == domain.MetadataModeStrip {
 		args = append(args, "-map_chapters", "-1")
 	}
+	// The artifact is written under a temporary .anvil-part name, so ffmpeg
+	// cannot infer the muxer from the file extension.
+	args = append(args, "-f", outputFormat(plan.Container))
 	args = append(args, plan.OutputPath)
 	return args
+}
+
+func outputFormat(container string) string {
+	switch strings.ToLower(strings.TrimSpace(container)) {
+	case "", "mkv", "matroska":
+		return "matroska"
+	default:
+		return container
+	}
 }
 
 type Block struct {
@@ -298,8 +310,8 @@ func (b DolbyVisionBlock) Run(ctx context.Context, job *pipeline.JobContext) err
 	if strings.TrimSpace(job.OutputPath) == "" {
 		return errors.New("dolby vision fix output path is required")
 	}
-	if !strings.EqualFold(filepath.Ext(job.OutputPath), ".mkv") {
-		return fmt.Errorf("dolby vision fix requires MKV output, got %q", filepath.Ext(job.OutputPath))
+	if !strings.EqualFold(filepath.Ext(job.DestinationPath), ".mkv") {
+		return fmt.Errorf("dolby vision fix requires MKV output, got %q", filepath.Ext(job.DestinationPath))
 	}
 	codec := job.EncodePlan.VideoCodec
 	if strings.TrimSpace(codec) == "" {
@@ -319,7 +331,7 @@ func (b DolbyVisionBlock) Run(ctx context.Context, job *pipeline.JobContext) err
 		return fmt.Errorf("create Dolby Vision staging dir: %w", err)
 	}
 
-	paths := doviWorkPaths(dir)
+	paths := doviWorkPaths(dir, job.OutputPath)
 	defer cleanupDoviPaths(paths)
 
 	if err := b.extractDolbyVisionRPU(ctx, job, paths); err != nil {
@@ -451,13 +463,16 @@ type doviPaths struct {
 	videoTags     string
 }
 
-func doviWorkPaths(dir string) doviPaths {
+// doviWorkPaths places the stream-level intermediates in the scratch dir and
+// the remuxed MKV next to the encode output, so installing it over the output
+// is a same-directory rename rather than a cross-device copy.
+func doviWorkPaths(dir string, outputPath string) doviPaths {
 	return doviPaths{
 		originalHEVC:  filepath.Join(dir, "dovi-original.hevc"),
 		originalRPU:   filepath.Join(dir, "dovi-original.rpu"),
 		convertedHEVC: filepath.Join(dir, "dovi-converted.hevc"),
 		fixedHEVC:     filepath.Join(dir, "dovi-fixed.hevc"),
-		fixedMKV:      filepath.Join(dir, "dovi-fixed.mkv"),
+		fixedMKV:      outputPath + ".dovi-fixed",
 		videoTags:     filepath.Join(dir, "dovi-video-tags.xml"),
 	}
 }
