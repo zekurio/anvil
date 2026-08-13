@@ -287,6 +287,12 @@ func videoOverrideKeyProblems(profileName string, overrides map[string]VideoOver
 			problems = append(problems, fmt.Sprintf("profile %q video.overrides key must not be empty", profileName))
 			continue
 		}
+		// Dolby Vision support was removed; its reserved override key must
+		// fail loudly instead of silently encoding with base settings.
+		if canonicalKey == "dolby-vision" {
+			problems = append(problems, fmt.Sprintf("profile %q video.overrides.%s targets removed Dolby Vision handling; delete the override (and any video.dolby_vision table)", profileName, key))
+			continue
+		}
 		if previousKey, exists := canonicalKeys[canonicalKey]; exists {
 			problems = append(problems, fmt.Sprintf("profile %q video.overrides.%s collides with video.overrides.%s after canonicalization to %q", profileName, key, previousKey, canonicalKey))
 			continue
