@@ -9,14 +9,21 @@
   outputs =
     inputs@{ self, nixpkgs, devenv, ... }:
     let
+      # The daemon and its packages only support Linux, but the development
+      # shell also evaluates on darwin so maintainers on macOS can build,
+      # lint, and run the operator tooling.
       systems = [
         "x86_64-linux"
         "aarch64-linux"
       ];
+      devSystems = systems ++ [
+        "x86_64-darwin"
+        "aarch64-darwin"
+      ];
 
       forEachSystem =
-        f:
-        nixpkgs.lib.genAttrs systems (
+        systemList: f:
+        nixpkgs.lib.genAttrs systemList (
           system:
           f {
             inherit system;
@@ -28,7 +35,7 @@
       nixosModules.default = import ./nix/modules/anvil.nix;
       nixosModules.anvil = import ./nix/modules/anvil.nix;
 
-      packages = forEachSystem (
+      packages = forEachSystem systems (
         { pkgs, ... }:
         let
           version = "0.1.0";
@@ -116,7 +123,7 @@
         }
       );
 
-      apps = forEachSystem (
+      apps = forEachSystem systems (
         { system, ... }:
         {
           default = {
@@ -134,7 +141,7 @@
         }
       );
 
-      devShells = forEachSystem (
+      devShells = forEachSystem devSystems (
         { pkgs, ... }:
         {
           default = devenv.lib.mkShell {

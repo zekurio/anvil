@@ -5,7 +5,6 @@ import (
 	"errors"
 	"log/slog"
 	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -325,32 +324,6 @@ func (m *Monitor) eventError(err error) {
 type FilesystemEventSource struct {
 	ReconcileInterval time.Duration
 	Completion        *CompletionTracker
-}
-
-func librariesForPath(roots map[domain.LibraryName]string, path string) []domain.LibraryName {
-	absPath, err := filepath.Abs(path)
-	if err != nil {
-		return nil
-	}
-	absPath = filepath.Clean(absPath)
-	names := make([]domain.LibraryName, 0, len(roots))
-	for name, root := range roots {
-		if pathWithinRoot(absPath, root) {
-			names = append(names, name)
-		}
-	}
-	sort.Slice(names, func(i, j int) bool {
-		return names[i] < names[j]
-	})
-	return names
-}
-
-func pathWithinRoot(path string, root string) bool {
-	rel, err := filepath.Rel(filepath.Clean(root), filepath.Clean(path))
-	if err != nil {
-		return false
-	}
-	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))
 }
 
 func nextScheduledScan(schedules map[domain.LibraryName]time.Time) (time.Time, bool) {
