@@ -45,36 +45,35 @@ type HandoffPlan struct {
 	PruneStart         string
 }
 
-func PlanReplacement(inputPath string, candidatePath string, mode domain.ReplacementMode) (ReplacementPlan, error) {
+// PlanReplacement maps a replacement mode to its publish action and backup
+// path. The destination itself comes from PlanDestination at stage time;
+// outputExt is the container extension the destination carries.
+func PlanReplacement(inputPath string, outputExt string, mode domain.ReplacementMode) (ReplacementPlan, error) {
 	if inputPath == "" {
 		return ReplacementPlan{}, errors.New("replace input path is required")
-	}
-	if candidatePath == "" {
-		return ReplacementPlan{}, errors.New("replace candidate path is required")
 	}
 	plan := ReplacementPlan{Mode: mode}
 	switch mode {
 	case domain.ReplacementModeCopy:
 		plan.Action = replacementActionCopy
-		plan.CopyPath = replacementCopyPath(inputPath, filepath.Ext(candidatePath))
+		plan.CopyPath = replacementCopyPath(inputPath, outputExt)
 	default:
 		plan.Action = replacementActionReplace
-		plan.ReplaceTarget = replaceExtension(inputPath, filepath.Ext(candidatePath))
+		plan.ReplaceTarget = replaceExtension(inputPath, outputExt)
 		plan.BackupPath = inputPath + ".anvil.bak"
 	}
 	return plan, nil
 }
 
+// PlanHandoff describes how a download-library artifact publishes. The
+// destination must already be planned on the job context by the stage step.
 func PlanHandoff(job *pipeline.JobContext) (HandoffPlan, error) {
 	if job == nil {
 		return HandoffPlan{}, errors.New("handoff job context is required")
 	}
-	if strings.TrimSpace(job.Library.Download.HandoffPath) == "" {
-		return HandoffPlan{}, errors.New("download handoff path is required")
-	}
-	destination, err := handoffDestination(job, filepath.Ext(job.OutputPath))
-	if err != nil {
-		return HandoffPlan{}, err
+	destination := strings.TrimSpace(job.DestinationPath)
+	if destination == "" {
+		return HandoffPlan{}, errors.New("handoff destination is required; the stage step must plan it first")
 	}
 	mode := job.Library.Download.HandoffMode
 	action := handoffActionCopy
@@ -135,6 +134,9 @@ func (b HandoffBlock) Recover(ctx context.Context, job *pipeline.JobContext) (bo
 }
 
 func handoffDestination(job *pipeline.JobContext, ext string) (string, error) {
+	if strings.TrimSpace(job.Library.Download.HandoffPath) == "" {
+		return "", errors.New("download handoff path is required")
+	}
 	var rel string
 	if job.Library.Download.PreserveRelativePath {
 		rel = mediapath.Relative(job.Source, job.Asset)
