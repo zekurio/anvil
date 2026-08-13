@@ -465,7 +465,7 @@ func (m Manager) replacementOperation(job *pipeline.JobContext) (PublishOperatio
 	if err != nil {
 		return PublishOperation{}, err
 	}
-	identity, err := statIdentity(job.OutputPath)
+	identity, err := StatFileIdentity(job.OutputPath)
 	if err != nil {
 		return PublishOperation{}, fmt.Errorf("identify replacement artifact: %w", err)
 	}
@@ -481,7 +481,7 @@ func (m Manager) replacementOperation(job *pipeline.JobContext) (PublishOperatio
 		op.Mode = replacementActionCopy
 		return op, nil
 	}
-	originalIdentity, err := statIdentity(job.InputPath)
+	originalIdentity, err := StatFileIdentity(job.InputPath)
 	if err != nil {
 		return PublishOperation{}, fmt.Errorf("identify replacement source: %w", err)
 	}
@@ -498,7 +498,7 @@ func (m Manager) handoffOperation(job *pipeline.JobContext) (PublishOperation, e
 	if err != nil {
 		return PublishOperation{}, err
 	}
-	identity, err := statIdentity(job.OutputPath)
+	identity, err := StatFileIdentity(job.OutputPath)
 	if err != nil {
 		return PublishOperation{}, fmt.Errorf("identify handoff artifact: %w", err)
 	}
@@ -520,7 +520,7 @@ func (m Manager) handoffOperation(job *pipeline.JobContext) (PublishOperation, e
 		HandoffRoot:       job.Library.Download.HandoffPath,
 	}
 	if op.CleanupSource {
-		sourceIdentity, err := statIdentity(plan.SourceMediaPath)
+		sourceIdentity, err := StatFileIdentity(plan.SourceMediaPath)
 		if err != nil {
 			return PublishOperation{}, fmt.Errorf("identify handoff cleanup source: %w", err)
 		}
@@ -573,14 +573,14 @@ func (m Manager) publishArtifact(op *PublishOperation) error {
 }
 
 func (m Manager) destinationMatches(ctx context.Context, op PublishOperation) (bool, string, error) {
-	destinationIdentity, err := statIdentity(op.DestinationPath)
+	destinationIdentity, err := StatFileIdentity(op.DestinationPath)
 	if err != nil {
 		return false, "", fmt.Errorf("identify existing destination: %w", err)
 	}
 	if destinationIdentity.SizeBytes != op.ArtifactIdentity.SizeBytes {
 		return false, "", nil
 	}
-	if sameFileIdentity(destinationIdentity, op.ArtifactIdentity) {
+	if SameFileIdentity(destinationIdentity, op.ArtifactIdentity) {
 		return true, op.DigestValue, nil
 	}
 	if op.DigestValue != "" {
@@ -696,7 +696,9 @@ func samePublishIntent(existing, intended PublishOperation) bool {
 	return reflect.DeepEqual(existing, intended)
 }
 
-func statIdentity(path string) (FileIdentity, error) {
+// StatFileIdentity records the durable filesystem identity used by publish
+// recovery and artifact-protection checks.
+func StatFileIdentity(path string) (FileIdentity, error) {
 	info, err := os.Stat(path)
 	if err != nil {
 		return FileIdentity{}, err
@@ -709,16 +711,18 @@ func statIdentity(path string) (FileIdentity, error) {
 	return identity, nil
 }
 
-func sameFileIdentity(left, right FileIdentity) bool {
+// SameFileIdentity reports whether two identities name the same inode and
+// observed size. Zero device or inode values are not usable identities.
+func SameFileIdentity(left, right FileIdentity) bool {
 	return left.Device != 0 && left.Inode != 0 && left.Device == right.Device && left.Inode == right.Inode && left.SizeBytes == right.SizeBytes
 }
 
 func verifyRecordedIdentity(path string, expected FileIdentity) error {
-	actual, err := statIdentity(path)
+	actual, err := StatFileIdentity(path)
 	if err != nil {
 		return err
 	}
-	if actual.SizeBytes != expected.SizeBytes || !sameFileIdentity(actual, expected) {
+	if actual.SizeBytes != expected.SizeBytes || !SameFileIdentity(actual, expected) {
 		return fmt.Errorf("identity for %q is size=%d device=%d inode=%d, want size=%d device=%d inode=%d", path, actual.SizeBytes, actual.Device, actual.Inode, expected.SizeBytes, expected.Device, expected.Inode)
 	}
 	return nil

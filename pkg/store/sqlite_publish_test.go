@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -47,6 +48,27 @@ func TestPublishArtifactProtectedByUnresolvedStage(t *testing.T) {
 	}
 }
 
+func TestPublishArtifactProtectedRecognizesFilesystemAlias(t *testing.T) {
+	ctx := context.Background()
+	store, jobID := openPublishTestStore(t, ctx)
+	realDir := t.TempDir()
+	alias := filepath.Join(t.TempDir(), "media-alias")
+	if err := os.Symlink(realDir, alias); err != nil {
+		t.Fatalf("symlink media root: %v", err)
+	}
+	realPath := filepath.Join(realDir, "movie.mkv.anvil-part")
+	aliasPath := filepath.Join(alias, "movie.mkv.anvil-part")
+	createPublishTestOperation(t, ctx, store, jobID, replacepkg.PublishStagePrepared, aliasPath)
+
+	protected, err := store.PublishArtifactProtected(ctx, realPath)
+	if err != nil {
+		t.Fatalf("PublishArtifactProtected: %v", err)
+	}
+	if !protected {
+		t.Fatal("artifact reached through filesystem alias was not protected")
+	}
+}
+
 func TestPublishArtifactProtectedFailsClosedOnInvalidUnresolvedJournal(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -84,12 +106,20 @@ func TestPublishArtifactProtectedFailsClosedOnInvalidUnresolvedJournal(t *testin
 			},
 			wantError: "has no artifact path",
 		},
+		{
+			name: "missing artifact identity",
+			mutate: func(t *testing.T, operation replacepkg.PublishOperation) []byte {
+				operation.ArtifactIdentity = replacepkg.FileIdentity{}
+				return marshalPublishTestOperation(t, operation)
+			},
+			wantError: "has no usable artifact identity",
+		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			ctx := context.Background()
 			store, jobID := openPublishTestStore(t, ctx)
-			artifact := "/media/movie.mkv.anvil-part"
+			artifact := filepath.Join(t.TempDir(), "movie.mkv.anvil-part")
 			operation := createPublishTestOperation(t, ctx, store, jobID, replacepkg.PublishStagePrepared, artifact)
 			data := test.mutate(t, operation)
 			if _, err := store.db.ExecContext(ctx, `UPDATE publish_operations SET operation_json = ? WHERE job_id = ?`, data, int64(jobID)); err != nil {
@@ -107,7 +137,7 @@ func TestPublishArtifactProtectedFailsClosedOnInvalidUnresolvedJournal(t *testin
 func TestPublishArtifactProtectedIgnoresInvalidCommittedJournal(t *testing.T) {
 	ctx := context.Background()
 	store, jobID := openPublishTestStore(t, ctx)
-	artifact := "/media/movie.mkv.anvil-part"
+	artifact := filepath.Join(t.TempDir(), "movie.mkv.anvil-part")
 	createPublishTestOperation(t, ctx, store, jobID, replacepkg.PublishStageCommitted, artifact)
 	if _, err := store.db.ExecContext(ctx, `UPDATE publish_operations SET operation_json = ? WHERE job_id = ?`, []byte("{"), int64(jobID)); err != nil {
 		t.Fatalf("corrupt committed publish operation: %v", err)
@@ -124,9 +154,19 @@ func TestPublishArtifactProtectedIgnoresInvalidCommittedJournal(t *testing.T) {
 
 func createPublishTestOperation(t *testing.T, ctx context.Context, store *SQLiteStore, jobID domain.JobID, stage replacepkg.PublishStage, artifact string) replacepkg.PublishOperation {
 	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(artifact), 0o750); err != nil {
+		t.Fatalf("create artifact directory: %v", err)
+	}
+	if err := os.WriteFile(artifact, []byte("encoded artifact"), 0o600); err != nil {
+		t.Fatalf("write artifact: %v", err)
+	}
+	identity, err := replacepkg.StatFileIdentity(artifact)
+	if err != nil {
+		t.Fatalf("identify artifact: %v", err)
+	}
 	now := time.Now().UTC()
 	operation := replacepkg.PublishOperation{
-		JobID: jobID, Stage: stage, ArtifactPath: artifact,
+		JobID: jobID, Stage: stage, ArtifactPath: artifact, ArtifactIdentity: identity,
 		CreatedAt: now, UpdatedAt: now,
 	}
 	if err := store.CreatePublishOperation(ctx, operation); err != nil {
