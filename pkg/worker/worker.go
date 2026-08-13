@@ -530,10 +530,17 @@ func (r Runner) fail(ctx context.Context, job domain.Job, attempt domain.Attempt
 }
 
 func (r Runner) cleanupFailedStaging(ctx context.Context, job *pipeline.JobContext, cfg config.Config) {
-	if job == nil || job.StagingDir == "" {
+	if job == nil {
 		return
 	}
-	err := staging.Manager{Root: staging.Root(r.tempDir(cfg))}.Cleanup(job)
+	var errs []error
+	if job.StagingDir != "" {
+		err := staging.Manager{Root: staging.Root(r.tempDir(cfg))}.Cleanup(job)
+		errs = append(errs, err)
+	}
+	// The artifact lives next to its publish destination, not in scratch.
+	errs = append(errs, replacepkg.CleanupPartFiles(job.DestinationPath))
+	err := errors.Join(errs...)
 	if err == nil || r.Store == nil {
 		return
 	}

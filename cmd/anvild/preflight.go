@@ -192,9 +192,10 @@ type preflightEncode struct {
 }
 
 type preflightPaths struct {
-	Input      string `json:"input"`
-	StagingDir string `json:"staging_dir"`
-	Output     string `json:"output"`
+	Input       string `json:"input"`
+	StagingDir  string `json:"staging_dir"`
+	Destination string `json:"destination"`
+	Output      string `json:"output"`
 }
 
 type preflightPublish struct {
@@ -416,7 +417,7 @@ func buildPreflightCandidate(ctx context.Context, cfg config.Config, state prefl
 	if status.AlreadyHasJob {
 		jobLabel = status.ExistingJobSlug
 	}
-	stagingPlan, err := staging.Manager{Root: staging.Root(cfg.Daemon.TempDir)}.Plan(jobLabel, "<new>", profile.Container, inputPath)
+	stagingPlan, err := staging.Manager{Root: staging.Root(cfg.Daemon.TempDir)}.Plan(jobLabel, "<new>")
 	if err != nil {
 		return preflightCandidate{}, err
 	}
@@ -427,9 +428,14 @@ func buildPreflightCandidate(ctx context.Context, cfg config.Config, state prefl
 		Flow:       flow,
 		Profile:    profile,
 		InputPath:  inputPath,
-		OutputPath: stagingPlan.OutputPath,
 		StagingDir: stagingPlan.StagingDir,
 	}
+	destination, err := replacepkg.PlanDestination(jobContext)
+	if err != nil {
+		return preflightCandidate{}, err
+	}
+	jobContext.DestinationPath = destination
+	jobContext.OutputPath = replacepkg.PartPath(destination)
 
 	item := preflightCandidate{
 		Library: preflightLibrary{
@@ -460,11 +466,12 @@ func buildPreflightCandidate(ctx context.Context, cfg config.Config, state prefl
 		Flow:    preflightFlow{Name: flow.Name, Steps: flowStepNames(flow)},
 		Profile: preflightProfileFromDomain(profile),
 		Search:  preflightSearch(flow, profile),
-		Encode:  preflightEncodePlan(flow, profile, stagingPlan.OutputPath),
+		Encode:  preflightEncodePlan(flow, profile, jobContext.OutputPath),
 		Paths: preflightPaths{
-			Input:      inputPath,
-			StagingDir: stagingPlan.StagingDir,
-			Output:     stagingPlan.OutputPath,
+			Input:       inputPath,
+			StagingDir:  stagingPlan.StagingDir,
+			Destination: destination,
+			Output:      jobContext.OutputPath,
 		},
 		Cleanup: preflightCleanupPlan(flow, library, jobContext),
 	}
@@ -508,7 +515,7 @@ func preflightPublishPlan(flow domain.Flow, library domain.Library, job *pipelin
 		return publish, warnings
 	}
 	if library.Kind == domain.LibraryKindMedia && flowHasStep(flow, "replace") {
-		plan, err := replacepkg.PlanReplacement(job.InputPath, job.OutputPath, library.Media.ReplacementMode)
+		plan, err := replacepkg.PlanReplacement(job.InputPath, filepath.Ext(job.DestinationPath), library.Media.ReplacementMode)
 		if err != nil {
 			return preflightPublish{Action: "error", Plan: map[string]string{"error": err.Error()}}, warnings
 		}
