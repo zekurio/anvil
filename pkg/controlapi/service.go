@@ -28,6 +28,7 @@ type Store interface {
 	ListJobs(context.Context, store.JobListFilter) ([]store.JobSummary, error)
 	GetJobSummary(context.Context, domain.JobID) (store.JobSummary, error)
 	ResolveJobReference(context.Context, string) (domain.Job, error)
+	GetJob(context.Context, domain.JobID) (domain.Job, error)
 	GetMediaSource(context.Context, domain.MediaSourceID) (domain.MediaSource, error)
 	GetMediaAsset(context.Context, domain.MediaAssetID) (domain.MediaAsset, error)
 	GetPublishOperation(context.Context, domain.JobID) (replacepkg.PublishOperation, bool, error)
@@ -329,6 +330,7 @@ func (s Service) CancelJobs(ctx context.Context, request control.JobCancelReques
 			item.WorkerSignaled = s.CancelRunningJob(result.JobID)
 		}
 		if result.Canceled {
+			s.cleanupOrphanedPart(ctx, result.JobID)
 			response.Canceled++
 		}
 		response.Matched++
@@ -336,6 +338,48 @@ func (s Service) CancelJobs(ctx context.Context, request control.JobCancelReques
 	}
 	slog.Info("control canceled jobs", "matched", response.Matched, "canceled", response.Canceled, "reason", reason)
 	return response, nil
+}
+
+// cleanupOrphanedPart removes a canceled job's unpublished artifact beside
+// its destination. A canceled job never runs another attempt, so without this
+// a part left by a crashed attempt would sit in the library forever. The job
+// must have no publish journal: cancel only refuses jobs whose publish is in
+// flight, while a conflicted publish leaves its residue for the operator on
+// purpose — both keep their part file.
+func (s Service) cleanupOrphanedPart(ctx context.Context, jobID domain.JobID) {
+	log := func(reason string, err error) {
+		slog.Warn("canceled job part cleanup skipped", "job", jobID, "reason", reason, "error", err)
+	}
+	if _, found, err := s.Store.GetPublishOperation(ctx, jobID); err != nil || found {
+		log("publish journal present", err)
+		return
+	}
+	job, err := s.Store.GetJob(ctx, jobID)
+	if err != nil {
+		log("load job", err)
+		return
+	}
+	source, err := s.Store.GetMediaSource(ctx, job.SourceID)
+	if err != nil {
+		log("load source", err)
+		return
+	}
+	var asset domain.MediaAsset
+	if job.AssetID != 0 {
+		asset, err = s.Store.GetMediaAsset(ctx, job.AssetID)
+		if err != nil {
+			log("load asset", err)
+			return
+		}
+	}
+	destination := plannedDestination(s.runtimeConfig(), job, source, asset)
+	if destination == "" {
+		log("destination unresolvable", nil)
+		return
+	}
+	if err := replacepkg.CleanupPartFiles(destination, replacepkg.PartJobLabel(jobID)); err != nil {
+		log("remove part files", err)
+	}
 }
 
 // resolveJobReferences turns operator-supplied job references into ids. Both

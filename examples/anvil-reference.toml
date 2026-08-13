@@ -2,7 +2,7 @@
 # Names after flows, profiles, arrs, and libraries are your own non-empty names.
 
 [daemon]
-temp_dir = "/var/lib/anvil/tmp" # Scratch directory (search samples, Dolby Vision intermediates, process logs); encode artifacts are written next to their publish destination as <name>.anvil-part; default is the OS temp directory plus /anvil; any non-empty path.
+temp_dir = "/var/lib/anvil/tmp" # Scratch directory (search samples, Dolby Vision intermediates, process logs); encode artifacts are written next to their publish destination as <name>.job-<id>.anvil-part; default is the OS temp directory plus /anvil; any non-empty path.
 store_path = "/var/lib/anvil/anvil.db" # SQLite state path; default is temp_dir/anvil.db; any non-empty path.
 control_socket = "/run/anvil/anvild.sock" # Daemon Unix socket; default is temp_dir/anvild.sock; must be absolute.
 worker_count = 2 # Simultaneous jobs; default is the CPU count; integer >= 1.
