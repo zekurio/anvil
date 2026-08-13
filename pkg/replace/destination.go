@@ -114,11 +114,17 @@ func CleanupPartFiles(destination string, jobLabel string) error {
 	// name, so reclaiming pre-upgrade orphans here is safe.
 	legacy := destination + PartSuffix
 	paths = append(paths, legacy)
-	variants, err := filepath.Glob(legacy + ".*")
-	if err != nil {
-		return fmt.Errorf("match legacy part variants: %w", err)
+	dir := filepath.Dir(legacy)
+	entries, err := os.ReadDir(dir)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("list legacy part directory %q: %w", dir, err)
 	}
-	paths = append(paths, variants...)
+	prefix := filepath.Base(legacy) + "."
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), prefix) {
+			paths = append(paths, filepath.Join(dir, entry.Name()))
+		}
+	}
 	var removeErrs []error
 	for _, path := range paths {
 		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
