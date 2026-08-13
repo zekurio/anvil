@@ -7,7 +7,9 @@ import (
 )
 
 func TestCleanupPartFilesRemovesJobAndLegacyArtifactsOnly(t *testing.T) {
-	destination := filepath.Join(t.TempDir(), "movie.mkv")
+	// Brackets are common in release names and must be treated literally,
+	// rather than as filepath.Glob character classes.
+	destination := filepath.Join(t.TempDir(), "[Group] movie.mkv")
 	jobPart := PartPath(destination, "42")
 	otherJobPart := PartPath(destination, "43")
 	legacyPart := destination + PartSuffix
