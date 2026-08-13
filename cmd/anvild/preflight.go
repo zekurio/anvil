@@ -435,7 +435,7 @@ func buildPreflightCandidate(ctx context.Context, cfg config.Config, state prefl
 		return preflightCandidate{}, err
 	}
 	jobContext.DestinationPath = destination
-	jobContext.OutputPath = replacepkg.PartPath(destination)
+	jobContext.OutputPath = replacepkg.PartPath(destination, "<new>")
 
 	item := preflightCandidate{
 		Library: preflightLibrary{
