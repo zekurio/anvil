@@ -711,10 +711,17 @@ func StatFileIdentity(path string) (FileIdentity, error) {
 	return identity, nil
 }
 
+// SameFileObject reports whether two identities name the same inode. It is
+// intentionally independent of size so ownership survives content changes;
+// publish recovery validates the recorded size separately.
+func SameFileObject(left, right FileIdentity) bool {
+	return left.Device != 0 && left.Inode != 0 && left.Device == right.Device && left.Inode == right.Inode
+}
+
 // SameFileIdentity reports whether two identities name the same inode and
-// observed size. Zero device or inode values are not usable identities.
+// observed size.
 func SameFileIdentity(left, right FileIdentity) bool {
-	return left.Device != 0 && left.Inode != 0 && left.Device == right.Device && left.Inode == right.Inode && left.SizeBytes == right.SizeBytes
+	return SameFileObject(left, right) && left.SizeBytes == right.SizeBytes
 }
 
 func verifyRecordedIdentity(path string, expected FileIdentity) error {
