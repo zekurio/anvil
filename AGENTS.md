@@ -162,15 +162,18 @@ Always respect `ctx` cancellation, and capture enough metadata (command, exit co
 - `pkg/worker/resume.go` checkpoints only reusable steps (`probe`,
   `audio-cleanup`, `crop-detect`, `crf-search`) as JSON in
   `jobs.pipeline_context_json`, guarded by an input/config fingerprint.
-  Attempt-local staging output is never resumed except through the publish
-  journal.
+  Attempt-local output is never resumed except through the publish journal.
 - `validate` is observational: `validate.Block.Run` logs and returns `nil` even
   on `ErrValidationFailed`. `ab-av1` search is the encode acceptance authority.
 - Publication (`pkg/replace`) goes through a durable journal
   (`prepared → published → source_cleaned → committed`, or `conflict`). Never
   overwrite an existing destination, and record intent before mutating the
-  filesystem. `pkg/store/protection.go` defines the jobs maintenance must not
-  disturb; staging cleanup and job pruning both depend on it.
+  filesystem. The `stage` step plans the destination (`replace.PlanDestination`)
+  and the artifact is written next to it as `<name>.anvil-part`, so publish is
+  fsync + hardlink + unlink, never a bulk copy; `pkg/staging` keeps only
+  scratch (search samples, Dolby Vision intermediates) under `temp_dir`.
+  `pkg/store/protection.go` defines the jobs maintenance must not disturb;
+  staging cleanup and job pruning both depend on it.
 - `anvild` takes an exclusive `flock` on `<store_path>.lock`, then claims the
   control socket, and only then opens the store, recovers jobs, and sweeps
   staging. Nothing with a side effect may run ahead of those two claims.
