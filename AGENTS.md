@@ -10,8 +10,8 @@
 - Data flow: `pkg/scanner` enqueues jobs into `pkg/store`, `pkg/scheduler`
   leases them under a thread budget (`pkg/resources`), `pkg/worker` runs a
   `pkg/pipeline` of named blocks (`probe`, `crop-detect`, `audio-cleanup`,
-  `subtitle-cleanup`, `stage`, `crf-search`, `encode`, `dovi-fix`,
-  `track-stats`, `validate`, `replace`/`handoff`, `cleanup`). Each block lives
+  `subtitle-cleanup`, `stage`, `crf-search`, `encode`,
+  `validate`, `replace`/`handoff`, `cleanup`). Each block lives
   in its own package and registers itself in `worker.DefaultPipeline`.
 - Deployment is Linux-only, but the dev shell and `go build` must keep working
   on darwin: platform corners carry build tags (`pkg/scanner/filesystem_*`,
@@ -32,7 +32,7 @@
 - Lint policy is `.golangci.yml`: `errcheck` (including blank assignments),
   `govet`, `ineffassign`, `staticcheck`, `unused`. Format with `gofmt` only;
   never hand-format.
-- External tools (`ffmpeg`/`ffprobe`, `ab-av1`, `dovi_tool`, `mkvtoolnix`) are
+- External tools (`ffmpeg`/`ffprobe`, `ab-av1`) are
   provided by the Nix dev shell (`flake.nix`, `devenv.nix`, `direnv allow`).
   Bump `vendorHash` in `flake.nix` whenever Go dependencies change.
 - There is no automated test suite. Verification is `gofmt`, `golangci-lint`,
@@ -171,7 +171,7 @@ Always respect `ctx` cancellation, and capture enough metadata (command, exit co
   filesystem. The `stage` step plans the destination (`replace.PlanDestination`)
   and the artifact is written next to it as `<name>.job-<id>.anvil-part`, so publish is
   fsync + hardlink + unlink, never a bulk copy; `pkg/staging` keeps only
-  scratch (search samples, Dolby Vision intermediates) under `temp_dir`.
+  scratch (search samples) under `temp_dir`.
   `pkg/store/protection.go` defines the jobs maintenance must not disturb;
   staging cleanup and job pruning both depend on it.
 - `anvild` takes an exclusive `flock` on `<store_path>.lock`, then claims the

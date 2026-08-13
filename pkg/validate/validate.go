@@ -250,8 +250,6 @@ func validateHDR(request Request, outputProbe domain.ProbeResult, result *domain
 	result.OutputHDRColorTransfer = outputVideo.ColorTransfer
 	result.SourceHDRColorPrimaries = sourceVideo.ColorPrimaries
 	result.OutputHDRColorPrimaries = outputVideo.ColorPrimaries
-	result.SourceDolbyVisionPresent = sourceVideo.DolbyVision != nil
-	result.OutputDolbyVisionPresent = outputVideo.DolbyVision != nil
 
 	for _, field := range []struct {
 		name   string
@@ -268,13 +266,6 @@ func validateHDR(request Request, outputProbe domain.ProbeResult, result *domain
 		if !strings.EqualFold(strings.TrimSpace(field.source), strings.TrimSpace(field.output)) {
 			addError(result, fmt.Sprintf("output HDR %s %q does not match source %q", field.name, field.output, field.source))
 		}
-	}
-
-	if sourceVideo.DolbyVision == nil || request.Profile.Video.DolbyVision.Mode == domain.DolbyVisionModeOff {
-		return
-	}
-	if outputVideo.DolbyVision == nil {
-		addError(result, "output Dolby Vision metadata is missing")
 	}
 }
 
