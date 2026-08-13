@@ -457,7 +457,11 @@ func (m Manager) replacementOperation(job *pipeline.JobContext) (PublishOperatio
 	if job == nil {
 		return PublishOperation{}, errors.New("replacement job context is required")
 	}
-	plan, err := PlanReplacement(job.InputPath, job.OutputPath, job.Library.Media.ReplacementMode)
+	destination := strings.TrimSpace(job.DestinationPath)
+	if destination == "" {
+		return PublishOperation{}, errors.New("replacement destination is required; the stage step must plan it first")
+	}
+	plan, err := PlanReplacement(job.InputPath, filepath.Ext(destination), job.Library.Media.ReplacementMode)
 	if err != nil {
 		return PublishOperation{}, err
 	}
@@ -466,16 +470,15 @@ func (m Manager) replacementOperation(job *pipeline.JobContext) (PublishOperatio
 		return PublishOperation{}, fmt.Errorf("identify replacement artifact: %w", err)
 	}
 	op := PublishOperation{
-		JobID:              job.Job.ID,
-		Kind:               publishKindReplacement,
-		ArtifactPath:       job.OutputPath,
-		ArtifactStagingDir: job.StagingDir,
-		ArtifactIdentity:   identity,
-		CleanupArtifact:    true,
+		JobID:            job.Job.ID,
+		Kind:             publishKindReplacement,
+		ArtifactPath:     job.OutputPath,
+		ArtifactIdentity: identity,
+		DestinationPath:  destination,
+		CleanupArtifact:  true,
 	}
 	if plan.Action == replacementActionCopy {
 		op.Mode = replacementActionCopy
-		op.DestinationPath = plan.CopyPath
 		return op, nil
 	}
 	originalIdentity, err := statIdentity(job.InputPath)
@@ -483,7 +486,6 @@ func (m Manager) replacementOperation(job *pipeline.JobContext) (PublishOperatio
 		return PublishOperation{}, fmt.Errorf("identify replacement source: %w", err)
 	}
 	op.Mode = replacementActionReplace
-	op.DestinationPath = plan.ReplaceTarget
 	op.BackupPath = plan.BackupPath
 	op.CleanupSourcePath = job.InputPath
 	op.CleanupIdentity = &originalIdentity
@@ -501,22 +503,21 @@ func (m Manager) handoffOperation(job *pipeline.JobContext) (PublishOperation, e
 		return PublishOperation{}, fmt.Errorf("identify handoff artifact: %w", err)
 	}
 	op := PublishOperation{
-		JobID:              job.Job.ID,
-		Kind:               publishKindHandoff,
-		Mode:               plan.Action,
-		ArtifactPath:       job.OutputPath,
-		ArtifactStagingDir: job.StagingDir,
-		DestinationPath:    plan.Destination,
-		CleanupSourcePath:  plan.SourceMediaPath,
-		PruneRoot:          job.Library.Path,
-		PruneStart:         plan.PruneStart,
-		IgnorableGlobs:     append([]string(nil), job.Library.Download.IgnorableGlobs...),
-		ArtifactIdentity:   identity,
-		CleanupArtifact:    true,
-		CleanupSource:      plan.CleanupSourceMedia,
-		PruneEmptyDirs:     plan.CleanupSourceMedia && plan.PruneEmptyDirs,
-		SetHandoffModes:    true,
-		HandoffRoot:        job.Library.Download.HandoffPath,
+		JobID:             job.Job.ID,
+		Kind:              publishKindHandoff,
+		Mode:              plan.Action,
+		ArtifactPath:      job.OutputPath,
+		DestinationPath:   plan.Destination,
+		CleanupSourcePath: plan.SourceMediaPath,
+		PruneRoot:         job.Library.Path,
+		PruneStart:        plan.PruneStart,
+		IgnorableGlobs:    append([]string(nil), job.Library.Download.IgnorableGlobs...),
+		ArtifactIdentity:  identity,
+		CleanupArtifact:   true,
+		CleanupSource:     plan.CleanupSourceMedia,
+		PruneEmptyDirs:    plan.CleanupSourceMedia && plan.PruneEmptyDirs,
+		SetHandoffModes:   true,
+		HandoffRoot:       job.Library.Download.HandoffPath,
 	}
 	if op.CleanupSource {
 		sourceIdentity, err := statIdentity(plan.SourceMediaPath)
@@ -548,18 +549,25 @@ func (m Manager) publishArtifact(op *PublishOperation) error {
 	if err := os.MkdirAll(filepath.Dir(op.DestinationPath), 0o750); err != nil {
 		return fmt.Errorf("create destination dir: %w", err)
 	}
-	if op.Mode != replacementActionCopy && op.Mode != handoffActionCopy {
-		link := m.LinkArtifact
-		if link == nil {
-			link = os.Link
-		}
-		if err := link(op.ArtifactPath, op.DestinationPath); err == nil {
-			return syncDir(filepath.Dir(op.DestinationPath))
-		} else if errors.Is(err, os.ErrExist) {
-			return os.ErrExist
-		} else if !errors.Is(err, syscall.EXDEV) && !errors.Is(err, syscall.EPERM) && !errors.Is(err, syscall.ENOTSUP) {
-			return fmt.Errorf("publish artifact link: %w", err)
-		}
+	// The encode never fsyncs its output; make the artifact durable before it
+	// gains its published name.
+	if err := syncFile(op.ArtifactPath); err != nil {
+		return fmt.Errorf("sync artifact before publish: %w", err)
+	}
+	// The artifact is written next to its destination (see PartPath), so the
+	// link is a same-directory metadata operation and never a bulk copy. The
+	// copy fallback only serves journals written before that layout, whose
+	// artifact can still live on a different filesystem.
+	link := m.LinkArtifact
+	if link == nil {
+		link = os.Link
+	}
+	if err := link(op.ArtifactPath, op.DestinationPath); err == nil {
+		return syncDir(filepath.Dir(op.DestinationPath))
+	} else if errors.Is(err, os.ErrExist) {
+		return os.ErrExist
+	} else if !errors.Is(err, syscall.EXDEV) && !errors.Is(err, syscall.EPERM) && !errors.Is(err, syscall.ENOTSUP) {
+		return fmt.Errorf("publish artifact link: %w", err)
 	}
 	return copyFileExclusive(op.ArtifactPath, op.DestinationPath)
 }

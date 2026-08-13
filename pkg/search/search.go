@@ -17,7 +17,10 @@ import (
 )
 
 type Searcher interface {
-	Search(ctx context.Context, plan domain.EncodePlan) (domain.SearchResult, error)
+	// Search runs the CRF search; scratchDir holds the sample encodes and is
+	// the process working directory, keeping sample IO off the destination
+	// filesystem the artifact is written to.
+	Search(ctx context.Context, plan domain.EncodePlan, scratchDir string) (domain.SearchResult, error)
 }
 
 type ABAV1 struct {
@@ -25,7 +28,7 @@ type ABAV1 struct {
 	Binary string
 }
 
-func (s ABAV1) Search(ctx context.Context, plan domain.EncodePlan) (domain.SearchResult, error) {
+func (s ABAV1) Search(ctx context.Context, plan domain.EncodePlan, scratchDir string) (domain.SearchResult, error) {
 	if plan.InputPath == "" {
 		return domain.SearchResult{}, errors.New("search input path is required")
 	}
@@ -38,7 +41,7 @@ func (s ABAV1) Search(ctx context.Context, plan domain.EncodePlan) (domain.Searc
 		binary = "ab-av1"
 	}
 	args := SearchArgs(plan)
-	scratchDir := searchScratchDir(plan)
+	scratchDir = strings.TrimSpace(scratchDir)
 	if scratchDir != "" {
 		if err := os.MkdirAll(scratchDir, 0o750); err != nil {
 			return domain.SearchResult{}, fmt.Errorf("prepare ab-av1 scratch dir: %w", err)
@@ -74,17 +77,6 @@ func (s ABAV1) Search(ctx context.Context, plan domain.EncodePlan) (domain.Searc
 	search.RawOutput = string(result.Stdout)
 	search.RawCommand = result.Command
 	return search, nil
-}
-
-func searchScratchDir(plan domain.EncodePlan) string {
-	if strings.TrimSpace(plan.OutputPath) == "" {
-		return ""
-	}
-	dir := filepath.Dir(plan.OutputPath)
-	if dir == "." || dir == string(filepath.Separator) {
-		return ""
-	}
-	return dir
 }
 
 func SearchArgs(plan domain.EncodePlan) []string {
@@ -169,7 +161,7 @@ func (b Block) Run(ctx context.Context, job *pipeline.JobContext) error {
 		searcher = ABAV1{}
 	}
 	plan := searchPlan(job)
-	result, err := searcher.Search(ctx, plan)
+	result, err := searcher.Search(ctx, plan, job.StagingDir)
 	if err != nil {
 		return err
 	}

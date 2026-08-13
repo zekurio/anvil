@@ -522,38 +522,15 @@ func plannedDestination(cfg config.Config, job domain.Job, source domain.MediaSo
 		return ""
 	}
 	inputPath := mediapath.Input(library.Path, source, asset)
-	ext := strings.TrimSpace(profile.Container)
-	if ext == "" {
-		ext = strings.TrimPrefix(filepath.Ext(inputPath), ".")
-	}
-	outputPath := "output"
-	if ext != "" {
-		outputPath += "." + strings.TrimPrefix(ext, ".")
-	}
 	jobContext := &pipeline.JobContext{
 		Job: job, Source: source, Asset: asset, Library: library, Flow: flow,
-		Profile: profile, InputPath: inputPath, OutputPath: outputPath,
+		Profile: profile, InputPath: inputPath,
 	}
-	for _, step := range flow.Steps {
-		switch step.Name {
-		case "handoff":
-			plan, err := replacepkg.PlanHandoff(jobContext)
-			if err == nil {
-				return filepath.Clean(plan.Destination)
-			}
-			return ""
-		case "replace":
-			plan, err := replacepkg.PlanReplacement(inputPath, outputPath, library.Media.ReplacementMode)
-			if err != nil {
-				return ""
-			}
-			if plan.CopyPath != "" {
-				return filepath.Clean(plan.CopyPath)
-			}
-			return filepath.Clean(plan.ReplaceTarget)
-		}
+	destination, err := replacepkg.PlanDestination(jobContext)
+	if err != nil {
+		return ""
 	}
-	return ""
+	return filepath.Clean(destination)
 }
 
 // newError builds a structured control error with the daemon's own wording.

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/zekurio/anvil/pkg/pipeline"
+	"github.com/zekurio/anvil/pkg/replace"
 )
 
 type Manager struct {
@@ -57,14 +58,16 @@ type CleanupStaleResult struct {
 
 type PathPlan struct {
 	StagingDir string
-	OutputPath string
 }
 
+// Prepare creates the per-attempt scratch directory and primes the publish
+// destination: the artifact is written next to its final path as a part file
+// (see replace.PartPath), never into scratch.
 func (m Manager) Prepare(job *pipeline.JobContext) error {
 	if job == nil {
 		return errors.New("staging job context is required")
 	}
-	plan, err := m.Plan(fmt.Sprintf("%d", job.Job.ID), fmt.Sprintf("%d", job.Attempt.ID), job.Profile.Container, job.InputPath)
+	plan, err := m.Plan(fmt.Sprintf("%d", job.Job.ID), fmt.Sprintf("%d", job.Attempt.ID))
 	if err != nil {
 		return err
 	}
@@ -73,11 +76,10 @@ func (m Manager) Prepare(job *pipeline.JobContext) error {
 		return fmt.Errorf("create staging dir: %w", err)
 	}
 	job.StagingDir = dir
-	job.OutputPath = plan.OutputPath
-	return nil
+	return replace.PrepareDestination(job)
 }
 
-func (m Manager) Plan(jobLabel string, attemptLabel string, container string, inputPath string) (PathPlan, error) {
+func (m Manager) Plan(jobLabel string, attemptLabel string) (PathPlan, error) {
 	root := strings.TrimSpace(m.Root)
 	if root == "" {
 		return PathPlan{}, errors.New("staging root is required")
@@ -88,11 +90,7 @@ func (m Manager) Plan(jobLabel string, attemptLabel string, container string, in
 	if strings.TrimSpace(attemptLabel) == "" {
 		attemptLabel = "<new>"
 	}
-	dir := filepath.Join(root, fmt.Sprintf("job-%s-attempt-%s", jobLabel, attemptLabel))
-	return PathPlan{
-		StagingDir: dir,
-		OutputPath: filepath.Join(dir, "output"+containerExt(container, inputPath)),
-	}, nil
+	return PathPlan{StagingDir: filepath.Join(root, fmt.Sprintf("job-%s-attempt-%s", jobLabel, attemptLabel))}, nil
 }
 
 func (m Manager) Cleanup(job *pipeline.JobContext) error {
@@ -183,11 +181,6 @@ func (CleanupBlock) Name() string {
 
 func (b CleanupBlock) Run(_ context.Context, job *pipeline.JobContext) error {
 	return b.Manager.Cleanup(job)
-}
-
-func containerExt(container string, inputPath string) string {
-	_, _ = container, inputPath
-	return ".mkv"
 }
 
 func inside(root string, path string) bool {

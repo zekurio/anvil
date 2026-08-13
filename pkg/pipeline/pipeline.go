@@ -12,19 +12,23 @@ import (
 )
 
 type JobContext struct {
-	Job        domain.Job
-	Attempt    domain.Attempt
-	Source     domain.MediaSource
-	Asset      domain.MediaAsset
-	Library    domain.Library
-	Flow       domain.Flow
-	Profile    domain.Profile
-	Resources  domain.ResourceAllocation
-	Metadata   domain.JobMetadata
-	InputPath  string
-	OutputPath string
-	StagingDir string
-	FinalPath  string
+	Job       domain.Job
+	Attempt   domain.Attempt
+	Source    domain.MediaSource
+	Asset     domain.MediaAsset
+	Library   domain.Library
+	Flow      domain.Flow
+	Profile   domain.Profile
+	Resources domain.ResourceAllocation
+	Metadata  domain.JobMetadata
+	InputPath string
+	// DestinationPath is the final publish path planned by the stage step;
+	// OutputPath is the temporary name the artifact is written to (see
+	// replace.PartPath) until publish links it into place.
+	DestinationPath string
+	OutputPath      string
+	StagingDir      string
+	FinalPath       string
 
 	Probe      *domain.ProbeResult
 	Audio      *domain.AudioSelection
