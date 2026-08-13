@@ -1,6 +1,7 @@
 package replace
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -19,6 +20,14 @@ import (
 // scanner never treats it as media, and media managers ignore the unknown
 // extension, so a part file is never imported half-written.
 const PartSuffix = ".anvil-part"
+
+// ArtifactProtection reports whether an unresolved publish journal owns a
+// path. Legacy part cleanup needs this before mutating the filesystem: unlike
+// current parts, the first destination-side layout carried no job id in its
+// name, so the filename alone cannot prove which job owns it.
+type ArtifactProtection interface {
+	PublishArtifactProtected(context.Context, string) (bool, error)
+}
 
 // PartPath returns the working path for the artifact that will be published
 // to destination. The job label keeps the path unique per job: two jobs can
@@ -101,32 +110,64 @@ func PartJobLabel(id domain.JobID) string {
 }
 
 // CleanupPartFiles removes the job's unpublished artifact beside its
-// destination. The part namespace is Anvil's own; the published destination
-// and other jobs' parts are never touched.
+// destination. The job label makes ownership unambiguous, so the published
+// destination, legacy unscoped artifacts, and other jobs' parts are untouched.
 func CleanupPartFiles(destination string, jobLabel string) error {
 	destination = strings.TrimSpace(destination)
 	if destination == "" || strings.TrimSpace(jobLabel) == "" {
 		return nil
 	}
-	paths := []string{PartPath(destination, jobLabel)}
-	// The first destination-side layout wrote <destination>.anvil-part (plus
-	// work variants) without a job label; current code never writes that
-	// name, so reclaiming pre-upgrade orphans here is safe.
+	part := PartPath(destination, jobLabel)
+	if err := os.Remove(part); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("remove %q: %w", part, err)
+	}
+	return nil
+}
+
+// CleanupLegacyPartFiles reclaims artifacts from the first destination-side
+// layout, which wrote <destination>.anvil-part (plus work variants) without a
+// job id. Every existing candidate is checked before anything is removed: if
+// the journal lookup fails, no legacy artifact is touched.
+func CleanupLegacyPartFiles(ctx context.Context, protection ArtifactProtection, destination string) error {
+	destination = strings.TrimSpace(destination)
+	if destination == "" {
+		return nil
+	}
 	legacy := destination + PartSuffix
-	paths = append(paths, legacy)
 	dir := filepath.Dir(legacy)
 	entries, err := os.ReadDir(dir)
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
 		return fmt.Errorf("list legacy part directory %q: %w", dir, err)
 	}
-	prefix := filepath.Base(legacy) + "."
+	base := filepath.Base(legacy)
+	prefix := base + "."
+	var candidates []string
 	for _, entry := range entries {
-		if strings.HasPrefix(entry.Name(), prefix) {
-			paths = append(paths, filepath.Join(dir, entry.Name()))
+		if entry.Name() == base || strings.HasPrefix(entry.Name(), prefix) {
+			candidates = append(candidates, filepath.Join(dir, entry.Name()))
+		}
+	}
+	if len(candidates) == 0 {
+		return nil
+	}
+	if protection == nil {
+		return errors.New("legacy part cleanup requires publish journal protection")
+	}
+	removable := make([]string, 0, len(candidates))
+	for _, path := range candidates {
+		protected, err := protection.PublishArtifactProtected(ctx, path)
+		if err != nil {
+			return fmt.Errorf("check legacy part protection for %q: %w", path, err)
+		}
+		if !protected {
+			removable = append(removable, path)
 		}
 	}
 	var removeErrs []error
-	for _, path := range paths {
+	for _, path := range removable {
 		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 			removeErrs = append(removeErrs, fmt.Errorf("remove %q: %w", path, err))
 		}
