@@ -169,7 +169,7 @@ Always respect `ctx` cancellation, and capture enough metadata (command, exit co
   (`prepared → published → source_cleaned → committed`, or `conflict`). Never
   overwrite an existing destination, and record intent before mutating the
   filesystem. The `stage` step plans the destination (`replace.PlanDestination`)
-  and the artifact is written next to it as `<name>.anvil-part`, so publish is
+  and the artifact is written next to it as `<name>.job-<id>.anvil-part`, so publish is
   fsync + hardlink + unlink, never a bulk copy; `pkg/staging` keeps only
   scratch (search samples, Dolby Vision intermediates) under `temp_dir`.
   `pkg/store/protection.go` defines the jobs maintenance must not disturb;
