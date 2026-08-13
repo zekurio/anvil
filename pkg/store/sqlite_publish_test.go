@@ -59,6 +59,11 @@ func TestPublishArtifactProtectedRecognizesFilesystemAlias(t *testing.T) {
 	realPath := filepath.Join(realDir, "movie.mkv.anvil-part")
 	aliasPath := filepath.Join(alias, "movie.mkv.anvil-part")
 	createPublishTestOperation(t, ctx, store, jobID, replacepkg.PublishStagePrepared, aliasPath)
+	// Recovery must diagnose changed content; cleanup still treats the inode as
+	// journal-owned even though its recorded size no longer matches.
+	if err := os.WriteFile(realPath, []byte("changed artifact contents"), 0o600); err != nil {
+		t.Fatalf("change artifact after journaling: %v", err)
+	}
 
 	protected, err := store.PublishArtifactProtected(ctx, realPath)
 	if err != nil {
