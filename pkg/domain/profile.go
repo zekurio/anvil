@@ -26,6 +26,7 @@ type VideoProfile struct {
 	BitDepth           int
 	CRFMin             int
 	CRFMax             int
+	Samples            int
 	Metric             QualityMetric
 	Target             float64
 	MinSavingsPercent  float64

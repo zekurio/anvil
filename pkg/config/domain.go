@@ -158,6 +158,7 @@ func (p ProfileConfig) ToDomain() domain.Profile {
 			BitDepth:           p.Video.BitDepth,
 			CRFMin:             p.Video.CRFMin,
 			CRFMax:             p.Video.CRFMax,
+			Samples:            p.Video.Samples,
 			Metric:             domain.QualityMetric(p.Video.Metric),
 			Target:             p.Video.Target,
 			MinSavingsPercent:  p.Video.MinSavingsPercent,

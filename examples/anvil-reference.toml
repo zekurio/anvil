@@ -27,6 +27,7 @@ preset = "6" # Trade speed for compression to match the selected encoder; defaul
 bit_depth = 10 # Preserve more tonal detail when the encoder supports it; default 10; 8 or 10.
 crf_min = 18 # Lowest search CRF; 0 or omitted uses the default 18; integer no greater than crf_max.
 crf_max = 40 # Highest search CRF; 0 or omitted uses the default 40; integer no lower than crf_min.
+samples = 0 # Fixed sample count for each CRF candidate; default 0 uses ab-av1's duration-based count; integer >= 0.
 metric = "vmaf" # Quality metric passed to ab-av1; default "vmaf"; "vmaf" or "xpsnr".
 target = 95.0 # Minimum score for metric; default 95 for vmaf, required for xpsnr; number from 0 through 100 (typical XPSNR target: 35-50).
 min_savings_percent = 20 # Skip a result that saves too little space; default 20; number from 0 through 100.
