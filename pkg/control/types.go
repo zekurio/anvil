@@ -13,7 +13,7 @@ import (
 // its --json shapes, and the error codes. It moves only when that contract
 // changes, independently of ProtocolVersion, which is about wire compatibility
 // between two binaries.
-const Version = "v2"
+const Version = "v1"
 
 // BuildVersion is stamped at link time. Both binaries report it, so an operator
 // can tell which client is talking to which daemon.
