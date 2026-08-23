@@ -21,3 +21,20 @@ func TestProcessedInput(t *testing.T) {
 		t.Fatal("processedInput accepted a non-canonical marker value")
 	}
 }
+
+func TestForcedMediaGenerationDoesNotSkipProcessedInput(t *testing.T) {
+	job := &pipeline.JobContext{
+		Library: domain.Library{Kind: domain.LibraryKindMedia},
+		Source:  domain.MediaSource{Generation: 2},
+		Probe: &domain.ProbeResult{Streams: []domain.MediaStream{{
+			Type: "video", Tags: map[string]string{marker.TagProcessed: "true"},
+		}}},
+	}
+	if shouldSkipProcessed(job) {
+		t.Fatal("forced media generation was skipped")
+	}
+	job.Library.Kind = domain.LibraryKindDownload
+	if !shouldSkipProcessed(job) {
+		t.Fatal("processed download generation was not skipped")
+	}
+}
