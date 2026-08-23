@@ -132,7 +132,7 @@ func (r Runner) Run(ctx context.Context, assignment scheduler.Assignment) error 
 	initialMetadata := metadata
 	jobContext.Metadata = metadata
 	pipelineRunner.BeforeStep = func(ctx context.Context, step string, job *pipeline.JobContext) error {
-		if step != "probe" && processedInput(job) {
+		if step != "probe" && shouldSkipProcessed(job) {
 			return errAlreadyProcessed
 		}
 		if step == "publish" {
@@ -179,6 +179,13 @@ var errAlreadyProcessed = errors.New("input has Anvil processed marker")
 
 func processedInput(job *pipeline.JobContext) bool {
 	return job != nil && job.Probe != nil && marker.Processed(*job.Probe)
+}
+
+func shouldSkipProcessed(job *pipeline.JobContext) bool {
+	if !processedInput(job) {
+		return false
+	}
+	return job.Library.Kind != domain.LibraryKindMedia || job.Source.Generation <= 1
 }
 
 func (r Runner) skipProcessed(ctx context.Context, job domain.Job, attempt domain.Attempt) error {
