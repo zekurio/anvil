@@ -1,30 +1,28 @@
 package config
 
 const (
-	DefaultFlowName         = "av1-crf-search"
-	DefaultDownloadFlowName = "download-av1-handoff"
-	DefaultProfileName      = "default-av1"
-	DefaultLibraryKind      = "media"
-	DefaultReplacementMode  = "replace"
-	DefaultScanInterval     = "30m"
-	DefaultFSDebounce       = "2s"
-	DefaultSchedulerTick    = "5s"
-	DefaultLeaseDuration    = "30m"
-	DefaultShutdownPolicy   = "drain"
-	DefaultShutdownTimeout  = "0s"
-	DefaultStagingCleanup   = "0s"
-	DefaultLogLevel         = "info"
-	DefaultMaxAttempts      = 3
-	DefaultStableFor        = "5m"
-	DefaultPackageMode      = "auto"
-	DefaultHandoffMode      = "copy"
-	DefaultStreamFallback   = "keep_all"
-	DefaultMetadataMode     = "preserve"
-	DefaultTrackTitleMode   = "strip"
-	DefaultMinSavingsPct    = 20
-	DefaultCRFMin           = 18
-	DefaultCRFMax           = 40
-	DefaultTargetVMAF       = 95
+	DefaultProfileName     = "default-av1"
+	DefaultLibraryKind     = "media"
+	DefaultReplacementMode = "replace"
+	DefaultScanInterval    = "30m"
+	DefaultFSDebounce      = "2s"
+	DefaultSchedulerTick   = "5s"
+	DefaultLeaseDuration   = "30m"
+	DefaultShutdownPolicy  = "drain"
+	DefaultShutdownTimeout = "0s"
+	DefaultStagingCleanup  = "0s"
+	DefaultLogLevel        = "info"
+	DefaultMaxAttempts     = 3
+	DefaultStableFor       = "5m"
+	DefaultPackageMode     = "auto"
+	DefaultHandoffMode     = "copy"
+	DefaultStreamFallback  = "keep_all"
+	DefaultMetadataMode    = "preserve"
+	DefaultTrackTitleMode  = "strip"
+	DefaultMinSavingsPct   = 20
+	DefaultCRFMin          = 18
+	DefaultCRFMax          = 40
+	DefaultTargetVMAF      = 95
 )
 
 // DefaultIgnorableGlobs are excluded from download-package discovery and stability handling.
@@ -47,7 +45,6 @@ var DefaultIgnorableGlobs = []string{
 type Config struct {
 	Daemon    DaemonConfig             `toml:"daemon"`
 	Arrs      map[string]ArrConfig     `toml:"arrs"`
-	Flows     map[string]FlowConfig    `toml:"flows"`
 	Profiles  map[string]ProfileConfig `toml:"profiles"`
 	Libraries map[string]LibraryConfig `toml:"libraries"`
 }
@@ -68,12 +65,6 @@ type DaemonConfig struct {
 	ShutdownTimeout   string `toml:"shutdown_timeout"`
 	StagingCleanupAge string `toml:"staging_cleanup_age"`
 	LogLevel          string `toml:"log_level"`
-}
-
-// FlowConfig names an orchestration flow. The steps are declarative for now.
-type FlowConfig struct {
-	Name  string   `toml:"-"`
-	Steps []string `toml:"steps"`
 }
 
 // ProfileConfig groups encode settings that libraries can reference.
@@ -166,7 +157,6 @@ type LibraryConfig struct {
 	Name             string                `toml:"-"`
 	Kind             string                `toml:"kind"`
 	Path             string                `toml:"path"`
-	Flow             string                `toml:"flow"`
 	Profile          string                `toml:"profile"`
 	ScanInterval     string                `toml:"scan_interval"`
 	Priority         int                   `toml:"priority"`

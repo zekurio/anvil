@@ -132,16 +132,6 @@ func (Block) Name() string {
 
 func (b Block) Run(ctx context.Context, job *pipeline.JobContext) error {
 	video, codec := effectiveVideo(job)
-	if job.Metadata.VideoAlreadyEncoded {
-		result := domain.SearchResult{
-			Metric:                video.Metric,
-			SkipVideoEncode:       true,
-			VideoEncodeSkipReason: "compatible Anvil video marker",
-			RawOutput:             "skipped: compatible Anvil video marker",
-		}
-		job.Search = &result
-		return nil
-	}
 	if codec == "" && len(job.Profile.Video.Overrides) > 0 {
 		return errors.New("source video codec is required to apply video overrides")
 	}
@@ -257,10 +247,6 @@ var (
 	fatalSearchPattern = regexp.MustCompile(`(?i)(panicked at|failed to create temp-dir|permission denied|invalid value|unknown option|unrecognized option)`)
 )
 
-func ParseResult(output []byte) (domain.SearchResult, error) {
-	return ParseResultForPlan(output, domain.EncodePlan{})
-}
-
 func ParseResultForPlan(output []byte, plan domain.EncodePlan) (domain.SearchResult, error) {
 	text := string(output)
 	if search, ok := ParseNoFitResult(text, plan); ok {
@@ -273,10 +259,6 @@ func ParseResultForPlan(output []byte, plan domain.EncodePlan) (domain.SearchRes
 	result := qualityResult(text, plan.Metric)
 	result.CRF = crf
 	return result, nil
-}
-
-func ParseSkipResult(text string) (domain.SearchResult, bool) {
-	return ParseNoFitResult(text, domain.EncodePlan{})
 }
 
 func ParseNoFitResult(text string, plan domain.EncodePlan) (domain.SearchResult, bool) {

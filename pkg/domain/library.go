@@ -14,7 +14,6 @@ type Library struct {
 	Kind             LibraryKind
 	Path             string
 	Priority         int
-	FlowName         FlowName
 	ProfileName      ProfileName
 	IncludeGlobs     []string
 	ExcludeGlobs     []string

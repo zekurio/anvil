@@ -1,7 +1,6 @@
 package domain
 
 type LibraryName string
-type FlowName string
 type ProfileName string
 
 type MediaSourceID int64

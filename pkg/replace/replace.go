@@ -91,16 +91,22 @@ func PlanHandoff(job *pipeline.JobContext) (HandoffPlan, error) {
 	}, nil
 }
 
-type ReplaceBlock struct {
+type PublishBlock struct {
 	Manager Manager
 }
 
-func (ReplaceBlock) Name() string {
-	return "replace"
+func (PublishBlock) Name() string {
+	return "publish"
 }
 
-func (b ReplaceBlock) Run(ctx context.Context, job *pipeline.JobContext) error {
-	finalPath, err := b.Manager.Replace(ctx, job)
+func (b PublishBlock) Run(ctx context.Context, job *pipeline.JobContext) error {
+	var finalPath string
+	var err error
+	if job.Library.Kind == domain.LibraryKindDownload {
+		finalPath, err = b.Manager.Handoff(ctx, job)
+	} else {
+		finalPath, err = b.Manager.Replace(ctx, job)
+	}
 	if err != nil {
 		return err
 	}
@@ -108,28 +114,7 @@ func (b ReplaceBlock) Run(ctx context.Context, job *pipeline.JobContext) error {
 	return nil
 }
 
-func (b ReplaceBlock) Recover(ctx context.Context, job *pipeline.JobContext) (bool, error) {
-	return b.Manager.Recover(ctx, job)
-}
-
-type HandoffBlock struct {
-	Manager Manager
-}
-
-func (HandoffBlock) Name() string {
-	return "handoff"
-}
-
-func (b HandoffBlock) Run(ctx context.Context, job *pipeline.JobContext) error {
-	finalPath, err := b.Manager.Handoff(ctx, job)
-	if err != nil {
-		return err
-	}
-	job.FinalPath = finalPath
-	return nil
-}
-
-func (b HandoffBlock) Recover(ctx context.Context, job *pipeline.JobContext) (bool, error) {
+func (b PublishBlock) Recover(ctx context.Context, job *pipeline.JobContext) (bool, error) {
 	return b.Manager.Recover(ctx, job)
 }
 

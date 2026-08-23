@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/zekurio/anvil/pkg/domain"
+	"github.com/zekurio/anvil/pkg/process"
 )
 
 type JobContext struct {
@@ -17,7 +18,6 @@ type JobContext struct {
 	Source    domain.MediaSource
 	Asset     domain.MediaAsset
 	Library   domain.Library
-	Flow      domain.Flow
 	Profile   domain.Profile
 	Resources domain.ResourceAllocation
 	Metadata  domain.JobMetadata
@@ -44,43 +44,6 @@ type Block interface {
 	Run(ctx context.Context, job *JobContext) error
 }
 
-type BlockFunc struct {
-	BlockName string
-	Fn        func(ctx context.Context, job *JobContext) error
-}
-
-func (b BlockFunc) Name() string {
-	return b.BlockName
-}
-
-func (b BlockFunc) Run(ctx context.Context, job *JobContext) error {
-	return b.Fn(ctx, job)
-}
-
-type Registry struct {
-	blocks map[string]Block
-}
-
-func NewRegistry(blocks ...Block) Registry {
-	registry := Registry{blocks: make(map[string]Block, len(blocks))}
-	for _, block := range blocks {
-		registry.Register(block)
-	}
-	return registry
-}
-
-func (r *Registry) Register(block Block) {
-	if r.blocks == nil {
-		r.blocks = make(map[string]Block)
-	}
-	r.blocks[block.Name()] = block
-}
-
-func (r Registry) Block(name string) (Block, bool) {
-	block, ok := r.blocks[name]
-	return block, ok
-}
-
 type EventRecorder interface {
 	RecordAttemptEvent(context.Context, domain.AttemptEvent) (domain.AttemptEvent, error)
 }
@@ -91,11 +54,10 @@ type StepPersistence interface {
 }
 
 type Runner struct {
-	Registry        Registry
+	Blocks          []Block
 	Events          EventRecorder
 	StepPersistence StepPersistence
 	BeforeStep      func(context.Context, string, *JobContext) error
-	StepContext     func(context.Context, string) context.Context
 	Now             func() time.Time
 }
 
@@ -103,12 +65,9 @@ func (r Runner) Run(ctx context.Context, job *JobContext) error {
 	if job == nil {
 		return errors.New("pipeline job context is required")
 	}
-	for index, step := range job.Flow.Steps {
-		block, ok := r.Registry.Block(step.Name)
-		if !ok {
-			return fmt.Errorf("pipeline block %q is not registered", step.Name)
-		}
-		resumed, err := r.resumeStep(ctx, step.Name, job)
+	for index, block := range r.Blocks {
+		step := block.Name()
+		resumed, err := r.resumeStep(ctx, step, job)
 		if err != nil {
 			return err
 		}
@@ -116,12 +75,12 @@ func (r Runner) Run(ctx context.Context, job *JobContext) error {
 		if resumed {
 			startPayload["resumed"] = true
 		}
-		if err := r.record(ctx, job.Attempt.ID, domain.AttemptEventBlockStarted, step.Name, "", startPayload); err != nil {
+		if err := r.record(ctx, job.Attempt.ID, domain.AttemptEventBlockStarted, step, "", startPayload); err != nil {
 			return err
 		}
 		started := time.Now()
 		if resumed {
-			slog.Info("pipeline step resumed", "job", job.Job.Label(), "attempt", job.Attempt.Number, "step", step.Name, "step_index", index)
+			slog.Info("pipeline step resumed", "job", job.Job.Label(), "attempt", job.Attempt.Number, "step", step, "step_index", index)
 			// The block itself did not run, so re-emit its decision: the log of
 			// the attempt that originally decided may already be rotated away.
 			if decision, ok := blockDecision(block, job); ok {
@@ -130,39 +89,36 @@ func (r Runner) Run(ctx context.Context, job *JobContext) error {
 			if err := r.recordDecision(ctx, block, job); err != nil {
 				return err
 			}
-			if err := r.record(ctx, job.Attempt.ID, domain.AttemptEventBlockFinished, step.Name, "", map[string]any{"step_index": index, "resumed": true}); err != nil {
+			if err := r.record(ctx, job.Attempt.ID, domain.AttemptEventBlockFinished, step, "", map[string]any{"step_index": index, "resumed": true}); err != nil {
 				return err
 			}
 			continue
 		}
 		if r.BeforeStep != nil {
-			if err := r.BeforeStep(ctx, step.Name, job); err != nil {
-				_ = r.record(ctx, job.Attempt.ID, domain.AttemptEventBlockFailed, step.Name, err.Error(), map[string]any{"step_index": index}) //nolint:errcheck // preserve the pre-step error
-				return fmt.Errorf("before block %q: %w", step.Name, err)
+			if err := r.BeforeStep(ctx, step, job); err != nil {
+				_ = r.record(ctx, job.Attempt.ID, domain.AttemptEventBlockFailed, step, err.Error(), map[string]any{"step_index": index}) //nolint:errcheck // preserve the pre-step error
+				return fmt.Errorf("before block %q: %w", step, err)
 			}
 		}
-		slog.Info("pipeline step started", "job", job.Job.Label(), "attempt", job.Attempt.Number, "step", step.Name, "step_index", index)
-		stepCtx := ctx
-		if r.StepContext != nil {
-			stepCtx = r.StepContext(ctx, step.Name)
-		}
+		slog.Info("pipeline step started", "job", job.Job.Label(), "attempt", job.Attempt.Number, "step", step, "step_index", index)
+		stepCtx := process.WithStep(ctx, step)
 		if err := block.Run(stepCtx, job); err != nil {
-			slog.Error("pipeline step failed", "job", job.Job.Label(), "attempt", job.Attempt.Number, "step", step.Name, "step_index", index, "duration", time.Since(started), "error", err)
+			slog.Error("pipeline step failed", "job", job.Job.Label(), "attempt", job.Attempt.Number, "step", step, "step_index", index, "duration", time.Since(started), "error", err)
 			// A failing block can still have decided something worth keeping —
 			// a fail_job stream selection is exactly the case where the record
 			// explains the failure the error message cannot.
-			_ = r.recordDecision(ctx, block, job)                                                                                          //nolint:errcheck // preserve the block error; decision recording is best-effort
-			_ = r.record(ctx, job.Attempt.ID, domain.AttemptEventBlockFailed, step.Name, err.Error(), map[string]any{"step_index": index}) //nolint:errcheck // preserve the block error; failed-event recording is best-effort
-			return fmt.Errorf("run block %q: %w", step.Name, err)
+			_ = r.recordDecision(ctx, block, job)                                                                                     //nolint:errcheck // preserve the block error; decision recording is best-effort
+			_ = r.record(ctx, job.Attempt.ID, domain.AttemptEventBlockFailed, step, err.Error(), map[string]any{"step_index": index}) //nolint:errcheck // preserve the block error; failed-event recording is best-effort
+			return fmt.Errorf("run block %q: %w", step, err)
 		}
-		slog.Info("pipeline step finished", "job", job.Job.Label(), "attempt", job.Attempt.Number, "step", step.Name, "step_index", index, "duration", time.Since(started))
-		if err := r.stepSucceeded(ctx, step.Name, job); err != nil {
+		slog.Info("pipeline step finished", "job", job.Job.Label(), "attempt", job.Attempt.Number, "step", step, "step_index", index, "duration", time.Since(started))
+		if err := r.stepSucceeded(ctx, step, job); err != nil {
 			return err
 		}
 		if err := r.recordDecision(ctx, block, job); err != nil {
 			return err
 		}
-		if err := r.record(ctx, job.Attempt.ID, domain.AttemptEventBlockFinished, step.Name, "", map[string]any{"step_index": index}); err != nil {
+		if err := r.record(ctx, job.Attempt.ID, domain.AttemptEventBlockFinished, step, "", map[string]any{"step_index": index}); err != nil {
 			return err
 		}
 	}
