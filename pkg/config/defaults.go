@@ -30,14 +30,6 @@ func Default() Config {
 			StagingCleanupAge: DefaultStagingCleanup,
 			LogLevel:          DefaultLogLevel,
 		},
-		Flows: map[string]FlowConfig{
-			DefaultFlowName: {
-				Steps: []string{"probe", "crop-detect", "audio-cleanup", "subtitle-cleanup", "stage", "crf-search", "encode", "validate", "replace", "cleanup"},
-			},
-			DefaultDownloadFlowName: {
-				Steps: []string{"probe", "crop-detect", "audio-cleanup", "subtitle-cleanup", "stage", "crf-search", "encode", "validate", "handoff", "cleanup"},
-			},
-		},
 		Profiles: map[string]ProfileConfig{
 			DefaultProfileName: {
 				Container: "mkv",
@@ -121,9 +113,6 @@ func applyDefaults(c *Config) {
 	if logLevel, ok := NormalizeLogLevel(c.Daemon.LogLevel); ok {
 		c.Daemon.LogLevel = logLevel
 	}
-	if len(c.Flows) == 0 {
-		c.Flows = defaults.Flows
-	}
 	if len(c.Profiles) == 0 {
 		c.Profiles = defaults.Profiles
 	}
@@ -139,11 +128,6 @@ func applyDefaults(c *Config) {
 		c.Arrs[name] = arr
 	}
 
-	for name, flow := range c.Flows {
-		flow.Name = name
-		c.Flows[name] = flow
-	}
-
 	for name, profile := range c.Profiles {
 		profile.Name = name
 		applyProfileDefaults(&profile)
@@ -154,12 +138,6 @@ func applyDefaults(c *Config) {
 		library.Name = name
 		if strings.TrimSpace(library.Kind) == "" {
 			library.Kind = DefaultLibraryKind
-		}
-		if strings.TrimSpace(library.Flow) == "" {
-			library.Flow = DefaultFlowName
-			if library.Kind == "download" {
-				library.Flow = DefaultDownloadFlowName
-			}
 		}
 		if strings.TrimSpace(library.Profile) == "" {
 			library.Profile = DefaultProfileName

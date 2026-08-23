@@ -49,20 +49,6 @@ func (c Config) Validate() error {
 		problems = append(problems, fmt.Sprintf("daemon.log_level %q is invalid (must be debug, info, warn, or error)", c.Daemon.LogLevel))
 	}
 
-	flows := make(map[string]struct{}, len(c.Flows))
-	for _, name := range sortedKeys(c.Flows) {
-		flow := c.Flows[name]
-		name = strings.TrimSpace(name)
-		if name == "" {
-			problems = append(problems, "flow name is required")
-			continue
-		}
-		flows[name] = struct{}{}
-		if len(flow.Steps) == 0 {
-			problems = append(problems, fmt.Sprintf("flow %q must have at least one step", name))
-		}
-	}
-
 	profiles := make(map[string]struct{}, len(c.Profiles))
 	for _, name := range sortedKeys(c.Profiles) {
 		profile := c.Profiles[name]
@@ -217,11 +203,6 @@ func (c Config) Validate() error {
 		if strings.TrimSpace(library.Path) == "" {
 			problems = append(problems, fmt.Sprintf("library %q path is required", name))
 		}
-		flow, flowExists := c.Flows[library.Flow]
-		if _, exists := flows[library.Flow]; !exists {
-			problems = append(problems, fmt.Sprintf("library %q references unknown flow %q", name, library.Flow))
-			flowExists = false
-		}
 		if _, exists := profiles[library.Profile]; !exists {
 			problems = append(problems, fmt.Sprintf("library %q references unknown profile %q", name, library.Profile))
 		}
@@ -249,14 +230,6 @@ func (c Config) Validate() error {
 		}
 		if strings.TrimSpace(library.Download.HandoffPath) == "" {
 			problems = append(problems, fmt.Sprintf("download library %q download.handoff_path is required", name))
-		}
-		if flowExists {
-			if !flowHasStep(flow, "handoff") {
-				problems = append(problems, fmt.Sprintf("download library %q flow %q must include handoff", name, library.Flow))
-			}
-			if flowHasStep(flow, "replace") {
-				problems = append(problems, fmt.Sprintf("download library %q flow %q must not include replace", name, library.Flow))
-			}
 		}
 		if stableFor, err := time.ParseDuration(library.Download.StableFor); err != nil {
 			problems = append(problems, fmt.Sprintf("download library %q download.stable_for is invalid: %v", name, err))
@@ -304,15 +277,6 @@ func videoOverrideKeyProblems(profileName string, overrides map[string]VideoOver
 
 func validLibraryKind(kind string) bool {
 	return kind == "media" || kind == "download"
-}
-
-func flowHasStep(flow FlowConfig, step string) bool {
-	for _, configured := range flow.Steps {
-		if strings.EqualFold(strings.TrimSpace(configured), step) {
-			return true
-		}
-	}
-	return false
 }
 
 func validatePositiveDuration(problems *[]string, name string, value string) {

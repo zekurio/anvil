@@ -6,7 +6,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
-	"sort"
 	"strings"
 	"unicode/utf8"
 
@@ -275,10 +274,7 @@ func decodeEventPayload(payload []byte) *control.EventPayload {
 }
 
 func pipelineContextDetail(snapshot domain.JobPipelineContext) control.PipelineContextDetail {
-	result := control.PipelineContextDetail{
-		Version: snapshot.Version,
-		Steps:   pipelineStepDetails(snapshot.Steps),
-	}
+	result := control.PipelineContextDetail{Version: snapshot.Version}
 	if snapshot.Crop != nil {
 		result.CropFilter = snapshot.Crop.Filter
 	}
@@ -288,34 +284,6 @@ func pipelineContextDetail(snapshot domain.JobPipelineContext) control.PipelineC
 		result.SearchVMAF = snapshot.Search.VMAF
 		result.SearchXPSNR = snapshot.Search.XPSNR
 		result.SearchSkipReason = snapshot.Search.VideoEncodeSkipReason
-	}
-	if snapshot.EncodePlan != nil {
-		result.EncodeVideoCodec = snapshot.EncodePlan.VideoCodec
-		result.EncodeCRF = snapshot.EncodePlan.CRF
-	}
-	if snapshot.Validation != nil {
-		ok := snapshot.Validation.OK
-		result.ValidationOK = &ok
-		result.ValidationErrors = append([]string(nil), snapshot.Validation.Errors...)
-	}
-	return result
-}
-
-func pipelineStepDetails(steps map[string]domain.JobPipelineStep) []control.PipelineStepDetail {
-	names := make([]string, 0, len(steps))
-	for name := range steps {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	result := make([]control.PipelineStepDetail, 0, len(names))
-	for _, name := range names {
-		step := steps[name]
-		result = append(result, control.PipelineStepDetail{
-			Name:       name,
-			AttemptID:  int64(step.AttemptID),
-			FinishedAt: step.FinishedAt,
-			Resumable:  step.Resumable,
-		})
 	}
 	return result
 }

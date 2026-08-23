@@ -17,15 +17,6 @@ func (c Config) FindLibrary(name domain.LibraryName) (LibraryConfig, bool) {
 	return LibraryConfig{}, false
 }
 
-func (c Config) FindFlow(name string) (FlowConfig, bool) {
-	flow, ok := c.Flows[name]
-	if ok {
-		flow.Name = name
-		return flow, true
-	}
-	return FlowConfig{}, false
-}
-
 func (c Config) FindProfile(name string) (ProfileConfig, bool) {
 	profile, ok := c.Profiles[name]
 	if ok {
@@ -43,28 +34,24 @@ func (c Config) FindArr(name string) (ArrConfig, bool) {
 	return arr, ok
 }
 
-func (c Config) ResolveForLibrary(name domain.LibraryName) (domain.Library, domain.Flow, domain.Profile, error) {
+func (c Config) ResolveForLibrary(name domain.LibraryName) (domain.Library, domain.Profile, error) {
 	library, ok := c.FindLibrary(name)
 	if !ok {
-		return domain.Library{}, domain.Flow{}, domain.Profile{}, fmt.Errorf("library %q not found", name)
-	}
-	flow, ok := c.FindFlow(library.Flow)
-	if !ok {
-		return domain.Library{}, domain.Flow{}, domain.Profile{}, fmt.Errorf("flow %q not found", library.Flow)
+		return domain.Library{}, domain.Profile{}, fmt.Errorf("library %q not found", name)
 	}
 	profile, ok := c.FindProfile(library.Profile)
 	if !ok {
-		return domain.Library{}, domain.Flow{}, domain.Profile{}, fmt.Errorf("profile %q not found", library.Profile)
+		return domain.Library{}, domain.Profile{}, fmt.Errorf("profile %q not found", library.Profile)
 	}
 	var arr ArrConfig
 	if library.Arr != "" {
 		var ok bool
 		arr, ok = c.FindArr(library.Arr)
 		if !ok {
-			return domain.Library{}, domain.Flow{}, domain.Profile{}, fmt.Errorf("arr %q not found", library.Arr)
+			return domain.Library{}, domain.Profile{}, fmt.Errorf("arr %q not found", library.Arr)
 		}
 	}
-	return library.ToDomain(arr), flow.ToDomain(), profile.ToDomain(), nil
+	return library.ToDomain(arr), profile.ToDomain(), nil
 }
 
 func (c Config) ScanInterval() time.Duration {
@@ -112,7 +99,6 @@ func (l LibraryConfig) ToDomain(arr ArrConfig) domain.Library {
 		Kind:             domain.LibraryKind(l.Kind),
 		Path:             l.Path,
 		Priority:         l.Priority,
-		FlowName:         domain.FlowName(l.Flow),
 		ProfileName:      domain.ProfileName(l.Profile),
 		IncludeGlobs:     append([]string(nil), l.Include...),
 		ExcludeGlobs:     append([]string(nil), l.Exclude...),
@@ -136,17 +122,6 @@ func (l LibraryConfig) ToDomain(arr ArrConfig) domain.Library {
 			PruneEmptyDirs:       l.Download.PruneEmptyDirs,
 			IgnorableGlobs:       append([]string(nil), l.Download.IgnorableGlobs...),
 		},
-	}
-}
-
-func (f FlowConfig) ToDomain() domain.Flow {
-	steps := make([]domain.FlowStep, 0, len(f.Steps))
-	for _, step := range f.Steps {
-		steps = append(steps, domain.FlowStep{Name: step})
-	}
-	return domain.Flow{
-		Name:  domain.FlowName(f.Name),
-		Steps: steps,
 	}
 }
 

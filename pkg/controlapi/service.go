@@ -405,18 +405,13 @@ func stagedDestinations(ctx context.Context, store Store, job domain.Job, source
 	seen := make(map[string]struct{})
 	var errs []error
 	for _, attempt := range attempts {
-		if len(attempt.ResolvedLibrary) == 0 || len(attempt.ResolvedFlow) == 0 || len(attempt.ResolvedProfile) == 0 {
+		if len(attempt.ResolvedLibrary) == 0 || len(attempt.ResolvedProfile) == 0 {
 			continue // config resolution failed before the pipeline ran: never staged
 		}
 		var library domain.Library
-		var flow domain.Flow
 		var profile domain.Profile
 		if err := json.Unmarshal(attempt.ResolvedLibrary, &library); err != nil {
 			errs = append(errs, fmt.Errorf("decode attempt %d resolved library: %w", attempt.Number, err))
-			continue
-		}
-		if err := json.Unmarshal(attempt.ResolvedFlow, &flow); err != nil {
-			errs = append(errs, fmt.Errorf("decode attempt %d resolved flow: %w", attempt.Number, err))
 			continue
 		}
 		if err := json.Unmarshal(attempt.ResolvedProfile, &profile); err != nil {
@@ -425,7 +420,7 @@ func stagedDestinations(ctx context.Context, store Store, job domain.Job, source
 		}
 		jobContext := &pipeline.JobContext{
 			Job: job, Source: source, Asset: asset,
-			Library: library, Flow: flow, Profile: profile,
+			Library: library, Profile: profile,
 			InputPath: mediapath.Input(library.Path, source, asset),
 		}
 		destination, err := replacepkg.PlanDestination(jobContext)
@@ -620,13 +615,13 @@ func (s Service) jobResponse(ctx context.Context, cfg config.Config, summary sto
 }
 
 func plannedDestination(cfg config.Config, job domain.Job, source domain.MediaSource, asset domain.MediaAsset) string {
-	library, flow, profile, err := cfg.ResolveForLibrary(job.LibraryName)
+	library, profile, err := cfg.ResolveForLibrary(job.LibraryName)
 	if err != nil {
 		return ""
 	}
 	inputPath := mediapath.Input(library.Path, source, asset)
 	jobContext := &pipeline.JobContext{
-		Job: job, Source: source, Asset: asset, Library: library, Flow: flow,
+		Job: job, Source: source, Asset: asset, Library: library,
 		Profile: profile, InputPath: inputPath,
 	}
 	destination, err := replacepkg.PlanDestination(jobContext)

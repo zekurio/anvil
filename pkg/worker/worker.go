@@ -20,6 +20,7 @@ import (
 	"github.com/zekurio/anvil/pkg/crop"
 	"github.com/zekurio/anvil/pkg/domain"
 	"github.com/zekurio/anvil/pkg/ffmpeg"
+	"github.com/zekurio/anvil/pkg/marker"
 	"github.com/zekurio/anvil/pkg/mediapath"
 	"github.com/zekurio/anvil/pkg/pipeline"
 	"github.com/zekurio/anvil/pkg/probe"
@@ -76,10 +77,10 @@ func (r Runner) Run(ctx context.Context, assignment scheduler.Assignment) error 
 	}
 
 	cfg := r.ConfigProvider()
-	library, flow, profile, resolveErr := cfg.ResolveForLibrary(assignment.Job.LibraryName)
-	resolvedLibrary, resolvedFlow, resolvedProfile := snapshots(library, flow, profile, resolveErr)
+	library, profile, resolveErr := cfg.ResolveForLibrary(assignment.Job.LibraryName)
+	resolvedLibrary, resolvedProfile := snapshots(library, profile, resolveErr)
 
-	attempt, err := r.Store.StartAttempt(ctx, assignment.Job.ID, assignment.WorkerID, resolvedLibrary, resolvedFlow, resolvedProfile, r.now())
+	attempt, err := r.Store.StartAttempt(ctx, assignment.Job.ID, assignment.WorkerID, resolvedLibrary, nil, resolvedProfile, r.now())
 	if err != nil {
 		return fmt.Errorf("start attempt: %w", err)
 	}
@@ -109,7 +110,6 @@ func (r Runner) Run(ctx context.Context, assignment scheduler.Assignment) error 
 		Source:    source,
 		Asset:     asset,
 		Library:   library,
-		Flow:      flow,
 		Profile:   profile,
 		Resources: assignment.Resources,
 		InputPath: inputPath,
@@ -118,7 +118,7 @@ func (r Runner) Run(ctx context.Context, assignment scheduler.Assignment) error 
 	if recovered, recoverErr := recoverPendingPublish(ctx, pipelineRunner, jobContext); recoverErr != nil {
 		return r.fail(ctx, assignment.Job, attempt, cfg, recoverErr)
 	} else if recovered {
-		return r.finishSuccessful(context.WithoutCancel(ctx), assignment, flow, library, jobContext)
+		return r.finishSuccessful(context.WithoutCancel(ctx), assignment, library, jobContext)
 	}
 	if err := r.verifyOccurrenceInput(inputPath, source, asset); err != nil {
 		return r.fail(ctx, assignment.Job, attempt, cfg, err)
@@ -131,33 +131,23 @@ func (r Runner) Run(ctx context.Context, assignment scheduler.Assignment) error 
 	disableUnsafeStreamCleanup(profile, &metadata)
 	initialMetadata := metadata
 	jobContext.Metadata = metadata
-	beforeStep := pipelineRunner.BeforeStep
 	pipelineRunner.BeforeStep = func(ctx context.Context, step string, job *pipeline.JobContext) error {
-		if beforeStep != nil {
-			if err := beforeStep(ctx, step, job); err != nil {
-				return err
-			}
+		if step != "probe" && processedInput(job) {
+			return errAlreadyProcessed
 		}
-		if step == "replace" || step == "handoff" {
+		if step == "publish" {
 			return r.verifyCurrentOccurrence(ctx, job)
 		}
 		return nil
 	}
-	contextPersistence := newPipelineContextPersistence(ctx, r.Store, jobContext, resolvedLibrary, resolvedFlow, resolvedProfile, initialMetadata, r.now)
-	slog.Info("worker pipeline started", "worker", assignment.WorkerID, "job", assignment.Job.Label(), "attempt", attempt.Number, "library", string(library.Name), "flow", string(flow.Name), "profile", string(profile.Name), "input", inputPath)
+	contextPersistence := newPipelineContextPersistence(ctx, r.Store, jobContext, resolvedLibrary, resolvedProfile, initialMetadata, r.now)
+	slog.Info("worker pipeline started", "worker", assignment.WorkerID, "job", assignment.Job.Label(), "attempt", attempt.Number, "library", string(library.Name), "profile", string(profile.Name), "input", inputPath)
 
 	if pipelineRunner.Events == nil {
 		pipelineRunner.Events = r.Store
 	}
 	if pipelineRunner.StepPersistence == nil {
 		pipelineRunner.StepPersistence = contextPersistence
-	}
-	stepContext := pipelineRunner.StepContext
-	pipelineRunner.StepContext = func(ctx context.Context, step string) context.Context {
-		if stepContext != nil {
-			ctx = stepContext(ctx, step)
-		}
-		return process.WithStep(ctx, step)
 	}
 	pipelineCtx := process.WithLogger(ctx, &processLogRecorder{
 		root:      filepath.Join(r.tempDir(cfg), "process-logs"),
@@ -169,6 +159,9 @@ func (r Runner) Run(ctx context.Context, assignment scheduler.Assignment) error 
 		now:       r.now,
 	})
 	if err := pipelineRunner.Run(pipelineCtx, jobContext); err != nil {
+		if errors.Is(err, errAlreadyProcessed) {
+			return r.skipProcessed(context.WithoutCancel(ctx), assignment.Job, attempt)
+		}
 		if !errors.Is(err, replacepkg.ErrPublishPending) {
 			// A pending publish keeps its staging artifact so a resumed job can
 			// still publish it. The detached context only carries the cleanup
@@ -179,11 +172,28 @@ func (r Runner) Run(ctx context.Context, assignment scheduler.Assignment) error 
 	}
 	// A finished pipeline is authoritative: the artifact is published, so the
 	// completion bookkeeping must run even if a cancel landed in the meantime.
-	return r.finishSuccessful(context.WithoutCancel(ctx), assignment, flow, library, jobContext)
+	return r.finishSuccessful(context.WithoutCancel(ctx), assignment, library, jobContext)
 }
 
-func (r Runner) finishSuccessful(ctx context.Context, assignment scheduler.Assignment, flow domain.Flow, library domain.Library, jobContext *pipeline.JobContext) error {
-	if err := r.complete(ctx, jobContext, flow); err != nil {
+var errAlreadyProcessed = errors.New("input has Anvil processed marker")
+
+func processedInput(job *pipeline.JobContext) bool {
+	return job != nil && job.Probe != nil && marker.Processed(*job.Probe)
+}
+
+func (r Runner) skipProcessed(ctx context.Context, job domain.Job, attempt domain.Attempt) error {
+	if _, err := r.Store.FinishAttempt(ctx, attempt.ID, domain.AttemptStateSucceeded, "", r.now()); err != nil {
+		return fmt.Errorf("finish skipped attempt: %w", err)
+	}
+	if _, err := r.Store.TransitionJob(ctx, job.ID, domain.JobStateSkipped, r.now(), errAlreadyProcessed.Error()); err != nil {
+		return fmt.Errorf("transition processed input job to skipped: %w", err)
+	}
+	slog.Info("worker skipped processed input", "worker", attempt.WorkerID, "job", job.Label(), "attempt", attempt.Number, "library", string(job.LibraryName))
+	return nil
+}
+
+func (r Runner) finishSuccessful(ctx context.Context, assignment scheduler.Assignment, library domain.Library, jobContext *pipeline.JobContext) error {
+	if err := r.complete(ctx, jobContext); err != nil {
 		return err
 	}
 	slog.Info("worker job completed", "worker", assignment.WorkerID, "job", assignment.Job.Label(), "attempt", jobContext.Attempt.Number, "library", string(library.Name), "final_path", jobContext.FinalPath)
@@ -198,14 +208,7 @@ func recoverPendingPublish(ctx context.Context, runner pipeline.Runner, job *pip
 	if job == nil {
 		return false, nil
 	}
-	for _, step := range job.Flow.Steps {
-		if step.Name != "replace" && step.Name != "handoff" {
-			continue
-		}
-		block, ok := runner.Registry.Block(step.Name)
-		if !ok {
-			continue
-		}
+	for _, block := range runner.Blocks {
 		recoverer, ok := block.(publishRecoverer)
 		if !ok {
 			continue
@@ -245,7 +248,7 @@ func DefaultPipeline(tempDir string, journal replacepkg.PublishJournal) pipeline
 	prober := probe.FFProbe{}
 	publishManager := replacepkg.Manager{Journal: journal}
 	return pipeline.Runner{
-		Registry: pipeline.NewRegistry(
+		Blocks: []pipeline.Block{
 			probe.Block{Prober: prober},
 			crop.Block{},
 			audio.Block{},
@@ -254,10 +257,9 @@ func DefaultPipeline(tempDir string, journal replacepkg.PublishJournal) pipeline
 			search.Block{},
 			ffmpeg.Block{},
 			validate.Block{Validator: validate.Validator{Prober: prober}},
-			replacepkg.ReplaceBlock{Manager: publishManager},
-			replacepkg.HandoffBlock{Manager: publishManager},
+			replacepkg.PublishBlock{Manager: publishManager},
 			staging.CleanupBlock{Manager: stageManager},
-		),
+		},
 	}
 }
 
@@ -391,20 +393,18 @@ func statFileSize(path string) int64 {
 	return info.Size()
 }
 
-func (r Runner) complete(ctx context.Context, job *pipeline.JobContext, flow domain.Flow) error {
+func (r Runner) complete(ctx context.Context, job *pipeline.JobContext) error {
 	now := r.now()
 	if _, err := r.Store.TransitionJob(ctx, job.Job.ID, domain.JobStateValidating, now, ""); err != nil {
 		return fmt.Errorf("transition job to validating: %w", err)
 	}
-	if flowNeedsReplacing(flow) {
-		if _, err := r.Store.TransitionJob(ctx, job.Job.ID, domain.JobStateReplacing, r.now(), ""); err != nil {
-			return fmt.Errorf("transition job to replacing: %w", err)
-		}
+	if _, err := r.Store.TransitionJob(ctx, job.Job.ID, domain.JobStateReplacing, r.now(), ""); err != nil {
+		return fmt.Errorf("transition job to replacing: %w", err)
 	}
 	if _, err := r.Store.CompleteJobOccurrence(ctx, store.CompleteJobOccurrenceInput{
 		JobID: job.Job.ID, AttemptID: job.Attempt.ID,
 		InputSizeBytes: jobInputSize(job), OutputSizeBytes: jobOutputSize(job),
-		SourceMediaRemoved:    sourceMediaRemovedOnCompletion(job, flow),
+		SourceMediaRemoved:    sourceMediaRemovedOnCompletion(job),
 		FinalInputFingerprint: finalInputFingerprint(job),
 		CompletedAt:           r.now(),
 	}); err != nil {
@@ -413,8 +413,8 @@ func (r Runner) complete(ctx context.Context, job *pipeline.JobContext, flow dom
 	return nil
 }
 
-func sourceMediaRemovedOnCompletion(job *pipeline.JobContext, flow domain.Flow) bool {
-	return job != nil && job.Library.Kind == domain.LibraryKindDownload && job.Library.Download.CleanupSourceMedia && flowHasStep(flow, "handoff")
+func sourceMediaRemovedOnCompletion(job *pipeline.JobContext) bool {
+	return job != nil && job.Library.Kind == domain.LibraryKindDownload && job.Library.Download.CleanupSourceMedia
 }
 
 func finalInputFingerprint(job *pipeline.JobContext) *domain.FileFingerprint {
@@ -581,11 +581,11 @@ func (r Runner) startHeartbeat(ctx context.Context, jobID domain.JobID, workerID
 	}
 }
 
-func snapshots(library domain.Library, flow domain.Flow, profile domain.Profile, resolveErr error) ([]byte, []byte, []byte) {
+func snapshots(library domain.Library, profile domain.Profile, resolveErr error) ([]byte, []byte) {
 	if resolveErr != nil {
-		return nil, nil, nil
+		return nil, nil
 	}
-	return mustJSON(library), mustJSON(flow), mustJSON(profile)
+	return mustJSON(library), mustJSON(profile)
 }
 
 func mustJSON(value any) []byte {
@@ -594,25 +594,6 @@ func mustJSON(value any) []byte {
 		panic(err)
 	}
 	return data
-}
-
-func flowNeedsReplacing(flow domain.Flow) bool {
-	for _, step := range flow.Steps {
-		name := strings.ToLower(step.Name)
-		if name == "replace" || name == "handoff" {
-			return true
-		}
-	}
-	return false
-}
-
-func flowHasStep(flow domain.Flow, wanted string) bool {
-	for _, step := range flow.Steps {
-		if strings.EqualFold(step.Name, wanted) {
-			return true
-		}
-	}
-	return false
 }
 
 func (r Runner) now() time.Time {

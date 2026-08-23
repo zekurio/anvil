@@ -19,8 +19,8 @@ type pipelineContextPersistence struct {
 	now     func() time.Time
 }
 
-func newPipelineContextPersistence(ctx context.Context, store Store, job *pipeline.JobContext, resolvedLibrary, resolvedFlow, resolvedProfile []byte, initialMetadata domain.JobMetadata, now func() time.Time) *pipelineContextPersistence {
-	base := basePipelineContext(job, resolvedLibrary, resolvedFlow, resolvedProfile, initialMetadata)
+func newPipelineContextPersistence(ctx context.Context, store Store, job *pipeline.JobContext, resolvedLibrary, resolvedProfile []byte, initialMetadata domain.JobMetadata, now func() time.Time) *pipelineContextPersistence {
+	base := basePipelineContext(job, resolvedLibrary, resolvedProfile, initialMetadata)
 	persistence := &pipelineContextPersistence{
 		store:   store,
 		base:    base,
@@ -45,7 +45,7 @@ func newPipelineContextPersistence(ctx context.Context, store Store, job *pipeli
 	}
 	persistence.cached = &snapshot
 	persistence.current = snapshot
-	slog.Info("job pipeline context loaded", "job", job.Job.Label(), "steps", len(snapshot.Steps))
+	slog.Info("job pipeline context loaded", "job", job.Job.Label())
 	return persistence
 }
 
@@ -53,10 +53,6 @@ func (p *pipelineContextPersistence) ResumeStep(_ context.Context, step string, 
 	if p == nil || p.cached == nil || job == nil || !resumableStep(step) {
 		return false, nil
 	}
-	if !p.stepCompleted(step) {
-		return false, nil
-	}
-
 	switch step {
 	case "probe":
 		if p.cached.Probe == nil {
@@ -87,47 +83,24 @@ func (p *pipelineContextPersistence) ResumeStep(_ context.Context, step string, 
 }
 
 func (p *pipelineContextPersistence) StepSucceeded(ctx context.Context, step string, job *pipeline.JobContext) error {
-	if p == nil || p.store == nil || job == nil || job.Job.ID == 0 {
+	if p == nil || p.store == nil || job == nil || job.Job.ID == 0 || !resumableStep(step) {
 		return nil
 	}
-	p.current = p.capture(step, job)
-	// Pipeline context is a resume checkpoint for reusable work, not the
-	// authoritative completion record for irreversible side effects.
-	if !resumableStep(step) {
-		return nil
-	}
+	p.current = p.capture(job)
 	return p.store.SaveJobPipelineContext(ctx, job.Job.ID, p.current, p.timestamp())
 }
 
-func (p *pipelineContextPersistence) capture(step string, job *pipeline.JobContext) domain.JobPipelineContext {
+func (p *pipelineContextPersistence) capture(job *pipeline.JobContext) domain.JobPipelineContext {
 	snapshot := p.current
 	if snapshot.Version == 0 {
 		snapshot = p.base
-	}
-	if snapshot.Steps == nil {
-		snapshot.Steps = make(map[string]domain.JobPipelineStep)
-	}
-	snapshot.Steps[step] = domain.JobPipelineStep{
-		AttemptID:  job.Attempt.ID,
-		FinishedAt: p.timestamp(),
-		Resumable:  resumableStep(step),
 	}
 	snapshot.Metadata = job.Metadata
 	snapshot.Probe = job.Probe
 	snapshot.Audio = job.Audio
 	snapshot.Crop = job.Crop
 	snapshot.Search = job.Search
-	snapshot.EncodePlan = job.EncodePlan
-	snapshot.Validation = job.Validation
 	return snapshot
-}
-
-func (p *pipelineContextPersistence) stepCompleted(step string) bool {
-	if p.cached == nil || p.cached.Steps == nil {
-		return false
-	}
-	state, ok := p.cached.Steps[step]
-	return ok && state.Resumable
 }
 
 func (p *pipelineContextPersistence) timestamp() time.Time {
@@ -137,12 +110,11 @@ func (p *pipelineContextPersistence) timestamp() time.Time {
 	return time.Now().UTC()
 }
 
-func basePipelineContext(job *pipeline.JobContext, resolvedLibrary, resolvedFlow, resolvedProfile []byte, initialMetadata domain.JobMetadata) domain.JobPipelineContext {
+func basePipelineContext(job *pipeline.JobContext, resolvedLibrary, resolvedProfile []byte, initialMetadata domain.JobMetadata) domain.JobPipelineContext {
 	snapshot := domain.JobPipelineContext{
 		Version:             domain.JobPipelineContextVersion,
 		InitialMetadata:     initialMetadata,
 		ResolvedLibraryJSON: string(resolvedLibrary),
-		ResolvedFlowJSON:    string(resolvedFlow),
 		ResolvedProfileJSON: string(resolvedProfile),
 		Metadata:            initialMetadata,
 	}
@@ -161,7 +133,6 @@ func pipelineContextMatches(base domain.JobPipelineContext, cached domain.JobPip
 		fingerprintMatches(cached.SourceFingerprint, base.SourceFingerprint) &&
 		fingerprintMatches(cached.AssetFingerprint, base.AssetFingerprint) &&
 		cached.ResolvedLibraryJSON == base.ResolvedLibraryJSON &&
-		cached.ResolvedFlowJSON == base.ResolvedFlowJSON &&
 		cached.ResolvedProfileJSON == base.ResolvedProfileJSON &&
 		reflect.DeepEqual(cached.InitialMetadata, base.InitialMetadata)
 }

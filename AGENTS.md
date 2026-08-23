@@ -11,7 +11,7 @@
   leases them under a thread budget (`pkg/resources`), `pkg/worker` runs a
   `pkg/pipeline` of named blocks (`probe`, `crop-detect`, `audio-cleanup`,
   `subtitle-cleanup`, `stage`, `crf-search`, `encode`,
-  `validate`, `replace`/`handoff`, `cleanup`). Each block lives
+  `validate`, `publish`, `cleanup`). Each block lives
   in its own package and registers itself in `worker.DefaultPipeline`.
 - Deployment is Linux-only, but the dev shell and `go build` must keep working
   on darwin: platform corners carry build tags (`pkg/scanner/filesystem_*`,
@@ -21,8 +21,7 @@
 - The default branch is `main` and it is the only long-lived branch; use `main`
   or `origin/main` for diffs.
 - Go `1.26.4` with a deliberately small dependency set (`BurntSushi/toml`,
-  `doublestar/v4`, `charm.land/log/v2`, `golang.org/x/sys`,
-  `modernc.org/sqlite`).
+  `doublestar/v4`, `golang.org/x/sys`, `modernc.org/sqlite`).
   SQLite must stay pure-Go: no CGo, ever. No CLI framework — stdlib `flag`
   parsing in both binaries.
 - `make fmt` (`go fmt ./...`) and `make lint` (`golangci-lint run ./...` inside
@@ -140,21 +139,22 @@ Always respect `ctx` cancellation, and capture enough metadata (command, exit co
 
 ### Logging
 
-`log/slog` with stable messages and variable data as attributes; `charm.land/log/v2` is only the handler installed in `cmd/anvild`. Large process output goes to per-attempt log files plus artifact events (`pkg/worker/process_logs.go`), never into the log stream.
+Use `log/slog` with stable messages and variable data as attributes. Large
+process output goes to per-attempt log files plus artifact events
+(`pkg/worker/process_logs.go`), never into the log stream.
 
 ## Repo Patterns
 
-- `pkg/domain` holds core job/attempt/media/profile/flow/encode types and must
+- `pkg/domain` holds core job/attempt/media/profile/encode types and must
   stay free of persistence, ffmpeg, and CLI concerns.
 - `pkg/config` is the only place raw TOML is parsed. Downstream code receives
   resolved values via `cfg.ResolveForLibrary`; never reparse config elsewhere.
-  Canonical defaults, flows, and profiles live in `pkg/config/defaults.go`;
-  the Nix module mirrors the schema structure and defers values to Go (unset
-  options are omitted from the generated TOML), while
+  Canonical defaults and profiles live in `pkg/config/defaults.go`. The Nix
+  module passes TOML-shaped settings to Go. The reference config in
   `examples/anvil-reference.toml` documents the defaults.
-- Pipeline step order comes from config flows, not code. A block's `Name()` is
-  its config step name; adding a step means a block plus registration in
-  `worker.DefaultPipeline`, plus the default flow lists in config and Nix.
+- Pipeline step order is fixed in `worker.DefaultPipeline`. A block's `Name()`
+  is its event and checkpoint name. The publish block selects replace or
+  handoff from the library kind.
 - `pkg/store` is SQLite via `modernc.org/sqlite` with `SetMaxOpenConns(1)`, WAL,
   and `foreign_keys` pragmas, split into `sqlite_*.go` by concern. Schema
   changes are versioned in-code migrations in `pkg/store/migrations.go`; bump

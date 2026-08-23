@@ -8,10 +8,8 @@ import (
 	"strconv"
 
 	"github.com/zekurio/anvil/pkg/domain"
-	"github.com/zekurio/anvil/pkg/marker"
 	"github.com/zekurio/anvil/pkg/pipeline"
 	"github.com/zekurio/anvil/pkg/process"
-	videocodec "github.com/zekurio/anvil/pkg/video"
 )
 
 type Prober interface {
@@ -68,19 +66,6 @@ func (b Block) Run(ctx context.Context, job *pipeline.JobContext) error {
 	}
 	job.Probe = &result
 	job.Metadata.HDR = hdrMetadata(result)
-	sourceCodec := ""
-	if stream, ok := domain.PrimaryVideoStream(result.Streams); ok {
-		sourceCodec = stream.Codec
-	}
-	video := domain.EffectiveVideoProfile(job.Profile, job.Metadata, sourceCodec)
-	match := marker.DetectVideo(result, job.Profile.Name, video.Codec, videocodec.SoftwarePixelFormat(video.BitDepth))
-	if match.Compatible {
-		job.Metadata.VideoAlreadyEncoded = true
-		job.Metadata.AnvilTags = match.Tags
-		if match.CropFilter != "" {
-			job.Metadata.CropFilter = match.CropFilter
-		}
-	}
 	return nil
 }
 
