@@ -97,6 +97,7 @@ type EncodePlan struct {
 	CRF                      int
 	CRFMin                   int
 	CRFMax                   int
+	SearchSamples            int
 	Metric                   QualityMetric
 	Target                   float64
 	MinSavingsPercent        float64

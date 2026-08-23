@@ -77,6 +77,9 @@ func (c Config) Validate() error {
 		if profile.Video.CRFMin > profile.Video.CRFMax {
 			problems = append(problems, fmt.Sprintf("profile %q crf_min must be less than or equal to crf_max", name))
 		}
+		if profile.Video.Samples < 0 {
+			problems = append(problems, fmt.Sprintf("profile %q video.samples must be non-negative", name))
+		}
 		if !validQualityMetric(profile.Video.Metric) {
 			problems = append(problems, fmt.Sprintf("profile %q video.metric %q is invalid (must be vmaf or xpsnr)", name, profile.Video.Metric))
 		} else if !validQualityTarget(profile.Video.Metric, profile.Video.Target) {
