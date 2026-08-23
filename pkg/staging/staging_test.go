@@ -81,7 +81,6 @@ func stagingTestJob(t *testing.T) (*pipeline.JobContext, string) {
 				PreserveRelativePath: true,
 			},
 		},
-		Flow:      domain.Flow{Name: "download", Steps: []domain.FlowStep{{Name: "handoff"}}},
 		Profile:   domain.Profile{Name: "encode", Container: "mkv"},
 		InputPath: filepath.Join(sourceRoot, "movie.mp4"),
 	}

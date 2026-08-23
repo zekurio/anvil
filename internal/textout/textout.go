@@ -18,7 +18,7 @@ type Writer struct {
 	err error
 }
 
-func NewWriter(out io.Writer) *Writer {
+func newWriter(out io.Writer) *Writer {
 	return &Writer{out: out}
 }
 
@@ -36,13 +36,8 @@ func (w *Writer) Println(args ...any) {
 	_, w.err = fmt.Fprintln(w.out, args...)
 }
 
-// Err reports the first write failure, if any.
-func (w *Writer) Err() error {
-	return w.err
-}
-
 func Write(out io.Writer, write func(*Writer)) error {
-	w := NewWriter(out)
+	w := newWriter(out)
 	write(w)
 	if w.err != nil {
 		return fmt.Errorf("write output: %w", w.err)
@@ -52,7 +47,7 @@ func Write(out io.Writer, write func(*Writer)) error {
 
 func WriteTable(out io.Writer, writeRows func(*Writer)) error {
 	table := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
-	w := NewWriter(table)
+	w := newWriter(table)
 	writeRows(w)
 	if w.err != nil {
 		return fmt.Errorf("write table: %w", w.err)

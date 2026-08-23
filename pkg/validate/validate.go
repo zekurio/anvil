@@ -37,7 +37,6 @@ type Request struct {
 	EncodePlan  *domain.EncodePlan
 	Audio       *domain.AudioSelection
 	Subtitles   *domain.SubtitleSelection
-	Metadata    domain.JobMetadata
 }
 
 func RequestFromJob(job *pipeline.JobContext) Request {
@@ -52,7 +51,6 @@ func RequestFromJob(job *pipeline.JobContext) Request {
 		EncodePlan:  job.EncodePlan,
 		Audio:       job.Audio,
 		Subtitles:   job.Subtitles,
-		Metadata:    job.Metadata,
 	}
 }
 
@@ -96,7 +94,7 @@ func (v Validator) Validate(ctx context.Context, request Request) (domain.Valida
 
 	v.validateDuration(request, outputProbe, &result)
 	validateVideo(request, outputProbe, &result)
-	validateMarker(request, outputProbe, &result)
+	validateMarker(outputProbe, &result)
 	validateAudio(request, outputProbe, &result)
 	validateSubtitles(request, outputProbe, &result)
 	validateHDR(request, outputProbe, &result)
@@ -165,46 +163,12 @@ func validateVideo(request Request, outputProbe domain.ProbeResult, result *doma
 	}
 }
 
-func validateMarker(request Request, outputProbe domain.ProbeResult, result *domain.ValidationResult) {
-	videoCodec := request.Profile.Video.Codec
-	pixelFormat := videocodec.SoftwarePixelFormat(request.Profile.Video.BitDepth)
-	if request.EncodePlan != nil {
-		videoCodec = request.EncodePlan.VideoCodec
-		pixelFormat = request.EncodePlan.PixelFormat
+func validateMarker(outputProbe domain.ProbeResult, result *domain.ValidationResult) {
+	processed := marker.Processed(outputProbe)
+	result.AnvilProcessedMarkerPresent = processed
+	if !processed {
+		addError(result, "output Anvil processed marker is missing or not truthy on the video stream")
 	}
-	match := marker.DetectVideo(outputProbe, request.Profile.Name, videoCodec, pixelFormat)
-	processed := marker.DetectProcessed(outputProbe, request.Profile)
-	result.AnvilProcessedMarkerPresent = len(processed.Tags) > 0
-
-	if match.Compatible {
-		result.AnvilMarkerCompatible = true
-		return
-	}
-	if videoCopy(request) {
-		if len(match.Tags) > 0 {
-			addError(result, fmt.Sprintf("output encoded Anvil marker is incompatible with profile %q", request.Profile.Name))
-			return
-		}
-		if len(processed.Tags) == 0 {
-			addError(result, "output Anvil processed marker is missing or not truthy on the video stream")
-			return
-		}
-		if !processed.Compatible {
-			addError(result, fmt.Sprintf("output Anvil processed marker is incompatible with profile %q", request.Profile.Name))
-			return
-		}
-		if !validVideoCopyAction(processed.Tags[marker.TagVideoAction]) {
-			addError(result, fmt.Sprintf("output Anvil video action %q is incompatible with video-copy validation", processed.Tags[marker.TagVideoAction]))
-			return
-		}
-		result.AnvilMarkerCompatible = true
-		return
-	}
-	if len(match.Tags) > 0 {
-		addError(result, fmt.Sprintf("output Anvil marker is incompatible with profile %q", request.Profile.Name))
-		return
-	}
-	addError(result, "output Anvil marker is missing or not truthy on the video stream")
 }
 
 func validateAudio(request Request, outputProbe domain.ProbeResult, result *domain.ValidationResult) {
@@ -357,19 +321,7 @@ func expectedSubtitleStreamCount(request Request, sourceSubtitleCount int) (int,
 }
 
 func videoCopy(request Request) bool {
-	if request.EncodePlan != nil {
-		return request.EncodePlan.VideoCopy
-	}
-	return request.Metadata.VideoAlreadyEncoded
-}
-
-func validVideoCopyAction(action string) bool {
-	switch strings.ToLower(strings.TrimSpace(action)) {
-	case "", marker.VideoActionCopy, marker.VideoActionRemux:
-		return true
-	default:
-		return false
-	}
+	return request.EncodePlan != nil && request.EncodePlan.VideoCopy
 }
 
 func encodeIntentCodec(codec string) string {

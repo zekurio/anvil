@@ -7,12 +7,53 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/zekurio/anvil/pkg/domain"
+	"github.com/zekurio/anvil/pkg/pipeline"
 )
 
 type artifactProtectionFunc func(context.Context, string) (bool, error)
 
 func (f artifactProtectionFunc) PublishArtifactProtected(ctx context.Context, path string) (bool, error) {
 	return f(ctx, path)
+}
+
+func TestPlanDestinationUsesLibraryKind(t *testing.T) {
+	mediaInput := filepath.Join(t.TempDir(), "movie.mp4")
+	handoffRoot := t.TempDir()
+	tests := []struct {
+		name string
+		job  *pipeline.JobContext
+		want string
+	}{
+		{
+			name: "media",
+			job: &pipeline.JobContext{
+				Library:   domain.Library{Kind: domain.LibraryKindMedia},
+				InputPath: mediaInput,
+			},
+			want: strings.TrimSuffix(mediaInput, ".mp4") + ".mkv",
+		},
+		{
+			name: "download",
+			job: &pipeline.JobContext{
+				Library:   domain.Library{Kind: domain.LibraryKindDownload, Download: domain.DownloadLibraryPolicy{HandoffPath: handoffRoot}},
+				InputPath: mediaInput,
+			},
+			want: filepath.Join(handoffRoot, "movie.mkv"),
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := PlanDestination(test.job)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != test.want {
+				t.Fatalf("PlanDestination() = %q, want %q", got, test.want)
+			}
+		})
+	}
 }
 
 func TestCleanupPartFilesRemovesOnlyTheJobsArtifact(t *testing.T) {

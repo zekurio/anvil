@@ -8,7 +8,6 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
@@ -52,19 +51,15 @@ type preflightSummary struct {
 }
 
 type preflightCandidate struct {
-	Library     preflightLibrary      `json:"library"`
-	Source      preflightSource       `json:"source"`
-	Asset       preflightAsset        `json:"asset"`
-	Status      preflightStatus       `json:"status"`
-	Flow        preflightFlow         `json:"flow"`
-	Profile     preflightProfile      `json:"profile"`
-	Search      preflightSearchPolicy `json:"search_policy"`
-	Encode      preflightEncode       `json:"encode"`
-	Paths       preflightPaths        `json:"paths"`
-	Publish     preflightPublish      `json:"publish"`
-	Cleanup     preflightCleanup      `json:"cleanup"`
-	Warnings    []string              `json:"warnings"`
-	Description string                `json:"description,omitempty"`
+	Library     preflightLibrary `json:"library"`
+	Source      preflightSource  `json:"source"`
+	Asset       preflightAsset   `json:"asset"`
+	Status      preflightStatus  `json:"status"`
+	Paths       preflightPaths   `json:"paths"`
+	Publish     preflightPublish `json:"publish"`
+	Cleanup     preflightCleanup `json:"cleanup"`
+	Warnings    []string         `json:"warnings"`
+	Description string           `json:"description,omitempty"`
 }
 
 type preflightLibrary struct {
@@ -110,75 +105,6 @@ type preflightStatus struct {
 	OccurrenceAction    string          `json:"occurrence_action"`
 }
 
-type preflightFlow struct {
-	Name  domain.FlowName `json:"name"`
-	Steps []string        `json:"steps"`
-}
-
-type preflightProfile struct {
-	Name               domain.ProfileName       `json:"name"`
-	Container          string                   `json:"container"`
-	VideoCodec         string                   `json:"video_codec"`
-	VideoAccelerator   string                   `json:"video_accelerator"`
-	VideoBitDepth      int                      `json:"video_bit_depth"`
-	CRFMin             int                      `json:"crf_min"`
-	CRFMax             int                      `json:"crf_max"`
-	Metric             domain.QualityMetric     `json:"metric"`
-	Target             float64                  `json:"target"`
-	ForceEncodeOnNoFit bool                     `json:"force_encode_on_no_fit"`
-	SkipEncode         bool                     `json:"skip_encode"`
-	FFmpegArgs         []string                 `json:"ffmpeg_args,omitempty"`
-	ABAV1Args          []string                 `json:"ab_av1_args,omitempty"`
-	VideoOverrides     []preflightVideoOverride `json:"video_overrides,omitempty"`
-}
-
-// preflightVideoOverride mirrors domain.VideoOverride so that a field the
-// operator never configured stays absent instead of being reported as a zero.
-type preflightVideoOverride struct {
-	Key                string                `json:"key"`
-	Codec              *string               `json:"codec,omitempty"`
-	Accelerator        *string               `json:"accelerator,omitempty"`
-	Preset             *string               `json:"preset,omitempty"`
-	BitDepth           *int                  `json:"bit_depth,omitempty"`
-	CRFMin             *int                  `json:"crf_min,omitempty"`
-	CRFMax             *int                  `json:"crf_max,omitempty"`
-	Metric             *domain.QualityMetric `json:"metric,omitempty"`
-	Target             *float64              `json:"target,omitempty"`
-	MinSavingsPercent  *float64              `json:"min_savings_percent,omitempty"`
-	ForceEncodeOnNoFit *bool                 `json:"force_encode_on_no_fit,omitempty"`
-	SkipEncode         *bool                 `json:"skip_encode,omitempty"`
-	FFmpegArgs         []string              `json:"ffmpeg_args,omitempty"`
-	ABAV1Args          []string              `json:"ab_av1_args,omitempty"`
-}
-
-type preflightSearchPolicy struct {
-	Enabled                      bool     `json:"enabled"`
-	Tool                         string   `json:"tool,omitempty"`
-	CRFMin                       int      `json:"crf_min,omitempty"`
-	CRFMax                       int      `json:"crf_max,omitempty"`
-	Metric                       string   `json:"metric,omitempty"`
-	Target                       string   `json:"target,omitempty"`
-	SavingsPolicy                string   `json:"savings_policy,omitempty"`
-	ForceEncodeOnNoFit           bool     `json:"force_encode_on_no_fit"`
-	CustomArgs                   []string `json:"custom_args,omitempty"`
-	MayDecideAV1FitNotWorthwhile bool     `json:"may_decide_av1_fit_not_worthwhile"`
-	NoFitBehavior                string   `json:"no_fit_behavior,omitempty"`
-	FlowCanFallbackToRemux       bool     `json:"flow_can_fallback_to_remux"`
-}
-
-type preflightEncode struct {
-	Enabled        bool     `json:"enabled"`
-	VideoAction    string   `json:"video_action"`
-	Codec          string   `json:"codec,omitempty"`
-	CRFSource      string   `json:"crf_source,omitempty"`
-	Output         string   `json:"output,omitempty"`
-	NoFitAction    string   `json:"no_fit_action,omitempty"`
-	AudioAction    string   `json:"audio_action,omitempty"`
-	SubtitleAction string   `json:"subtitle_action,omitempty"`
-	MetadataAction string   `json:"metadata_action,omitempty"`
-	CustomArgs     []string `json:"custom_args,omitempty"`
-}
-
 type preflightPaths struct {
 	Input       string `json:"input"`
 	StagingDir  string `json:"staging_dir"`
@@ -198,8 +124,6 @@ type preflightPublish struct {
 }
 
 type preflightCleanup struct {
-	StagingCleanupStep       bool                        `json:"staging_cleanup_step"`
-	StagingCleanupAction     string                      `json:"staging_cleanup_action"`
 	DownloadCleanupSource    bool                        `json:"download_cleanup_source_media"`
 	DownloadPruneEmptyDirs   bool                        `json:"download_prune_empty_dirs"`
 	DownloadSourceMediaPath  string                      `json:"download_source_media_path,omitempty"`
@@ -276,7 +200,7 @@ func buildPreflightReport(ctx context.Context, cfg config.Config, opts options, 
 		if !ok {
 			return preflightReport{}, fmt.Errorf("library %q not found", name)
 		}
-		library, flow, profile, err := cfg.ResolveForLibrary(domain.LibraryName(name))
+		library, _, err := cfg.ResolveForLibrary(domain.LibraryName(name))
 		if err != nil {
 			return preflightReport{}, err
 		}
@@ -286,7 +210,7 @@ func buildPreflightReport(ctx context.Context, cfg config.Config, opts options, 
 		}
 		report.Summary.Libraries++
 		for _, candidate := range plan.Candidates {
-			item, err := buildPreflightCandidate(ctx, cfg, state, candidate, library, flow, profile)
+			item, err := buildPreflightCandidate(ctx, cfg, state, candidate, library)
 			if err != nil {
 				return preflightReport{}, err
 			}
@@ -305,7 +229,7 @@ func buildPreflightReport(ctx context.Context, cfg config.Config, opts options, 
 	return report, nil
 }
 
-func buildPreflightCandidate(ctx context.Context, cfg config.Config, state preflightStore, candidate scanner.CandidatePlan, library domain.Library, flow domain.Flow, profile domain.Profile) (preflightCandidate, error) {
+func buildPreflightCandidate(ctx context.Context, cfg config.Config, state preflightStore, candidate scanner.CandidatePlan, library domain.Library) (preflightCandidate, error) {
 	source := domain.MediaSource{
 		LibraryName:  candidate.LibraryName,
 		Kind:         candidate.SourceKind,
@@ -405,7 +329,7 @@ func buildPreflightCandidate(ctx context.Context, cfg config.Config, state prefl
 	if status.AlreadyHasJob {
 		jobLabel = status.ExistingJobSlug
 	}
-	stagingPlan, err := staging.Manager{Root: staging.Root(cfg.Daemon.TempDir)}.Plan(jobLabel, "<new>")
+	stagingDir, err := staging.Manager{Root: staging.Root(cfg.Daemon.TempDir)}.Plan(jobLabel, "<new>")
 	if err != nil {
 		return preflightCandidate{}, err
 	}
@@ -413,10 +337,8 @@ func buildPreflightCandidate(ctx context.Context, cfg config.Config, state prefl
 		Source:     source,
 		Asset:      asset,
 		Library:    library,
-		Flow:       flow,
-		Profile:    profile,
 		InputPath:  inputPath,
-		StagingDir: stagingPlan.StagingDir,
+		StagingDir: stagingDir,
 	}
 	destination, err := replacepkg.PlanDestination(jobContext)
 	if err != nil {
@@ -450,20 +372,16 @@ func buildPreflightCandidate(ctx context.Context, cfg config.Config, state prefl
 			SizeBytes:           candidate.SizeBytes,
 			ModTime:             candidate.ModTime,
 		},
-		Status:  status,
-		Flow:    preflightFlow{Name: flow.Name, Steps: flowStepNames(flow)},
-		Profile: preflightProfileFromDomain(profile),
-		Search:  preflightSearch(flow, profile),
-		Encode:  preflightEncodePlan(flow, profile, jobContext.OutputPath),
+		Status: status,
 		Paths: preflightPaths{
 			Input:       inputPath,
-			StagingDir:  stagingPlan.StagingDir,
+			StagingDir:  stagingDir,
 			Destination: destination,
 			Output:      jobContext.OutputPath,
 		},
-		Cleanup: preflightCleanupPlan(flow, library, jobContext),
+		Cleanup: preflightCleanupPlan(library, jobContext),
 	}
-	item.Publish, item.Warnings = preflightPublishPlan(flow, library, jobContext)
+	item.Publish, item.Warnings = preflightPublishPlan(library, jobContext)
 	if item.Cleanup.DownloadCleanupSource {
 		item.Warnings = append(item.Warnings, "download cleanup_source_media=true would remove source media after handoff")
 	}
@@ -485,10 +403,10 @@ func buildPreflightCandidate(ctx context.Context, cfg config.Config, state prefl
 	return item, nil
 }
 
-func preflightPublishPlan(flow domain.Flow, library domain.Library, job *pipeline.JobContext) (preflightPublish, []string) {
+func preflightPublishPlan(library domain.Library, job *pipeline.JobContext) (preflightPublish, []string) {
 	publish := preflightPublish{Action: "none"}
 	var warnings []string
-	if library.Kind == domain.LibraryKindDownload && flowHasStep(flow, "handoff") {
+	if library.Kind == domain.LibraryKindDownload {
 		plan, err := replacepkg.PlanHandoff(job)
 		if err != nil {
 			return preflightPublish{Action: "error", Plan: map[string]string{"error": err.Error()}}, warnings
@@ -502,34 +420,25 @@ func preflightPublishPlan(flow domain.Flow, library domain.Library, job *pipelin
 		}
 		return publish, warnings
 	}
-	if library.Kind == domain.LibraryKindMedia && flowHasStep(flow, "replace") {
-		plan, err := replacepkg.PlanReplacement(job.InputPath, filepath.Ext(job.DestinationPath), library.Media.ReplacementMode)
-		if err != nil {
-			return preflightPublish{Action: "error", Plan: map[string]string{"error": err.Error()}}, warnings
-		}
-		publish.Action = plan.Action
-		publish.Mode = string(plan.Mode)
-		publish.CopyPath = plan.CopyPath
-		publish.ReplaceTarget = plan.ReplaceTarget
-		publish.ReplacementBackup = plan.BackupPath
-		publish.Destructive = plan.Action == "replace"
-		if plan.Action == "replace" {
-			warnings = append(warnings, "media replacement mode is replace; source media would be moved through an .anvil.bak backup and replaced")
-		}
-		return publish, warnings
+	plan, err := replacepkg.PlanReplacement(job.InputPath, filepath.Ext(job.DestinationPath), library.Media.ReplacementMode)
+	if err != nil {
+		return preflightPublish{Action: "error", Plan: map[string]string{"error": err.Error()}}, warnings
+	}
+	publish.Action = plan.Action
+	publish.Mode = string(plan.Mode)
+	publish.CopyPath = plan.CopyPath
+	publish.ReplaceTarget = plan.ReplaceTarget
+	publish.ReplacementBackup = plan.BackupPath
+	publish.Destructive = plan.Action == "replace"
+	if plan.Action == "replace" {
+		warnings = append(warnings, "media replacement mode is replace; source media would be moved through an .anvil.bak backup and replaced")
 	}
 	return publish, warnings
 }
 
-func preflightCleanupPlan(flow domain.Flow, library domain.Library, job *pipeline.JobContext) preflightCleanup {
-	cleanup := preflightCleanup{
-		StagingCleanupStep:   flowHasStep(flow, "cleanup"),
-		StagingCleanupAction: "none",
-	}
-	if cleanup.StagingCleanupStep {
-		cleanup.StagingCleanupAction = "remove staging dir after configured cleanup step"
-	}
-	if library.Kind != domain.LibraryKindDownload || !flowHasStep(flow, "handoff") {
+func preflightCleanupPlan(library domain.Library, job *pipeline.JobContext) preflightCleanup {
+	var cleanup preflightCleanup
+	if library.Kind != domain.LibraryKindDownload {
 		return cleanup
 	}
 	cleanup.DownloadCleanupTriggered = true
@@ -550,133 +459,6 @@ func preflightCleanupPlan(flow domain.Flow, library domain.Library, job *pipelin
 	cleanup.DownloadCleanupDirs = append([]replacepkg.CleanupEntry(nil), plan.Directories...)
 	cleanup.DownloadCleanupBlockers = append([]replacepkg.CleanupBlocker(nil), plan.Blockers...)
 	return cleanup
-}
-
-func preflightProfileFromDomain(profile domain.Profile) preflightProfile {
-	return preflightProfile{
-		Name:               profile.Name,
-		Container:          profile.Container,
-		VideoCodec:         profile.Video.Codec,
-		VideoAccelerator:   profile.Video.Accelerator,
-		VideoBitDepth:      profile.Video.BitDepth,
-		CRFMin:             profile.Video.CRFMin,
-		CRFMax:             profile.Video.CRFMax,
-		Metric:             profile.Video.Metric,
-		Target:             profile.Video.Target,
-		ForceEncodeOnNoFit: profile.Video.ForceEncodeOnNoFit,
-		SkipEncode:         profile.Video.SkipEncode,
-		FFmpegArgs:         append([]string(nil), profile.Video.FFmpegArgs...),
-		ABAV1Args:          append([]string(nil), profile.Video.ABAV1Args...),
-		VideoOverrides:     preflightVideoOverrides(profile.Video),
-	}
-}
-
-// preflightVideoOverrides lists overrides in the order they would be applied
-// at runtime: source codec families sorted by key.
-func preflightVideoOverrides(video domain.VideoProfile) []preflightVideoOverride {
-	if len(video.Overrides) == 0 {
-		return nil
-	}
-	keys := make([]string, 0, len(video.Overrides))
-	for key := range video.Overrides {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	overrides := make([]preflightVideoOverride, 0, len(keys))
-	for _, key := range keys {
-		override := video.Overrides[key]
-		overrides = append(overrides, preflightVideoOverride{
-			Key:                key,
-			Codec:              clonePreflightValue(override.Codec),
-			Accelerator:        clonePreflightValue(override.Accelerator),
-			Preset:             clonePreflightValue(override.Preset),
-			BitDepth:           clonePreflightValue(override.BitDepth),
-			CRFMin:             clonePreflightValue(override.CRFMin),
-			CRFMax:             clonePreflightValue(override.CRFMax),
-			Metric:             clonePreflightValue(override.Metric),
-			Target:             clonePreflightValue(override.Target),
-			MinSavingsPercent:  clonePreflightValue(override.MinSavingsPercent),
-			ForceEncodeOnNoFit: clonePreflightValue(override.ForceEncodeOnNoFit),
-			SkipEncode:         clonePreflightValue(override.SkipEncode),
-			FFmpegArgs:         append([]string(nil), override.FFmpegArgs...),
-			ABAV1Args:          append([]string(nil), override.ABAV1Args...),
-		})
-	}
-	return overrides
-}
-
-func clonePreflightValue[T any](value *T) *T {
-	if value == nil {
-		return nil
-	}
-	copied := *value
-	return &copied
-}
-
-func preflightSearch(flow domain.Flow, profile domain.Profile) preflightSearchPolicy {
-	searchEnabled := flowHasStep(flow, "crf-search")
-	if !searchEnabled || profile.Video.SkipEncode {
-		return preflightSearchPolicy{Enabled: false, FlowCanFallbackToRemux: flowHasStep(flow, "encode")}
-	}
-	return preflightSearchPolicy{
-		Enabled:                      true,
-		Tool:                         "ab-av1 crf-search",
-		CRFMin:                       profile.Video.CRFMin,
-		CRFMax:                       profile.Video.CRFMax,
-		Metric:                       string(profile.Video.Metric),
-		Target:                       formatFloat(profile.Video.Target),
-		SavingsPolicy:                "ab-av1/search policy; explicit min-savings is not configured",
-		ForceEncodeOnNoFit:           profile.Video.ForceEncodeOnNoFit,
-		CustomArgs:                   append([]string(nil), profile.Video.ABAV1Args...),
-		MayDecideAV1FitNotWorthwhile: true,
-		NoFitBehavior:                noFitBehavior(profile.Video.ForceEncodeOnNoFit),
-		FlowCanFallbackToRemux:       !profile.Video.ForceEncodeOnNoFit && flowHasStep(flow, "encode"),
-	}
-}
-
-func preflightEncodePlan(flow domain.Flow, profile domain.Profile, outputPath string) preflightEncode {
-	if !flowHasStep(flow, "encode") {
-		return preflightEncode{Enabled: false, VideoAction: "none"}
-	}
-	encode := preflightEncode{
-		Enabled:        true,
-		VideoAction:    strings.ToUpper(profile.Video.Codec) + " encode using CRF selected by search",
-		Codec:          profile.Video.Codec,
-		CRFSource:      "ab-av1 crf-search result",
-		Output:         outputPath,
-		AudioAction:    "copy/remux after configured audio cleanup selections",
-		SubtitleAction: "copy/remux after configured subtitle cleanup selections",
-		MetadataAction: fmt.Sprintf("apply metadata=%s, track_titles=%s, attachments=%s, chapters=%s, and Anvil marker policies", profile.Metadata.Mode, profile.Metadata.TrackTitles, profile.Attachments.Mode, profile.Chapters.Mode),
-		CustomArgs:     append([]string(nil), profile.Video.FFmpegArgs...),
-	}
-	if profile.Video.SkipEncode {
-		encode.VideoAction = "copy/remux video because encoding is disabled by profile"
-		encode.Codec = ""
-		encode.CRFSource = ""
-		encode.CustomArgs = nil
-		return encode
-	}
-	if !flowHasStep(flow, "crf-search") {
-		encode.VideoAction = "encode/remux using profile defaults"
-		encode.CRFSource = "profile default"
-		return encode
-	}
-	encode.NoFitAction = noFitEncodeAction(profile.Video.ForceEncodeOnNoFit)
-	return encode
-}
-
-func noFitBehavior(forceEncode bool) string {
-	if forceEncode {
-		return "if search cannot find a fitting CRF, force an encode with the lowest tested CRF instead of falling back to video-copy/remux"
-	}
-	return "if search decides AV1 fitting is not worthwhile, continue remaining configured actions as video-copy/remux/metadata processing without applying an AV1 CRF encode"
-}
-
-func noFitEncodeAction(forceEncode bool) string {
-	if forceEncode {
-		return "if search policy cannot find a fitting CRF, encode with the lowest tested CRF reported by ab-av1"
-	}
-	return "if search policy decides AV1 fitting is not worthwhile, skip AV1 CRF encode and continue remaining configured actions as video-copy/remux/metadata processing"
 }
 
 func preflightExcludeWarnings(candidate scanner.CandidatePlan) []string {
@@ -726,23 +508,6 @@ func preflightLibraryNames(cfg config.Config, libraryName string) ([]string, err
 	}
 	sort.Strings(names)
 	return names, nil
-}
-
-func flowStepNames(flow domain.Flow) []string {
-	steps := make([]string, 0, len(flow.Steps))
-	for _, step := range flow.Steps {
-		steps = append(steps, step.Name)
-	}
-	return steps
-}
-
-func flowHasStep(flow domain.Flow, name string) bool {
-	for _, step := range flow.Steps {
-		if strings.EqualFold(step.Name, name) {
-			return true
-		}
-	}
-	return false
 }
 
 func preflightFingerprintMatches(left, right domain.FileFingerprint) bool {
@@ -817,49 +582,10 @@ func writePreflightReport(out io.Writer, report preflightReport) error {
 			if item.Status.AlreadyHasJob {
 				w.Printf("  job: %s (id=%d) state=%s attempt=%s\n", item.Status.ExistingJobSlug, item.Status.ExistingJobID, item.Status.ExistingJobState, item.Status.ExistingAttemptHint)
 			}
-			w.Printf("  flow: %s [%s]\n", item.Flow.Name, strings.Join(item.Flow.Steps, " -> "))
-			w.Printf("  profile: %s container=%s codec=%s accelerator=%s bit_depth=%d skip_encode=%t\n",
-				item.Profile.Name,
-				item.Profile.Container,
-				item.Profile.VideoCodec,
-				item.Profile.VideoAccelerator,
-				item.Profile.VideoBitDepth,
-				item.Profile.SkipEncode,
-			)
-			for _, override := range item.Profile.VideoOverrides {
-				fields := preflightVideoOverrideFields(override)
-				if len(fields) == 0 {
-					w.Printf("  video override %s: inherits base profile\n", override.Key)
-					continue
-				}
-				w.Printf("  video override %s: %s\n", override.Key, strings.Join(fields, " "))
-			}
-			if item.Search.Enabled {
-				w.Printf("  search: %s crf=%d..%d metric=%s target=%s savings_policy=%s\n",
-					item.Search.Tool,
-					item.Search.CRFMin,
-					item.Search.CRFMax,
-					item.Search.Metric,
-					item.Search.Target,
-					item.Search.SavingsPolicy,
-				)
-				if len(item.Search.CustomArgs) > 0 {
-					w.Printf("  search args: custom=%v\n", item.Search.CustomArgs)
-				}
-				w.Printf("  no-fit: %s\n", item.Search.NoFitBehavior)
-			}
-			w.Printf("  encode: enabled=%t video=%s output=%s\n", item.Encode.Enabled, item.Encode.VideoAction, item.Encode.Output)
-			if len(item.Encode.CustomArgs) > 0 {
-				w.Printf("  encode args: custom=%v\n", item.Encode.CustomArgs)
-			}
-			if item.Encode.NoFitAction != "" {
-				w.Printf("  encode no-fit: %s\n", item.Encode.NoFitAction)
-			}
 			w.Printf("  input: %s\n", item.Paths.Input)
 			w.Printf("  staging: %s -> %s\n", item.Paths.StagingDir, item.Paths.Output)
 			writePreflightPublish(w, item.Publish)
-			w.Printf("  cleanup: staging=%s download_cleanup_source=%t prune_empty_dirs=%t\n",
-				item.Cleanup.StagingCleanupAction,
+			w.Printf("  cleanup: download_cleanup_source=%t prune_empty_dirs=%t\n",
 				item.Cleanup.DownloadCleanupSource,
 				item.Cleanup.DownloadPruneEmptyDirs,
 			)
@@ -885,52 +611,6 @@ func writePreflightReport(out io.Writer, report preflightReport) error {
 	})
 }
 
-// preflightVideoOverrideFields renders only the fields the override actually
-// sets, so an inherited field is never shown as a configured zero.
-func preflightVideoOverrideFields(override preflightVideoOverride) []string {
-	var fields []string
-	if override.Codec != nil {
-		fields = append(fields, "codec="+textout.OrNone(*override.Codec))
-	}
-	if override.Accelerator != nil {
-		fields = append(fields, "accelerator="+textout.OrNone(*override.Accelerator))
-	}
-	if override.Preset != nil {
-		fields = append(fields, "preset="+textout.OrNone(*override.Preset))
-	}
-	if override.BitDepth != nil {
-		fields = append(fields, fmt.Sprintf("bit_depth=%d", *override.BitDepth))
-	}
-	if override.CRFMin != nil {
-		fields = append(fields, fmt.Sprintf("crf_min=%d", *override.CRFMin))
-	}
-	if override.CRFMax != nil {
-		fields = append(fields, fmt.Sprintf("crf_max=%d", *override.CRFMax))
-	}
-	if override.Metric != nil {
-		fields = append(fields, "metric="+string(*override.Metric))
-	}
-	if override.Target != nil {
-		fields = append(fields, "target="+strconv.FormatFloat(*override.Target, 'f', -1, 64))
-	}
-	if override.MinSavingsPercent != nil {
-		fields = append(fields, "min_savings_percent="+strconv.FormatFloat(*override.MinSavingsPercent, 'f', -1, 64))
-	}
-	if override.ForceEncodeOnNoFit != nil {
-		fields = append(fields, fmt.Sprintf("force_encode_on_no_fit=%t", *override.ForceEncodeOnNoFit))
-	}
-	if override.SkipEncode != nil {
-		fields = append(fields, fmt.Sprintf("skip_encode=%t", *override.SkipEncode))
-	}
-	if len(override.FFmpegArgs) > 0 {
-		fields = append(fields, fmt.Sprintf("ffmpeg_args=%v", override.FFmpegArgs))
-	}
-	if len(override.ABAV1Args) > 0 {
-		fields = append(fields, fmt.Sprintf("ab_av1_args=%v", override.ABAV1Args))
-	}
-	return fields
-}
-
 func writePreflightPublish(w *textout.Writer, publish preflightPublish) {
 	switch publish.Action {
 	case "copy":
@@ -953,11 +633,4 @@ func appendUnique(values *[]string, value string) {
 		}
 	}
 	*values = append(*values, value)
-}
-
-func formatFloat(value float64) string {
-	if value == 0 {
-		return ""
-	}
-	return strconv.FormatFloat(value, 'f', -1, 64)
 }

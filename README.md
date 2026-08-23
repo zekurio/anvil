@@ -39,12 +39,15 @@ Then import and configure the module:
       install = true;
       package = inputs.anvil.packages.${pkgs.system}.anvilctl;
     };
+
+    settings.libraries.movies.path = "/srv/media/movies";
   };
 
   users.users.alice.extraGroups = [ "anvil" ];
 }
 ```
 
+`services.anvil.settings` uses the same snake_case keys as the reference TOML.
 The module renders `/etc/anvil/anvil.toml`, creates `/var/lib/anvil`, exposes
 the control socket from `RuntimeDirectory`, and adds Jellyfin ffmpeg and
 `ab-av1` to the service PATH. The socket is `0660` inside a
@@ -55,7 +58,7 @@ Without Nix, install `ffmpeg`/`ffprobe` and `ab-av1`,
 then run `anvild --config /etc/anvil/anvil.toml`.
 [`examples/anvil.toml`](examples/anvil.toml) is the minimal quick-start;
 [`examples/anvil-reference.toml`](examples/anvil-reference.toml) documents every
-setting, including daemon, flows, profiles, Arrs, and media and download
+setting, including daemon, profiles, Arrs, and media and download
 libraries. Validate a config before starting anything:
 
 ```sh
@@ -67,7 +70,7 @@ anvild preflight --config examples/anvil.toml --library movies --limit 20
 defaults applied and secrets redacted.
 
 Both are local and read-only; every command that touches live state lives in
-`anvilctl`. `SIGHUP` reloads libraries, flows, profiles, and most daemon
+`anvilctl`. `SIGHUP` reloads libraries, profiles, and most daemon
 settings in place; `store_path`, `temp_dir`, and `control_socket` require a
 restart.
 

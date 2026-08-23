@@ -1,4 +1,4 @@
-# Start with one library; the built-in AV1 profile and replace flow are safe defaults.
+# Start with one library; the built-in AV1 profile is a safe default.
 [arrs.radarr]
 type = "radarr"
 base_url = "http://localhost:7878"

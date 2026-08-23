@@ -14,7 +14,6 @@ import (
 	"syscall"
 	"time"
 
-	charmlog "charm.land/log/v2"
 	"github.com/zekurio/anvil/internal/textout"
 	"github.com/zekurio/anvil/pkg/config"
 	"github.com/zekurio/anvil/pkg/controlapi"
@@ -430,7 +429,7 @@ func logConfiguredWork(cfg config.Config) {
 	}
 
 	for name, library := range cfg.Libraries {
-		slog.Info("library configured", "name", name, "kind", library.Kind, "path", library.Path, "flow", library.Flow, "profile", library.Profile, "scan_interval", cfg.ScanIntervalForLibrary(domain.LibraryName(name)))
+		slog.Info("library configured", "name", name, "kind", library.Kind, "path", library.Path, "profile", library.Profile, "scan_interval", cfg.ScanIntervalForLibrary(domain.LibraryName(name)))
 	}
 	slog.Info("scanner, scheduler, worker, and built-in media pipeline are enabled")
 }
@@ -490,7 +489,7 @@ func startReloadLoop(ctx context.Context, wg *sync.WaitGroup, opts options, runt
 					continue
 				}
 				runtimeCfg.Set(next)
-				slog.Info("config reloaded", "config", configPathLabel(opts.configPath), "libraries", len(next.Libraries), "flows", len(next.Flows), "profiles", len(next.Profiles), "workers", next.Daemon.WorkerCount, "threads", next.Daemon.TotalThreads, "filesystem_event_debounce", next.FilesystemEventDebounce(), "log_level", next.Daemon.LogLevel)
+				slog.Info("config reloaded", "config", configPathLabel(opts.configPath), "libraries", len(next.Libraries), "profiles", len(next.Profiles), "workers", next.Daemon.WorkerCount, "threads", next.Daemon.TotalThreads, "filesystem_event_debounce", next.FilesystemEventDebounce(), "log_level", next.Daemon.LogLevel)
 			}
 		}
 	}()
@@ -500,30 +499,8 @@ func configureLogging(logLevel string) error {
 	if _, err := applyLogLevel(&activeLogLevel, logLevel); err != nil {
 		return err
 	}
-	slog.SetDefault(slog.New(newCharmLogger(os.Stderr, activeLogLevel.Level())))
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: &activeLogLevel})))
 	return nil
-}
-
-func newCharmLogger(out io.Writer, level slog.Level) *charmlog.Logger {
-	return charmlog.NewWithOptions(out, charmlog.Options{
-		Level:           charmLogLevel(level),
-		ReportTimestamp: true,
-		TimeFormat:      "15:04:05",
-		Formatter:       charmlog.TextFormatter,
-	})
-}
-
-func charmLogLevel(level slog.Level) charmlog.Level {
-	switch {
-	case level < slog.LevelInfo:
-		return charmlog.DebugLevel
-	case level >= slog.LevelError:
-		return charmlog.ErrorLevel
-	case level >= slog.LevelWarn:
-		return charmlog.WarnLevel
-	default:
-		return charmlog.InfoLevel
-	}
 }
 
 func applyLogLevel(levelVar *slog.LevelVar, logLevel string) (string, error) {

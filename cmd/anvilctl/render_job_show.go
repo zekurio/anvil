@@ -112,7 +112,6 @@ func writeJobShow(out io.Writer, report control.JobShowResponse) error {
 func writePipelineContext(w *textout.Writer, context control.PipelineContextDetail) {
 	w.Printf("\nSaved context:\n")
 	w.Printf("  Version: %d\n", context.Version)
-	w.Printf("  Steps: %s\n", formatPipelineSteps(context.Steps))
 	if context.CropFilter != "" {
 		w.Printf("  Crop: %s\n", context.CropFilter)
 	}
@@ -132,31 +131,6 @@ func writePipelineContext(w *textout.Writer, context control.PipelineContextDeta
 			w.Printf("\n")
 		}
 	}
-	if context.EncodeVideoCodec != "" {
-		w.Printf("  Encode plan: codec=%s crf=%d\n", context.EncodeVideoCodec, context.EncodeCRF)
-	}
-	if context.ValidationOK != nil {
-		w.Printf("  Validation: %t", *context.ValidationOK)
-		if len(context.ValidationErrors) > 0 {
-			w.Printf(" (%s)", strings.Join(context.ValidationErrors, "; "))
-		}
-		w.Printf("\n")
-	}
-}
-
-func formatPipelineSteps(steps []control.PipelineStepDetail) string {
-	if len(steps) == 0 {
-		return "<none>"
-	}
-	values := make([]string, 0, len(steps))
-	for _, step := range steps {
-		value := step.Name
-		if step.Resumable {
-			value += "*"
-		}
-		values = append(values, value)
-	}
-	return strings.Join(values, ", ")
 }
 
 func writeStreamSelection(w *textout.Writer, indent string, decision domain.StreamSelectionDecision) {

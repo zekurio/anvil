@@ -56,10 +56,6 @@ type CleanupStaleResult struct {
 	Errors        []string
 }
 
-type PathPlan struct {
-	StagingDir string
-}
-
 // Prepare creates the per-attempt scratch directory and primes the publish
 // destination: the artifact is written next to its final path as a part file
 // (see replace.PartPath), never into scratch.
@@ -67,11 +63,10 @@ func (m Manager) Prepare(job *pipeline.JobContext) error {
 	if job == nil {
 		return errors.New("staging job context is required")
 	}
-	plan, err := m.Plan(fmt.Sprintf("%d", job.Job.ID), fmt.Sprintf("%d", job.Attempt.ID))
+	dir, err := m.Plan(fmt.Sprintf("%d", job.Job.ID), fmt.Sprintf("%d", job.Attempt.ID))
 	if err != nil {
 		return err
 	}
-	dir := plan.StagingDir
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return fmt.Errorf("create staging dir: %w", err)
 	}
@@ -79,10 +74,10 @@ func (m Manager) Prepare(job *pipeline.JobContext) error {
 	return replace.PrepareDestination(job)
 }
 
-func (m Manager) Plan(jobLabel string, attemptLabel string) (PathPlan, error) {
+func (m Manager) Plan(jobLabel string, attemptLabel string) (string, error) {
 	root := strings.TrimSpace(m.Root)
 	if root == "" {
-		return PathPlan{}, errors.New("staging root is required")
+		return "", errors.New("staging root is required")
 	}
 	if strings.TrimSpace(jobLabel) == "" {
 		jobLabel = "<new>"
@@ -90,7 +85,7 @@ func (m Manager) Plan(jobLabel string, attemptLabel string) (PathPlan, error) {
 	if strings.TrimSpace(attemptLabel) == "" {
 		attemptLabel = "<new>"
 	}
-	return PathPlan{StagingDir: filepath.Join(root, fmt.Sprintf("job-%s-attempt-%s", jobLabel, attemptLabel))}, nil
+	return filepath.Join(root, fmt.Sprintf("job-%s-attempt-%s", jobLabel, attemptLabel)), nil
 }
 
 func (m Manager) Cleanup(job *pipeline.JobContext) error {

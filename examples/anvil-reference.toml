@@ -1,5 +1,5 @@
 # Complete Anvil configuration reference. Copy only the settings your deployment needs.
-# Names after flows, profiles, arrs, and libraries are your own non-empty names.
+# Names after profiles, arrs, and libraries are your own non-empty names.
 
 [daemon]
 temp_dir = "/var/lib/anvil/tmp" # Scratch directory (search samples, process logs); encode artifacts are written next to their publish destination as <name>.job-<id>.anvil-part; default is the OS temp directory plus /anvil; any non-empty path.
@@ -16,14 +16,6 @@ shutdown_policy = "drain" # Let active jobs finish or cancel them; default "drai
 shutdown_timeout = "0s" # Force cancellation after this graceful wait; default "0s" means wait indefinitely; duration >= 0.
 staging_cleanup_age = "0s" # Remove abandoned staging only when wanted; default "0s" disables it; duration >= 0.
 log_level = "info" # Keep logs useful without excessive detail; default "info"; "debug", "info", "warn", or "error".
-
-# Media libraries replace in place, so their flow ends in replace.
-[flows.av1-crf-search]
-steps = ["probe", "crop-detect", "audio-cleanup", "subtitle-cleanup", "stage", "crf-search", "encode", "validate", "replace", "cleanup"] # Default media flow; non-empty ordered pipeline block names.
-
-# Download libraries must hand off rather than replace their downloader-owned source.
-[flows.download-av1-handoff]
-steps = ["probe", "crop-detect", "audio-cleanup", "subtitle-cleanup", "stage", "crf-search", "encode", "validate", "handoff", "cleanup"] # Default download flow; non-empty ordered pipeline block names.
 
 [profiles.default-av1]
 container = "mkv" # Output container; default "mkv"; only "mkv".
@@ -100,7 +92,6 @@ api_key = "replace-with-a-secret" # Literal credential (redacted by --show); def
 [libraries.movies]
 kind = "media" # Replace media in place or process downloader output; default "media"; "media" or "download".
 path = "/srv/media/movies" # Root scanned for source files; no default; non-empty path.
-flow = "av1-crf-search" # Named flow for this library; default "av1-crf-search" for media; existing flow name.
 profile = "default-av1" # Named encoding policy; default "default-av1"; existing profile name.
 scan_interval = "1h" # Override daemon scan cadence for this library; default "" uses daemon.scan_interval; duration > 0 when set.
 priority = 0 # Prefer higher-priority libraries when work competes; default 0; integer.
@@ -116,7 +107,6 @@ replacement_mode = "replace" # Replace source files or publish a copy beside the
 [libraries.downloads]
 kind = "download" # Use downloader-safe handoff semantics; default "media"; "media" or "download".
 path = "/srv/downloads/complete/tv" # Root scanned for stable completed downloads; no default; non-empty path.
-flow = "download-av1-handoff" # Named flow must contain handoff and not replace; default "download-av1-handoff" for downloads; existing flow name.
 profile = "default-av1" # Named encoding policy; default "default-av1"; existing profile name.
 scan_interval = "5m" # Check completed downloads more often when needed; default "" uses daemon.scan_interval; duration > 0 when set.
 priority = 10 # Prefer completed downloads over lower-priority libraries; default 0; integer.

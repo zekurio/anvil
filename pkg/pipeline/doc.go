@@ -1,2 +1,2 @@
-// Package pipeline contains composable orchestration blocks for encode flows.
+// Package pipeline runs the ordered blocks for an encode job.
 package pipeline

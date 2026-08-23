@@ -20,10 +20,6 @@ func NewAllocator(totalThreads int) Allocator {
 	return Allocator{TotalThreads: totalThreads}
 }
 
-func (a Allocator) Allocate(workerID string, activeWorkers int) domain.ResourceAllocation {
-	return a.AllocateFrom(workerID, a.TotalThreads, activeWorkers)
-}
-
 func (a Allocator) AllocateFrom(workerID string, threads int, workers int) domain.ResourceAllocation {
 	if workers < 1 {
 		workers = 1

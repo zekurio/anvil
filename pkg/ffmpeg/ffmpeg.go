@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"sort"
 	"strconv"
 	"strings"
 
@@ -55,23 +54,6 @@ type BuildPlanRequest struct {
 	Probe      *domain.ProbeResult
 }
 
-func BuildPlan(profile domain.Profile, inputPath string, outputPath string, allocation domain.ResourceAllocation, search *domain.SearchResult, audio *domain.AudioSelection, metadata domain.JobMetadata) (domain.EncodePlan, error) {
-	return BuildPlanWithProbe(profile, inputPath, outputPath, allocation, search, audio, metadata, nil)
-}
-
-func BuildPlanWithProbe(profile domain.Profile, inputPath string, outputPath string, allocation domain.ResourceAllocation, search *domain.SearchResult, audio *domain.AudioSelection, metadata domain.JobMetadata, probe *domain.ProbeResult) (domain.EncodePlan, error) {
-	return BuildPlanFromRequest(BuildPlanRequest{
-		Profile:    profile,
-		InputPath:  inputPath,
-		OutputPath: outputPath,
-		Resources:  allocation,
-		Search:     search,
-		Audio:      audio,
-		Metadata:   metadata,
-		Probe:      probe,
-	})
-}
-
 // BuildPlanFromRequest builds the ffmpeg encode plan for request.
 func BuildPlanFromRequest(request BuildPlanRequest) (domain.EncodePlan, error) {
 	if err := request.validate(); err != nil {
@@ -82,7 +64,7 @@ func BuildPlanFromRequest(request BuildPlanRequest) (domain.EncodePlan, error) {
 		return domain.EncodePlan{}, errors.New("source video stream is required to apply video overrides")
 	}
 	video := domain.EffectiveVideoProfile(request.Profile, request.Metadata, inputVideo.Codec)
-	videoCopy, videoCopyReason := videoCopyState(video, request.Metadata, request.Search)
+	videoCopy, videoCopyReason := videoCopyState(video, request.Search)
 	crf := selectedCRF(video, videoCopy, request.Search)
 	plan := domain.EncodePlan{
 		InputPath:          request.InputPath,
@@ -112,7 +94,6 @@ func BuildPlanFromRequest(request BuildPlanRequest) (domain.EncodePlan, error) {
 		TrackTitleMode:     trackTitleModeOrDefault(request.Profile.Metadata.TrackTitles),
 		AttachmentMode:     request.Profile.Attachments.Mode,
 		ChapterMode:        request.Profile.Chapters.Mode,
-		AnvilTags:          copyTags(request.Metadata.AnvilTags),
 		FFmpegArgs:         append([]string(nil), video.FFmpegArgs...),
 		ABAV1Args:          append([]string(nil), video.ABAV1Args...),
 		HDR:                request.Metadata.HDR,
@@ -137,12 +118,9 @@ func (request BuildPlanRequest) validate() error {
 	return nil
 }
 
-func videoCopyState(video domain.VideoProfile, metadata domain.JobMetadata, search *domain.SearchResult) (bool, string) {
-	videoCopy := metadata.VideoAlreadyEncoded
+func videoCopyState(video domain.VideoProfile, search *domain.SearchResult) (bool, string) {
+	videoCopy := false
 	videoCopyReason := ""
-	if videoCopy {
-		videoCopyReason = "compatible Anvil video marker"
-	}
 	if video.SkipEncode {
 		videoCopy = true
 		videoCopyReason = "video encoding disabled by profile"
@@ -205,7 +183,7 @@ func Args(plan domain.EncodePlan) []string {
 		args = append(args, "-map_metadata", "-1")
 	}
 	args = append(args, trackTitleArgs(plan)...)
-	args = append(args, anvilMetadataArgs(plan)...)
+	args = append(args, anvilMetadataArgs()...)
 	if plan.AttachmentMode == domain.MetadataModeStrip {
 		args = append(args, "-dn")
 	} else {
@@ -741,27 +719,6 @@ func valueOr(value string, fallback string) string {
 	return value
 }
 
-func anvilMetadataArgs(plan domain.EncodePlan) []string {
-	tags := marker.OutputTags(plan)
-	keys := make([]string, 0, len(tags))
-	for key := range tags {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	args := make([]string, 0, len(keys)*2)
-	for _, key := range keys {
-		args = append(args, "-metadata:s:v:0", key+"="+tags[key])
-	}
-	return args
-}
-
-func copyTags(tags map[string]string) map[string]string {
-	if len(tags) == 0 {
-		return nil
-	}
-	copied := make(map[string]string, len(tags))
-	for key, value := range tags {
-		copied[key] = value
-	}
-	return copied
+func anvilMetadataArgs() []string {
+	return []string{"-metadata:s:v:0", marker.TagProcessed + "=true"}
 }

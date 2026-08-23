@@ -1,14 +1,5 @@
 package domain
 
-type Flow struct {
-	Name  FlowName
-	Steps []FlowStep
-}
-
-type FlowStep struct {
-	Name string
-}
-
 type Profile struct {
 	Name        ProfileName
 	Container   string

@@ -124,23 +124,11 @@ type ProcessOutputDetail struct {
 }
 
 type PipelineContextDetail struct {
-	Version          int                  `json:"version"`
-	Steps            []PipelineStepDetail `json:"steps"`
-	CropFilter       string               `json:"crop_filter,omitempty"`
-	SearchCRF        int                  `json:"search_crf,omitempty"`
-	SearchMetric     string               `json:"search_metric,omitempty"`
-	SearchVMAF       float64              `json:"search_vmaf,omitempty"`
-	SearchXPSNR      float64              `json:"search_xpsnr,omitempty"`
-	SearchSkipReason string               `json:"search_skip_reason,omitempty"`
-	EncodeVideoCodec string               `json:"encode_video_codec,omitempty"`
-	EncodeCRF        int                  `json:"encode_crf,omitempty"`
-	ValidationOK     *bool                `json:"validation_ok,omitempty"`
-	ValidationErrors []string             `json:"validation_errors,omitempty"`
-}
-
-type PipelineStepDetail struct {
-	Name       string    `json:"name"`
-	AttemptID  int64     `json:"attempt_id"`
-	FinishedAt time.Time `json:"finished_at"`
-	Resumable  bool      `json:"resumable"`
+	Version          int     `json:"version"`
+	CropFilter       string  `json:"crop_filter,omitempty"`
+	SearchCRF        int     `json:"search_crf,omitempty"`
+	SearchMetric     string  `json:"search_metric,omitempty"`
+	SearchVMAF       float64 `json:"search_vmaf,omitempty"`
+	SearchXPSNR      float64 `json:"search_xpsnr,omitempty"`
+	SearchSkipReason string  `json:"search_skip_reason,omitempty"`
 }

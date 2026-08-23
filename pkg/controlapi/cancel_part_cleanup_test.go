@@ -26,14 +26,13 @@ func (s attemptSnapshotStore) ListAttemptsForJob(context.Context, domain.JobID) 
 func TestStagedDestinationsUseAttemptSnapshots(t *testing.T) {
 	job := domain.Job{ID: 42}
 	source := domain.MediaSource{Kind: domain.SourceKindFile, RelativePath: "season/movie.mp4"}
-	flow := domain.Flow{Name: "download", Steps: []domain.FlowStep{{Name: "handoff"}}}
 	profile := domain.Profile{Name: "encode", Container: "mkv"}
 	oldRoot := filepath.Join(t.TempDir(), "old")
 	newRoot := filepath.Join(t.TempDir(), "new")
 	attempts := []domain.Attempt{
-		snapshotAttempt(t, 1, domain.Library{Kind: domain.LibraryKindDownload, Path: "/source", Download: domain.DownloadLibraryPolicy{HandoffPath: oldRoot, PreserveRelativePath: true}}, flow, profile),
-		snapshotAttempt(t, 2, domain.Library{Kind: domain.LibraryKindDownload, Path: "/source", Download: domain.DownloadLibraryPolicy{HandoffPath: newRoot, PreserveRelativePath: true}}, flow, profile),
-		snapshotAttempt(t, 3, domain.Library{Kind: domain.LibraryKindDownload, Path: "/source", Download: domain.DownloadLibraryPolicy{HandoffPath: newRoot, PreserveRelativePath: true}}, flow, profile),
+		snapshotAttempt(t, 1, domain.Library{Kind: domain.LibraryKindDownload, Path: "/source", Download: domain.DownloadLibraryPolicy{HandoffPath: oldRoot, PreserveRelativePath: true}}, profile),
+		snapshotAttempt(t, 2, domain.Library{Kind: domain.LibraryKindDownload, Path: "/source", Download: domain.DownloadLibraryPolicy{HandoffPath: newRoot, PreserveRelativePath: true}}, profile),
+		snapshotAttempt(t, 3, domain.Library{Kind: domain.LibraryKindDownload, Path: "/source", Download: domain.DownloadLibraryPolicy{HandoffPath: newRoot, PreserveRelativePath: true}}, profile),
 		{Number: 4}, // Resolution failed before the pipeline ran, so it never staged.
 		{Number: 5, ResolvedLibrary: []byte("{"), ResolvedFlow: []byte("{}"), ResolvedProfile: []byte("{}")},
 	}
@@ -65,7 +64,6 @@ func TestCleanupOrphanedPartProtectsAnotherJobsLegacyArtifact(t *testing.T) {
 	handoffRoot := t.TempDir()
 	attempt := snapshotAttempt(t, 1,
 		domain.Library{Kind: domain.LibraryKindDownload, Path: "/source", Download: domain.DownloadLibraryPolicy{HandoffPath: handoffRoot, PreserveRelativePath: true}},
-		domain.Flow{Name: "download", Steps: []domain.FlowStep{{Name: "handoff"}}},
 		domain.Profile{Name: "encode", Container: "mkv"},
 	)
 	destination := filepath.Join(handoffRoot, "movie.mkv")
@@ -130,7 +128,7 @@ func (s listAttemptsErrorStore) ListAttemptsForJob(context.Context, domain.JobID
 	return nil, s.err
 }
 
-func snapshotAttempt(t *testing.T, number int, library domain.Library, flow domain.Flow, profile domain.Profile) domain.Attempt {
+func snapshotAttempt(t *testing.T, number int, library domain.Library, profile domain.Profile) domain.Attempt {
 	t.Helper()
 	marshal := func(value any) []byte {
 		data, err := json.Marshal(value)
@@ -142,7 +140,6 @@ func snapshotAttempt(t *testing.T, number int, library domain.Library, flow doma
 	return domain.Attempt{
 		Number:          number,
 		ResolvedLibrary: marshal(library),
-		ResolvedFlow:    marshal(flow),
 		ResolvedProfile: marshal(profile),
 	}
 }

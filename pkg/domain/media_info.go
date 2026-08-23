@@ -115,7 +115,6 @@ type EncodePlan struct {
 	TrackTitles              []TrackTitle
 	AttachmentMode           MetadataMode
 	ChapterMode              MetadataMode
-	AnvilTags                map[string]string
 	FFmpegArgs               []string
 	ABAV1Args                []string
 	HDR                      HDRMetadata
@@ -146,7 +145,6 @@ type ValidationResult struct {
 	ExpectedAudioStreamCount    int
 	SourceSubtitleStreamCount   int
 	ExpectedSubtitleStreamCount int
-	AnvilMarkerCompatible       bool
 	AnvilProcessedMarkerPresent bool
 	SourceHDRColorTransfer      string
 	OutputHDRColorTransfer      string
@@ -160,8 +158,6 @@ type JobMetadata struct {
 	CropFilter                  string
 	StreamCleanupDisabled       bool
 	StreamCleanupDisabledReason string
-	VideoAlreadyEncoded         bool
-	AnvilTags                   map[string]string
 	HDR                         HDRMetadata
 }
 
