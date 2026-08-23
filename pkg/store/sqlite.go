@@ -89,10 +89,11 @@ type ScanEntry struct {
 }
 
 type ApplyScanInput struct {
-	LibraryName domain.LibraryName
-	Priority    int
-	Entries     []ScanEntry
-	CompletedAt time.Time
+	LibraryName     domain.LibraryName
+	Priority        int
+	RequeueExisting bool
+	Entries         []ScanEntry
+	CompletedAt     time.Time
 }
 
 type ApplyScanResult struct {
