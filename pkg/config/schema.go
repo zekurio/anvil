@@ -88,6 +88,7 @@ type VideoConfig struct {
 	BitDepth           int                            `toml:"bit_depth"`
 	CRFMin             int                            `toml:"crf_min"`
 	CRFMax             int                            `toml:"crf_max"`
+	Samples            int                            `toml:"samples"`
 	Metric             string                         `toml:"metric"`
 	Target             float64                        `toml:"target"`
 	MinSavingsPercent  float64                        `toml:"min_savings_percent"`

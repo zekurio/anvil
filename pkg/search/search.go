@@ -86,6 +86,9 @@ func SearchArgs(plan domain.EncodePlan) []string {
 		"--min-crf", strconv.Itoa(crfMin(plan)),
 		"--max-crf", strconv.Itoa(crfMax(plan)),
 	}
+	if plan.SearchSamples > 0 {
+		args = append(args, "--samples", strconv.Itoa(plan.SearchSamples))
+	}
 	if plan.Target > 0 {
 		qualityArg := "--min-vmaf"
 		if plan.Metric == domain.QualityMetricXPSNR {
@@ -188,6 +191,7 @@ func searchPlan(job *pipeline.JobContext) domain.EncodePlan {
 		PixelFormat:        videocodec.SoftwarePixelFormat(video.BitDepth),
 		CRFMin:             video.CRFMin,
 		CRFMax:             video.CRFMax,
+		SearchSamples:      video.Samples,
 		Metric:             video.Metric,
 		Target:             video.Target,
 		MinSavingsPercent:  video.MinSavingsPercent,
