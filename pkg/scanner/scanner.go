@@ -184,7 +184,8 @@ func (s Scanner) applyPlan(ctx context.Context, plan LibraryPlan) (ScanResult, e
 		})
 	}
 	applied, err := s.Store.ApplyLibraryScan(ctx, plan.ScanToken, store.ApplyScanInput{
-		LibraryName: domain.LibraryName(plan.Library.Name), Priority: plan.Library.Priority, Entries: entries, CompletedAt: now,
+		LibraryName: domain.LibraryName(plan.Library.Name), Priority: plan.Library.Priority,
+		RequeueExisting: plan.Library.Kind == string(domain.LibraryKindDownload), Entries: entries, CompletedAt: now,
 	})
 	if err != nil {
 		return result, fmt.Errorf("apply library scan: %w", err)

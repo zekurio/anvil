@@ -95,6 +95,14 @@ SELECT next_token, applied_token FROM library_scans WHERE library_name = ?
 		if err != nil {
 			return ApplyScanResult{}, err
 		}
+		known := found
+		if !known {
+			known, err = sourcePathKnownTx(ctx, tx, input.LibraryName, sourcePath)
+			if err != nil {
+				return ApplyScanResult{}, err
+			}
+		}
+		skipKnown := known && !input.RequeueExisting
 		if !group.persist {
 			continue
 		}
@@ -107,11 +115,15 @@ SELECT next_token, applied_token FROM library_scans WHERE library_name = ?
 			found = false
 		}
 		if !found {
+			status := domain.MediaSourceActive
+			if skipKnown {
+				status = domain.MediaSourceProcessed
+			}
 			source, err = insertSourceOccurrenceTx(ctx, tx, domain.MediaSource{
 				LibraryName:  input.LibraryName,
 				Kind:         group.kind,
 				RelativePath: sourcePath,
-				Status:       domain.MediaSourceActive,
+				Status:       status,
 				Fingerprint:  group.fingerprint,
 				FirstSeenAt:  now,
 				LastSeenAt:   now,
@@ -155,11 +167,15 @@ WHERE id = ?
 				assetFound = false
 			}
 			if !assetFound {
+				status := domain.MediaAssetActive
+				if skipKnown {
+					status = domain.MediaAssetProcessed
+				}
 				asset, err = insertAssetOccurrenceTx(ctx, tx, domain.MediaAsset{
 					SourceID:     source.ID,
 					RelativePath: assetPath,
 					Role:         defaultAssetRole(entry.AssetRole),
-					Status:       domain.MediaAssetActive,
+					Status:       status,
 					Fingerprint:  entry.AssetFingerprint,
 					FirstSeenAt:  now,
 					LastSeenAt:   now,
@@ -177,7 +193,7 @@ WHERE id = ?
 				}
 			}
 
-			if entry.Enqueue && asset.Status == domain.MediaAssetActive {
+			if entry.Enqueue && asset.Status == domain.MediaAssetActive && !skipKnown {
 				_, inserted, err := enqueueJobTx(ctx, tx, EnqueueJobInput{
 					SourceID: source.ID, AssetID: asset.ID, LibraryName: input.LibraryName,
 					Priority: input.Priority, Now: now,
@@ -338,6 +354,14 @@ func currentSourceTx(ctx context.Context, tx *sql.Tx, libraryName domain.Library
 		return domain.MediaSource{}, false, fmt.Errorf("get current source occurrence: %w", err)
 	}
 	return source, true, nil
+}
+
+func sourcePathKnownTx(ctx context.Context, tx *sql.Tx, libraryName domain.LibraryName, relativePath string) (bool, error) {
+	var known bool
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM media_sources WHERE library_name = ? AND relative_path = ?)`, string(libraryName), relativePath).Scan(&known); err != nil {
+		return false, fmt.Errorf("check source path history: %w", err)
+	}
+	return known, nil
 }
 
 func currentAssetTx(ctx context.Context, tx *sql.Tx, sourceID domain.MediaSourceID, relativePath string) (domain.MediaAsset, bool, error) {
