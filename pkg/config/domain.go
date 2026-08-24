@@ -151,6 +151,17 @@ func (p ProfileConfig) ToDomain() domain.Profile {
 	return domain.Profile{
 		Name:      domain.ProfileName(p.Name),
 		Container: p.Container,
+		Crop: domain.CropPolicy{
+			SeekOffsets:            parseDurations(p.Crop.SeekOffsets),
+			FrameCount:             p.Crop.FrameCount,
+			Limit:                  p.Crop.Limit,
+			Round:                  p.Crop.Round,
+			ResetCount:             p.Crop.ResetCount,
+			MinRetainedAreaPercent: p.Crop.MinRetainedAreaPct,
+			MinWidth:               p.Crop.MinWidth,
+			MinHeight:              p.Crop.MinHeight,
+			RequiredAlignment:      p.Crop.RequiredAlignment,
+		},
 		Video: domain.VideoProfile{
 			Codec:              p.Video.Codec,
 			Accelerator:        strings.ToLower(strings.TrimSpace(p.Video.Accelerator)),
@@ -212,6 +223,14 @@ func clonePointer[T any](value *T) *T {
 	}
 	cloned := *value
 	return &cloned
+}
+
+func parseDurations(values []string) []time.Duration {
+	result := make([]time.Duration, 0, len(values))
+	for _, value := range values {
+		result = append(result, mustDuration(strings.TrimSpace(value)))
+	}
+	return result
 }
 
 func mustDuration(value string) time.Duration {

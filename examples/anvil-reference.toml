@@ -36,6 +36,22 @@ skip_encode = false # Copy video instead of searching and encoding when policy r
 ffmpeg_args = [] # Extra ffmpeg arguments appended to Anvil's command; default []; any argument strings.
 ab_av1_args = [] # Extra ab-av1 arguments appended to the search command; default []; any argument strings.
 
+[profiles.default-av1.crop]
+seek_offsets = ["0s", "2m", "5m", "12m", "20m", "30m"] # Sample crop candidates at these input offsets; default shown; an empty or omitted list uses this default; otherwise non-negative Go duration strings.
+frame_count = 300 # Frames analyzed at each seek offset; 0 or omitted uses the default 300; integer >= 0.
+limit = 64 # ffmpeg cropdetect black threshold; 0 or omitted uses the default 64; otherwise integer from 1 through 255.
+round = 16 # Round crop width and height to this multiple during detection; 0 or omitted uses the default 16; integer >= 0.
+reset_count = 0 # Reset cropdetect's largest-area history after this many frames; default 0 disables reset; integer >= 0.
+min_retained_area_percent = 70 # Reject candidates retaining less source area and continue without cropping; 0 or omitted uses the default 70, which supports common letterbox and pillarbox crops; otherwise finite number > 0 through 100.
+min_width = 128 # Reject a crop narrower than this encoder safety floor; 0 or omitted uses the default 128; integer >= 0.
+min_height = 128 # Reject a crop shorter than this encoder safety floor; 0 or omitted uses the default 128; integer >= 0.
+required_alignment = 2 # Require crop dimensions and offsets to be divisible by this encoder alignment; 0 or omitted uses the default 2; integer >= 0.
+
+# Unsafe crop candidates are recorded in job events and saved context, then
+# discarded before CRF search and encode; cached candidates are revalidated
+# before retries reuse them. Lower the retained-area threshold explicitly for
+# unusually wide content that legitimately needs a deeper crop.
+
 # These names match a canonical source codec family.
 # Each field is optional here: omit it to inherit video settings; argument lists append.
 [profiles.default-av1.video.overrides.hevc]

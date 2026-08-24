@@ -1,32 +1,43 @@
 package crop
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/zekurio/anvil/pkg/domain"
 	"github.com/zekurio/anvil/pkg/pipeline"
 	"github.com/zekurio/anvil/pkg/process"
+	"github.com/zekurio/anvil/pkg/video"
 )
 
 const (
-	defaultCropDetectLimit = 64
-	defaultCropDetectRound = 16
-	defaultCropDetectReset = 0
-	defaultFrameLimit      = 300
+	defaultCropDetectLimit      = 64
+	defaultCropDetectRound      = 16
+	defaultCropDetectResetCount = 0
+	defaultFrameCount           = 300
+	defaultMinRetainedAreaPct   = 70
+	defaultMinWidth             = 128
+	defaultMinHeight            = 128
+	defaultRequiredAlignment    = 2
 )
 
-var defaultSeekOffsets = []string{
-	"",
-	"00:02:00",
-	"00:05:00",
-	"00:12:00",
-	"00:20:00",
-	"00:30:00",
+// CropSelectionArtifact is the attempt-event name used for crop decisions.
+const CropSelectionArtifact = "crop-selection"
+
+var defaultSeekOffsets = []time.Duration{
+	0,
+	2 * time.Minute,
+	5 * time.Minute,
+	12 * time.Minute,
+	20 * time.Minute,
+	30 * time.Minute,
 }
 
 type Detector interface {
@@ -34,10 +45,15 @@ type Detector interface {
 }
 
 type FFmpegDetector struct {
-	Runner      process.Runner
-	Binary      string
-	FrameLimit  int
-	SeekOffsets []string
+	Runner           process.Runner
+	Binary           string
+	FrameCount       int
+	SeekOffsets      []time.Duration
+	Limit            int
+	Round            int
+	ResetCount       int
+	MapVideoStream   bool
+	VideoStreamIndex int
 }
 
 func (d FFmpegDetector) Detect(ctx context.Context, path string) (domain.CropResult, error) {
@@ -63,13 +79,15 @@ func (d FFmpegDetector) Detect(ctx context.Context, path string) (domain.CropRes
 		command = result.Command
 		output = appendOutput(output, combinedOutput(result))
 		if err != nil {
-			errs = append(errs, fmt.Errorf("offset %q: %w", offset, err))
+			errs = append(errs, fmt.Errorf("offset %s: %w", offset, err))
 		}
 	}
+	candidate := ParseFilter(output)
 	crop := domain.CropResult{
-		Filter:     ParseFilter(output),
-		RawOutput:  string(output),
-		RawCommand: command,
+		CandidateFilter: candidate,
+		Filter:          candidate,
+		RawOutput:       string(output),
+		RawCommand:      command,
 	}
 	if len(errs) == len(offsets) || (crop.Filter == "" && len(errs) > 0) {
 		return crop, fmt.Errorf("ffmpeg cropdetect: %w", errors.Join(errs...))
@@ -77,20 +95,33 @@ func (d FFmpegDetector) Detect(ctx context.Context, path string) (domain.CropRes
 	return crop, nil
 }
 
-func (d FFmpegDetector) args(path string, offset string) []string {
-	frames := d.FrameLimit
+func (d FFmpegDetector) args(path string, offset time.Duration) []string {
+	frames := d.FrameCount
 	if frames <= 0 {
-		frames = defaultFrameLimit
+		frames = defaultFrameCount
 	}
-	args := []string{
-		"-hide_banner",
+	limit := d.Limit
+	if limit <= 0 {
+		limit = defaultCropDetectLimit
 	}
-	if offset = strings.TrimSpace(offset); offset != "" {
-		args = append(args, "-ss", offset)
+	round := d.Round
+	if round <= 0 {
+		round = defaultCropDetectRound
+	}
+	resetCount := d.ResetCount
+	if resetCount < 0 {
+		resetCount = defaultCropDetectResetCount
+	}
+	args := []string{"-hide_banner"}
+	if offset > 0 {
+		args = append(args, "-ss", strconv.FormatFloat(offset.Seconds(), 'f', -1, 64))
+	}
+	args = append(args, "-i", path)
+	if d.MapVideoStream {
+		args = append(args, "-map", "0:"+strconv.Itoa(d.VideoStreamIndex))
 	}
 	args = append(args,
-		"-i", path,
-		"-vf", fmt.Sprintf("cropdetect=%d:%d:%d", defaultCropDetectLimit, defaultCropDetectRound, defaultCropDetectReset),
+		"-vf", fmt.Sprintf("cropdetect=%d:%d:%d", limit, round, resetCount),
 		"-frames:v", strconv.Itoa(frames),
 		"-an",
 		"-sn",
@@ -101,11 +132,11 @@ func (d FFmpegDetector) args(path string, offset string) []string {
 	return args
 }
 
-func (d FFmpegDetector) seekOffsets() []string {
+func (d FFmpegDetector) seekOffsets() []time.Duration {
 	if len(d.SeekOffsets) > 0 {
-		return append([]string(nil), d.SeekOffsets...)
+		return append([]time.Duration(nil), d.SeekOffsets...)
 	}
-	return append([]string(nil), defaultSeekOffsets...)
+	return append([]time.Duration(nil), defaultSeekOffsets...)
 }
 
 type Block struct {
@@ -119,21 +150,184 @@ func (Block) Name() string {
 func (b Block) Run(ctx context.Context, job *pipeline.JobContext) error {
 	detector := b.Detector
 	if detector == nil {
-		detector = FFmpegDetector{}
+		policy := effectivePolicy(job.Profile.Crop)
+		stream, hasVideo := primaryVideo(job.Probe)
+		detector = FFmpegDetector{
+			FrameCount:       policy.FrameCount,
+			SeekOffsets:      policy.SeekOffsets,
+			Limit:            policy.Limit,
+			Round:            policy.Round,
+			ResetCount:       policy.ResetCount,
+			MapVideoStream:   hasVideo,
+			VideoStreamIndex: stream.Index,
+		}
 	}
 	result, err := detector.Detect(ctx, job.InputPath)
 	if err != nil {
 		return err
 	}
+	result = ApplySafetyPolicy(result, job.Probe, job.Profile.Crop)
 	job.Crop = &result
 	job.Metadata.CropFilter = result.Filter
 	return nil
 }
 
+func (Block) Artifact(job *pipeline.JobContext) (pipeline.ArtifactReport, bool) {
+	if job == nil || job.Crop == nil {
+		return pipeline.ArtifactReport{}, false
+	}
+	result := job.Crop
+	message := "no crop detected; using source dimensions"
+	switch {
+	case result.RejectionReason != "":
+		message = fmt.Sprintf("rejected %s; using no crop: %s", result.CandidateFilter, result.RejectionReason)
+	case result.NoOp:
+		message = fmt.Sprintf("selected %s is a full-frame no-op; using source dimensions", result.CandidateFilter)
+	case result.Filter != "":
+		message = fmt.Sprintf("selected %s (%.2f%% retained area)", result.Filter, result.RetainedAreaPercent)
+	}
+	return pipeline.ArtifactReport{
+		Name:    CropSelectionArtifact,
+		Message: message,
+		Payload: cropSelectionPayload{
+			CandidateFilter:     result.CandidateFilter,
+			AppliedFilter:       result.Filter,
+			SourceWidth:         result.SourceWidth,
+			SourceHeight:        result.SourceHeight,
+			OutputWidth:         result.OutputWidth,
+			OutputHeight:        result.OutputHeight,
+			RetainedAreaPercent: result.RetainedAreaPercent,
+			RejectionReason:     result.RejectionReason,
+			NoOp:                result.NoOp,
+		},
+	}, true
+}
+
+type cropSelectionPayload struct {
+	CandidateFilter     string  `json:"candidate_filter,omitempty"`
+	AppliedFilter       string  `json:"applied_filter,omitempty"`
+	SourceWidth         int     `json:"source_width,omitempty"`
+	SourceHeight        int     `json:"source_height,omitempty"`
+	OutputWidth         int     `json:"output_width,omitempty"`
+	OutputHeight        int     `json:"output_height,omitempty"`
+	RetainedAreaPercent float64 `json:"retained_area_percent,omitempty"`
+	RejectionReason     string  `json:"rejection_reason,omitempty"`
+	NoOp                bool    `json:"no_op,omitempty"`
+}
+
+// ApplySafetyPolicy revalidates a detected or cached candidate against the
+// current source dimensions and profile. Rejected candidates become an
+// explicit no-crop result so search and encode cannot accidentally reuse them.
+func ApplySafetyPolicy(result domain.CropResult, probe *domain.ProbeResult, configured domain.CropPolicy) domain.CropResult {
+	policy := effectivePolicy(configured)
+	candidate := strings.TrimSpace(result.CandidateFilter)
+	if candidate == "" {
+		candidate = strings.TrimSpace(result.Filter)
+	}
+	result.CandidateFilter = candidate
+	result.Filter = ""
+	result.SourceWidth = 0
+	result.SourceHeight = 0
+	result.OutputWidth = 0
+	result.OutputHeight = 0
+	result.RetainedAreaPercent = 0
+	result.RejectionReason = ""
+	result.NoOp = false
+
+	stream, hasVideo := primaryVideo(probe)
+	if hasVideo {
+		result.SourceWidth = stream.Width
+		result.SourceHeight = stream.Height
+	}
+	if candidate == "" {
+		if hasVideo {
+			result.OutputWidth = stream.Width
+			result.OutputHeight = stream.Height
+			result.RetainedAreaPercent = 100
+		}
+		return result
+	}
+	if !hasVideo {
+		result.RejectionReason = "source video dimensions are unavailable"
+		return result
+	}
+
+	spec, retainedAreaPercent, err := video.ValidateCropFilter(
+		candidate,
+		stream.Width,
+		stream.Height,
+		policy.MinWidth,
+		policy.MinHeight,
+		policy.MinRetainedAreaPercent,
+		policy.RequiredAlignment,
+	)
+	result.OutputWidth = spec.Width
+	result.OutputHeight = spec.Height
+	result.RetainedAreaPercent = retainedAreaPercent
+	if err != nil {
+		result.RejectionReason = err.Error()
+		return result
+	}
+	if video.NoOpCrop(candidate, stream.Width, stream.Height) {
+		result.NoOp = true
+		return result
+	}
+	result.Filter = candidate
+	return result
+}
+
+func primaryVideo(probe *domain.ProbeResult) (domain.MediaStream, bool) {
+	if probe == nil {
+		return domain.MediaStream{}, false
+	}
+	stream, ok := domain.PrimaryVideoStream(probe.Streams)
+	return stream, ok && stream.Width > 0 && stream.Height > 0
+}
+
+func effectivePolicy(policy domain.CropPolicy) domain.CropPolicy {
+	if len(policy.SeekOffsets) == 0 {
+		policy.SeekOffsets = append([]time.Duration(nil), defaultSeekOffsets...)
+	}
+	if policy.FrameCount <= 0 {
+		policy.FrameCount = defaultFrameCount
+	}
+	if policy.Limit <= 0 {
+		policy.Limit = defaultCropDetectLimit
+	}
+	if policy.Round <= 0 {
+		policy.Round = defaultCropDetectRound
+	}
+	if policy.ResetCount < 0 {
+		policy.ResetCount = defaultCropDetectResetCount
+	}
+	if math.IsNaN(policy.MinRetainedAreaPercent) || math.IsInf(policy.MinRetainedAreaPercent, 0) || policy.MinRetainedAreaPercent <= 0 {
+		policy.MinRetainedAreaPercent = defaultMinRetainedAreaPct
+	}
+	if policy.MinWidth <= 0 {
+		policy.MinWidth = defaultMinWidth
+	}
+	if policy.MinHeight <= 0 {
+		policy.MinHeight = defaultMinHeight
+	}
+	if policy.RequiredAlignment <= 0 {
+		policy.RequiredAlignment = defaultRequiredAlignment
+	}
+	return policy
+}
+
 var cropPattern = regexp.MustCompile(`crop=\d+:\d+:\d+:\d+`)
 
 func ParseFilter(output []byte) string {
-	matches := cropPattern.FindAll(output, -1)
+	var matches [][]byte
+	for _, line := range bytes.Split(output, []byte{'\n'}) {
+		line = bytes.TrimSpace(line)
+		prefixEnd := bytes.IndexByte(line, ']')
+		if len(line) == 0 || line[0] != '[' || prefixEnd < 0 ||
+			!bytes.Contains(bytes.ToLower(line[1:prefixEnd]), []byte("cropdetect")) {
+			continue
+		}
+		matches = append(matches, cropPattern.FindAll(line[prefixEnd+1:], -1)...)
+	}
 	if len(matches) == 0 {
 		return ""
 	}
