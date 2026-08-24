@@ -75,9 +75,17 @@ type SubtitleSelection struct {
 }
 
 type CropResult struct {
-	Filter     string
-	RawOutput  string
-	RawCommand []string
+	CandidateFilter     string
+	Filter              string
+	SourceWidth         int
+	SourceHeight        int
+	OutputWidth         int
+	OutputHeight        int
+	RetainedAreaPercent float64
+	RejectionReason     string
+	NoOp                bool
+	RawOutput           string
+	RawCommand          []string
 }
 
 type EncodePlan struct {
@@ -105,6 +113,7 @@ type EncodePlan struct {
 	Threads                  int
 	Container                string
 	CropFilter               string
+	CropPolicy               CropPolicy
 	VideoSelectionApplied    bool
 	VideoStreamIndex         int
 	AudioSelectionApplied    bool

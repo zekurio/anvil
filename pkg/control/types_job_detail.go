@@ -124,11 +124,20 @@ type ProcessOutputDetail struct {
 }
 
 type PipelineContextDetail struct {
-	Version          int     `json:"version"`
-	CropFilter       string  `json:"crop_filter,omitempty"`
-	SearchCRF        int     `json:"search_crf,omitempty"`
-	SearchMetric     string  `json:"search_metric,omitempty"`
-	SearchVMAF       float64 `json:"search_vmaf,omitempty"`
-	SearchXPSNR      float64 `json:"search_xpsnr,omitempty"`
-	SearchSkipReason string  `json:"search_skip_reason,omitempty"`
+	Version                 int     `json:"version"`
+	CropEvaluated           bool    `json:"crop_evaluated,omitempty"`
+	CropCandidateFilter     string  `json:"crop_candidate_filter,omitempty"`
+	CropFilter              string  `json:"crop_filter,omitempty"`
+	CropRejectionReason     string  `json:"crop_rejection_reason,omitempty"`
+	CropNoOp                bool    `json:"crop_no_op,omitempty"`
+	CropSourceWidth         int     `json:"crop_source_width,omitempty"`
+	CropSourceHeight        int     `json:"crop_source_height,omitempty"`
+	CropOutputWidth         int     `json:"crop_output_width,omitempty"`
+	CropOutputHeight        int     `json:"crop_output_height,omitempty"`
+	CropRetainedAreaPercent float64 `json:"crop_retained_area_percent,omitempty"`
+	SearchCRF               int     `json:"search_crf,omitempty"`
+	SearchMetric            string  `json:"search_metric,omitempty"`
+	SearchVMAF              float64 `json:"search_vmaf,omitempty"`
+	SearchXPSNR             float64 `json:"search_xpsnr,omitempty"`
+	SearchSkipReason        string  `json:"search_skip_reason,omitempty"`
 }

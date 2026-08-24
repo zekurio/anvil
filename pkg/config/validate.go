@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"math"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -61,6 +62,32 @@ func (c Config) Validate() error {
 
 		if !validContainer(profile.Container) {
 			problems = append(problems, fmt.Sprintf("profile %q container %q is invalid; Anvil outputs MKV only", name, profile.Container))
+		}
+		if profile.Crop.FrameCount < 1 {
+			problems = append(problems, fmt.Sprintf("profile %q crop.frame_count must be at least 1", name))
+		}
+		validateCropSeekOffsets(&problems, name, profile.Crop.SeekOffsets)
+		if profile.Crop.Limit < 1 || profile.Crop.Limit > 255 {
+			problems = append(problems, fmt.Sprintf("profile %q crop.limit must be between 1 and 255", name))
+		}
+		if profile.Crop.Round < 1 {
+			problems = append(problems, fmt.Sprintf("profile %q crop.round must be at least 1", name))
+		}
+		if profile.Crop.ResetCount < 0 {
+			problems = append(problems, fmt.Sprintf("profile %q crop.reset_count must be non-negative", name))
+		}
+		if math.IsNaN(profile.Crop.MinRetainedAreaPct) || math.IsInf(profile.Crop.MinRetainedAreaPct, 0) ||
+			profile.Crop.MinRetainedAreaPct <= 0 || profile.Crop.MinRetainedAreaPct > 100 {
+			problems = append(problems, fmt.Sprintf("profile %q crop.min_retained_area_percent must be finite, greater than 0, and at most 100", name))
+		}
+		if profile.Crop.MinWidth < 1 {
+			problems = append(problems, fmt.Sprintf("profile %q crop.min_width must be at least 1", name))
+		}
+		if profile.Crop.MinHeight < 1 {
+			problems = append(problems, fmt.Sprintf("profile %q crop.min_height must be at least 1", name))
+		}
+		if profile.Crop.RequiredAlignment < 1 {
+			problems = append(problems, fmt.Sprintf("profile %q crop.required_alignment must be at least 1", name))
 		}
 		if !validVideoCodec(profile.Video.Codec) {
 			problems = append(problems, fmt.Sprintf("profile %q video.codec %q is invalid (must be av1, hevc, h265, h264, or avc)", name, profile.Video.Codec))
@@ -301,6 +328,23 @@ func validateNonNegativeDuration(problems *[]string, name string, value string) 
 	}
 	if duration < 0 {
 		*problems = append(*problems, fmt.Sprintf("%s must be non-negative", name))
+	}
+}
+
+func validateCropSeekOffsets(problems *[]string, profileName string, values []string) {
+	if len(values) == 0 {
+		*problems = append(*problems, fmt.Sprintf("profile %q crop.seek_offsets must not be empty", profileName))
+		return
+	}
+	for i, value := range values {
+		duration, err := time.ParseDuration(strings.TrimSpace(value))
+		if err != nil {
+			*problems = append(*problems, fmt.Sprintf("profile %q crop.seek_offsets[%d] is invalid: %v", profileName, i, err))
+			continue
+		}
+		if duration < 0 {
+			*problems = append(*problems, fmt.Sprintf("profile %q crop.seek_offsets[%d] must be non-negative", profileName, i))
+		}
 	}
 }
 

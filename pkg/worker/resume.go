@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/zekurio/anvil/pkg/crop"
 	"github.com/zekurio/anvil/pkg/domain"
 	"github.com/zekurio/anvil/pkg/pipeline"
 )
@@ -49,7 +50,7 @@ func newPipelineContextPersistence(ctx context.Context, store Store, job *pipeli
 	return persistence
 }
 
-func (p *pipelineContextPersistence) ResumeStep(_ context.Context, step string, job *pipeline.JobContext) (bool, error) {
+func (p *pipelineContextPersistence) ResumeStep(ctx context.Context, step string, job *pipeline.JobContext) (bool, error) {
 	if p == nil || p.cached == nil || job == nil || !resumableStep(step) {
 		return false, nil
 	}
@@ -69,8 +70,23 @@ func (p *pipelineContextPersistence) ResumeStep(_ context.Context, step string, 
 		if p.cached.Crop == nil {
 			return false, nil
 		}
-		job.Crop = p.cached.Crop
-		job.Metadata.CropFilter = p.cached.Crop.Filter
+		result := crop.ApplySafetyPolicy(*p.cached.Crop, job.Probe, job.Profile.Crop)
+		cropChanged := result.Filter != p.cached.Crop.Filter
+		job.Crop = &result
+		job.Metadata.CropFilter = result.Filter
+		if cropChanged {
+			p.cached.Search = nil
+			p.current.Search = nil
+		}
+		if !reflect.DeepEqual(result, *p.cached.Crop) || p.current.Metadata.CropFilter != result.Filter || cropChanged {
+			p.current.Crop = &result
+			p.current.Metadata = job.Metadata
+			if p.store != nil && job.Job.ID != 0 {
+				if err := p.store.SaveJobPipelineContext(ctx, job.Job.ID, p.current, p.timestamp()); err != nil {
+					return false, err
+				}
+			}
+		}
 	case "crf-search":
 		if p.cached.Search == nil {
 			return false, nil

@@ -199,6 +199,7 @@ func searchPlan(job *pipeline.JobContext) domain.EncodePlan {
 		Threads:            job.Resources.Threads,
 		Container:          job.Profile.Container,
 		CropFilter:         job.Metadata.CropFilter,
+		CropPolicy:         job.Profile.Crop,
 		ABAV1Args:          append([]string(nil), video.ABAV1Args...),
 		HDR:                job.Metadata.HDR,
 	}
@@ -206,6 +207,17 @@ func searchPlan(job *pipeline.JobContext) domain.EncodePlan {
 
 func searchVideoFilter(plan domain.EncodePlan) string {
 	if strings.TrimSpace(plan.CropFilter) == "" || videocodec.NoOpCrop(plan.CropFilter, plan.InputWidth, plan.InputHeight) {
+		return ""
+	}
+	if _, _, err := videocodec.ValidateCropFilter(
+		plan.CropFilter,
+		plan.InputWidth,
+		plan.InputHeight,
+		plan.CropPolicy.MinWidth,
+		plan.CropPolicy.MinHeight,
+		plan.CropPolicy.MinRetainedAreaPercent,
+		plan.CropPolicy.RequiredAlignment,
+	); err != nil {
 		return ""
 	}
 	return plan.CropFilter
