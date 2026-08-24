@@ -1,7 +1,9 @@
 package video
 
 import (
+	"errors"
 	"fmt"
+	"math"
 	"regexp"
 	"strconv"
 	"strings"
@@ -28,6 +30,52 @@ func ParseCropFilter(filter string) (CropSpec, bool) {
 		values = append(values, value)
 	}
 	return CropSpec{Width: values[0], Height: values[1], X: values[2], Y: values[3]}, true
+}
+
+// ValidateCropFilter checks a crop against source geometry and encoder safety
+// constraints. Zero constraints are ignored so callers can still use it as a
+// final syntax-and-bounds guard when no resolved policy is available.
+func ValidateCropFilter(filter string, sourceWidth, sourceHeight, minWidth, minHeight int, minRetainedAreaPercent float64, requiredAlignment int) (CropSpec, float64, error) {
+	crop, ok := ParseCropFilter(filter)
+	if !ok || crop.Width <= 0 || crop.Height <= 0 {
+		return CropSpec{}, 0, fmt.Errorf("candidate %q is not a valid positive crop rectangle", filter)
+	}
+	if sourceWidth <= 0 || sourceHeight <= 0 {
+		return crop, 0, errors.New("source video dimensions are unavailable")
+	}
+	retainedAreaPercent := float64(crop.Width) * float64(crop.Height) * 100 /
+		(float64(sourceWidth) * float64(sourceHeight))
+
+	var reasons []string
+	if crop.Width > sourceWidth || crop.Height > sourceHeight ||
+		crop.X > sourceWidth-crop.Width || crop.Y > sourceHeight-crop.Height {
+		reasons = append(reasons, fmt.Sprintf("crop rectangle exceeds source dimensions %dx%d", sourceWidth, sourceHeight))
+	}
+	widthTooSmall := minWidth > 0 && crop.Width < minWidth
+	heightTooSmall := minHeight > 0 && crop.Height < minHeight
+	switch {
+	case widthTooSmall && heightTooSmall:
+		reasons = append(reasons, fmt.Sprintf("output %dx%d is smaller than minimum %dx%d", crop.Width, crop.Height, minWidth, minHeight))
+	case widthTooSmall:
+		reasons = append(reasons, fmt.Sprintf("output width %d is smaller than minimum %d", crop.Width, minWidth))
+	case heightTooSmall:
+		reasons = append(reasons, fmt.Sprintf("output height %d is smaller than minimum %d", crop.Height, minHeight))
+	}
+	if math.IsNaN(minRetainedAreaPercent) || math.IsInf(minRetainedAreaPercent, 0) {
+		reasons = append(reasons, "minimum retained area must be finite")
+	} else if minRetainedAreaPercent > 0 && retainedAreaPercent < minRetainedAreaPercent {
+		reasons = append(reasons, fmt.Sprintf("retained area %.2f%% is below minimum %.2f%%", retainedAreaPercent, minRetainedAreaPercent))
+	}
+	if requiredAlignment > 1 && (crop.Width%requiredAlignment != 0 ||
+		crop.Height%requiredAlignment != 0 ||
+		crop.X%requiredAlignment != 0 ||
+		crop.Y%requiredAlignment != 0) {
+		reasons = append(reasons, fmt.Sprintf("crop geometry is not aligned to %d pixels", requiredAlignment))
+	}
+	if len(reasons) > 0 {
+		return crop, retainedAreaPercent, errors.New(strings.Join(reasons, "; "))
+	}
+	return crop, retainedAreaPercent, nil
 }
 
 func NoOpCrop(filter string, width int, height int) bool {

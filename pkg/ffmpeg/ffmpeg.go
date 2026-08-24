@@ -90,6 +90,7 @@ func BuildPlanFromRequest(request BuildPlanRequest) (domain.EncodePlan, error) {
 		Threads:            request.Resources.Threads,
 		Container:          request.Profile.Container,
 		CropFilter:         request.Metadata.CropFilter,
+		CropPolicy:         request.Profile.Crop,
 		MetadataMode:       request.Profile.Metadata.Mode,
 		TrackTitleMode:     trackTitleModeOrDefault(request.Profile.Metadata.TrackTitles),
 		AttachmentMode:     request.Profile.Attachments.Mode,
@@ -304,8 +305,19 @@ func videoFilter(plan domain.EncodePlan) string {
 }
 
 func noCropFilter(plan domain.EncodePlan) bool {
-	return strings.TrimSpace(plan.CropFilter) == "" ||
-		videocodec.NoOpCrop(plan.CropFilter, plan.InputWidth, plan.InputHeight)
+	if strings.TrimSpace(plan.CropFilter) == "" || videocodec.NoOpCrop(plan.CropFilter, plan.InputWidth, plan.InputHeight) {
+		return true
+	}
+	_, _, err := videocodec.ValidateCropFilter(
+		plan.CropFilter,
+		plan.InputWidth,
+		plan.InputHeight,
+		plan.CropPolicy.MinWidth,
+		plan.CropPolicy.MinHeight,
+		plan.CropPolicy.MinRetainedAreaPercent,
+		plan.CropPolicy.RequiredAlignment,
+	)
+	return err != nil
 }
 
 func qsvInputPipeline(plan domain.EncodePlan) bool {

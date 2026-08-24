@@ -1,15 +1,30 @@
 package domain
 
+import "time"
+
 type Profile struct {
 	Name        ProfileName
 	Container   string
 	Video       VideoProfile
+	Crop        CropPolicy
 	Audio       AudioProfile
 	Subtitles   SubtitleProfile
 	Validation  ValidationPolicy
 	Metadata    MetadataPolicy
 	Attachments AttachmentPolicy
 	Chapters    ChapterPolicy
+}
+
+type CropPolicy struct {
+	SeekOffsets            []time.Duration
+	FrameCount             int
+	Limit                  int
+	Round                  int
+	ResetCount             int
+	MinRetainedAreaPercent float64
+	MinWidth               int
+	MinHeight              int
+	RequiredAlignment      int
 }
 
 type QualityMetric string

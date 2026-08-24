@@ -143,6 +143,17 @@ in
       example = literalExpression ''
         {
           daemon.log_level = "info";
+          profiles."default-av1".crop = {
+            seek_offsets = [ "0s" "2m" "5m" "12m" "20m" "30m" ];
+            frame_count = 300;
+            limit = 64;
+            round = 16;
+            reset_count = 0;
+            min_retained_area_percent = 70;
+            min_width = 128;
+            min_height = 128;
+            required_alignment = 2;
+          };
           libraries.movies = {
             path = "/srv/media/movies";
             profile = "default-av1";
