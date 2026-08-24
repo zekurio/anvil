@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/bmatcuk/doublestar/v4"
@@ -318,6 +319,10 @@ func discoverCandidates(ctx context.Context, root string, library config.Library
 
 		if !likelyMediaFile(rel) {
 			recordSourceStat(sourceStats, library, absPath, rel, info, completion)
+			return nil
+		}
+		if stat, ok := info.Sys().(*syscall.Stat_t); ok && stat.Nlink > 1 {
+			skipped++
 			return nil
 		}
 		if replacepkg.IsAnvilCopyOutputPath(rel) {
