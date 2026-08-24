@@ -33,6 +33,17 @@ func Default() Config {
 		Profiles: map[string]ProfileConfig{
 			DefaultProfileName: {
 				Container: "mkv",
+				Crop: CropConfig{
+					SeekOffsets:        append([]string(nil), DefaultCropSeekOffsets...),
+					FrameCount:         DefaultCropFrameCount,
+					Limit:              DefaultCropDetectLimit,
+					Round:              DefaultCropDetectRound,
+					ResetCount:         DefaultCropDetectResetCount,
+					MinRetainedAreaPct: DefaultCropMinRetainedAreaPct,
+					MinWidth:           DefaultCropMinWidth,
+					MinHeight:          DefaultCropMinHeight,
+					RequiredAlignment:  DefaultCropRequiredAlignment,
+				},
 				Video: VideoConfig{
 					Codec:             "av1",
 					Accelerator:       "software",
@@ -152,6 +163,30 @@ func applyProfileDefaults(profile *ProfileConfig) {
 		profile.Container = "mkv"
 	} else {
 		profile.Container = normalizeContainer(profile.Container)
+	}
+	if len(profile.Crop.SeekOffsets) == 0 {
+		profile.Crop.SeekOffsets = append([]string(nil), DefaultCropSeekOffsets...)
+	}
+	if profile.Crop.FrameCount == 0 {
+		profile.Crop.FrameCount = DefaultCropFrameCount
+	}
+	if profile.Crop.Limit == 0 {
+		profile.Crop.Limit = DefaultCropDetectLimit
+	}
+	if profile.Crop.Round == 0 {
+		profile.Crop.Round = DefaultCropDetectRound
+	}
+	if profile.Crop.MinRetainedAreaPct == 0 {
+		profile.Crop.MinRetainedAreaPct = DefaultCropMinRetainedAreaPct
+	}
+	if profile.Crop.MinWidth == 0 {
+		profile.Crop.MinWidth = DefaultCropMinWidth
+	}
+	if profile.Crop.MinHeight == 0 {
+		profile.Crop.MinHeight = DefaultCropMinHeight
+	}
+	if profile.Crop.RequiredAlignment == 0 {
+		profile.Crop.RequiredAlignment = DefaultCropRequiredAlignment
 	}
 	if strings.TrimSpace(profile.Video.Codec) == "" {
 		profile.Video.Codec = "av1"

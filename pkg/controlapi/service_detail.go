@@ -276,7 +276,19 @@ func decodeEventPayload(payload []byte) *control.EventPayload {
 func pipelineContextDetail(snapshot domain.JobPipelineContext) control.PipelineContextDetail {
 	result := control.PipelineContextDetail{Version: snapshot.Version}
 	if snapshot.Crop != nil {
+		result.CropEvaluated = true
+		result.CropCandidateFilter = snapshot.Crop.CandidateFilter
+		if result.CropCandidateFilter == "" {
+			result.CropCandidateFilter = snapshot.Crop.Filter
+		}
 		result.CropFilter = snapshot.Crop.Filter
+		result.CropRejectionReason = snapshot.Crop.RejectionReason
+		result.CropNoOp = snapshot.Crop.NoOp
+		result.CropSourceWidth = snapshot.Crop.SourceWidth
+		result.CropSourceHeight = snapshot.Crop.SourceHeight
+		result.CropOutputWidth = snapshot.Crop.OutputWidth
+		result.CropOutputHeight = snapshot.Crop.OutputHeight
+		result.CropRetainedAreaPercent = snapshot.Crop.RetainedAreaPercent
 	}
 	if snapshot.Search != nil {
 		result.SearchCRF = snapshot.Search.CRF

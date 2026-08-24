@@ -16,3 +16,21 @@ func TestSearchArgsSamples(t *testing.T) {
 		t.Fatalf("SearchArgs = %q, want %q", args, want)
 	}
 }
+
+func TestSearchArgsOmitsUnsafeCropAtProcessBoundary(t *testing.T) {
+	args := SearchArgs(domain.EncodePlan{
+		InputPath:   "movie.mkv",
+		InputWidth:  1920,
+		InputHeight: 1080,
+		CropFilter:  "crop=176:64:996:64",
+		CropPolicy: domain.CropPolicy{
+			MinRetainedAreaPercent: 70,
+			MinWidth:               128,
+			MinHeight:              128,
+			RequiredAlignment:      2,
+		},
+	})
+	if slices.Contains(args, "--vfilter") {
+		t.Fatalf("SearchArgs applied unsafe crop: %q", args)
+	}
+}

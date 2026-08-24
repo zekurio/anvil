@@ -1,29 +1,48 @@
 package config
 
 const (
-	DefaultProfileName     = "default-av1"
-	DefaultLibraryKind     = "media"
-	DefaultReplacementMode = "replace"
-	DefaultScanInterval    = "30m"
-	DefaultFSDebounce      = "2s"
-	DefaultSchedulerTick   = "5s"
-	DefaultLeaseDuration   = "30m"
-	DefaultShutdownPolicy  = "drain"
-	DefaultShutdownTimeout = "0s"
-	DefaultStagingCleanup  = "0s"
-	DefaultLogLevel        = "info"
-	DefaultMaxAttempts     = 3
-	DefaultStableFor       = "5m"
-	DefaultPackageMode     = "auto"
-	DefaultHandoffMode     = "copy"
-	DefaultStreamFallback  = "keep_all"
-	DefaultMetadataMode    = "preserve"
-	DefaultTrackTitleMode  = "strip"
-	DefaultMinSavingsPct   = 20
-	DefaultCRFMin          = 18
-	DefaultCRFMax          = 40
-	DefaultTargetVMAF      = 95
+	DefaultProfileName            = "default-av1"
+	DefaultLibraryKind            = "media"
+	DefaultReplacementMode        = "replace"
+	DefaultScanInterval           = "30m"
+	DefaultFSDebounce             = "2s"
+	DefaultSchedulerTick          = "5s"
+	DefaultLeaseDuration          = "30m"
+	DefaultShutdownPolicy         = "drain"
+	DefaultShutdownTimeout        = "0s"
+	DefaultStagingCleanup         = "0s"
+	DefaultLogLevel               = "info"
+	DefaultMaxAttempts            = 3
+	DefaultStableFor              = "5m"
+	DefaultPackageMode            = "auto"
+	DefaultHandoffMode            = "copy"
+	DefaultStreamFallback         = "keep_all"
+	DefaultMetadataMode           = "preserve"
+	DefaultTrackTitleMode         = "strip"
+	DefaultMinSavingsPct          = 20
+	DefaultCRFMin                 = 18
+	DefaultCRFMax                 = 40
+	DefaultTargetVMAF             = 95
+	DefaultCropFrameCount         = 300
+	DefaultCropDetectLimit        = 64
+	DefaultCropDetectRound        = 16
+	DefaultCropDetectResetCount   = 0
+	DefaultCropMinRetainedAreaPct = 70
+	DefaultCropMinWidth           = 128
+	DefaultCropMinHeight          = 128
+	DefaultCropRequiredAlignment  = 2
 )
+
+// DefaultCropSeekOffsets sample the beginning and several points through
+// typical episode- and movie-length content.
+var DefaultCropSeekOffsets = []string{
+	"0s",
+	"2m",
+	"5m",
+	"12m",
+	"20m",
+	"30m",
+}
 
 // DefaultIgnorableGlobs are excluded from download-package discovery and stability handling.
 // External subtitle sidecars are intentionally preserved by default.
@@ -72,12 +91,26 @@ type ProfileConfig struct {
 	Name        string           `toml:"-"`
 	Container   string           `toml:"container"`
 	Video       VideoConfig      `toml:"video"`
+	Crop        CropConfig       `toml:"crop"`
 	Audio       AudioConfig      `toml:"audio"`
 	Subtitles   SubtitleConfig   `toml:"subtitles"`
 	Validation  ValidationConfig `toml:"validation"`
 	Metadata    MetadataConfig   `toml:"metadata"`
 	Attachments ModeConfig       `toml:"attachments"`
 	Chapters    ModeConfig       `toml:"chapters"`
+}
+
+// CropConfig controls crop sampling and the safety policy applied to candidates.
+type CropConfig struct {
+	SeekOffsets        []string `toml:"seek_offsets"`
+	FrameCount         int      `toml:"frame_count"`
+	Limit              int      `toml:"limit"`
+	Round              int      `toml:"round"`
+	ResetCount         int      `toml:"reset_count"`
+	MinRetainedAreaPct float64  `toml:"min_retained_area_percent"`
+	MinWidth           int      `toml:"min_width"`
+	MinHeight          int      `toml:"min_height"`
+	RequiredAlignment  int      `toml:"required_alignment"`
 }
 
 // VideoConfig contains the initial video settings shape for AV1 search work.

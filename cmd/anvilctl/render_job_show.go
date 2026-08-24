@@ -112,8 +112,21 @@ func writeJobShow(out io.Writer, report control.JobShowResponse) error {
 func writePipelineContext(w *textout.Writer, context control.PipelineContextDetail) {
 	w.Printf("\nSaved context:\n")
 	w.Printf("  Version: %d\n", context.Version)
-	if context.CropFilter != "" {
-		w.Printf("  Crop: %s\n", context.CropFilter)
+	if context.CropEvaluated {
+		switch {
+		case context.CropRejectionReason != "":
+			w.Printf("  Crop candidate: %s (rejected: %s)\n", textout.OrNone(context.CropCandidateFilter), context.CropRejectionReason)
+			w.Printf("  Crop applied: none\n")
+		case context.CropNoOp:
+			w.Printf("  Crop candidate: %s (full-frame no-op)\n", context.CropCandidateFilter)
+		case context.CropFilter != "":
+			w.Printf("  Crop candidate: %s (applied, %.2f%% retained area)\n", context.CropCandidateFilter, context.CropRetainedAreaPercent)
+		default:
+			w.Printf("  Crop: none detected\n")
+		}
+		if context.CropSourceWidth > 0 && context.CropSourceHeight > 0 && context.CropOutputWidth > 0 && context.CropOutputHeight > 0 {
+			w.Printf("  Crop dimensions: %dx%d -> %dx%d\n", context.CropSourceWidth, context.CropSourceHeight, context.CropOutputWidth, context.CropOutputHeight)
+		}
 	}
 	if context.SearchCRF > 0 || context.SearchSkipReason != "" {
 		if context.SearchSkipReason != "" {

@@ -89,6 +89,9 @@ func (r Runner) Run(ctx context.Context, job *JobContext) error {
 			if err := r.recordDecision(ctx, block, job); err != nil {
 				return err
 			}
+			if err := r.recordBlockArtifact(ctx, block, job); err != nil {
+				return err
+			}
 			if err := r.record(ctx, job.Attempt.ID, domain.AttemptEventBlockFinished, step, "", map[string]any{"step_index": index, "resumed": true}); err != nil {
 				return err
 			}
@@ -108,6 +111,7 @@ func (r Runner) Run(ctx context.Context, job *JobContext) error {
 			// a fail_job stream selection is exactly the case where the record
 			// explains the failure the error message cannot.
 			_ = r.recordDecision(ctx, block, job)                                                                                     //nolint:errcheck // preserve the block error; decision recording is best-effort
+			_ = r.recordBlockArtifact(ctx, block, job)                                                                                //nolint:errcheck // preserve the block error; result recording is best-effort
 			_ = r.record(ctx, job.Attempt.ID, domain.AttemptEventBlockFailed, step, err.Error(), map[string]any{"step_index": index}) //nolint:errcheck // preserve the block error; failed-event recording is best-effort
 			return fmt.Errorf("run block %q: %w", step, err)
 		}
@@ -116,6 +120,9 @@ func (r Runner) Run(ctx context.Context, job *JobContext) error {
 			return err
 		}
 		if err := r.recordDecision(ctx, block, job); err != nil {
+			return err
+		}
+		if err := r.recordBlockArtifact(ctx, block, job); err != nil {
 			return err
 		}
 		if err := r.record(ctx, job.Attempt.ID, domain.AttemptEventBlockFinished, step, "", map[string]any{"step_index": index}); err != nil {
@@ -161,6 +168,18 @@ func (r Runner) recordDecision(ctx context.Context, block Block, job *JobContext
 	}
 	message := fmt.Sprintf("%s %s", decision.Kind, decision.Rule)
 	return r.record(ctx, job.Attempt.ID, domain.AttemptEventArtifact, StreamSelectionArtifact, message, decision)
+}
+
+func (r Runner) recordBlockArtifact(ctx context.Context, block Block, job *JobContext) error {
+	reporter, ok := block.(ArtifactReporter)
+	if !ok {
+		return nil
+	}
+	artifact, ok := reporter.Artifact(job)
+	if !ok {
+		return nil
+	}
+	return r.record(ctx, job.Attempt.ID, domain.AttemptEventArtifact, artifact.Name, artifact.Message, artifact.Payload)
 }
 
 func (r Runner) record(ctx context.Context, attemptID domain.AttemptID, eventType domain.AttemptEventType, name string, message string, payload any) error {
