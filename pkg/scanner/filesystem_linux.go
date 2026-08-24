@@ -27,6 +27,7 @@ const filesystemWatchMask = unix.IN_CREATE |
 	unix.IN_CLOSE_WRITE |
 	unix.IN_MOVED_FROM |
 	unix.IN_MOVED_TO |
+	unix.IN_DELETE |
 	unix.IN_DELETE_SELF |
 	unix.IN_MOVE_SELF |
 	unix.IN_ONLYDIR |
@@ -37,6 +38,7 @@ const filesystemTriggerMask = unix.IN_CREATE |
 	unix.IN_CLOSE_WRITE |
 	unix.IN_MOVED_FROM |
 	unix.IN_MOVED_TO |
+	unix.IN_DELETE |
 	unix.IN_MOVE_SELF
 
 type filesystemLibrary struct {
