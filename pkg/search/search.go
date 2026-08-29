@@ -256,11 +256,12 @@ func crfMax(plan domain.EncodePlan) int {
 }
 
 var (
-	crfPattern         = regexp.MustCompile(`(?i)\bcrf\b[^0-9]*(\d{1,3})`)
-	vmafPattern        = regexp.MustCompile(`(?i)\bvmaf\b[^0-9]*(\d+(?:\.\d+)?)`)
-	xpsnrPattern       = regexp.MustCompile(`(?i)\bxpsnr\b[^0-9-]*(-?\d+(?:\.\d+)?)`)
-	noGoodCRFPattern   = regexp.MustCompile(`(?i)(failed to find a suitable crf|no suitable crf|no good crf|not worth (?:av1 )?encoding)`)
-	fatalSearchPattern = regexp.MustCompile(`(?i)(panicked at|failed to create temp-dir|permission denied|invalid value|unknown option|unrecognized option)`)
+	crfPattern            = regexp.MustCompile(`(?i)\bcrf\b[^0-9]*(\d{1,3})`)
+	vmafPattern           = regexp.MustCompile(`(?i)\bvmaf\b[^0-9]*(\d+(?:\.\d+)?)`)
+	xpsnrPattern          = regexp.MustCompile(`(?i)\bxpsnr\b[^0-9-]*(-?\d+(?:\.\d+)?)`)
+	encodedPercentPattern = regexp.MustCompile(`\((\d+(?:\.\d+)?)%\)`)
+	noGoodCRFPattern      = regexp.MustCompile(`(?i)(failed to find a suitable crf|no suitable crf|no good crf|not worth (?:av1 )?encoding)`)
+	fatalSearchPattern    = regexp.MustCompile(`(?i)(panicked at|failed to create temp-dir|permission denied|invalid value|unknown option|unrecognized option)`)
 )
 
 func ParseResultForPlan(output []byte, plan domain.EncodePlan) (domain.SearchResult, error) {
@@ -283,7 +284,7 @@ func ParseNoFitResult(text string, plan domain.EncodePlan) (domain.SearchResult,
 	}
 	metric := activeMetric(plan.Metric)
 	if plan.ForceEncodeOnNoFit {
-		crf, score, ok := lowestCRFObservation(text, metric)
+		crf, score, ok := bestCRFObservation(text, metric, max(100-plan.MinSavingsPercent, 0))
 		if !ok {
 			crf = crfMin(plan)
 		}
@@ -357,30 +358,29 @@ func searchResultForScore(metric domain.QualityMetric, score float64) domain.Sea
 	return result
 }
 
-func lowestCRFObservation(text string, metric domain.QualityMetric) (int, float64, bool) {
-	bestCRF := 0
-	bestScore := 0.0
+func bestCRFObservation(text string, metric domain.QualityMetric, maxEncodedPercent float64) (int, float64, bool) {
+	bestCRF, bestScore := 0, 0.0
+	bestFits := false
 	found := false
 	scorePattern := vmafPattern
 	if metric == domain.QualityMetricXPSNR {
 		scorePattern = xpsnrPattern
 	}
 	for _, line := range strings.Split(text, "\n") {
-		matches := crfPattern.FindAllStringSubmatch(line, -1)
-		if len(matches) == 0 {
+		if !strings.Contains(line, "command::crf_search]") {
 			continue
 		}
-		lineScore, _ := lastFloatMatch(scorePattern, line)
-		for _, match := range matches {
-			value, err := strconv.Atoi(match[1])
-			if err != nil {
-				continue
-			}
-			if !found || value < bestCRF {
-				bestCRF = value
-				bestScore = lineScore
-				found = true
-			}
+		crf, hasCRF := lastIntMatch(crfPattern, line)
+		score, hasScore := lastFloatMatch(scorePattern, line)
+		percent, hasPercent := lastFloatMatch(encodedPercentPattern, line)
+		if !hasCRF || !hasScore || !hasPercent {
+			continue
+		}
+		fits := percent <= maxEncodedPercent
+		if !found || (fits && !bestFits) || (fits == bestFits && score > bestScore) {
+			bestCRF, bestScore = crf, score
+			bestFits = fits
+			found = true
 		}
 	}
 	return bestCRF, bestScore, found
@@ -397,7 +397,7 @@ func noGoodCRFReason(text string) string {
 }
 
 func forceNoGoodCRFReason(text string, crf int) string {
-	return fmt.Sprintf("%s; forcing encode with lowest tested CRF %d", noGoodCRFReason(text), crf)
+	return fmt.Sprintf("%s; forcing encode with best tested CRF %d", noGoodCRFReason(text), crf)
 }
 
 func combinedOutput(result process.Result) string {
