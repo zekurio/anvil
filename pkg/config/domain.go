@@ -2,7 +2,6 @@ package config
 
 import (
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/zekurio/anvil/pkg/domain"
@@ -55,45 +54,38 @@ func (c Config) ResolveForLibrary(name domain.LibraryName) (domain.Library, doma
 }
 
 func (c Config) ScanInterval() time.Duration {
-	return mustDuration(c.Daemon.ScanInterval)
+	return c.Daemon.ScanInterval.Duration
 }
 
 func (c Config) FilesystemEventDebounce() time.Duration {
-	if strings.TrimSpace(c.Daemon.FSDebounce) == "" {
-		return mustDuration(DefaultFSDebounce)
-	}
-	return mustDuration(c.Daemon.FSDebounce)
+	return c.Daemon.FSDebounce.Duration
 }
 
 func (c Config) ScanIntervalForLibrary(name domain.LibraryName) time.Duration {
 	library, ok := c.FindLibrary(name)
-	if ok && strings.TrimSpace(library.ScanInterval) != "" {
-		return mustDuration(library.ScanInterval)
+	if ok && library.ScanInterval.Duration > 0 {
+		return library.ScanInterval.Duration
 	}
-	return c.ScanInterval()
+	return c.Daemon.ScanInterval.Duration
 }
 
 func (c Config) SchedulerInterval() time.Duration {
-	return mustDuration(c.Daemon.SchedulerInterval)
+	return c.Daemon.SchedulerInterval.Duration
 }
 
 func (c Config) LeaseDuration() time.Duration {
-	return mustDuration(c.Daemon.LeaseDuration)
+	return c.Daemon.LeaseDuration.Duration
 }
 
 func (c Config) ShutdownTimeout() time.Duration {
-	return mustDuration(c.Daemon.ShutdownTimeout)
+	return c.Daemon.ShutdownTimeout.Duration
 }
 
 func (c Config) StagingCleanupAge() time.Duration {
-	return mustDuration(c.Daemon.StagingCleanupAge)
+	return c.Daemon.StagingCleanupAge.Duration
 }
 
 func (l LibraryConfig) ToDomain(arr ArrConfig) domain.Library {
-	stableFor := time.Duration(0)
-	if strings.TrimSpace(l.Download.StableFor) != "" {
-		stableFor = mustDuration(l.Download.StableFor)
-	}
 	return domain.Library{
 		Name:             domain.LibraryName(l.Name),
 		Kind:             domain.LibraryKind(l.Kind),
@@ -114,7 +106,7 @@ func (l LibraryConfig) ToDomain(arr ArrConfig) domain.Library {
 		},
 		Download: domain.DownloadLibraryPolicy{
 			HandoffPath:          l.Download.HandoffPath,
-			StableFor:            stableFor,
+			StableFor:            l.Download.StableFor.Duration,
 			PackageMode:          domain.DownloadPackageMode(l.Download.PackageMode),
 			HandoffMode:          domain.HandoffMode(l.Download.HandoffMode),
 			PreserveRelativePath: l.Download.PreserveRelativePath,
@@ -152,7 +144,7 @@ func (p ProfileConfig) ToDomain() domain.Profile {
 		Name:      domain.ProfileName(p.Name),
 		Container: p.Container,
 		Crop: domain.CropPolicy{
-			SeekOffsets:            parseDurations(p.Crop.SeekOffsets),
+			SeekOffsets:            stdDurations(p.Crop.SeekOffsets),
 			FrameCount:             p.Crop.FrameCount,
 			Limit:                  p.Crop.Limit,
 			Round:                  p.Crop.Round,
@@ -164,7 +156,7 @@ func (p ProfileConfig) ToDomain() domain.Profile {
 		},
 		Video: domain.VideoProfile{
 			Codec:              p.Video.Codec,
-			Accelerator:        strings.ToLower(strings.TrimSpace(p.Video.Accelerator)),
+			Accelerator:        p.Video.Accelerator,
 			Preset:             p.Video.Preset,
 			BitDepth:           p.Video.BitDepth,
 			CRFMin:             p.Video.CRFMin,
@@ -225,18 +217,10 @@ func clonePointer[T any](value *T) *T {
 	return &cloned
 }
 
-func parseDurations(values []string) []time.Duration {
+func stdDurations(values []Duration) []time.Duration {
 	result := make([]time.Duration, 0, len(values))
 	for _, value := range values {
-		result = append(result, mustDuration(strings.TrimSpace(value)))
+		result = append(result, value.Duration)
 	}
 	return result
-}
-
-func mustDuration(value string) time.Duration {
-	duration, err := time.ParseDuration(value)
-	if err != nil {
-		panic(err)
-	}
-	return duration
 }
