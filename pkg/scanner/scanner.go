@@ -113,10 +113,7 @@ func (s Scanner) PlanLibrary(ctx context.Context, library config.LibraryConfig) 
 		return LibraryPlan{}, err
 	}
 
-	stableFor, err := parseStableFor(library)
-	if err != nil {
-		return LibraryPlan{}, err
-	}
+	stableFor := downloadStableFor(library)
 
 	plan := LibraryPlan{
 		Library:        library,
@@ -449,21 +446,6 @@ func sourceFor(library config.LibraryConfig, rel string) (string, string, domain
 		return rel, rel, domain.SourceKindFile
 	}
 	return first, rest, domain.SourceKindPackage
-}
-
-func parseStableFor(library config.LibraryConfig) (time.Duration, error) {
-	if library.Kind != "download" {
-		return 0, nil
-	}
-	stableFor := strings.TrimSpace(library.Download.StableFor)
-	if stableFor == "" {
-		stableFor = config.DefaultStableFor
-	}
-	duration, err := time.ParseDuration(stableFor)
-	if err != nil {
-		return 0, fmt.Errorf("parse download.stable_for: %w", err)
-	}
-	return duration, nil
 }
 
 func includedBy(patterns []string, rel string) (bool, error) {

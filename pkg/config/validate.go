@@ -8,7 +8,6 @@ import (
 	"regexp"
 	"sort"
 	"strings"
-	"time"
 
 	"github.com/zekurio/anvil/pkg/video"
 )
@@ -239,8 +238,8 @@ func (c Config) Validate() error {
 		if library.ConcurrencyLimit < 0 {
 			problems = append(problems, fmt.Sprintf("library %q concurrency_limit must be non-negative", name))
 		}
-		if strings.TrimSpace(library.ScanInterval) != "" {
-			validatePositiveDuration(&problems, fmt.Sprintf("library %q scan_interval", name), library.ScanInterval)
+		if library.ScanInterval.Duration < 0 {
+			problems = append(problems, fmt.Sprintf("library %q scan_interval must be greater than zero", name))
 		}
 		validateRegexps(&problems, fmt.Sprintf("library %q ignore_regex", name), library.IgnoreRegex)
 		if strings.TrimSpace(library.Arr) != "" {
@@ -261,9 +260,7 @@ func (c Config) Validate() error {
 		if strings.TrimSpace(library.Download.HandoffPath) == "" {
 			problems = append(problems, fmt.Sprintf("download library %q download.handoff_path is required", name))
 		}
-		if stableFor, err := time.ParseDuration(library.Download.StableFor); err != nil {
-			problems = append(problems, fmt.Sprintf("download library %q download.stable_for is invalid: %v", name, err))
-		} else if stableFor < 0 {
+		if library.Download.StableFor.Duration < 0 {
 			problems = append(problems, fmt.Sprintf("download library %q download.stable_for must be non-negative", name))
 		}
 		if !validPackageMode(library.Download.PackageMode) {
@@ -275,7 +272,7 @@ func (c Config) Validate() error {
 	}
 
 	if len(problems) > 0 {
-		return errors.New("invalid config: " + strings.Join(problems, "; "))
+		return errors.New("invalid config:\n- " + strings.Join(problems, "\n- "))
 	}
 
 	return nil
@@ -309,40 +306,33 @@ func validLibraryKind(kind string) bool {
 	return kind == "media" || kind == "download"
 }
 
-func validatePositiveDuration(problems *[]string, name string, value string) {
-	duration, err := time.ParseDuration(value)
-	if err != nil {
-		*problems = append(*problems, fmt.Sprintf("%s is invalid: %v", name, err))
-		return
+func canonicalVideoOverrideKey(key string) string {
+	key = strings.ToLower(strings.TrimSpace(key))
+	if key == "" {
+		return key
 	}
-	if duration <= 0 {
+	return video.CanonicalCodec(key)
+}
+
+func validatePositiveDuration(problems *[]string, name string, value Duration) {
+	if value.Duration <= 0 {
 		*problems = append(*problems, fmt.Sprintf("%s must be greater than zero", name))
 	}
 }
 
-func validateNonNegativeDuration(problems *[]string, name string, value string) {
-	duration, err := time.ParseDuration(value)
-	if err != nil {
-		*problems = append(*problems, fmt.Sprintf("%s is invalid: %v", name, err))
-		return
-	}
-	if duration < 0 {
+func validateNonNegativeDuration(problems *[]string, name string, value Duration) {
+	if value.Duration < 0 {
 		*problems = append(*problems, fmt.Sprintf("%s must be non-negative", name))
 	}
 }
 
-func validateCropSeekOffsets(problems *[]string, profileName string, values []string) {
+func validateCropSeekOffsets(problems *[]string, profileName string, values []Duration) {
 	if len(values) == 0 {
 		*problems = append(*problems, fmt.Sprintf("profile %q crop.seek_offsets must not be empty", profileName))
 		return
 	}
 	for i, value := range values {
-		duration, err := time.ParseDuration(strings.TrimSpace(value))
-		if err != nil {
-			*problems = append(*problems, fmt.Sprintf("profile %q crop.seek_offsets[%d] is invalid: %v", profileName, i, err))
-			continue
-		}
-		if duration < 0 {
+		if value.Duration < 0 {
 			*problems = append(*problems, fmt.Sprintf("profile %q crop.seek_offsets[%d] must be non-negative", profileName, i))
 		}
 	}

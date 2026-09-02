@@ -1,2 +1,2 @@
-// Package config owns daemon configuration loading, validation, and defaults.
+// Package config loads, resolves, and validates daemon configuration.
 package config
