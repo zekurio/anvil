@@ -281,15 +281,7 @@ func downloadStableFor(library config.LibraryConfig) time.Duration {
 	if library.Kind != "download" {
 		return 0
 	}
-	stableFor := strings.TrimSpace(library.Download.StableFor)
-	if stableFor == "" {
-		stableFor = config.DefaultStableFor
-	}
-	duration, err := time.ParseDuration(stableFor)
-	if err != nil {
-		return 0
-	}
-	return duration
+	return library.Download.StableFor.Duration
 }
 
 func (m *Monitor) reconcileInterval(cfg config.Config) time.Duration {
