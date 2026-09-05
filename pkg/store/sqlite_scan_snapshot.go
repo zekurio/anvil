@@ -28,12 +28,17 @@ func readScanSnapshot(ctx context.Context, tx *sql.Tx, input ApplyScanInput) (sc
 	for _, path := range input.SourcePaths {
 		result.scope[path] = true
 	}
-	paths, err := json.Marshal(input.SourcePaths)
-	if err != nil {
-		return result, fmt.Errorf("encode scan scope: %w", err)
+	predicate := `library_name = ?`
+	args := []any{string(input.LibraryName)}
+	if input.SourcePaths != nil {
+		paths, err := json.Marshal(input.SourcePaths)
+		if err != nil {
+			return result, fmt.Errorf("encode scan scope: %w", err)
+		}
+		predicate += ` AND relative_path IN (SELECT value FROM json_each(?))`
+		args = append(args, string(paths))
 	}
-	predicate := `library_name = ? AND (? OR relative_path IN (SELECT value FROM json_each(?)))`
-	args := []any{string(input.LibraryName), input.SourcePaths == nil, string(paths)}
+
 	read := func(query string, scan func(*sql.Rows) error) (err error) {
 		rows, err := tx.QueryContext(ctx, query, args...)
 		if err != nil {
