@@ -88,7 +88,7 @@ anvilctl recover
 anvilctl scan [LIBRARY]
 anvilctl stats [LIBRARY]
 anvilctl requeue --library NAME PATH
-anvilctl staging cleanup [--older-than D] [--dry-run]
+anvilctl staging cleanup [--older-than D] [--dry-run] [--legacy-parts]
 anvilctl backup DESTINATION
 anvilctl help [COMMAND]
 ```
@@ -107,6 +107,18 @@ anvilctl prune --library movies --state complete,failed,canceled --apply
 anvilctl staging cleanup --older-than 24h --dry-run
 anvilctl backup /srv/backups/anvil-$(date +%F).db
 ```
+
+Legacy output artifacts are cleaned only on request. Use
+`anvilctl staging cleanup --older-than 24h --legacy-parts --dry-run` to preview
+old unscoped `.mkv.anvil-part` files in configured output libraries. Remove
+`--dry-run` to delete eligible files. Current job parts and artifacts held by
+publish journals are preserved. Job startup no longer lists destination
+directories for this maintenance.
+
+The scheduler wakes when work arrives or a worker finishes. Its timer remains
+a fallback. `daemon.max_threads_per_job = 0` divides the thread budget across
+worker slots so later arrivals can start. Set a positive value to choose a
+per-job cap. Allocations remain fixed for each running job.
 
 `cancel` requires a narrowing selector, and refuses a job whose publish is
 already journaled — only the daemon can finish that destination safely. Job

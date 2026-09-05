@@ -47,7 +47,7 @@ func (s ABAV1) Search(ctx context.Context, plan domain.EncodePlan, scratchDir st
 			return domain.SearchResult{}, fmt.Errorf("prepare ab-av1 scratch dir: %w", err)
 		}
 	}
-	command := process.Command{Name: binary, Args: args}
+	command := process.Command{Name: binary, Args: args, RequireFullStdout: true, RequireFullStderr: true}
 	if scratchDir != "" {
 		command.Dir = scratchDir
 		command.Env = []string{
@@ -59,6 +59,10 @@ func (s ABAV1) Search(ctx context.Context, plan domain.EncodePlan, scratchDir st
 	}
 	result, err := runner.Run(ctx, command)
 	if err != nil {
+		if errors.Is(err, process.ErrOutputCapture) || errors.Is(err, process.ErrOutputLog) ||
+			errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return domain.SearchResult{}, fmt.Errorf("ab-av1 crf-search failed: %w", err)
+		}
 		output := combinedOutput(result)
 		if fatalSearchFailure(output) {
 			return domain.SearchResult{}, fmt.Errorf("ab-av1 crf-search failed: %w%s", err, outputHint(result))

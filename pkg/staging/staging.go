@@ -155,22 +155,15 @@ func (m Manager) CleanupStale(options CleanupStaleOptions) (CleanupStaleResult, 
 }
 
 type StageBlock struct {
-	Manager            Manager
-	ArtifactProtection replace.ArtifactProtection
+	Manager Manager
 }
 
 func (StageBlock) Name() string {
 	return "stage"
 }
 
-func (b StageBlock) Run(ctx context.Context, job *pipeline.JobContext) error {
-	if err := b.Manager.Prepare(job); err != nil {
-		return err
-	}
-	if err := replace.CleanupLegacyPartFiles(ctx, b.ArtifactProtection, job.DestinationPath); err != nil {
-		return fmt.Errorf("remove stale legacy artifact parts: %w", err)
-	}
-	return nil
+func (b StageBlock) Run(_ context.Context, job *pipeline.JobContext) error {
+	return b.Manager.Prepare(job)
 }
 
 type CleanupBlock struct {

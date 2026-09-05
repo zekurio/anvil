@@ -4,13 +4,14 @@ package scanner
 
 import (
 	"context"
-	"github.com/zekurio/anvil/pkg/config"
-	"github.com/zekurio/anvil/pkg/domain"
-	"golang.org/x/sys/unix"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/zekurio/anvil/pkg/config"
+	"github.com/zekurio/anvil/pkg/domain"
+	"golang.org/x/sys/unix"
 )
 
 func TestFilesystemEventsFilterArtifactsAndOrderDirectoryCompletion(t *testing.T) {
