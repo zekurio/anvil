@@ -201,9 +201,10 @@ var requeueHelp = commandHelp{
 var stagingCleanupHelp = commandHelp{
 	name:        "staging cleanup",
 	description: "Remove stale Anvil staging directories.",
-	usage:       "anvilctl staging cleanup [--older-than DURATION] [--dry-run]",
+	usage:       "anvilctl staging cleanup [--older-than DURATION] [--dry-run] [--legacy-parts]",
 	options: []helpOption{
 		{flag: "--older-than DURATION", description: "remove directories older than this age; an empty value uses daemon.staging_cleanup_age", defaultValue: `""`},
+		{flag: "--legacy-parts", description: "also scan configured output libraries for old unscoped Anvil artifacts", defaultValue: "false"},
 		{flag: "--dry-run", description: "show cleanup candidates without deleting them", defaultValue: "false"},
 	},
 	notes: []string{

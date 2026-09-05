@@ -75,6 +75,7 @@ type DaemonConfig struct {
 	ControlSocket     string `toml:"control_socket"`
 	WorkerCount       int    `toml:"worker_count"`
 	TotalThreads      int    `toml:"total_threads"`
+	MaxThreadsPerJob  int    `toml:"max_threads_per_job"`
 	MaxAttempts       int    `toml:"max_attempts"`
 	ScanInterval      string `toml:"scan_interval"`
 	FSDebounce        string `toml:"filesystem_event_debounce"`
