@@ -85,6 +85,7 @@ func resolveDaemon(raw rawDaemonConfig) DaemonConfig {
 		ControlSocket:     controlSocket,
 		WorkerCount:       valueOr(raw.WorkerCount, cpus),
 		TotalThreads:      valueOr(raw.TotalThreads, cpus),
+		MaxThreadsPerJob:  valueOr(raw.MaxThreadsPerJob, 0),
 		MaxAttempts:       valueOr(raw.MaxAttempts, DefaultMaxAttempts),
 		ScanInterval:      valueOr(raw.ScanInterval, Duration{Duration: DefaultScanInterval}),
 		FSDebounce:        valueOr(raw.FSDebounce, Duration{Duration: DefaultFSDebounce}),

@@ -246,6 +246,9 @@ func writeStagingCleanup(out io.Writer, errOut io.Writer, response control.Stagi
 		w.Printf("dry_run=%t root=%s older_than=%s candidates=%d removed=%d skipped=%d protected=%d errors=%d\n",
 			response.DryRun, response.Root, response.OlderThan,
 			response.Candidates, response.Removed, response.Skipped, response.Protected, len(response.Errors))
+		if legacy := response.LegacyParts; legacy != nil {
+			w.Printf("legacy_candidates=%d legacy_removed=%d legacy_protected=%d\n", legacy.Candidates, legacy.Removed, legacy.Protected)
+		}
 		writeProtectedJobs(w, response.ProtectedJobs)
 	}); err != nil {
 		return err

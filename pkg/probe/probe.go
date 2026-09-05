@@ -34,8 +34,9 @@ func (p FFProbe) Probe(ctx context.Context, path string) (domain.ProbeResult, er
 		binary = "ffprobe"
 	}
 	result, err := runner.Run(ctx, process.Command{
-		Name: binary,
-		Args: []string{"-v", "error", "-print_format", "json", "-show_format", "-show_streams", path},
+		Name:              binary,
+		RequireFullStdout: true,
+		Args:              []string{"-v", "error", "-print_format", "json", "-show_format", "-show_streams", path},
 	})
 	if err != nil {
 		return domain.ProbeResult{}, fmt.Errorf("run ffprobe for %q: %w", path, err)

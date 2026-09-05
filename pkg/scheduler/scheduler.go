@@ -50,6 +50,7 @@ type Scheduler struct {
 
 	mu         sync.Mutex
 	active     map[string]activeAssignment
+	wake       chan struct{}
 	workerWG   sync.WaitGroup
 	nextWorker atomic.Uint64
 }
@@ -79,6 +80,11 @@ func (s *Scheduler) Run(ctx context.Context) error {
 		return err
 	}
 
+	wake := s.wakeChannel()
+	var workAvailable <-chan struct{}
+	if source, ok := s.Store.(interface{ WorkAvailable() <-chan struct{} }); ok {
+		workAvailable = source.WorkAvailable()
+	}
 	for {
 		if _, err := s.ScheduleAvailable(ctx); err != nil {
 			return err
@@ -89,6 +95,10 @@ func (s *Scheduler) Run(ctx context.Context) error {
 			timer.Stop()
 			return ctx.Err()
 		case <-timer.C:
+		case <-wake:
+			timer.Stop()
+		case <-workAvailable:
+			timer.Stop()
 		}
 	}
 }
@@ -141,7 +151,13 @@ func (s *Scheduler) scheduleAvailable(ctx context.Context, limit int) (int, erro
 		return 0, errors.Join(err, workerErr, releaseErr)
 	}
 
-	started, dispatchErr := s.dispatchLeased(ctx, leased, allocator, availableThreads, active.count)
+	threadCap := cfg.Daemon.MaxThreadsPerJob
+	if threadCap == 0 {
+		// Reserve a share for later arrivals. Allocations stay fixed while an
+		// external encoder runs, so one early job must not claim every thread.
+		threadCap = 1 + (allocator.TotalThreads-1)/workerCount
+	}
+	started, dispatchErr := s.dispatchLeased(ctx, leased, allocator, availableThreads, active.count, threadCap)
 	if err != nil || dispatchErr != nil {
 		return started, errors.Join(err, dispatchErr)
 	}
@@ -292,7 +308,7 @@ func (s *Scheduler) leaseAvailable(ctx context.Context, cfg config.Config, activ
 	return leased, nil
 }
 
-func (s *Scheduler) dispatchLeased(ctx context.Context, leased []leasedAssignment, allocator resources.Allocator, availableThreads int, activeBefore int) (int, error) {
+func (s *Scheduler) dispatchLeased(ctx context.Context, leased []leasedAssignment, allocator resources.Allocator, availableThreads int, activeBefore int, threadCap int) (int, error) {
 	if len(leased) == 0 {
 		return 0, nil
 	}
@@ -306,7 +322,9 @@ func (s *Scheduler) dispatchLeased(ctx context.Context, leased []leasedAssignmen
 			releaseErr := s.releaseLeased(context.WithoutCancel(ctx), leased[i:])
 			return started, errors.Join(err, releaseErr)
 		}
-		allocation := allocator.AllocateFrom(leasedAssignment.workerID, availableThreads, len(leased))
+		allocation := allocator.AllocateFrom(leasedAssignment.workerID, availableThreads, len(leased)-i)
+		allocation.Threads = min(allocation.Threads, threadCap)
+		availableThreads -= allocation.Threads
 		assignment := Assignment{
 			Job:       leasedAssignment.job,
 			WorkerID:  leasedAssignment.workerID,
@@ -372,8 +390,22 @@ func (s *Scheduler) register(assignment Assignment, cancel context.CancelCauseFu
 
 func (s *Scheduler) unregister(workerID string) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	delete(s.active, workerID)
+	wake := s.wake
+	s.mu.Unlock()
+	select {
+	case wake <- struct{}{}:
+	default:
+	}
+}
+
+func (s *Scheduler) wakeChannel() <-chan struct{} {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.wake == nil {
+		s.wake = make(chan struct{}, 1)
+	}
+	return s.wake
 }
 
 func (s *Scheduler) activeCount() int {

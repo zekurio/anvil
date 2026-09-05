@@ -41,6 +41,9 @@ func (s *SQLiteStore) EnqueueJob(ctx context.Context, input EnqueueJobInput) (do
 	if err := tx.Commit(); err != nil {
 		return domain.Job{}, false, fmt.Errorf("commit enqueue transaction: %w", err)
 	}
+	if inserted {
+		s.notifyWork()
+	}
 	return job, inserted, nil
 }
 
@@ -378,6 +381,9 @@ func (s *SQLiteStore) RetryJobs(ctx context.Context, input RetryJobsInput) (Retr
 	if err := tx.Commit(); err != nil {
 		return RetryJobsResult{}, fmt.Errorf("commit retry transaction: %w", err)
 	}
+	if len(result.Jobs) > 0 || result.RetriedFailed > 0 {
+		s.notifyWork()
+	}
 	return result, nil
 }
 
@@ -629,6 +635,9 @@ WHERE id = ?
 		return domain.Job{}, fmt.Errorf("commit transition transaction: %w", err)
 	}
 
+	if job.State == domain.JobStatePending {
+		s.notifyWork()
+	}
 	return job, nil
 }
 
@@ -737,6 +746,9 @@ WHERE `+staleWhere+`
 		return 0, fmt.Errorf("commit recovery transaction: %w", err)
 	}
 
+	if pendingRows > 0 {
+		s.notifyWork()
+	}
 	return skippedRows + failedRows + pendingRows, nil
 }
 

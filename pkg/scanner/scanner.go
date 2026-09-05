@@ -2,11 +2,14 @@ package scanner
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io/fs"
+	"os"
 	"path"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"syscall"
 	"time"
@@ -41,6 +44,7 @@ type ScanResult struct {
 }
 
 type LibraryPlan struct {
+	SourcePaths     []string
 	ScanToken       store.ScanToken
 	Library         config.LibraryConfig
 	Candidates      []CandidatePlan
@@ -107,8 +111,12 @@ func (s Scanner) PlanLibrary(ctx context.Context, library config.LibraryConfig) 
 		return LibraryPlan{}, fmt.Errorf("library path is required")
 	}
 
+	return s.planPaths(ctx, library, root, nil)
+}
+
+func (s Scanner) planPaths(ctx context.Context, library config.LibraryConfig, root string, paths []string) (LibraryPlan, error) {
 	now := s.now()
-	candidates, sourceStats, skipped, err := discoverCandidates(ctx, root, library, s.Completion)
+	candidates, sourceStats, skipped, err := discoverPaths(ctx, root, library, s.Completion, paths)
 	if err != nil {
 		return LibraryPlan{}, err
 	}
@@ -117,6 +125,7 @@ func (s Scanner) PlanLibrary(ctx context.Context, library config.LibraryConfig) 
 
 	plan := LibraryPlan{
 		Library:        library,
+		SourcePaths:    paths,
 		SkippedIgnored: skipped,
 	}
 	for _, candidate := range candidates {
@@ -182,7 +191,7 @@ func (s Scanner) applyPlan(ctx context.Context, plan LibraryPlan) (ScanResult, e
 		})
 	}
 	applied, err := s.Store.ApplyLibraryScan(ctx, plan.ScanToken, store.ApplyScanInput{
-		LibraryName: domain.LibraryName(plan.Library.Name), Priority: plan.Library.Priority,
+		SourcePaths: plan.SourcePaths, LibraryName: domain.LibraryName(plan.Library.Name), Priority: plan.Library.Priority,
 		RequeueExisting: plan.Library.Kind == string(domain.LibraryKindDownload), Entries: entries, CompletedAt: now,
 	})
 	if err != nil {
@@ -235,6 +244,10 @@ type sourceStat struct {
 }
 
 func discoverCandidates(ctx context.Context, root string, library config.LibraryConfig, completion *CompletionTracker) ([]candidate, map[string]sourceStat, int, error) {
+	return discoverPaths(ctx, root, library, completion, nil)
+}
+
+func discoverPaths(ctx context.Context, root string, library config.LibraryConfig, completion *CompletionTracker, paths []string) ([]candidate, map[string]sourceStat, int, error) {
 	var candidates []candidate
 	sourceStats := make(map[string]sourceStat)
 	var skipped int
@@ -244,7 +257,7 @@ func discoverCandidates(ctx context.Context, root string, library config.Library
 		return nil, nil, skipped, err
 	}
 
-	err = filepath.WalkDir(root, func(absPath string, entry fs.DirEntry, walkErr error) error {
+	visit := func(absPath string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
@@ -267,6 +280,9 @@ func discoverCandidates(ctx context.Context, root string, library config.Library
 			if entry.IsDir() {
 				return filepath.SkipDir
 			}
+			if !likelyMediaFile(rel) {
+				return nil
+			}
 			info, err := entry.Info()
 			if err != nil {
 				return err
@@ -284,6 +300,9 @@ func discoverCandidates(ctx context.Context, root string, library config.Library
 		if excluded {
 			if entry.IsDir() {
 				return filepath.SkipDir
+			}
+			if !likelyMediaFile(rel) {
+				return nil
 			}
 			info, err := entry.Info()
 			if err != nil {
@@ -307,6 +326,12 @@ func discoverCandidates(ctx context.Context, root string, library config.Library
 			return nil
 		}
 		if entry.Type()&fs.ModeType != 0 {
+			return nil
+		}
+		if !likelyMediaFile(rel) && (library.Kind != "download" || library.Download.PackageMode == "file" || !strings.Contains(rel, "/")) {
+			return nil
+		}
+		if strings.HasSuffix(rel, ".anvil-part") {
 			return nil
 		}
 		info, err := entry.Info()
@@ -348,9 +373,44 @@ func discoverCandidates(ctx context.Context, root string, library config.Library
 
 		candidates = append(candidates, buildCandidate(library, absPath, rel, info, false, ""))
 		return nil
-	})
-	if err != nil {
-		return nil, nil, skipped, err
+	}
+	walkRoots := []string{root}
+	if paths != nil {
+		walkRoots = nil
+		for _, rel := range paths {
+			walkRoots = append(walkRoots, filepath.Join(root, filepath.FromSlash(rel)))
+		}
+	}
+	for _, walkRoot := range walkRoots {
+		if paths != nil {
+			ignored := false
+			for parent := filepath.Dir(walkRoot); parent != root && parent != filepath.Dir(parent); parent = filepath.Dir(parent) {
+				rel, relErr := filepath.Rel(root, parent)
+				if relErr != nil {
+					return nil, nil, skipped, relErr
+				}
+				rel = filepath.ToSlash(rel)
+				excluded, matchErr := matchesExcludedPath(excludePatterns, rel, true)
+				if matchErr != nil {
+					return nil, nil, skipped, matchErr
+				}
+				if excluded || ignoredByRegex(ignoreRegexps, rel, true) {
+					ignored = true
+					break
+				}
+			}
+			if ignored {
+				continue
+			}
+			if _, statErr := os.Lstat(walkRoot); errors.Is(statErr, fs.ErrNotExist) {
+				continue
+			} else if statErr != nil {
+				return nil, nil, skipped, statErr
+			}
+		}
+		if err := filepath.WalkDir(walkRoot, visit); err != nil {
+			return nil, nil, skipped, err
+		}
 	}
 
 	return candidates, sourceStats, skipped, nil
@@ -456,7 +516,11 @@ func includedBy(patterns []string, rel string) (bool, error) {
 }
 
 func matchesAny(patterns []string, rel string) (bool, error) {
+	directory := strings.HasSuffix(filepath.ToSlash(rel), "/")
 	rel = path.Clean(filepath.ToSlash(rel))
+	if directory {
+		rel += "/"
+	}
 	base := path.Base(rel)
 
 	for _, pattern := range patterns {
@@ -507,4 +571,64 @@ func classifyMediaAsset(rel string) domain.MediaAssetRole {
 
 func enqueueableRole(role domain.MediaAssetRole) bool {
 	return role == domain.MediaAssetRolePrimaryVideo || role == domain.MediaAssetRoleVideo
+}
+
+// ScanPaths replaces only the sources touched by these absolute event paths.
+// Directory events in file mode require a full scan to find removed descendants.
+func (s Scanner) ScanPaths(ctx context.Context, library config.LibraryConfig, paths []string) (ScanResult, error) {
+	root, err := filepath.Abs(library.Path)
+	if err != nil {
+		return ScanResult{}, err
+	}
+	info, err := os.Stat(root)
+	if err != nil {
+		return ScanResult{}, fmt.Errorf("stat library root: %w", err)
+	}
+	if !info.IsDir() {
+		return ScanResult{}, fmt.Errorf("library path is not a directory")
+	}
+	sources := make(map[string]struct{})
+	for _, eventPath := range paths {
+		rel, err := filepath.Rel(root, eventPath)
+		if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			return s.ScanLibrary(ctx, library)
+		}
+		rel = filepath.ToSlash(rel)
+		source, _, _ := sourceFor(library, rel)
+		if library.Kind != "download" || library.Download.PackageMode == "file" {
+			if !likelyMediaFile(rel) {
+				return s.ScanLibrary(ctx, library)
+			}
+		}
+		sources[source] = struct{}{}
+	}
+	if len(sources) == 0 {
+		return s.ScanLibrary(ctx, library)
+	}
+	selected := make([]string, 0, len(sources))
+	for source := range sources {
+		selected = append(selected, source)
+	}
+	sort.Strings(selected)
+	if s.Store == nil {
+		return ScanResult{}, fmt.Errorf("scanner store is required")
+	}
+	token, err := s.Store.BeginLibraryScan(ctx, domain.LibraryName(library.Name))
+	if err != nil {
+		return ScanResult{}, err
+	}
+	plan, err := s.planPaths(ctx, library, root, selected)
+	if err != nil {
+		return ScanResult{}, err
+	}
+	plan.ScanToken = token
+	return s.applyPlan(ctx, plan)
+}
+
+func matchesExcludedPath(patterns []string, rel string, directory bool) (bool, error) {
+	matched, err := matchesAny(patterns, rel)
+	if matched || err != nil || !directory {
+		return matched, err
+	}
+	return matchesAny(patterns, rel+"/")
 }

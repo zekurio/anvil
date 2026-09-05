@@ -21,6 +21,7 @@ store_path = "/var/lib/anvil/anvil.db" # SQLite state path. Defaults to anvil.db
 control_socket = "/run/anvil/anvild.sock" # Daemon Unix socket. Defaults to anvild.sock inside temp_dir; must be absolute.
 worker_count = 2 # Simultaneous jobs. Defaults to the CPU count; integer >= 1.
 total_threads = 8 # Shared encode-thread budget. Defaults to the CPU count; integer >= 0.
+max_threads_per_job = 0 # Per-job thread cap. Zero shares the budget across worker slots; integer >= 0.
 max_attempts = 3 # Retries before a job stays failed; integer >= 1.
 scan_interval = "30m" # Full-library scan cadence; duration > 0.
 filesystem_event_debounce = "2s" # Coalesce filesystem events before scanning; duration >= 0.

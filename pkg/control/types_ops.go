@@ -130,8 +130,9 @@ type ForceOccurrenceResponse struct {
 // StagingCleanupRequest removes stale staging directories. OlderThan is a Go
 // duration string; empty uses daemon.staging_cleanup_age.
 type StagingCleanupRequest struct {
-	OlderThan string `json:"older_than,omitempty"`
-	DryRun    bool   `json:"dry_run,omitempty"`
+	OlderThan   string `json:"older_than,omitempty"`
+	DryRun      bool   `json:"dry_run,omitempty"`
+	LegacyParts bool   `json:"legacy_parts,omitempty"`
 }
 
 type StagingCleanupResponse struct {
@@ -145,9 +146,16 @@ type StagingCleanupResponse struct {
 	Skipped    int       `json:"skipped"`
 	// Protected counts staging directories that were old enough to remove but
 	// still belong to a live attempt or an unresolved publish journal.
-	Protected     int            `json:"protected"`
-	ProtectedJobs []ProtectedJob `json:"protected_jobs,omitempty"`
-	Errors        []string       `json:"errors,omitempty"`
+	Protected     int                       `json:"protected"`
+	ProtectedJobs []ProtectedJob            `json:"protected_jobs,omitempty"`
+	Errors        []string                  `json:"errors,omitempty"`
+	LegacyParts   *LegacyPartCleanupSummary `json:"legacy_parts,omitempty"`
+}
+
+type LegacyPartCleanupSummary struct {
+	Candidates int `json:"candidates"`
+	Removed    int `json:"removed"`
+	Protected  int `json:"protected"`
 }
 
 // StoreBackupRequest writes a consistent SQLite snapshot. The destination is

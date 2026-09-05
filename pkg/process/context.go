@@ -2,7 +2,6 @@ package process
 
 import (
 	"context"
-	"log/slog"
 	"strings"
 )
 
@@ -13,8 +12,13 @@ type Logger interface {
 	LogProcess(context.Context, Command, Result, error) error
 }
 
+// SessionLogger opens a separate output sink for each process invocation.
+type SessionLogger interface {
+	StartProcess(context.Context, Command) (Logger, error)
+}
+
 type StreamLogger interface {
-	LogProcessOutput(context.Context, Command, string, []byte)
+	LogProcessOutput(context.Context, Command, string, []byte) error
 }
 
 func WithLogger(ctx context.Context, logger Logger) context.Context {
@@ -36,20 +40,18 @@ func Step(ctx context.Context) string {
 	return step
 }
 
-func recordProcessOutput(ctx context.Context, command Command, result Result, runErr error) {
+func recordProcessOutput(ctx context.Context, command Command, result Result, runErr error) error {
 	logger, _ := ctx.Value(loggerKey{}).(Logger)
 	if logger == nil {
-		return
+		return nil
 	}
-	if err := logger.LogProcess(ctx, command, result, runErr); err != nil {
-		slog.Warn("record process output failed", "error", err)
-	}
+	return logger.LogProcess(ctx, command, result, runErr)
 }
 
-func streamProcessOutput(ctx context.Context, command Command, stream string, output []byte) {
+func streamProcessOutput(ctx context.Context, command Command, stream string, output []byte) error {
 	logger, _ := ctx.Value(loggerKey{}).(StreamLogger)
 	if logger == nil || len(output) == 0 {
-		return
+		return nil
 	}
-	logger.LogProcessOutput(ctx, command, stream, output)
+	return logger.LogProcessOutput(ctx, command, stream, output)
 }

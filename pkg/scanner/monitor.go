@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"log/slog"
-	"os"
 	"sort"
 	"strings"
 	"sync"
@@ -23,12 +22,17 @@ type LibraryScanner interface {
 	ScanLibrary(context.Context, config.LibraryConfig) (ScanResult, error)
 }
 
+type pathScanner interface {
+	ScanPaths(context.Context, config.LibraryConfig, []string) (ScanResult, error)
+}
+
 type ConfigProvider func() config.Config
 
 type ScanTrigger struct {
 	LibraryName domain.LibraryName
 	Reason      string
 	Path        string
+	Paths       []string
 	Completed   bool
 }
 
@@ -37,6 +41,8 @@ type EventSource interface {
 }
 
 type Monitor struct {
+	pending           map[domain.LibraryName]ScanTrigger
+	fullDue           map[domain.LibraryName]time.Time
 	Scanner           LibraryScanner
 	ConfigProvider    ConfigProvider
 	EventSource       EventSource
@@ -76,6 +82,8 @@ func (m *Monitor) Run(ctx context.Context) error {
 		watcherWG.Wait()
 	}()
 
+	m.pending = make(map[domain.LibraryName]ScanTrigger)
+	m.fullDue = make(map[domain.LibraryName]time.Time)
 	schedules := make(map[domain.LibraryName]time.Time)
 	reasons := make(map[domain.LibraryName]string)
 	cfg := m.reconcileSchedules(schedules, reasons)
@@ -122,6 +130,12 @@ func (m *Monitor) reconcileSchedules(schedules map[domain.LibraryName]time.Time,
 		libraryName := domain.LibraryName(name)
 		seen[libraryName] = struct{}{}
 		next := now.Add(cfg.ScanIntervalForLibrary(libraryName))
+		if m.fullDue != nil {
+			if deadline, ok := m.fullDue[libraryName]; ok && deadline.Before(next) {
+				next = deadline
+			}
+			m.fullDue[libraryName] = next
+		}
 		current, exists := schedules[libraryName]
 		if !exists || current.IsZero() || current.After(next) {
 			schedules[libraryName] = next
@@ -131,6 +145,8 @@ func (m *Monitor) reconcileSchedules(schedules map[domain.LibraryName]time.Time,
 		if _, ok := seen[name]; !ok {
 			delete(schedules, name)
 			delete(reasons, name)
+			delete(m.pending, name)
+			delete(m.fullDue, name)
 		}
 	}
 
@@ -144,6 +160,12 @@ func (m *Monitor) scheduleTrigger(cfg config.Config, schedules map[domain.Librar
 	library, ok := cfg.FindLibrary(trigger.LibraryName)
 	if !ok {
 		return
+	}
+	if m.pending != nil {
+		if current, exists := m.pending[trigger.LibraryName]; exists {
+			trigger = mergeScanTrigger(current, trigger)
+		}
+		m.pending[trigger.LibraryName] = trigger
 	}
 	due := m.triggerDue(cfg, library, trigger)
 	current, exists := schedules[trigger.LibraryName]
@@ -187,7 +209,21 @@ func (m *Monitor) scanDue(ctx context.Context, cfg config.Config, schedules map[
 		if reason == "" {
 			reason = "timer"
 		}
-		result, err := m.Scanner.ScanLibrary(ctx, library)
+		var result ScanResult
+		var err error
+		trigger, pending := m.pending[name]
+		paths := triggerPaths(trigger)
+		targeted, supportsPaths := m.Scanner.(pathScanner)
+		full := !pending || len(paths) == 0 || !supportsPaths
+		if deadline, ok := m.fullDue[name]; !ok || !deadline.After(now) {
+			full = true
+		}
+		if full {
+			result, err = m.Scanner.ScanLibrary(ctx, library)
+		} else {
+			result, err = targeted.ScanPaths(ctx, library, paths)
+		}
+		delete(m.pending, name)
 		if m.OnScan != nil {
 			m.OnScan(library, reason, result, err)
 		}
@@ -195,11 +231,20 @@ func (m *Monitor) scanDue(ctx context.Context, cfg config.Config, schedules map[
 			return ctx.Err()
 		}
 		nextDue := m.now().Add(cfg.ScanIntervalForLibrary(name))
+		if full && m.fullDue != nil {
+			m.fullDue[name] = nextDue
+		}
+		if deadline, ok := m.fullDue[name]; ok && deadline.Before(nextDue) {
+			nextDue = deadline
+		}
 		nextReason := ""
 		if err == nil {
 			if retryDue, ok := m.stabilityRetryDue(cfg, library, result); ok && retryDue.Before(nextDue) {
 				nextDue = retryDue
 				nextReason = "stability"
+				if !full {
+					m.pending[name] = trigger
+				}
 				if filesystemReason(reason) {
 					nextReason = "filesystem-stability"
 				}
@@ -218,27 +263,9 @@ func (m *Monitor) scanDue(ctx context.Context, cfg config.Config, schedules map[
 }
 
 func (m *Monitor) triggerDue(cfg config.Config, library config.LibraryConfig, trigger ScanTrigger) time.Time {
-	now := m.now()
-	due := now.Add(m.debounce(cfg))
-	if trigger.Completed {
-		return due
-	}
-	if library.Kind != "download" {
-		return due
-	}
-	stableFor := downloadStableFor(library)
-	if stableFor <= 0 || strings.TrimSpace(trigger.Path) == "" {
-		return due
-	}
-	info, err := os.Stat(trigger.Path)
-	if err != nil {
-		return due
-	}
-	stableDue := info.ModTime().UTC().Add(stableFor).Add(m.debounce(cfg))
-	if stableDue.After(due) {
-		return stableDue
-	}
-	return due
+	// Discovery computes stability from all source files. Do not stat each
+	// incoming event, which can repeat thousands of times during a write.
+	return m.now().Add(m.debounce(cfg))
 }
 
 func (m *Monitor) stabilityRetryDue(cfg config.Config, library config.LibraryConfig, result ScanResult) (time.Time, bool) {
@@ -346,4 +373,44 @@ func stopTimer(timer *time.Timer) {
 		default:
 		}
 	}
+}
+
+const scanPathLimit = 256
+
+func triggerPaths(trigger ScanTrigger) []string {
+	if len(trigger.Paths) > 0 {
+		return trigger.Paths
+	}
+	if trigger.Path != "" {
+		return []string{trigger.Path}
+	}
+	return nil
+}
+
+// Keep every changed path. A full scan bounds memory during event bursts.
+func mergeScanTrigger(current, next ScanTrigger) ScanTrigger {
+	left, right := triggerPaths(current), triggerPaths(next)
+	if len(left) == 0 || len(right) == 0 {
+		return ScanTrigger{LibraryName: current.LibraryName, Reason: "filesystem"}
+	}
+	paths := make(map[string]struct{}, len(left)+len(right))
+	for _, path := range left {
+		paths[path] = struct{}{}
+	}
+	for _, path := range right {
+		paths[path] = struct{}{}
+	}
+	if len(paths) > scanPathLimit {
+		return ScanTrigger{LibraryName: current.LibraryName, Reason: "filesystem"}
+	}
+	result := current
+	if next.Completed {
+		result = next
+	}
+	result.Paths = make([]string, 0, len(paths))
+	for path := range paths {
+		result.Paths = append(result.Paths, path)
+	}
+	sort.Strings(result.Paths)
+	return result
 }
