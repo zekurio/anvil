@@ -10,6 +10,12 @@ import (
 	"time"
 )
 
+// ErrOutputCapture means required parser output exceeded its capture limit.
+var ErrOutputCapture = errors.New("process output capture failed")
+
+// ErrOutputLog means process output could not be recorded completely.
+var ErrOutputLog = errors.New("process output log failed")
+
 type Command struct {
 	Name  string
 	Args  []string
@@ -58,7 +64,7 @@ func (OSRunner) Run(ctx context.Context, command Command) (Result, error) {
 	if logger, ok := ctx.Value(loggerKey{}).(SessionLogger); ok {
 		session, err := logger.StartProcess(ctx, command)
 		if err != nil {
-			return Result{}, fmt.Errorf("open process logs: %w", err)
+			return Result{}, fmt.Errorf("%w: open process logs: %w", ErrOutputLog, err)
 		}
 		// A nil session disables capture for this command.
 		ctx = context.WithValue(ctx, loggerKey{}, struct{}{})
@@ -101,10 +107,12 @@ func (OSRunner) Run(ctx context.Context, command Command) (Result, error) {
 		runErr = fmt.Errorf("run %q: %w", command.Name, err)
 	}
 	if stdout.overflow || stderr.overflow {
-		runErr = errors.Join(runErr, fmt.Errorf("run %q: required process output exceeds %d bytes", command.Name, FullCaptureLimit))
+		runErr = errors.Join(runErr, fmt.Errorf("%w: run %q: required process output exceeds %d bytes", ErrOutputCapture, command.Name, FullCaptureLimit))
 	}
 	runErr = errors.Join(runErr, stdoutLog.err, stderrLog.err)
-	runErr = errors.Join(runErr, recordProcessOutput(ctx, command, result, runErr))
+	if logErr := recordProcessOutput(ctx, command, result, runErr); logErr != nil {
+		runErr = errors.Join(runErr, fmt.Errorf("%w: %w", ErrOutputLog, logErr))
+	}
 	return result, runErr
 }
 
@@ -117,7 +125,9 @@ type outputWriter struct {
 
 func (w *outputWriter) Write(p []byte) (int, error) {
 	if w.err == nil {
-		w.err = streamProcessOutput(w.ctx, w.command, w.stream, p)
+		if err := streamProcessOutput(w.ctx, w.command, w.stream, p); err != nil {
+			w.err = fmt.Errorf("%w: %w", ErrOutputLog, err)
+		}
 	}
 	return len(p), nil
 }
