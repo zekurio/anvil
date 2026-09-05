@@ -72,6 +72,8 @@ type directoryCompletion struct {
 
 type inotifyFilesystemWatcher struct {
 	directoryCompletions map[string]directoryCompletion
+	readyCompletions     map[string]directoryCompletion
+	wakeWrite            int
 	fd                   int
 	wakeRead             int
 	completion           *CompletionTracker
@@ -97,7 +99,7 @@ func (s FilesystemEventSource) Run(ctx context.Context, cfgProvider ConfigProvid
 		return fmt.Errorf("initialize filesystem watcher: %w", err)
 	}
 	wakeFDs := []int{0, 0}
-	if err := unix.Pipe2(wakeFDs, unix.O_CLOEXEC); err != nil {
+	if err := unix.Pipe2(wakeFDs, unix.O_CLOEXEC|unix.O_NONBLOCK); err != nil {
 		return errors.Join(fmt.Errorf("initialize filesystem watcher wake pipe: %w", err), closeFilesystemInotifyFD(fd))
 	}
 	defer func() {
@@ -108,6 +110,7 @@ func (s FilesystemEventSource) Run(ctx context.Context, cfgProvider ConfigProvid
 	watcher := &inotifyFilesystemWatcher{
 		fd:                fd,
 		wakeRead:          wakeFDs[0],
+		wakeWrite:         wakeFDs[1],
 		completion:        s.Completion,
 		triggers:          triggers,
 		reconcileRequests: reconcileRequests,
@@ -194,7 +197,7 @@ func closeFilesystemWakeFD(fd int) error {
 }
 
 func wakeFilesystemReader(fd int) error {
-	if _, err := unix.Write(fd, []byte{1}); err != nil {
+	if _, err := unix.Write(fd, []byte{1}); err != nil && !errors.Is(err, unix.EAGAIN) {
 		return fmt.Errorf("wake filesystem watcher: %w", err)
 	}
 	return nil
@@ -213,14 +216,34 @@ func (w *inotifyFilesystemWatcher) readEvents(ctx context.Context) error {
 			}
 			return fmt.Errorf("poll filesystem events: %w", err)
 		}
-		if pollFDs[1].Revents != 0 {
-			// The parent closes the inotify descriptor only after this loop has
-			// exited, so a reused descriptor number is never read.
+		if ctx.Err() != nil {
 			return nil
 		}
-		if pollFDs[0].Revents&unix.POLLIN == 0 {
+		if pollFDs[1].Revents != 0 {
+			var wake [256]byte
+			for {
+				_, err := unix.Read(w.wakeRead, wake[:])
+				if errors.Is(err, unix.EINTR) {
+					continue
+				}
+				if errors.Is(err, unix.EAGAIN) {
+					break
+				}
+				if err != nil {
+					return fmt.Errorf("read filesystem wake: %w", err)
+				}
+				break
+			}
+		}
+		if pollFDs[0].Revents&unix.POLLIN == 0 && pollFDs[1].Revents == 0 {
 			return fmt.Errorf("poll filesystem events returned flags %#x", pollFDs[0].Revents)
 		}
+		// Take ready repairs before draining inotify. A repair added during this
+		// drain stays queued for the next pass through the same ordering barrier.
+		w.mu.Lock()
+		ready := w.readyCompletions
+		w.readyCompletions = nil
+		w.mu.Unlock()
 
 		batch := make(filesystemTriggerBatch)
 		for {
@@ -249,6 +272,13 @@ func (w *inotifyFilesystemWatcher) readEvents(ctx context.Context) error {
 			if err := w.parseEvents(ctx, buffer[:n], batch); err != nil {
 				w.publishTriggers(batch)
 				return err
+			}
+		}
+		for root, completion := range ready {
+			if w.completion.completeDirectory(root, completion.at, completion.generation) {
+				for _, library := range w.librariesFor(root) {
+					queueFilesystemTrigger(batch, ScanTrigger{LibraryName: library.name, Reason: "transfer-complete", Path: root, Completed: true})
+				}
 			}
 		}
 		// Publish only after draining events already queued in the kernel. This
@@ -455,12 +485,18 @@ func (w *inotifyFilesystemWatcher) reconcile(ctx context.Context, cfg config.Con
 		if err != nil && ctx.Err() == nil {
 			slog.Warn("repair directory watches", "path", root, "error", err)
 		}
-		if completion, ok := completions[root]; ok && added && err == nil && w.completion.completeDirectory(root, completion.at, completion.generation) {
-			batch := make(filesystemTriggerBatch)
-			for _, library := range w.librariesFor(root) {
-				queueFilesystemTrigger(batch, ScanTrigger{LibraryName: library.name, Reason: "transfer-complete", Path: root, Completed: true})
+		if completion, ok := completions[root]; ok && added && err == nil {
+			w.mu.Lock()
+			if w.readyCompletions == nil {
+				w.readyCompletions = make(map[string]directoryCompletion)
 			}
-			w.publishTriggers(batch)
+			if len(w.readyCompletions) < scanPathLimit {
+				w.readyCompletions[root] = completion
+			}
+			w.mu.Unlock()
+			if err := wakeFilesystemReader(w.wakeWrite); err != nil {
+				slog.Warn("wake filesystem reader after repair", "error", err)
+			}
 		}
 	}
 
@@ -935,7 +971,7 @@ func filesystemPathRelevant(library filesystemLibrary, path string, isDir bool) 
 		if ignoredByRegex(library.ignores, current, isDir || current != rel) {
 			return false
 		}
-		if excluded, err := matchesAny(effectiveExcludeGlobs(library.config), current); err == nil && excluded {
+		if excluded, err := matchesExcludedPath(effectiveExcludeGlobs(library.config), current, isDir || current != rel); err == nil && excluded {
 			return false
 		}
 	}
