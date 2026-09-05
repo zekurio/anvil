@@ -60,7 +60,7 @@ func TestLiveStreamCancellationAndFailure(t *testing.T) {
 	sinkErr := errors.New("disk full")
 	logger := &cancelLogger{cancel: cancel, streamErr: sinkErr}
 	result, err := (OSRunner{}).Run(WithLogger(ctx, logger), Command{Name: executable, Args: []string{"-test.run=^TestProcessHelper$"}, Env: []string{"ANVIL_PROCESS_HELPER=wait"}})
-	if !errors.Is(err, context.Canceled) || !errors.Is(err, sinkErr) || !logger.closed || result.StdoutBytes == 0 {
+	if !errors.Is(err, context.Canceled) || !errors.Is(err, sinkErr) || !errors.Is(err, ErrOutputLog) || !logger.closed || result.StdoutBytes == 0 {
 		t.Fatalf("result %+v, err %v, closed %v", result, err, logger.closed)
 	}
 }
@@ -110,10 +110,40 @@ func TestRunnerFullCaptureOverflow(t *testing.T) {
 		t.Fatal(err)
 	}
 	result, err := (OSRunner{}).Run(context.Background(), Command{Name: executable, Args: []string{"-test.run=^TestProcessHelper$"}, Env: []string{"ANVIL_PROCESS_HELPER=overflow"}, RequireFullStdout: true})
-	if err == nil || !strings.Contains(err.Error(), "required process output exceeds") {
+	if !errors.Is(err, ErrOutputCapture) || !strings.Contains(err.Error(), "required process output exceeds") {
 		t.Fatalf("missing overflow error: %v", err)
 	}
 	if len(result.Stdout) != FullCaptureLimit || result.StdoutBytes != FullCaptureLimit+TailCaptureLimit {
 		t.Fatalf("size %d, count %d", len(result.Stdout), result.StdoutBytes)
+	}
+}
+
+type failingLogger struct {
+	startErr error
+	closeErr error
+}
+
+func (l failingLogger) StartProcess(context.Context, Command) (Logger, error)    { return l, l.startErr }
+func (l failingLogger) LogProcess(context.Context, Command, Result, error) error { return l.closeErr }
+
+func TestLogLifecycleErrors(t *testing.T) {
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	failure := errors.New("log failure")
+	for _, phase := range []string{"open", "close"} {
+		t.Run(phase, func(t *testing.T) {
+			logger := failingLogger{}
+			if phase == "open" {
+				logger.startErr = failure
+			} else {
+				logger.closeErr = failure
+			}
+			_, err := (OSRunner{}).Run(WithLogger(context.Background(), logger), Command{Name: executable, Args: []string{"-test.run=^TestProcessHelper$"}, Env: []string{"ANVIL_PROCESS_HELPER=json"}})
+			if !errors.Is(err, ErrOutputLog) || !errors.Is(err, failure) {
+				t.Fatalf("unclassified log error: %v", err)
+			}
+		})
 	}
 }
