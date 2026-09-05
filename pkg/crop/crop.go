@@ -75,10 +75,14 @@ func (d FFmpegDetector) Detect(ctx context.Context, path string) (domain.CropRes
 	)
 	offsets := d.seekOffsets()
 	for _, offset := range offsets {
-		result, err := runner.Run(ctx, process.Command{Name: binary, Args: d.args(path, offset)})
+		result, err := runner.Run(ctx, process.Command{Name: binary, Args: d.args(path, offset), RequireFullStdout: true, RequireFullStderr: true})
 		command = result.Command
 		output = appendOutput(output, combinedOutput(result))
 		if err != nil {
+			if errors.Is(err, process.ErrOutputCapture) || errors.Is(err, process.ErrOutputLog) ||
+				errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				return domain.CropResult{}, fmt.Errorf("ffmpeg cropdetect offset %s: %w", offset, err)
+			}
 			errs = append(errs, fmt.Errorf("offset %s: %w", offset, err))
 		}
 	}

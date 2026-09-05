@@ -2,7 +2,6 @@ package staging
 
 import (
 	"context"
-	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -12,22 +11,13 @@ import (
 	"github.com/zekurio/anvil/pkg/replace"
 )
 
-type artifactProtectionFunc func(context.Context, string) (bool, error)
-
-func (f artifactProtectionFunc) PublishArtifactProtected(ctx context.Context, path string) (bool, error) {
-	return f(ctx, path)
-}
-
-func TestStageBlockProtectsJournalOwnedLegacyArtifact(t *testing.T) {
+func TestStageBlockLeavesLegacyArtifactForMaintenance(t *testing.T) {
 	job, destination := stagingTestJob(t)
 	legacy := destination + replace.PartSuffix
 	if err := os.WriteFile(legacy, []byte("encoded artifact"), 0o600); err != nil {
 		t.Fatalf("write legacy artifact: %v", err)
 	}
-	protection := artifactProtectionFunc(func(_ context.Context, path string) (bool, error) {
-		return path == legacy, nil
-	})
-	block := StageBlock{Manager: Manager{Root: Root(t.TempDir())}, ArtifactProtection: protection}
+	block := StageBlock{Manager: Manager{Root: Root(t.TempDir())}}
 
 	if err := block.Run(context.Background(), job); err != nil {
 		t.Fatalf("StageBlock.Run: %v", err)
@@ -38,27 +28,6 @@ func TestStageBlockProtectsJournalOwnedLegacyArtifact(t *testing.T) {
 	wantOutput := replace.PartPath(destination, replace.PartJobLabel(job.Job.ID))
 	if job.OutputPath != wantOutput {
 		t.Fatalf("OutputPath = %q, want %q", job.OutputPath, wantOutput)
-	}
-}
-
-func TestStageBlockFailsClosedOnProtectionError(t *testing.T) {
-	job, destination := stagingTestJob(t)
-	legacy := destination + replace.PartSuffix
-	if err := os.WriteFile(legacy, []byte("encoded artifact"), 0o600); err != nil {
-		t.Fatalf("write legacy artifact: %v", err)
-	}
-	lookupErr := errors.New("journal unavailable")
-	protection := artifactProtectionFunc(func(context.Context, string) (bool, error) {
-		return false, lookupErr
-	})
-	block := StageBlock{Manager: Manager{Root: Root(t.TempDir())}, ArtifactProtection: protection}
-
-	err := block.Run(context.Background(), job)
-	if !errors.Is(err, lookupErr) {
-		t.Fatalf("StageBlock.Run error = %v, want %v", err, lookupErr)
-	}
-	if _, err := os.Stat(legacy); err != nil {
-		t.Fatalf("legacy artifact after protection error: %v", err)
 	}
 }
 

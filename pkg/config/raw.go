@@ -19,6 +19,7 @@ type rawDaemonConfig struct {
 	ControlSocket     string    `toml:"control_socket"`
 	WorkerCount       *int      `toml:"worker_count"`
 	TotalThreads      *int      `toml:"total_threads"`
+	MaxThreadsPerJob  *int      `toml:"max_threads_per_job"`
 	MaxAttempts       *int      `toml:"max_attempts"`
 	ScanInterval      *Duration `toml:"scan_interval"`
 	FSDebounce        *Duration `toml:"filesystem_event_debounce"`

@@ -90,6 +90,8 @@ type DaemonConfig struct {
 	WorkerCount int `toml:"worker_count"`
 	// Shared encode-thread budget. Defaults to the CPU count; integer >= 0.
 	TotalThreads int `toml:"total_threads"`
+	// Per-job thread cap. Zero shares the budget across worker slots; integer >= 0.
+	MaxThreadsPerJob int `toml:"max_threads_per_job"`
 	// Retries before a job stays failed; integer >= 1.
 	MaxAttempts int `toml:"max_attempts"`
 	// Full-library scan cadence; duration > 0.

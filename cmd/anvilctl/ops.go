@@ -95,9 +95,11 @@ func runStaging(ctx context.Context, e *env, args []string) error {
 func runStagingCleanup(ctx context.Context, e *env, args []string) error {
 	var olderThan string
 	var dryRun bool
+	var legacyParts bool
 	flags, positional, err := e.subcommand(stagingCleanupHelp, args, func(f *flag.FlagSet) {
 		f.StringVar(&olderThan, "older-than", "", "remove Anvil staging dirs older than this duration; defaults to daemon.staging_cleanup_age")
 		f.BoolVar(&dryRun, "dry-run", false, "show cleanup candidates without deleting them")
+		f.BoolVar(&legacyParts, "legacy-parts", false, "also sweep old unscoped artifacts in configured output libraries")
 	})
 	if flags == nil {
 		return err
@@ -106,7 +108,7 @@ func runStagingCleanup(ctx context.Context, e *env, args []string) error {
 		return err
 	}
 	response, err := e.client.CleanupStaging(ctx, control.StagingCleanupRequest{
-		OlderThan: olderThan, DryRun: dryRun,
+		OlderThan: olderThan, DryRun: dryRun, LegacyParts: legacyParts,
 	})
 	if err != nil {
 		return err

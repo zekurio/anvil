@@ -37,7 +37,13 @@ func newJobSlug() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return adjective + "-" + color + "-" + animal, nil
+	// The word lists contain only 13,824 combinations. Add entropy so a
+	// large job history cannot exhaust the readable names.
+	var suffix [6]byte
+	if _, err := rand.Read(suffix[:]); err != nil {
+		return "", fmt.Errorf("generate job slug suffix: %w", err)
+	}
+	return fmt.Sprintf("%s-%s-%s-%x", adjective, color, animal, suffix), nil
 }
 
 func randomWord(words []string) (string, error) {

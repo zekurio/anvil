@@ -251,7 +251,6 @@ func (r Runner) verifyCurrentOccurrence(ctx context.Context, job *pipeline.JobCo
 
 func DefaultPipeline(tempDir string, journal replacepkg.PublishJournal) pipeline.Runner {
 	stageManager := staging.Manager{Root: staging.Root(tempDir)}
-	artifactProtection, _ := journal.(replacepkg.ArtifactProtection)
 	prober := probe.FFProbe{}
 	publishManager := replacepkg.Manager{Journal: journal}
 	return pipeline.Runner{
@@ -260,7 +259,7 @@ func DefaultPipeline(tempDir string, journal replacepkg.PublishJournal) pipeline
 			crop.Block{},
 			audio.Block{},
 			subtitle.Block{},
-			staging.StageBlock{Manager: stageManager, ArtifactProtection: artifactProtection},
+			staging.StageBlock{Manager: stageManager},
 			search.Block{},
 			ffmpeg.Block{},
 			validate.Block{Validator: validate.Validator{Prober: prober}},

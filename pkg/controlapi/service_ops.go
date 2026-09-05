@@ -12,6 +12,7 @@ import (
 	"github.com/zekurio/anvil/pkg/config"
 	"github.com/zekurio/anvil/pkg/control"
 	"github.com/zekurio/anvil/pkg/domain"
+	"github.com/zekurio/anvil/pkg/replace"
 	"github.com/zekurio/anvil/pkg/scanner"
 	"github.com/zekurio/anvil/pkg/staging"
 	"github.com/zekurio/anvil/pkg/store"
@@ -331,8 +332,33 @@ func (s Service) CleanupStaging(ctx context.Context, request control.StagingClea
 		Candidates: result.Candidates, Removed: result.Removed, Skipped: result.Skipped,
 		Protected: result.Protected, Errors: result.Errors, ProtectedJobs: result.ProtectedJobs,
 	}
-	if !request.DryRun && (result.Removed > 0 || len(result.Errors) > 0) {
-		slog.Info("control cleaned staging", "removed", result.Removed, "protected", result.Protected, "errors", len(result.Errors))
+	if request.LegacyParts {
+		var roots []string
+		for _, library := range cfg.Libraries {
+			root := library.Path
+			if library.Kind == "download" {
+				root = library.Download.HandoffPath
+			}
+			absolute, err := filepath.Abs(root)
+			if err != nil {
+				return response, fmt.Errorf("resolve legacy cleanup root: %w", err)
+			}
+			roots = append(roots, absolute)
+		}
+		legacy, err := replace.SweepLegacyParts(ctx, s.Store, replace.LegacySweepOptions{
+			Roots: roots, OlderThan: age, Now: s.now(), DryRun: request.DryRun,
+		})
+		response.LegacyParts = &control.LegacyPartCleanupSummary{Candidates: legacy.Candidates, Removed: legacy.Removed, Protected: legacy.Protected}
+		if err != nil {
+			response.Errors = append(response.Errors, err.Error())
+		}
+	}
+	legacyRemoved := 0
+	if response.LegacyParts != nil {
+		legacyRemoved = response.LegacyParts.Removed
+	}
+	if !request.DryRun && (result.Removed > 0 || legacyRemoved > 0 || len(response.Errors) > 0) {
+		slog.Info("control cleaned staging", "removed", result.Removed, "protected", result.Protected, "legacy_removed", legacyRemoved, "errors", len(response.Errors))
 	}
 	return response, nil
 }

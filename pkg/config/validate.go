@@ -33,6 +33,9 @@ func (c Config) Validate() error {
 	if c.Daemon.TotalThreads < 0 {
 		problems = append(problems, "daemon.total_threads must be non-negative")
 	}
+	if c.Daemon.MaxThreadsPerJob < 0 {
+		problems = append(problems, "daemon.max_threads_per_job must be non-negative")
+	}
 	if c.Daemon.MaxAttempts < 1 {
 		problems = append(problems, "daemon.max_attempts must be at least 1")
 	}
