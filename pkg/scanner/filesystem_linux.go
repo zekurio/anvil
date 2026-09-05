@@ -11,6 +11,8 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"reflect"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -45,6 +47,8 @@ type filesystemLibrary struct {
 	name     domain.LibraryName
 	root     string
 	download bool
+	config   config.LibraryConfig
+	ignores  []*regexp.Regexp
 }
 
 type filesystemWatchAlias struct {
@@ -61,15 +65,23 @@ type filesystemWatch struct {
 
 type filesystemTriggerBatch map[domain.LibraryName]ScanTrigger
 
+type directoryCompletion struct {
+	at         time.Time
+	generation uint64
+}
+
 type inotifyFilesystemWatcher struct {
-	fd                int
-	wakeRead          int
-	completion        *CompletionTracker
-	triggers          chan<- ScanTrigger
-	reconcileRequests chan<- struct{}
-	triggerReady      chan struct{}
+	directoryCompletions map[string]directoryCompletion
+	fd                   int
+	wakeRead             int
+	completion           *CompletionTracker
+	triggers             chan<- ScanTrigger
+	reconcileRequests    chan<- struct{}
+	triggerReady         chan struct{}
 
 	mu             sync.Mutex
+	dirty          map[string]struct{}
+	repairAll      bool
 	wdToWatch      map[int]*filesystemWatch
 	dirToWD        map[string]int
 	ignoredPending map[int]int
@@ -109,7 +121,7 @@ func (s FilesystemEventSource) Run(ctx context.Context, cfgProvider ConfigProvid
 
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	watcher.reconcile(runCtx, cfgProvider())
+	watcher.reconcile(runCtx, cfgProvider(), true)
 
 	dispatchDone := make(chan struct{})
 	go func() {
@@ -126,6 +138,8 @@ func (s FilesystemEventSource) Run(ctx context.Context, cfgProvider ConfigProvid
 	if interval <= 0 {
 		interval = DefaultConfigReconcileInterval
 	}
+	repairTimer := time.NewTicker(15 * time.Minute)
+	defer repairTimer.Stop()
 	reconcileTimer := time.NewTimer(interval)
 	defer reconcileTimer.Stop()
 
@@ -154,10 +168,12 @@ func (s FilesystemEventSource) Run(ctx context.Context, cfgProvider ConfigProvid
 			return errors.Join(readErr, closeFilesystemInotifyFD(fd))
 		case <-reconcileRequests:
 			stopTimer(reconcileTimer)
-			watcher.reconcile(runCtx, cfgProvider())
+			watcher.reconcile(runCtx, cfgProvider(), false)
 			reconcileTimer.Reset(interval)
+		case <-repairTimer.C:
+			watcher.reconcile(runCtx, cfgProvider(), true)
 		case <-reconcileTimer.C:
-			watcher.reconcile(runCtx, cfgProvider())
+			watcher.reconcile(runCtx, cfgProvider(), false)
 			reconcileTimer.Reset(interval)
 		}
 	}
@@ -266,6 +282,9 @@ func (w *inotifyFilesystemWatcher) handleEvent(ctx context.Context, wd int, mask
 		slog.Warn("filesystem event queue overflow", "action", "clear completion confidence and reconcile watches")
 		w.completion.Reset()
 		w.clearPendingTriggers()
+		w.mu.Lock()
+		w.repairAll = true
+		w.mu.Unlock()
 		w.requestReconcile()
 		for _, libraryName := range w.libraryNames() {
 			// Ordering was lost, so replace stronger completion events from this
@@ -289,51 +308,83 @@ func (w *inotifyFilesystemWatcher) handleEvent(ctx context.Context, wd int, mask
 	// Mutation events are ordered after close events on the same inotify fd.
 	// Invalidate every lexical alias before any trigger from this event can be
 	// published; a later close will establish confidence again.
-	if !isDir && mask&(unix.IN_CREATE|unix.IN_MODIFY|unix.IN_MOVED_FROM) != 0 {
+	if mask&(unix.IN_CREATE|unix.IN_MODIFY|unix.IN_MOVED_FROM|unix.IN_DELETE) != 0 {
 		for _, path := range targets {
 			w.completion.Invalidate(path)
 		}
 	}
 
-	if mask&unix.IN_DELETE_SELF != 0 {
-		w.pruneStaleAliases(aliases)
-		return
+	if mask&(unix.IN_DELETE_SELF|unix.IN_MOVE_SELF) != 0 {
+		w.mu.Lock()
+		w.repairAll = true
+		w.mu.Unlock()
+		w.requestReconcile()
 	}
-	if mask&unix.IN_MOVE_SELF != 0 {
-		w.pruneStaleAliases(aliases)
-	}
-
 	if isDir && mask&(unix.IN_CREATE|unix.IN_MOVED_TO) != 0 {
+		w.mu.Lock()
+		if w.dirty == nil {
+			w.dirty = make(map[string]struct{})
+		}
 		for _, path := range targets {
-			if _, err := w.addRecursive(ctx, path); err != nil && ctx.Err() == nil && !errors.Is(err, fs.ErrNotExist) {
-				slog.Warn("add filesystem watches for new directory", "path", path, "error", err)
+			if len(w.dirty) < scanPathLimit {
+				w.dirty[path] = struct{}{}
+			} else {
+				w.repairAll = true
 			}
 		}
+		w.mu.Unlock()
+		w.requestReconcile()
 	}
-	if isDir && mask&unix.IN_MOVED_TO != 0 {
-		for _, path := range targets {
-			w.handleMovedInDirectory(ctx, path, batch)
-		}
-		return
-	}
+	// Directory completion marks avoid walking the tree in the event reader.
 	if mask&filesystemTriggerMask == 0 {
 		return
 	}
 
-	completionEvent := !isDir && mask&(unix.IN_CLOSE_WRITE|unix.IN_MOVED_TO) != 0
+	completionEvent := mask&unix.IN_MOVED_TO != 0 || (!isDir && mask&unix.IN_CLOSE_WRITE != 0)
 	markedAt := time.Now().UTC()
 	for _, path := range targets {
 		libraries := w.librariesFor(path)
+		if isDir && mask&unix.IN_MOVED_TO != 0 {
+			w.mu.Lock()
+			for _, library := range w.libraries {
+				if library.root != path && pathWithinRoot(library.root, path) {
+					libraries = append(libraries, library)
+				}
+			}
+			w.mu.Unlock()
+		}
+		filtered := libraries[:0]
+		for _, library := range libraries {
+			if filesystemPathRelevant(library, path, isDir) {
+				filtered = append(filtered, library)
+			}
+		}
+		libraries = filtered
 		if completionEvent {
 			for _, library := range libraries {
 				if library.download {
-					w.completion.Mark(path, markedAt)
+					if isDir {
+						w.mu.Lock()
+						if w.directoryCompletions == nil {
+							w.directoryCompletions = make(map[string]directoryCompletion)
+						}
+						if len(w.directoryCompletions) < scanPathLimit {
+							w.directoryCompletions[path] = directoryCompletion{at: markedAt, generation: w.completion.currentGeneration()}
+						}
+						w.mu.Unlock()
+						w.requestReconcile()
+					} else {
+						w.completion.Mark(path, markedAt)
+					}
 					break
 				}
 			}
 		}
 		for _, library := range libraries {
 			trigger := ScanTrigger{LibraryName: library.name, Reason: "filesystem", Path: path}
+			if isDir && (library.config.Kind != "download" || library.config.Download.PackageMode == "file") {
+				trigger.Path = ""
+			}
 			if completionEvent && library.download && w.completion != nil {
 				trigger.Reason = "transfer-complete"
 				trigger.Completed = true
@@ -343,44 +394,7 @@ func (w *inotifyFilesystemWatcher) handleEvent(ctx context.Context, wd int, mask
 	}
 }
 
-func (w *inotifyFilesystemWatcher) handleMovedInDirectory(ctx context.Context, path string, batch filesystemTriggerBatch) {
-	libraries := w.librariesForMovedDirectory(path)
-	if w.completion != nil {
-		markRoots := make(map[string]struct{})
-		for _, library := range libraries {
-			if !library.download {
-				continue
-			}
-			root := path
-			if pathWithinRoot(library.root, path) {
-				root = library.root
-			}
-			markRoots[root] = struct{}{}
-		}
-		roots := make([]string, 0, len(markRoots))
-		for root := range markRoots {
-			roots = append(roots, root)
-		}
-		sort.Strings(roots)
-		markedAt := time.Now().UTC()
-		for _, root := range roots {
-			if err := w.markRegularFiles(ctx, root, markedAt); err != nil && ctx.Err() == nil && !errors.Is(err, fs.ErrNotExist) {
-				slog.Warn("mark files in completed directory", "path", root, "error", err)
-			}
-		}
-	}
-
-	for _, library := range libraries {
-		trigger := ScanTrigger{LibraryName: library.name, Reason: "filesystem", Path: path}
-		if library.download && w.completion != nil {
-			trigger.Reason = "transfer-complete"
-			trigger.Completed = true
-		}
-		queueFilesystemTrigger(batch, trigger)
-	}
-}
-
-func (w *inotifyFilesystemWatcher) reconcile(ctx context.Context, cfg config.Config) {
+func (w *inotifyFilesystemWatcher) reconcile(ctx context.Context, cfg config.Config, full bool) {
 	names := make([]string, 0, len(cfg.Libraries))
 	for name := range cfg.Libraries {
 		names = append(names, name)
@@ -393,6 +407,7 @@ func (w *inotifyFilesystemWatcher) reconcile(ctx context.Context, cfg config.Con
 		configured := filesystemLibrary{
 			name:     domain.LibraryName(name),
 			download: library.Kind == "download",
+			config:   library,
 		}
 		root := strings.TrimSpace(library.Path)
 		if root != "" {
@@ -403,11 +418,51 @@ func (w *inotifyFilesystemWatcher) reconcile(ctx context.Context, cfg config.Con
 				configured.root = filepath.Clean(absRoot)
 			}
 		}
+		var ignoreErr error
+		configured.ignores, ignoreErr = compileIgnoreRegexps(library.IgnoreRegex)
+		if ignoreErr != nil {
+			slog.Warn("compile filesystem ignore patterns", "library", name, "error", ignoreErr)
+		}
 		next[configured.name] = configured
 	}
 
+	w.mu.Lock()
+	changed := len(next) != len(w.libraries)
+	for name, library := range next {
+		if previous, ok := w.libraries[name]; !ok || !reflect.DeepEqual(previous.config, library.config) {
+			changed = true
+		}
+	}
+	dirty := w.dirty
+	w.dirty = nil
+	completions := w.directoryCompletions
+	w.directoryCompletions = nil
+	for path := range completions {
+		if dirty == nil {
+			dirty = make(map[string]struct{})
+		}
+		dirty[path] = struct{}{}
+	}
+	full = full || changed || w.repairAll
+	w.repairAll = false
+	w.mu.Unlock()
 	w.replaceLibraries(next)
-	w.removeUnneededWatches(next)
+	if full {
+		w.removeUnneededWatches(next)
+	}
+	for root := range dirty {
+		added, err := w.addRecursive(ctx, root)
+		if err != nil && ctx.Err() == nil {
+			slog.Warn("repair directory watches", "path", root, "error", err)
+		}
+		if completion, ok := completions[root]; ok && added && err == nil && w.completion.completeDirectory(root, completion.at, completion.generation) {
+			batch := make(filesystemTriggerBatch)
+			for _, library := range w.librariesFor(root) {
+				queueFilesystemTrigger(batch, ScanTrigger{LibraryName: library.name, Reason: "transfer-complete", Path: root, Completed: true})
+			}
+			w.publishTriggers(batch)
+		}
+	}
 
 	seenRoots := make(map[string]struct{}, len(next))
 	for _, name := range names {
@@ -419,6 +474,18 @@ func (w *inotifyFilesystemWatcher) reconcile(ctx context.Context, cfg config.Con
 			continue
 		}
 		seenRoots[library.root] = struct{}{}
+		if !full {
+			w.mu.Lock()
+			wd, exists := w.dirToWD[library.root]
+			var alias filesystemWatchAlias
+			if watch := w.wdToWatch[wd]; watch != nil {
+				alias = watch.aliases[library.root]
+			}
+			w.mu.Unlock()
+			if exists && filesystemWatchIdentityMatches(alias) {
+				continue
+			}
+		}
 		added, err := w.addRecursive(ctx, library.root)
 		if err != nil {
 			if ctx.Err() == nil {
@@ -456,28 +523,34 @@ func (w *inotifyFilesystemWatcher) removeUnneededWatches(libraries map[domain.Li
 	sort.Strings(roots)
 
 	w.mu.Lock()
-	defer w.mu.Unlock()
-	for _, wd := range sortedWatchDescriptors(w.wdToWatch) {
-		watch := w.wdToWatch[wd]
-		for _, alias := range sortedWatchAliases(watch) {
-			keep := filesystemWatchIdentityMatches(alias)
-			if keep {
-				keep = false
-				for _, root := range roots {
-					if pathWithinRoot(alias.path, root) {
-						keep = true
-						break
-					}
+	aliases := make(map[int][]filesystemWatchAlias, len(w.wdToWatch))
+	for wd, watch := range w.wdToWatch {
+		aliases[wd] = sortedWatchAliases(watch)
+	}
+	w.mu.Unlock()
+	for wd, entries := range aliases {
+		for _, alias := range entries {
+			keep := false
+			for _, root := range roots {
+				if pathWithinRoot(alias.path, root) {
+					keep = true
+					break
 				}
 			}
-			if !keep {
+			if keep {
+				keep = filesystemWatchIdentityMatches(alias)
+			}
+			if keep {
+				continue
+			}
+			w.mu.Lock()
+			if watch := w.wdToWatch[wd]; watch != nil && watch.aliases[alias.path] == alias {
 				w.deleteAliasLocked(wd, alias.path)
+				if err := w.removeEmptyWatchLocked(wd); err != nil {
+					slog.Debug("remove unneeded filesystem watch", "wd", wd, "error", err)
+				}
 			}
-		}
-		if len(watch.aliases) == 0 {
-			if err := w.removeEmptyWatchLocked(wd); err != nil {
-				slog.Debug("remove unneeded filesystem watch", "wd", wd, "error", err)
-			}
+			w.mu.Unlock()
 		}
 	}
 }
@@ -496,9 +569,10 @@ func (w *inotifyFilesystemWatcher) addRecursive(ctx context.Context, root string
 	}
 
 	addedAny := false
+	var repairErr error
 	err = filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
-			slog.Warn("skip filesystem watch path", "path", path, "error", walkErr)
+			repairErr = errors.Join(repairErr, walkErr)
 			if entry != nil && entry.IsDir() {
 				return filepath.SkipDir
 			}
@@ -510,8 +584,18 @@ func (w *inotifyFilesystemWatcher) addRecursive(ctx context.Context, root string
 		if !entry.IsDir() {
 			return nil
 		}
+		relevant := false
+		for _, library := range w.librariesFor(path) {
+			if filesystemPathRelevant(library, path, true) {
+				relevant = true
+				break
+			}
+		}
+		if !relevant {
+			return filepath.SkipDir
+		}
 		if err := w.addWatch(path); err != nil {
-			slog.Warn("add filesystem watch", "path", path, "error", err)
+			repairErr = errors.Join(repairErr, err)
 			return filepath.SkipDir
 		}
 		addedAny = true
@@ -520,7 +604,7 @@ func (w *inotifyFilesystemWatcher) addRecursive(ctx context.Context, root string
 	if err != nil {
 		return addedAny, err
 	}
-	return addedAny, nil
+	return addedAny, repairErr
 }
 
 func (w *inotifyFilesystemWatcher) addWatch(dir string) error {
@@ -583,28 +667,6 @@ func (w *inotifyFilesystemWatcher) addWatch(dir string) error {
 	return nil
 }
 
-func (w *inotifyFilesystemWatcher) markRegularFiles(ctx context.Context, root string, at time.Time) error {
-	return filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		if entry.IsDir() {
-			return nil
-		}
-		info, err := entry.Info()
-		if err != nil {
-			return err
-		}
-		if info.Mode().IsRegular() {
-			w.completion.Mark(path, at)
-		}
-		return nil
-	})
-}
-
 func (w *inotifyFilesystemWatcher) aliasesForDescriptor(wd int) []filesystemWatchAlias {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -623,42 +685,6 @@ func (w *inotifyFilesystemWatcher) handleIgnored(wd int) {
 		return
 	}
 	w.deleteWatchStateLocked(wd)
-}
-
-func (w *inotifyFilesystemWatcher) pruneStaleAliases(eventAliases []filesystemWatchAlias) {
-	staleRoots := make([]string, 0, len(eventAliases))
-	for _, alias := range eventAliases {
-		if !filesystemWatchIdentityMatches(alias) {
-			staleRoots = append(staleRoots, alias.path)
-		}
-	}
-	if len(staleRoots) == 0 {
-		return
-	}
-	sort.Strings(staleRoots)
-
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	for _, wd := range sortedWatchDescriptors(w.wdToWatch) {
-		watch := w.wdToWatch[wd]
-		for _, alias := range sortedWatchAliases(watch) {
-			underStaleRoot := false
-			for _, root := range staleRoots {
-				if pathWithinRoot(alias.path, root) {
-					underStaleRoot = true
-					break
-				}
-			}
-			if underStaleRoot && !filesystemWatchIdentityMatches(alias) {
-				w.deleteAliasLocked(wd, alias.path)
-			}
-		}
-		if len(watch.aliases) == 0 {
-			if err := w.removeEmptyWatchLocked(wd); err != nil {
-				slog.Debug("remove stale moved filesystem watch", "wd", wd, "error", err)
-			}
-		}
-	}
 }
 
 func (w *inotifyFilesystemWatcher) deleteAliasLocked(wd int, path string) {
@@ -706,15 +732,6 @@ func (w *inotifyFilesystemWatcher) removeEmptyWatchLocked(wd int) error {
 func filesystemWatchIdentityMatches(alias filesystemWatchAlias) bool {
 	var stat unix.Stat_t
 	return unix.Stat(alias.path, &stat) == nil && alias.device == stat.Dev && alias.inode == stat.Ino
-}
-
-func sortedWatchDescriptors(watches map[int]*filesystemWatch) []int {
-	wds := make([]int, 0, len(watches))
-	for wd := range watches {
-		wds = append(wds, wd)
-	}
-	sort.Ints(wds)
-	return wds
 }
 
 func sortedWatchAliases(watch *filesystemWatch) []filesystemWatchAlias {
@@ -794,24 +811,6 @@ func (w *inotifyFilesystemWatcher) librariesFor(path string) []filesystemLibrary
 	return matched
 }
 
-func (w *inotifyFilesystemWatcher) librariesForMovedDirectory(path string) []filesystemLibrary {
-	w.mu.Lock()
-	libraries := make([]filesystemLibrary, 0, len(w.libraries))
-	for _, library := range w.libraries {
-		if library.root == "" {
-			continue
-		}
-		if pathWithinRoot(path, library.root) || pathWithinRoot(library.root, path) {
-			libraries = append(libraries, library)
-		}
-	}
-	w.mu.Unlock()
-	sort.Slice(libraries, func(i, j int) bool {
-		return libraries[i].name < libraries[j].name
-	})
-	return libraries
-}
-
 func (w *inotifyFilesystemWatcher) libraryNames() []domain.LibraryName {
 	w.mu.Lock()
 	names := make([]domain.LibraryName, 0, len(w.libraries))
@@ -838,24 +837,7 @@ func queueFilesystemTrigger(batch filesystemTriggerBatch, trigger ScanTrigger) {
 }
 
 func strongerFilesystemTrigger(current ScanTrigger, next ScanTrigger) ScanTrigger {
-	if current.Completed != next.Completed {
-		if next.Completed {
-			return next
-		}
-		return current
-	}
-	// A pathless trigger requests a whole-library scan (not a stability delay),
-	// so it is stronger than a path-specific ordinary event after overflow.
-	if !current.Completed && (current.Path == "") != (next.Path == "") {
-		if next.Path == "" {
-			return next
-		}
-		return current
-	}
-	if next.Path < current.Path {
-		return next
-	}
-	return current
+	return mergeScanTrigger(current, next)
 }
 
 func (w *inotifyFilesystemWatcher) publishTriggers(batch filesystemTriggerBatch) {
@@ -937,4 +919,31 @@ func (w *inotifyFilesystemWatcher) requestReconcile() {
 	case w.reconcileRequests <- struct{}{}:
 	default:
 	}
+}
+
+func filesystemPathRelevant(library filesystemLibrary, path string, isDir bool) bool {
+	rel, err := filepath.Rel(library.root, path)
+	if err != nil {
+		return true
+	}
+	rel = filepath.ToSlash(rel)
+	if strings.HasSuffix(rel, ".anvil-part") {
+		return false
+	}
+	// Check ancestors too, since their descendants can still have old watches.
+	for current := rel; current != "."; current = filepath.ToSlash(filepath.Dir(current)) {
+		if ignoredByRegex(library.ignores, current, isDir || current != rel) {
+			return false
+		}
+		if excluded, err := matchesAny(effectiveExcludeGlobs(library.config), current); err == nil && excluded {
+			return false
+		}
+	}
+	if isDir {
+		return true
+	}
+	if library.download && library.config.Download.PackageMode != "file" {
+		return true
+	}
+	return likelyMediaFile(rel)
 }
