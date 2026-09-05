@@ -61,7 +61,8 @@ type CancelJobResult struct {
 }
 
 type SQLiteStore struct {
-	db *sql.DB
+	db            *sql.DB
+	workAvailable chan struct{}
 }
 
 type EnqueueJobInput struct {
@@ -89,6 +90,8 @@ type ScanEntry struct {
 }
 
 type ApplyScanInput struct {
+	// SourcePaths limits replacement to these exact paths. Nil selects the full library.
+	SourcePaths     []string
 	LibraryName     domain.LibraryName
 	Priority        int
 	RequeueExisting bool
@@ -173,7 +176,7 @@ func Open(ctx context.Context, path string) (*SQLiteStore, error) {
 	}
 	db.SetMaxOpenConns(1)
 
-	store := &SQLiteStore{db: db}
+	store := &SQLiteStore{db: db, workAvailable: make(chan struct{}, 1)}
 	if err := store.configure(ctx); err != nil {
 		return nil, closeDBOnError(db, err)
 	}
@@ -205,7 +208,7 @@ func OpenReadOnly(ctx context.Context, path string) (*SQLiteStore, error) {
 	}
 	db.SetMaxOpenConns(1)
 
-	store := &SQLiteStore{db: db}
+	store := &SQLiteStore{db: db, workAvailable: make(chan struct{}, 1)}
 	if err := store.configureReadOnly(ctx); err != nil {
 		return nil, closeDBOnError(db, err)
 	}
@@ -238,4 +241,15 @@ func closeDBOnError(db *sql.DB, cause error) error {
 		return errors.Join(cause, fmt.Errorf("close sqlite store after error: %w", closeErr))
 	}
 	return cause
+}
+
+// WorkAvailable signals that the queue can contain new runnable work.
+// Signals are coalesced. Callers must also check the queue at startup.
+func (s *SQLiteStore) WorkAvailable() <-chan struct{} { return s.workAvailable }
+
+func (s *SQLiteStore) notifyWork() {
+	select {
+	case s.workAvailable <- struct{}{}:
+	default:
+	}
 }
