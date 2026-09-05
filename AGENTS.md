@@ -147,11 +147,12 @@ process output goes to per-attempt log files plus artifact events
 
 - `pkg/domain` holds core job/attempt/media/profile/encode types and must
   stay free of persistence, ffmpeg, and CLI concerns.
-- `pkg/config` is the only place raw TOML is parsed. Downstream code receives
-  resolved values via `cfg.ResolveForLibrary`; never reparse config elsewhere.
-  Canonical defaults and profiles live in `pkg/config/defaults.go`. The Nix
-  module passes TOML-shaped settings to Go. The reference config in
-  `examples/anvil-reference.toml` documents the defaults.
+- `pkg/config` is the only place raw TOML is parsed. `Load` decodes into the
+  pointer-bearing raw structs in `pkg/config/raw.go` and `resolve.go` fills
+  defaults in one pass, so downstream code always sees effective values via
+  `cfg.ResolveForLibrary`; never reparse config elsewhere. Keep the field doc
+  comments in `pkg/config/schema.go` and `examples/anvil-reference.toml` in
+  sync. The Nix module passes TOML-shaped settings to Go.
 - Pipeline step order is fixed in `worker.DefaultPipeline`. A block's `Name()`
   is its event and checkpoint name. The publish block selects replace or
   handoff from the library kind.

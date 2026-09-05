@@ -240,7 +240,7 @@ func (s *Scheduler) interval() time.Duration {
 	if s.ConfigProvider != nil {
 		return s.ConfigProvider().SchedulerInterval()
 	}
-	return configMustDuration(config.DefaultSchedulerTick)
+	return config.DefaultSchedulerTick
 }
 
 func (s *Scheduler) allocator(cfg config.Config) resources.Allocator {
@@ -449,12 +449,4 @@ func (s *Scheduler) now() time.Time {
 		return s.Now().UTC()
 	}
 	return time.Now().UTC()
-}
-
-func configMustDuration(value string) time.Duration {
-	duration, err := time.ParseDuration(value)
-	if err != nil {
-		panic(err)
-	}
-	return duration
 }
