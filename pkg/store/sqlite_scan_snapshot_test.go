@@ -2,7 +2,10 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -160,5 +163,124 @@ func TestForceSupersedesPendingScan(t *testing.T) {
 	source, err := s.GetMediaSourceByPath(context.Background(), "test", "a")
 	if err != nil || source.Fingerprint.SizeBytes != 2 {
 		t.Fatalf("force overwritten: %+v %v", source, err)
+	}
+}
+
+func BenchmarkOnePathLibraryScan(b *testing.B) {
+	s := scanStore(b)
+	entries := largeScanEntries(33000, false)
+	applyEntries(b, s, scanToken(b, s), nil, entries...)
+	entry := entries[len(entries)/2]
+	b.ResetTimer()
+	for b.Loop() {
+		applyEntries(b, s, scanToken(b, s), []string{entry.SourceRelativePath}, entry)
+	}
+}
+
+func TestScopedScanUsesPathIndex(t *testing.T) {
+	s := scanStore(t)
+	rows, err := s.db.Query(`EXPLAIN QUERY PLAN SELECT `+mediaSourceColumns+` FROM media_sources WHERE is_current = 1 AND library_name = ? AND relative_path IN (SELECT value FROM json_each(?))`, "test", `["a"]`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := rows.Close(); err != nil {
+			t.Error(err)
+		}
+	}()
+	found := false
+	for rows.Next() {
+		var id, parent, unused int
+		var detail string
+		if err := rows.Scan(&id, &parent, &unused, &detail); err != nil {
+			t.Fatal(err)
+		}
+		t.Log(detail)
+		if strings.Contains(detail, "library_name=? AND relative_path=?") {
+			found = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if !found {
+		t.Fatal("scoped query does not seek by source path")
+	}
+}
+
+func TestUpgradeSchemaSixToSeven(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "upgrade.db")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Version 7 adds only source_scans. Remove that addition to build the
+	// previous schema, including its existing full-scan watermark.
+	start := strings.Index(currentSchema, "CREATE TABLE source_scans (")
+	end := start + strings.Index(currentSchema[start:], "CREATE TABLE media_sources (")
+	schemaSix := currentSchema[:start] + currentSchema[end:]
+	_, setupErr := db.ExecContext(ctx, schemaSix+`INSERT INTO schema_migrations VALUES (6, '2026-09-05T00:00:00Z'); INSERT INTO library_scans VALUES ('test', 4, 3, NULL);`)
+	closeErr := db.Close()
+	if setupErr != nil {
+		t.Fatal(setupErr)
+	}
+	if closeErr != nil {
+		t.Fatal(closeErr)
+	}
+	s, err := Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := s.Close(); err != nil {
+			t.Error(err)
+		}
+	}()
+	var version int
+	if err := s.db.QueryRow(`SELECT max(version) FROM schema_migrations`).Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if version != 7 {
+		t.Fatalf("schema version %d", version)
+	}
+	if result := applyEntries(t, s, ScanToken{LibraryName: "test", Sequence: 2}, []string{"a"}, pathEntry("a", 1)); result.Applied {
+		t.Fatal("upgrade lost full watermark")
+	}
+	applyEntries(t, s, scanToken(t, s), []string{"a"}, pathEntry("a", 1))
+}
+
+func TestRetryTransitionSignalsWork(t *testing.T) {
+	s := scanStore(t)
+	ctx := context.Background()
+	applyEntries(t, s, scanToken(t, s), nil, pathEntry("a", 1))
+	select {
+	case <-s.WorkAvailable():
+	default:
+		t.Fatal("missing initial signal")
+	}
+	now := time.Now()
+	job, err := s.LeaseNextJob(ctx, "worker", now.Add(time.Minute), now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if job == nil {
+		t.Fatal("missing job")
+	}
+	if _, err := s.TransitionJob(ctx, job.ID, domain.JobStateRetrying, now, ""); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-s.WorkAvailable():
+		t.Fatal("retrying job is not runnable")
+	default:
+	}
+	if _, err := s.TransitionJob(ctx, job.ID, domain.JobStatePending, now, ""); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-s.WorkAvailable():
+	default:
+		t.Fatal("missing retry signal")
 	}
 }
