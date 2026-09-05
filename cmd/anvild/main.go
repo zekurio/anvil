@@ -621,7 +621,11 @@ func loadRuntimeConfig(path string, opts options) (config.Config, error) {
 		cfg.Daemon.ShutdownPolicy = opts.shutdownPolicy
 	}
 	if opts.shutdownTimeout != "" {
-		cfg.Daemon.ShutdownTimeout = opts.shutdownTimeout
+		timeout, err := time.ParseDuration(opts.shutdownTimeout)
+		if err != nil {
+			return config.Config{}, fmt.Errorf("parse --shutdown-timeout: %w", err)
+		}
+		cfg.Daemon.ShutdownTimeout = config.Duration{Duration: timeout}
 	}
 	if err := cfg.Validate(); err != nil {
 		return config.Config{}, err

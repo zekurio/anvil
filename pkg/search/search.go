@@ -93,13 +93,11 @@ func SearchArgs(plan domain.EncodePlan) []string {
 	if plan.SearchSamples > 0 {
 		args = append(args, "--samples", strconv.Itoa(plan.SearchSamples))
 	}
-	if plan.Target > 0 {
-		qualityArg := "--min-vmaf"
-		if plan.Metric == domain.QualityMetricXPSNR {
-			qualityArg = "--min-xpsnr"
-		}
-		args = append(args, qualityArg, strconv.FormatFloat(plan.Target, 'f', -1, 64))
+	qualityArg := "--min-vmaf"
+	if plan.Metric == domain.QualityMetricXPSNR {
+		qualityArg = "--min-xpsnr"
 	}
+	args = append(args, qualityArg, strconv.FormatFloat(plan.Target, 'f', -1, 64))
 	if plan.MinSavingsPercent > 0 {
 		maxEncodedPercent := 100 - plan.MinSavingsPercent
 		if maxEncodedPercent < 0 {
