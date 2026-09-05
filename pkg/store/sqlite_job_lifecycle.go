@@ -635,6 +635,9 @@ WHERE id = ?
 		return domain.Job{}, fmt.Errorf("commit transition transaction: %w", err)
 	}
 
+	if job.State == domain.JobStatePending {
+		s.notifyWork()
+	}
 	return job, nil
 }
 
