@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-const currentSchemaVersion = 6
+const currentSchemaVersion = 7
 
 // minUpgradableSchemaVersion is the oldest schema version schemaMigrations can
 // still upgrade in place. Anything older predates the migration chain and is
@@ -34,6 +34,13 @@ CREATE TABLE library_scans (
 	next_token INTEGER NOT NULL DEFAULT 0,
 	applied_token INTEGER NOT NULL DEFAULT 0,
 	applied_at TEXT
+);
+
+CREATE TABLE source_scans (
+ library_name TEXT NOT NULL,
+ relative_path TEXT NOT NULL,
+ applied_token INTEGER NOT NULL,
+ PRIMARY KEY (library_name, relative_path)
 );
 
 CREATE TABLE media_sources (
@@ -199,6 +206,7 @@ type schemaMigration struct {
 // predecessor produced, so it never references the evolving currentSchema.
 var schemaMigrations = []schemaMigration{
 	{version: 6, apply: addCanceledJobState},
+	{version: 7, apply: addSourceScans},
 }
 
 func (s *SQLiteStore) migrate(ctx context.Context) error {
@@ -442,4 +450,14 @@ func foreignKeyViolation(rows *sql.Rows) error {
 		parts = append(parts, fmt.Sprintf("row %d", rowID.Int64))
 	}
 	return fmt.Errorf("verify foreign keys: %s", strings.Join(parts, ", "))
+}
+
+func addSourceScans(ctx context.Context, tx *sql.Tx) error {
+	_, err := tx.ExecContext(ctx, `CREATE TABLE source_scans (
+ library_name TEXT NOT NULL,
+ relative_path TEXT NOT NULL,
+ applied_token INTEGER NOT NULL,
+ PRIMARY KEY (library_name, relative_path)
+);`)
+	return err
 }

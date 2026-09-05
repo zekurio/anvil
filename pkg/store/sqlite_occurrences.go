@@ -80,7 +80,21 @@ SELECT next_token, applied_token FROM library_scans WHERE library_name = ?
 		return ApplyScanResult{}, nil
 	}
 
+	snapshot, err := readScanSnapshot(ctx, tx, input)
+	if err != nil {
+		return ApplyScanResult{}, err
+	}
+	eligible := func(path string) bool { return snapshot.tokens[path] < token.Sequence }
+	for path := range groups {
+		if input.SourcePaths != nil && !snapshot.scope[path] {
+			return ApplyScanResult{}, fmt.Errorf("scan entry %q is outside source paths", path)
+		}
+		if !eligible(path) {
+			delete(groups, path)
+		}
+	}
 	result := ApplyScanResult{Applied: true}
+	var touchSources, touchAssets []int64
 	seenSources := make(map[string]struct{}, len(groups))
 	paths := make([]string, 0, len(groups))
 	for sourcePath := range groups {
@@ -91,10 +105,7 @@ SELECT next_token, applied_token FROM library_scans WHERE library_name = ?
 	for _, sourcePath := range paths {
 		group := groups[sourcePath]
 		seenSources[sourcePath] = struct{}{}
-		source, found, err := currentSourceTx(ctx, tx, input.LibraryName, sourcePath)
-		if err != nil {
-			return ApplyScanResult{}, err
-		}
+		source, found := snapshot.sources[sourcePath]
 		known := found
 		if !known {
 			known, err = sourcePathKnownTx(ctx, tx, input.LibraryName, sourcePath)
@@ -131,7 +142,7 @@ SELECT next_token, applied_token FROM library_scans WHERE library_name = ?
 			if err != nil {
 				return ApplyScanResult{}, err
 			}
-		} else {
+		} else if !fingerprintsEqual(source.Fingerprint, group.fingerprint) {
 			if _, err := tx.ExecContext(ctx, `
 UPDATE media_sources
 SET kind = ?, size_bytes = ?, mod_time = ?, hash_algorithm = ?, hash_value = ?,
@@ -143,6 +154,9 @@ WHERE id = ?
 			}
 		}
 
+		touchSources = append(touchSources, int64(source.ID))
+		assets := snapshot.assets[source.ID]
+		activeAssets := 0
 		seenAssets := make(map[string]struct{}, len(group.entries))
 		assetPaths := make([]string, 0, len(group.entries))
 		for assetPath := range group.entries {
@@ -156,10 +170,7 @@ WHERE id = ?
 				continue
 			}
 			result.Assets++
-			asset, assetFound, err := currentAssetTx(ctx, tx, source.ID, assetPath)
-			if err != nil {
-				return ApplyScanResult{}, err
-			}
+			asset, assetFound := assets[assetPath]
 			if assetFound && !fingerprintsEqual(asset.Fingerprint, entry.AssetFingerprint) {
 				if err := retireAssetTx(ctx, tx, asset.ID, now); err != nil {
 					return ApplyScanResult{}, err
@@ -183,7 +194,7 @@ WHERE id = ?
 				if err != nil {
 					return ApplyScanResult{}, err
 				}
-			} else {
+			} else if asset.Role != defaultAssetRole(entry.AssetRole) {
 				if _, err := tx.ExecContext(ctx, `
 UPDATE media_assets
 SET role = ?, last_seen_at = ?, updated_at = ?
@@ -193,7 +204,15 @@ WHERE id = ?
 				}
 			}
 
+			touchAssets = append(touchAssets, int64(asset.ID))
+			if asset.Status == domain.MediaAssetActive {
+				activeAssets++
+			}
 			if entry.Enqueue && asset.Status == domain.MediaAssetActive && !skipKnown {
+				if snapshot.jobs[asset.ID] {
+					result.ExistingJobs++
+					continue
+				}
 				_, inserted, err := enqueueJobTx(ctx, tx, EnqueueJobInput{
 					SourceID: source.ID, AssetID: asset.ID, LibraryName: input.LibraryName,
 					Priority: input.Priority, Now: now,
@@ -208,24 +227,63 @@ WHERE id = ?
 				}
 			}
 		}
-		if err := markUnseenAssetsMissingTx(ctx, tx, source.ID, seenAssets, now); err != nil {
-			return ApplyScanResult{}, err
+		for path, asset := range assets {
+			if _, seen := seenAssets[path]; !seen {
+				if err := retireAssetTx(ctx, tx, asset.ID, now); err != nil {
+					return ApplyScanResult{}, err
+				}
+			} else if !group.entries[path].Persist && asset.Status == domain.MediaAssetActive {
+				activeAssets++
+			}
 		}
-		if err := refreshSourceLifecycleTx(ctx, tx, source.ID, now); err != nil {
-			return ApplyScanResult{}, err
+		status := domain.MediaSourceProcessed
+		if activeAssets > 0 {
+			status = domain.MediaSourceActive
+		}
+		if source.Status != status {
+			if _, err := tx.ExecContext(ctx, `UPDATE media_sources SET status = ?, updated_at = ? WHERE id = ?`, string(status), encodeTime(now), int64(source.ID)); err != nil {
+				return ApplyScanResult{}, err
+			}
 		}
 	}
-
-	if err := markUnseenSourcesMissingTx(ctx, tx, input.LibraryName, seenSources, now); err != nil {
+	for path, source := range snapshot.sources {
+		if _, seen := seenSources[path]; !seen && eligible(path) {
+			if err := retireSourceTx(ctx, tx, source.ID, now); err != nil {
+				return ApplyScanResult{}, err
+			}
+		}
+	}
+	if err := touchScanRows(ctx, tx, "media_sources", touchSources, now); err != nil {
 		return ApplyScanResult{}, err
 	}
-	if _, err := tx.ExecContext(ctx, `
+	if err := touchScanRows(ctx, tx, "media_assets", touchAssets, now); err != nil {
+		return ApplyScanResult{}, err
+	}
+	if input.SourcePaths != nil {
+		for path := range snapshot.scope {
+			if !eligible(path) {
+				continue
+			}
+			if _, err := tx.ExecContext(ctx, `INSERT INTO source_scans VALUES (?, ?, ?) ON CONFLICT(library_name, relative_path) DO UPDATE SET applied_token = excluded.applied_token`, string(input.LibraryName), path, token.Sequence); err != nil {
+				return ApplyScanResult{}, err
+			}
+		}
+	} else {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM source_scans WHERE library_name = ? AND applied_token <= ?`, string(input.LibraryName), token.Sequence); err != nil {
+			return ApplyScanResult{}, err
+		}
+
+		if _, err := tx.ExecContext(ctx, `
 UPDATE library_scans SET applied_token = ?, applied_at = ? WHERE library_name = ?
 `, token.Sequence, encodeTime(now), string(input.LibraryName)); err != nil {
-		return ApplyScanResult{}, fmt.Errorf("record applied library scan: %w", err)
+			return ApplyScanResult{}, fmt.Errorf("record applied library scan: %w", err)
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return ApplyScanResult{}, fmt.Errorf("commit library scan: %w", err)
+	}
+	if result.EnqueuedJobs > 0 {
+		s.notifyWork()
 	}
 	return result, nil
 }
@@ -309,9 +367,18 @@ func (s *SQLiteStore) ForceOccurrence(ctx context.Context, input ForceOccurrence
 	if err != nil {
 		return ForceOccurrenceResult{}, err
 	}
+	// A force command must supersede observations that started before it.
+	var token int64
+	if err := tx.QueryRowContext(ctx, `INSERT INTO library_scans (library_name, next_token) VALUES (?, 1) ON CONFLICT(library_name) DO UPDATE SET next_token = next_token + 1 RETURNING next_token`, string(input.LibraryName)).Scan(&token); err != nil {
+		return ForceOccurrenceResult{}, fmt.Errorf("advance forced scan token: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO source_scans VALUES (?, ?, ?) ON CONFLICT(library_name, relative_path) DO UPDATE SET applied_token = excluded.applied_token`, string(input.LibraryName), input.SourceRelativePath, token); err != nil {
+		return ForceOccurrenceResult{}, fmt.Errorf("record forced scan token: %w", err)
+	}
 	if err := tx.Commit(); err != nil {
 		return ForceOccurrenceResult{}, fmt.Errorf("commit force occurrence: %w", err)
 	}
+	s.notifyWork()
 	return ForceOccurrenceResult{Source: source, Asset: asset, Job: job}, nil
 }
 
@@ -477,78 +544,6 @@ UPDATE media_assets SET size_bytes = ?, mod_time = ?, hash_algorithm = ?, hash_v
 	return nil
 }
 
-func markUnseenSourcesMissingTx(ctx context.Context, tx *sql.Tx, libraryName domain.LibraryName, seen map[string]struct{}, now time.Time) error {
-	query := `SELECT id FROM media_sources WHERE library_name = ? AND is_current = 1`
-	args := []any{string(libraryName)}
-	if len(seen) > 0 {
-		paths := sortedKeys(seen)
-		query += ` AND relative_path NOT IN (` + placeholders(len(paths)) + `)`
-		for _, path := range paths {
-			args = append(args, path)
-		}
-	}
-	rows, err := tx.QueryContext(ctx, query, args...)
-	if err != nil {
-		return fmt.Errorf("list missing source occurrences: %w", err)
-	}
-	var ids []domain.MediaSourceID
-	for rows.Next() {
-		var id domain.MediaSourceID
-		if err := rows.Scan(&id); err != nil {
-			return fmt.Errorf("scan missing source occurrence: %w", errors.Join(err, rows.Close()))
-		}
-		ids = append(ids, id)
-	}
-	if err := rows.Close(); err != nil {
-		return fmt.Errorf("close missing source occurrences: %w", err)
-	}
-	if err := rows.Err(); err != nil {
-		return fmt.Errorf("iterate missing source occurrences: %w", err)
-	}
-	for _, id := range ids {
-		if err := retireSourceTx(ctx, tx, id, now); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func markUnseenAssetsMissingTx(ctx context.Context, tx *sql.Tx, sourceID domain.MediaSourceID, seen map[string]struct{}, now time.Time) error {
-	query := `SELECT id FROM media_assets WHERE source_id = ? AND is_current = 1`
-	args := []any{int64(sourceID)}
-	if len(seen) > 0 {
-		paths := sortedKeys(seen)
-		query += ` AND relative_path NOT IN (` + placeholders(len(paths)) + `)`
-		for _, path := range paths {
-			args = append(args, path)
-		}
-	}
-	rows, err := tx.QueryContext(ctx, query, args...)
-	if err != nil {
-		return fmt.Errorf("list missing asset occurrences: %w", err)
-	}
-	var ids []domain.MediaAssetID
-	for rows.Next() {
-		var id domain.MediaAssetID
-		if err := rows.Scan(&id); err != nil {
-			return fmt.Errorf("scan missing asset occurrence: %w", errors.Join(err, rows.Close()))
-		}
-		ids = append(ids, id)
-	}
-	if err := rows.Close(); err != nil {
-		return fmt.Errorf("close missing asset occurrences: %w", err)
-	}
-	if err := rows.Err(); err != nil {
-		return fmt.Errorf("iterate missing asset occurrences: %w", err)
-	}
-	for _, id := range ids {
-		if err := retireAssetTx(ctx, tx, id, now); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
 func refreshSourceLifecycleTx(ctx context.Context, tx *sql.Tx, sourceID domain.MediaSourceID, now time.Time) error {
 	var active int
 	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM media_assets WHERE source_id = ? AND is_current = 1 AND status = ?`, int64(sourceID), string(domain.MediaAssetActive)).Scan(&active); err != nil {
@@ -641,13 +636,4 @@ func defaultAssetRole(role domain.MediaAssetRole) domain.MediaAssetRole {
 		return domain.MediaAssetRoleUnknown
 	}
 	return role
-}
-
-func sortedKeys(values map[string]struct{}) []string {
-	keys := make([]string, 0, len(values))
-	for key := range values {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	return keys
 }
