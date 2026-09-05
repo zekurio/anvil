@@ -3,6 +3,7 @@ package worker
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -30,7 +31,6 @@ type processLogRecorder struct {
 	now       func() time.Time
 	mu        sync.Mutex
 	names     map[string]int
-	progress  map[string]*processProgress
 }
 
 type processProgress struct {
@@ -48,60 +48,82 @@ type processLogArtifact struct {
 	DurationMillis int64    `json:"duration_ms"`
 	StdoutPath     string   `json:"stdout_path"`
 	StderrPath     string   `json:"stderr_path"`
-	StdoutBytes    int      `json:"stdout_bytes"`
-	StderrBytes    int      `json:"stderr_bytes"`
+	StdoutBytes    int64    `json:"stdout_bytes"`
+	StderrBytes    int64    `json:"stderr_bytes"`
 	Error          string   `json:"error,omitempty"`
 }
 
-func (r *processLogRecorder) LogProcess(ctx context.Context, command process.Command, result process.Result, runErr error) error {
-	if !shouldCaptureProcess(command, result, runErr) {
-		return nil
+type processLogSession struct {
+	recorder *processLogRecorder
+	stdout   *os.File
+	stderr   *os.File
+	progress processProgress
+	mu       sync.Mutex
+}
+
+func (r *processLogRecorder) StartProcess(ctx context.Context, command process.Command) (process.Logger, error) {
+	switch filepath.Base(command.Name) {
+	case "ffmpeg", "ab-av1":
+	default:
+		return nil, nil
 	}
 	root := strings.TrimSpace(r.root)
 	if root == "" {
-		return nil
+		return nil, nil
 	}
 	step := process.Step(ctx)
-	if strings.TrimSpace(step) == "" {
+	if step == "" {
 		step = "process"
-	}
-	commandName := command.Name
-	if commandName == "" && len(result.Command) > 0 {
-		commandName = result.Command[0]
-	}
-	if runErr != nil {
-		slog.Error("external process failed",
-			"job", r.jobLabel(),
-			"attempt", r.attempt,
-			"step", step,
-			"command", filepath.Base(commandName),
-			"exit_code", result.ExitCode,
-			"duration", result.Duration,
-			"diagnostic", lastProcessDiagnostic(result.Stderr),
-		)
 	}
 	dir := filepath.Join(root, r.jobLabel(), fmt.Sprintf("attempt-%d", r.attempt))
 	if err := os.MkdirAll(dir, 0o750); err != nil {
-		return fmt.Errorf("create process log dir: %w", err)
+		return nil, fmt.Errorf("create process log dir: %w", err)
 	}
-	baseName := r.uniqueLogBaseName(sanitizeLogName(step) + "-" + sanitizeLogName(filepath.Base(commandName)))
-	stdoutPath := filepath.Join(dir, baseName+".stdout.log")
-	stderrPath := filepath.Join(dir, baseName+".stderr.log")
-	if err := os.WriteFile(stdoutPath, result.Stdout, 0o640); err != nil {
-		return fmt.Errorf("write process stdout log: %w", err)
+	baseName := r.uniqueLogBaseName(sanitizeLogName(step) + "-" + sanitizeLogName(filepath.Base(command.Name)))
+	stdout, err := os.OpenFile(filepath.Join(dir, baseName+".stdout.log"), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o640)
+	if err != nil {
+		return nil, fmt.Errorf("open process stdout log: %w", err)
 	}
-	if err := os.WriteFile(stderrPath, result.Stderr, 0o640); err != nil {
-		return fmt.Errorf("write process stderr log: %w", err)
+	stderr, err := os.OpenFile(filepath.Join(dir, baseName+".stderr.log"), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o640)
+	if err != nil {
+		return nil, errors.Join(fmt.Errorf("open process stderr log: %w", err), stdout.Close())
 	}
+	return &processLogSession{recorder: r, stdout: stdout, stderr: stderr, progress: processProgress{values: make(map[string]string)}}, nil
+}
+
+// LogProcess keeps the context logger contract. OSRunner uses a per-run session.
+func (r *processLogRecorder) LogProcess(context.Context, process.Command, process.Result, error) error {
+	return nil
+}
+
+func (s *processLogSession) LogProcess(ctx context.Context, command process.Command, result process.Result, runErr error) error {
+	closeErr := errors.Join(s.stdout.Close(), s.stderr.Close())
+	r := s.recorder
+	step := process.Step(ctx)
+	if step == "" {
+		step = "process"
+	}
+	commandName := command.Name
+	if runErr != nil {
+		slog.Error("external process failed", "job", r.jobLabel(), "attempt", r.attempt, "step", step,
+			"command", filepath.Base(commandName), "exit_code", result.ExitCode, "duration", result.Duration,
+			"diagnostic", lastProcessDiagnostic(result.Stderr))
+	}
+	artifactErr := s.recordArtifact(ctx, command, result, errors.Join(runErr, closeErr), step, commandName)
+	return errors.Join(closeErr, artifactErr)
+}
+
+func (s *processLogSession) recordArtifact(ctx context.Context, command process.Command, result process.Result, runErr error, step, commandName string) error {
+	r := s.recorder
 	artifact := processLogArtifact{
 		Step:           step,
 		Command:        result.Command,
 		ExitCode:       result.ExitCode,
 		DurationMillis: result.Duration.Milliseconds(),
-		StdoutPath:     stdoutPath,
-		StderrPath:     stderrPath,
-		StdoutBytes:    len(result.Stdout),
-		StderrBytes:    len(result.Stderr),
+		StdoutPath:     s.stdout.Name(),
+		StderrPath:     s.stderr.Name(),
+		StdoutBytes:    result.StdoutBytes,
+		StderrBytes:    result.StderrBytes,
 	}
 	if runErr != nil {
 		artifact.Error = runErr.Error()
@@ -135,72 +157,44 @@ func lastProcessDiagnostic(output []byte) string {
 	for index := len(lines) - 1; index >= 0; index-- {
 		line := strings.TrimSpace(lines[index])
 		if line != "" && !ffmpegStatsPattern.MatchString(line) {
+			if len(line) > maxProgressLine {
+				line = line[len(line)-maxProgressLine:]
+			}
 			return line
 		}
 	}
 	return ""
 }
 
-func (r *processLogRecorder) LogProcessOutput(ctx context.Context, command process.Command, stream string, output []byte) {
-	key := process.Step(ctx) + "\x00" + strings.Join(command.ArgsWithName(), "\x00")
-	r.mu.Lock()
-	if r.progress == nil {
-		r.progress = make(map[string]*processProgress)
-	}
-	progress := r.progress[key]
-	if progress == nil {
-		progress = &processProgress{values: make(map[string]string)}
-		r.progress[key] = progress
-	}
+const maxProgressLine = 4096
+
+func (s *processLogSession) LogProcessOutput(ctx context.Context, command process.Command, stream string, output []byte) error {
+	file := s.stderr
 	if stream == "stdout" {
-		progress.stdout += string(output)
-		if filepath.Base(command.Name) == "ffmpeg" {
-			progress.stdout = r.consumeProgress(ctx, progress, progress.stdout)
-		} else {
-			progress.stdout = r.consumeToolOutput(ctx, command, stream, progress.stdout)
-		}
-	} else {
-		progress.stderr += string(output)
-		if filepath.Base(command.Name) == "ffmpeg" {
-			progress.stderr = r.consumeProgress(ctx, progress, progress.stderr)
-		} else {
-			progress.stderr = r.consumeToolOutput(ctx, command, stream, progress.stderr)
-		}
+		file = s.stdout
 	}
-	r.mu.Unlock()
-}
-
-func (r *processLogRecorder) consumeToolOutput(ctx context.Context, command process.Command, stream, buffered string) string {
-	if !shouldLogLiveOutput(command.Name) {
-		return ""
+	if _, err := file.Write(output); err != nil {
+		return fmt.Errorf("write process %s log: %w", stream, err)
 	}
-	for {
-		index := strings.IndexAny(buffered, "\r\n")
-		if index < 0 {
-			return buffered
+	if filepath.Base(command.Name) != "ffmpeg" {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	buffered := &s.progress.stderr
+	if stream == "stdout" {
+		buffered = &s.progress.stdout
+	}
+	// Bound partial lines even when a tool emits no delimiters.
+	for len(output) > 0 {
+		n := min(len(output), maxProgressLine)
+		*buffered = s.recorder.consumeProgress(ctx, &s.progress, *buffered+string(output[:n]))
+		if len(*buffered) > maxProgressLine {
+			*buffered = (*buffered)[len(*buffered)-maxProgressLine:]
 		}
-		line := strings.TrimSpace(buffered[:index])
-		buffered = strings.TrimLeft(buffered[index+1:], "\r\n")
-		if line != "" {
-			slog.Info("external process output",
-				"job", r.jobLabel(),
-				"attempt", r.attempt,
-				"step", process.Step(ctx),
-				"command", filepath.Base(command.Name),
-				"stream", stream,
-				"message", line,
-			)
-		}
+		output = output[n:]
 	}
-}
-
-func shouldLogLiveOutput(command string) bool {
-	switch filepath.Base(command) {
-	case "ab-av1":
-		return true
-	default:
-		return false
-	}
+	return nil
 }
 
 func (r *processLogRecorder) consumeProgress(ctx context.Context, progress *processProgress, buffered string) string {
@@ -215,7 +209,10 @@ func (r *processLogRecorder) consumeProgress(ctx context.Context, progress *proc
 			continue
 		}
 		if key, value, ok := strings.Cut(line, "="); ok && !strings.Contains(key, " ") {
-			progress.values[key] = value
+			switch key {
+			case "frame", "fps", "out_time", "out_time_us", "speed":
+				progress.values[key] = value
+			}
 			if key == "progress" {
 				r.logFFmpegProgress(ctx, progress.values)
 			}
@@ -266,19 +263,6 @@ func (r *processLogRecorder) uniqueLogBaseName(baseName string) string {
 		return baseName
 	}
 	return fmt.Sprintf("%s-%d", baseName, r.names[baseName])
-}
-
-func shouldCaptureProcess(command process.Command, result process.Result, runErr error) bool {
-	name := filepath.Base(command.Name)
-	if name == "" && len(result.Command) > 0 {
-		name = filepath.Base(result.Command[0])
-	}
-	switch name {
-	case "ffmpeg", "ab-av1":
-	default:
-		return false
-	}
-	return runErr != nil || len(result.Stdout) > 0 || len(result.Stderr) > 0
 }
 
 func (r *processLogRecorder) timestamp() time.Time {
