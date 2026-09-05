@@ -94,3 +94,24 @@ func TestPartialDiscoveryAndPackageSidecars(t *testing.T) {
 		t.Fatal("unrelated files got source stats")
 	}
 }
+
+func TestPartialDiscoveryHonorsExcludedAncestorDirectory(t *testing.T) {
+	root := t.TempDir()
+	file := filepath.Join(root, "ignored", "film.mkv")
+	if err := os.MkdirAll(filepath.Dir(file), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(file, []byte("video"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	library := config.LibraryConfig{Kind: "media", Exclude: []string{"ignored/"}}
+	for _, paths := range [][]string{nil, {"ignored/film.mkv"}} {
+		candidates, _, _, err := discoverPaths(context.Background(), root, library, nil, paths)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(candidates) != 0 {
+			t.Fatal("excluded ancestor admitted a candidate")
+		}
+	}
+}

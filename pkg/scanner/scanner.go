@@ -393,7 +393,7 @@ func discoverPaths(ctx context.Context, root string, library config.LibraryConfi
 					return nil, nil, skipped, relErr
 				}
 				rel = filepath.ToSlash(rel)
-				excluded, matchErr := matchesAny(excludePatterns, rel)
+				excluded, matchErr := matchesExcludedPath(excludePatterns, rel, true)
 				if matchErr != nil {
 					return nil, nil, skipped, matchErr
 				}
@@ -534,7 +534,11 @@ func includedBy(patterns []string, rel string) (bool, error) {
 }
 
 func matchesAny(patterns []string, rel string) (bool, error) {
+	directory := strings.HasSuffix(filepath.ToSlash(rel), "/")
 	rel = path.Clean(filepath.ToSlash(rel))
+	if directory {
+		rel += "/"
+	}
 	base := path.Base(rel)
 
 	for _, pattern := range patterns {
@@ -637,4 +641,12 @@ func (s Scanner) ScanPaths(ctx context.Context, library config.LibraryConfig, pa
 	}
 	plan.ScanToken = token
 	return s.applyPlan(ctx, plan)
+}
+
+func matchesExcludedPath(patterns []string, rel string, directory bool) (bool, error) {
+	matched, err := matchesAny(patterns, rel)
+	if matched || err != nil || !directory {
+		return matched, err
+	}
+	return matchesAny(patterns, rel+"/")
 }
