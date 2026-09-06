@@ -26,6 +26,8 @@ const (
 	defaultMinWidth             = 128
 	defaultMinHeight            = 128
 	defaultRequiredAlignment    = 2
+	// Allow small edge differences caused by cropdetect rounding.
+	maxBorderDifference = 16
 )
 
 // CropSelectionArtifact is the attempt-event name used for crop decisions.
@@ -72,12 +74,20 @@ func (d FFmpegDetector) Detect(ctx context.Context, path string) (domain.CropRes
 		command []string
 		output  []byte
 		errs    []error
+		samples []domain.CropSample
 	)
 	offsets := d.seekOffsets()
 	for _, offset := range offsets {
 		result, err := runner.Run(ctx, process.Command{Name: binary, Args: d.args(path, offset), RequireFullStdout: true, RequireFullStderr: true})
 		command = result.Command
-		output = appendOutput(output, combinedOutput(result))
+		sampleOutput := combinedOutput(result)
+		output = appendOutput(output, sampleOutput)
+		filter, count := parseBounds(sampleOutput)
+		sample := domain.CropSample{Offset: offset, Filter: filter, Observations: count}
+		if err != nil {
+			sample.Error = err.Error()
+		}
+		samples = append(samples, sample)
 		if err != nil {
 			if errors.Is(err, process.ErrOutputCapture) || errors.Is(err, process.ErrOutputLog) ||
 				errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
@@ -86,12 +96,14 @@ func (d FFmpegDetector) Detect(ctx context.Context, path string) (domain.CropRes
 			errs = append(errs, fmt.Errorf("offset %s: %w", offset, err))
 		}
 	}
-	candidate := ParseFilter(output)
+	candidate, selectionReason := selectSamples(samples)
 	crop := domain.CropResult{
 		CandidateFilter: candidate,
 		Filter:          candidate,
 		RawOutput:       string(output),
 		RawCommand:      command,
+		Samples:         samples,
+		SelectionReason: selectionReason,
 	}
 	if len(errs) == len(offsets) || (crop.Filter == "" && len(errs) > 0) {
 		return crop, fmt.Errorf("ffmpeg cropdetect: %w", errors.Join(errs...))
@@ -186,7 +198,7 @@ func (Block) Artifact(job *pipeline.JobContext) (pipeline.ArtifactReport, bool) 
 	case result.RejectionReason != "":
 		message = fmt.Sprintf("rejected %s; using no crop: %s", result.CandidateFilter, result.RejectionReason)
 	case result.NoOp:
-		message = fmt.Sprintf("selected %s is a full-frame no-op; using source dimensions", result.CandidateFilter)
+		message = fmt.Sprintf("selected %s removes only small edge strips; using source dimensions", result.CandidateFilter)
 	case result.Filter != "":
 		message = fmt.Sprintf("selected %s (%.2f%% retained area)", result.Filter, result.RetainedAreaPercent)
 	}
@@ -203,20 +215,24 @@ func (Block) Artifact(job *pipeline.JobContext) (pipeline.ArtifactReport, bool) 
 			RetainedAreaPercent: result.RetainedAreaPercent,
 			RejectionReason:     result.RejectionReason,
 			NoOp:                result.NoOp,
+			Samples:             result.Samples,
+			SelectionReason:     result.SelectionReason,
 		},
 	}, true
 }
 
 type cropSelectionPayload struct {
-	CandidateFilter     string  `json:"candidate_filter,omitempty"`
-	AppliedFilter       string  `json:"applied_filter,omitempty"`
-	SourceWidth         int     `json:"source_width,omitempty"`
-	SourceHeight        int     `json:"source_height,omitempty"`
-	OutputWidth         int     `json:"output_width,omitempty"`
-	OutputHeight        int     `json:"output_height,omitempty"`
-	RetainedAreaPercent float64 `json:"retained_area_percent,omitempty"`
-	RejectionReason     string  `json:"rejection_reason,omitempty"`
-	NoOp                bool    `json:"no_op,omitempty"`
+	Samples             []domain.CropSample `json:"samples,omitempty"`
+	SelectionReason     string              `json:"selection_reason,omitempty"`
+	CandidateFilter     string              `json:"candidate_filter,omitempty"`
+	AppliedFilter       string              `json:"applied_filter,omitempty"`
+	SourceWidth         int                 `json:"source_width,omitempty"`
+	SourceHeight        int                 `json:"source_height,omitempty"`
+	OutputWidth         int                 `json:"output_width,omitempty"`
+	OutputHeight        int                 `json:"output_height,omitempty"`
+	RetainedAreaPercent float64             `json:"retained_area_percent,omitempty"`
+	RejectionReason     string              `json:"rejection_reason,omitempty"`
+	NoOp                bool                `json:"no_op,omitempty"`
 }
 
 // ApplySafetyPolicy revalidates a detected or cached candidate against the
@@ -235,7 +251,7 @@ func ApplySafetyPolicy(result domain.CropResult, probe *domain.ProbeResult, conf
 	result.OutputWidth = 0
 	result.OutputHeight = 0
 	result.RetainedAreaPercent = 0
-	result.RejectionReason = ""
+	result.RejectionReason = result.SelectionReason
 	result.NoOp = false
 
 	stream, hasVideo := primaryVideo(probe)
@@ -243,7 +259,7 @@ func ApplySafetyPolicy(result domain.CropResult, probe *domain.ProbeResult, conf
 		result.SourceWidth = stream.Width
 		result.SourceHeight = stream.Height
 	}
-	if candidate == "" {
+	if candidate == "" || result.SelectionReason != "" {
 		if hasVideo {
 			result.OutputWidth = stream.Width
 			result.OutputHeight = stream.Height
@@ -272,7 +288,13 @@ func ApplySafetyPolicy(result domain.CropResult, probe *domain.ProbeResult, conf
 		result.RejectionReason = err.Error()
 		return result
 	}
-	if video.NoOpCrop(candidate, stream.Width, stream.Height) {
+	right := stream.Width - spec.X - spec.Width
+	bottom := stream.Height - spec.Y - spec.Height
+	if abs(spec.X-right) > maxBorderDifference || abs(spec.Y-bottom) > maxBorderDifference {
+		result.RejectionReason = fmt.Sprintf("uneven borders: left %d, right %d, top %d, bottom %d", spec.X, right, spec.Y, bottom)
+		return result
+	}
+	if spec.X <= maxBorderDifference && right <= maxBorderDifference && spec.Y <= maxBorderDifference && bottom <= maxBorderDifference {
 		result.NoOp = true
 		return result
 	}
@@ -321,8 +343,16 @@ func effectivePolicy(policy domain.CropPolicy) domain.CropPolicy {
 
 var cropPattern = regexp.MustCompile(`crop=\d+:\d+:\d+:\d+`)
 
+// ParseFilter returns the rectangle that contains every observed picture area.
+// Frame frequency must not let dark scenes override wider picture evidence.
 func ParseFilter(output []byte) string {
-	var matches [][]byte
+	filter, _ := parseBounds(output)
+	return filter
+}
+
+func parseBounds(output []byte) (string, int) {
+	var bounds video.CropSpec
+	count := 0
 	for _, line := range bytes.Split(output, []byte{'\n'}) {
 		line = bytes.TrimSpace(line)
 		prefixEnd := bytes.IndexByte(line, ']')
@@ -330,34 +360,74 @@ func ParseFilter(output []byte) string {
 			!bytes.Contains(bytes.ToLower(line[1:prefixEnd]), []byte("cropdetect")) {
 			continue
 		}
-		matches = append(matches, cropPattern.FindAll(line[prefixEnd+1:], -1)...)
-	}
-	if len(matches) == 0 {
-		return ""
-	}
-	counts := make(map[string]candidate, len(matches))
-	best := ""
-	for index, match := range matches {
-		filter := string(match)
-		next := counts[filter]
-		next.count++
-		next.last = index
-		counts[filter] = next
-		if best == "" || better(next, counts[best]) {
-			best = filter
+		for _, match := range cropPattern.FindAll(line[prefixEnd+1:], -1) {
+			spec, ok := video.ParseCropFilter(string(match))
+			if !ok || spec.Width <= 0 || spec.Height <= 0 || spec.X > math.MaxInt-spec.Width || spec.Y > math.MaxInt-spec.Height {
+				continue
+			}
+			bounds = unionBounds(bounds, spec)
+			count++
 		}
 	}
-	return best
+	if count == 0 {
+		return "", 0
+	}
+	return formatBounds(bounds), count
 }
 
-type candidate struct {
-	count int
-	last  int
+func unionBounds(a, b video.CropSpec) video.CropSpec {
+	if a.Width == 0 {
+		return b
+	}
+	x, y := min(a.X, b.X), min(a.Y, b.Y)
+	return video.CropSpec{X: x, Y: y, Width: max(a.X+a.Width, b.X+b.Width) - x, Height: max(a.Y+a.Height, b.Y+b.Height) - y}
 }
 
-func better(candidate, incumbent candidate) bool {
-	return candidate.count > incumbent.count ||
-		(candidate.count == incumbent.count && candidate.last > incumbent.last)
+func formatBounds(spec video.CropSpec) string {
+	return fmt.Sprintf("crop=%d:%d:%d:%d", spec.Width, spec.Height, spec.X, spec.Y)
+}
+
+func selectSamples(samples []domain.CropSample) (string, string) {
+	var bounds video.CropSpec
+	var specs []video.CropSpec
+	failed := false
+	for _, sample := range samples {
+		if sample.Error != "" {
+			failed = true
+			continue
+		}
+		spec, ok := video.ParseCropFilter(sample.Filter)
+		if !ok {
+			continue
+		}
+		specs = append(specs, spec)
+		bounds = unionBounds(bounds, spec)
+	}
+	candidate := ""
+	if len(specs) > 0 {
+		candidate = formatBounds(bounds)
+	}
+	if failed {
+		return candidate, "crop sample failed"
+	}
+	if len(specs) < 2 {
+		return candidate, "fewer than two crop samples contain picture evidence"
+	}
+	for _, spec := range specs {
+		if spec.X-bounds.X > maxBorderDifference || spec.Y-bounds.Y > maxBorderDifference ||
+			bounds.X+bounds.Width-spec.X-spec.Width > maxBorderDifference ||
+			bounds.Y+bounds.Height-spec.Y-spec.Height > maxBorderDifference {
+			return candidate, "crop samples disagree on picture bounds"
+		}
+	}
+	return candidate, ""
+}
+
+func abs(n int) int {
+	if n < 0 {
+		return -n
+	}
+	return n
 }
 
 func combinedOutput(result process.Result) []byte {
