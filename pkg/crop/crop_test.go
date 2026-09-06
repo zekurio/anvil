@@ -142,14 +142,14 @@ func TestDetectorArgsUseConfiguredSamplingAndVideoStream(t *testing.T) {
 	}
 }
 
-func TestParseFilterUsesLatestCandidateToBreakFrequencyTie(t *testing.T) {
+func TestParseFilterPreservesAllObservedPictureBounds(t *testing.T) {
 	output := []byte(strings.Join([]string{
 		"[Parsed_cropdetect_0 @ 0x1] crop=1920:800:0:140",
 		"[Parsed_cropdetect_0 @ 0x1] crop=1440:1080:240:0",
 		"[Parsed_cropdetect_0 @ 0x1] crop=1920:800:0:140",
 		"[Parsed_cropdetect_0 @ 0x1] crop=1440:1080:240:0",
 	}, "\n"))
-	if got := ParseFilter(output); got != "crop=1440:1080:240:0" {
+	if got := ParseFilter(output); got != "crop=1920:1080:0:0" {
 		t.Fatalf("ParseFilter = %q", got)
 	}
 }
@@ -165,4 +165,51 @@ func TestParseFilterIgnoresCropExpressionsOutsideCropdetectOutput(t *testing.T) 
 
 func videoProbe(width, height int) *domain.ProbeResult {
 	return &domain.ProbeResult{Streams: []domain.MediaStream{{Type: "video", Width: width, Height: height}}}
+}
+
+func TestApplySafetyPolicyRejectsWhiplashCrop(t *testing.T) {
+	result := ApplySafetyPolicy(domain.CropResult{Filter: "crop=1616:752:254:2"}, videoProbe(1920, 804), domain.CropPolicy{})
+	if result.Filter != "" || !strings.Contains(result.RejectionReason, "uneven borders") || result.RetainedAreaPercent < 70 {
+		t.Fatalf("unsafe crop accepted: %#v", result)
+	}
+}
+
+func TestSelectSamples(t *testing.T) {
+	tests := []struct {
+		name    string
+		filters []string
+		want    string
+		reason  string
+	}{
+		{"dark scenes", []string{"crop=1696:576:96:228", "crop=1856:480:60:318", "crop=1824:560:0:2", "crop=1616:752:254:2", "crop=1920:800:0:2"}, "crop=1920:802:0:2", "disagree"},
+		{"letterbox", []string{"crop=1920:800:0:140", "crop=1920:800:0:140"}, "crop=1920:800:0:140", ""},
+		{"pillarbox", []string{"crop=1440:1080:240:0", "crop=1440:1080:240:0"}, "crop=1440:1080:240:0", ""},
+		{"rounding", []string{"crop=1920:800:0:140", "crop=1920:804:0:138"}, "crop=1920:804:0:138", ""},
+		{"full frame evidence", []string{"crop=1920:800:0:140", "crop=1920:1080:0:0"}, "crop=1920:1080:0:0", "disagree"},
+		{"no evidence", []string{"", ""}, "", "fewer than two"},
+		{"one sample", []string{"crop=1920:800:0:140", ""}, "crop=1920:800:0:140", "fewer than two"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var samples []domain.CropSample
+			for _, filter := range tt.filters {
+				samples = append(samples, domain.CropSample{Filter: filter})
+			}
+			got, reason := selectSamples(samples)
+			if got != tt.want || (tt.reason == "" && reason != "") || !strings.Contains(reason, tt.reason) {
+				t.Fatalf("got %q, %q", got, reason)
+			}
+			result := ApplySafetyPolicy(domain.CropResult{CandidateFilter: got, SelectionReason: reason}, videoProbe(1920, 1080), domain.CropPolicy{})
+			if reason != "" && (result.Filter != "" || result.RejectionReason != reason) {
+				t.Fatalf("lost rejection: %#v", result)
+			}
+		})
+	}
+}
+
+func TestParseFilterDoesNotVoteAwayWiderPicture(t *testing.T) {
+	output := strings.Repeat("[Parsed_cropdetect_0 @ 0x1] crop=1616:752:254:2\n", 212) + strings.Repeat("[Parsed_cropdetect_0 @ 0x1] crop=1920:800:0:2\n", 191)
+	if got := ParseFilter([]byte(output)); got != "crop=1920:800:0:2" {
+		t.Fatalf("got %q", got)
+	}
 }

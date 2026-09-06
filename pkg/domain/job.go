@@ -64,7 +64,7 @@ func (j Job) Label() string {
 	return fmt.Sprintf("job-%d", j.ID)
 }
 
-const JobPipelineContextVersion = 3
+const JobPipelineContextVersion = 4
 
 type JobPipelineContext struct {
 	Version             int             `json:"version"`

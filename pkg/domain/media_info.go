@@ -1,6 +1,9 @@
 package domain
 
-import "strings"
+import (
+	"strings"
+	"time"
+)
 
 type MediaStream struct {
 	Index          int
@@ -74,7 +77,17 @@ type SubtitleSelection struct {
 	Decision         *StreamSelectionDecision `json:"decision,omitempty"`
 }
 
+// CropSample records the picture bounds seen at one seek offset.
+type CropSample struct {
+	Offset       time.Duration `json:"offset"`
+	Filter       string        `json:"filter,omitempty"`
+	Observations int           `json:"observations"`
+	Error        string        `json:"error,omitempty"`
+}
+
 type CropResult struct {
+	Samples             []CropSample
+	SelectionReason     string
 	CandidateFilter     string
 	Filter              string
 	SourceWidth         int
