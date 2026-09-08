@@ -13,6 +13,7 @@ import (
 	"github.com/zekurio/anvil/pkg/marker"
 	"github.com/zekurio/anvil/pkg/pipeline"
 	"github.com/zekurio/anvil/pkg/process"
+	"github.com/zekurio/anvil/pkg/replace"
 	videocodec "github.com/zekurio/anvil/pkg/video"
 )
 
@@ -239,6 +240,10 @@ func (b Block) Run(ctx context.Context, job *pipeline.JobContext) error {
 		)
 	}
 	job.EncodePlan = &plan
+	// The quality search can outlast a media manager's handoff folder cleanup.
+	if err := replace.PrepareDestination(job); err != nil {
+		return fmt.Errorf("prepare encode destination: %w", err)
+	}
 	_, err = b.Encoder.Encode(ctx, plan)
 	if err != nil {
 		return fmt.Errorf("ffmpeg encode: %w", err)
