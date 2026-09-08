@@ -61,11 +61,8 @@ func PlanDestination(job *pipeline.JobContext) (string, error) {
 	return plan.ReplaceTarget, nil
 }
 
-// PrepareDestination plans the publish destination and primes it for the
-// encode: the destination directory is created (with handoff permissions for
-// download libraries), leftovers of a crashed earlier attempt are removed,
-// and the job context points at the part path the artifact is written to.
-func PrepareDestination(job *pipeline.JobContext) error {
+// PlanArtifactPaths sets the publish and part paths without changing files.
+func PlanArtifactPaths(job *pipeline.JobContext) error {
 	if job == nil {
 		return errors.New("destination job context is required")
 	}
@@ -76,7 +73,23 @@ func PrepareDestination(job *pipeline.JobContext) error {
 	if err != nil {
 		return err
 	}
-	dir := filepath.Dir(destination)
+	jobLabel := PartJobLabel(job.Job.ID)
+	job.DestinationPath = destination
+	job.OutputPath = PartPath(destination, jobLabel)
+	return nil
+}
+
+// PrepareDestination creates the planned output directory and removes the job's
+// stale part just before encoding. Media managers can delete handoff folders,
+// so this must run after the quality search.
+func PrepareDestination(job *pipeline.JobContext) error {
+	if job == nil || job.Job.ID == 0 {
+		return errors.New("destination preparation requires a persisted job")
+	}
+	if strings.TrimSpace(job.DestinationPath) == "" {
+		return errors.New("destination path is required")
+	}
+	dir := filepath.Dir(job.DestinationPath)
 	if job.Library.Kind == domain.LibraryKindDownload {
 		if err := prepareHandoffDestination(job.Library.Download.HandoffPath, dir); err != nil {
 			return err
@@ -84,12 +97,9 @@ func PrepareDestination(job *pipeline.JobContext) error {
 	} else if err := os.MkdirAll(dir, 0o750); err != nil {
 		return fmt.Errorf("create destination dir: %w", err)
 	}
-	jobLabel := PartJobLabel(job.Job.ID)
-	if err := CleanupPartFiles(destination, jobLabel); err != nil {
+	if err := CleanupPartFiles(job.DestinationPath, PartJobLabel(job.Job.ID)); err != nil {
 		return fmt.Errorf("remove stale artifact parts: %w", err)
 	}
-	job.DestinationPath = destination
-	job.OutputPath = PartPath(destination, jobLabel)
 	return nil
 }
 

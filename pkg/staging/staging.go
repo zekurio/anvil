@@ -56,9 +56,8 @@ type CleanupStaleResult struct {
 	Errors        []string
 }
 
-// Prepare creates the per-attempt scratch directory and primes the publish
-// destination: the artifact is written next to its final path as a part file
-// (see replace.PartPath), never into scratch.
+// Prepare creates the per-attempt scratch directory and plans the artifact
+// paths. The encode step creates the output directory when it is ready to write.
 func (m Manager) Prepare(job *pipeline.JobContext) error {
 	if job == nil {
 		return errors.New("staging job context is required")
@@ -71,7 +70,7 @@ func (m Manager) Prepare(job *pipeline.JobContext) error {
 		return fmt.Errorf("create staging dir: %w", err)
 	}
 	job.StagingDir = dir
-	return replace.PrepareDestination(job)
+	return replace.PlanArtifactPaths(job)
 }
 
 func (m Manager) Plan(jobLabel string, attemptLabel string) (string, error) {
