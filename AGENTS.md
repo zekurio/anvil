@@ -31,7 +31,7 @@
 - Lint policy is `.golangci.yml`: `errcheck` (including blank assignments),
   `govet`, `ineffassign`, `staticcheck`, `unused`. Format with `gofmt` only;
   never hand-format.
-- External tools (`ffmpeg`/`ffprobe`, `ab-av1`) are
+- External tools (`ffmpeg`/`ffprobe`) are
   provided by the Nix dev shell (`flake.nix`, `devenv.nix`, `direnv allow`).
   Bump `vendorHash` in `flake.nix` whenever Go dependencies change.
 - There is no automated test suite. Verification is `gofmt`, `golangci-lint`,
@@ -165,7 +165,7 @@ process output goes to per-attempt log files plus artifact events
   `jobs.pipeline_context_json`, guarded by an input/config fingerprint.
   Attempt-local output is never resumed except through the publish journal.
 - `validate` is observational: `validate.Block.Run` logs and returns `nil` even
-  on `ErrValidationFailed`. `ab-av1` search is the encode acceptance authority.
+  on `ErrValidationFailed`. Native CRF search in `pkg/search` is the encode acceptance authority.
 - Publication (`pkg/replace`) goes through a durable journal
   (`prepared → published → source_cleaned → committed`, or `conflict`). Never
   overwrite an existing destination, and record intent before mutating the

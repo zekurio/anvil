@@ -50,6 +50,7 @@ type rawVideoConfig struct {
 	BitDepth           *int                           `toml:"bit_depth"`
 	CRFMin             *int                           `toml:"crf_min"`
 	CRFMax             *int                           `toml:"crf_max"`
+	SampleDuration     *Duration                      `toml:"sample_duration"`
 	Samples            *int                           `toml:"samples"`
 	Metric             string                         `toml:"metric"`
 	Target             *float64                       `toml:"target"`
@@ -57,7 +58,6 @@ type rawVideoConfig struct {
 	ForceEncodeOnNoFit bool                           `toml:"force_encode_on_no_fit"`
 	SkipEncode         bool                           `toml:"skip_encode"`
 	FFmpegArgs         []string                       `toml:"ffmpeg_args"`
-	ABAV1Args          []string                       `toml:"ab_av1_args"`
 	Overrides          map[string]VideoOverrideConfig `toml:"overrides"`
 }
 

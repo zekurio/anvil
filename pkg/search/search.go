@@ -4,425 +4,248 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
-	"regexp"
-	"strconv"
 	"strings"
 
 	"github.com/zekurio/anvil/pkg/domain"
+	"github.com/zekurio/anvil/pkg/ffmpeg"
 	"github.com/zekurio/anvil/pkg/pipeline"
+	"github.com/zekurio/anvil/pkg/probe"
 	"github.com/zekurio/anvil/pkg/process"
-	videocodec "github.com/zekurio/anvil/pkg/video"
 )
 
 type Searcher interface {
-	// Search runs the CRF search; scratchDir holds the sample encodes and is
-	// the process working directory, keeping sample IO off the destination
-	// filesystem the artifact is written to.
 	Search(ctx context.Context, plan domain.EncodePlan, scratchDir string) (domain.SearchResult, error)
 }
 
-type ABAV1 struct {
-	Runner process.Runner
-	Binary string
-}
+// FFmpeg owns sample selection, CRF selection, and quality/size acceptance.
+// Only the actual encoding and metric calculation are delegated to FFmpeg.
+type FFmpeg struct{ Runner process.Runner }
 
-func (s ABAV1) Search(ctx context.Context, plan domain.EncodePlan, scratchDir string) (domain.SearchResult, error) {
-	if plan.InputPath == "" {
-		return domain.SearchResult{}, errors.New("search input path is required")
+func (s FFmpeg) Search(ctx context.Context, plan domain.EncodePlan, scratchDir string) (result domain.SearchResult, err error) {
+	if err := validatePlan(plan); err != nil {
+		return result, err
+	}
+	if err := ctx.Err(); err != nil {
+		return result, err
 	}
 	runner := s.Runner
 	if runner == nil {
 		runner = process.OSRunner{}
 	}
-	binary := s.Binary
-	if binary == "" {
-		binary = "ab-av1"
+	plan.InputPath, err = filepath.Abs(plan.InputPath)
+	if err != nil {
+		return result, fmt.Errorf("resolve search input: %w", err)
 	}
-	args := SearchArgs(plan)
-	scratchDir = strings.TrimSpace(scratchDir)
+	source, err := (probe.FFProbe{Runner: runner}).Probe(ctx, plan.InputPath)
+	if err != nil {
+		return result, err
+	}
+	stream, ok := domain.PrimaryVideoStream(source.Streams)
+	if !ok {
+		return result, errors.New("search input has no video stream")
+	}
+	if plan.VideoSelectionApplied && plan.VideoStreamIndex != stream.Index {
+		return result, errors.New("search input video stream changed since probing")
+	}
+	plan.VideoSelectionApplied, plan.VideoStreamIndex = true, stream.Index
+	plan.InputPixelFormat = stream.PixelFormat
+	windows, err := sampleWindows(source.DurationSeconds, plan.SearchSamples, plan.SearchSampleDuration)
+	if err != nil {
+		return result, err
+	}
 	if scratchDir != "" {
 		if err := os.MkdirAll(scratchDir, 0o750); err != nil {
-			return domain.SearchResult{}, fmt.Errorf("prepare ab-av1 scratch dir: %w", err)
+			return result, fmt.Errorf("prepare search scratch directory: %w", err)
 		}
 	}
-	command := process.Command{Name: binary, Args: args, RequireFullStdout: true, RequireFullStderr: true}
-	if scratchDir != "" {
-		command.Dir = scratchDir
-		command.Env = []string{
-			"TMPDIR=" + scratchDir,
-			"TEMP=" + scratchDir,
-			"TMP=" + scratchDir,
-			"XDG_CACHE_HOME=" + filepath.Join(scratchDir, ".cache"),
-		}
-	}
-	result, err := runner.Run(ctx, command)
+	dir, err := os.MkdirTemp(scratchDir, "crf-search-")
 	if err != nil {
-		if errors.Is(err, process.ErrOutputCapture) || errors.Is(err, process.ErrOutputLog) ||
-			errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			return domain.SearchResult{}, fmt.Errorf("ab-av1 crf-search failed: %w", err)
-		}
-		output := combinedOutput(result)
-		if fatalSearchFailure(output) {
-			return domain.SearchResult{}, fmt.Errorf("ab-av1 crf-search failed: %w%s", err, outputHint(result))
-		}
-		if search, ok := ParseNoFitResult(output, plan); ok {
-			search.RawOutput = combinedOutput(result)
-			search.RawCommand = result.Command
-			return search, nil
-		}
-		return domain.SearchResult{}, fmt.Errorf("ab-av1 crf-search failed: %w%s", err, outputHint(result))
+		return result, fmt.Errorf("create search scratch directory: %w", err)
 	}
-	search, err := ParseResultForPlan(result.Stdout, plan)
+	// Only this invocation's private directory is removed, also on cancellation.
+	defer func() {
+		if cleanupErr := os.RemoveAll(dir); cleanupErr != nil {
+			err = errors.Join(err, fmt.Errorf("clean search scratch directory: %w", cleanupErr))
+		}
+	}()
+	dir, err = filepath.Abs(dir)
 	if err != nil {
-		return domain.SearchResult{}, fmt.Errorf("%w%s", err, outputHint(result))
+		return result, fmt.Errorf("resolve search scratch directory: %w", err)
 	}
-	search.RawOutput = string(result.Stdout)
-	search.RawCommand = result.Command
-	return search, nil
+	samples, err := prepareSamples(ctx, runner, plan, windows, dir)
+	if err != nil {
+		return result, err
+	}
+	return searchCRF(ctx, plan, func(ctx context.Context, crf int) (domain.SearchCandidate, error) {
+		return measureCandidate(ctx, runner, plan, samples, dir, crf)
+	})
 }
 
-func SearchArgs(plan domain.EncodePlan) []string {
-	args := []string{
-		"crf-search",
-		"-i", plan.InputPath,
-		"--min-crf", strconv.Itoa(crfMin(plan)),
-		"--max-crf", strconv.Itoa(crfMax(plan)),
+func validatePlan(plan domain.EncodePlan) error {
+	if strings.TrimSpace(plan.InputPath) == "" {
+		return errors.New("search input path is required")
 	}
-	if plan.SearchSamples > 0 {
-		args = append(args, "--samples", strconv.Itoa(plan.SearchSamples))
+	if plan.CRFMin < 0 || plan.CRFMax < plan.CRFMin || plan.CRFMax > 255 {
+		return errors.New("search CRF range must be ordered and between 0 and 255")
 	}
-	qualityArg := "--min-vmaf"
+	if plan.Metric != domain.QualityMetricVMAF && plan.Metric != domain.QualityMetricXPSNR {
+		return fmt.Errorf("unsupported search metric %q", plan.Metric)
+	}
+	if math.IsNaN(plan.Target) || math.IsInf(plan.Target, 0) || plan.Target < 0 || plan.Target > 100 {
+		return errors.New("search quality target must be finite and between 0 and 100")
+	}
+	if math.IsNaN(plan.MinSavingsPercent) || math.IsInf(plan.MinSavingsPercent, 0) || plan.MinSavingsPercent < 0 || plan.MinSavingsPercent > 100 {
+		return errors.New("search savings target must be finite and between 0 and 100")
+	}
+	return ffmpeg.ValidateEncoderArgs(plan.FFmpegArgs)
+}
+
+func searchCRF(ctx context.Context, plan domain.EncodePlan, measure func(context.Context, int) (domain.SearchCandidate, error)) (domain.SearchResult, error) {
+	result := domain.SearchResult{Metric: plan.Metric}
+	measured := make(map[int]domain.SearchCandidate)
+	evaluate := func(crf int) (domain.SearchCandidate, error) {
+		if err := ctx.Err(); err != nil {
+			return domain.SearchCandidate{}, err
+		}
+		if candidate, ok := measured[crf]; ok {
+			return candidate, nil
+		}
+		candidate, err := measure(ctx, crf)
+		if err != nil {
+			return candidate, err
+		}
+		if err := ctx.Err(); err != nil {
+			return candidate, err
+		}
+		if math.IsNaN(candidate.Score) || math.IsInf(candidate.Score, 0) || math.IsNaN(candidate.EncodedPercent) || math.IsInf(candidate.EncodedPercent, 0) || candidate.EncodedPercent <= 0 {
+			return candidate, errors.New("search candidate has invalid quality or size measurements")
+		}
+		candidate.CRF = crf
+		measured[crf] = candidate
+		result.Candidates = append(result.Candidates, candidate)
+		result.RawOutput += fmt.Sprintf("crf %d %s %.4f encoded %.2f%%\n", crf, plan.Metric, candidate.Score, candidate.EncodedPercent)
+		return candidate, nil
+	}
+	// ponytail: search assumes quality falls and size shrinks as CRF rises.
+	// A sweep is needed to guarantee an optimum for non-monotonic encoders.
+	endpoint, err := evaluate(plan.CRFMax)
+	if err != nil {
+		return result, err
+	}
+	low, high := plan.CRFMin, plan.CRFMax-1
+	if endpoint.Score >= plan.Target {
+		low = plan.CRFMax
+	}
+	previousWidth := 0
+	for low <= high {
+		width := high - low + 1
+		mid := low + (high-low)/2
+		// Estimate the quality boundary from the last two scores. Only do so
+		// after halving the interval, so poor estimates fall back to bisection.
+		if n := len(result.Candidates); n >= 2 && width <= previousWidth/2 {
+			a, b := result.Candidates[n-2], result.Candidates[n-1]
+			if a.CRF > b.CRF {
+				a, b = b, a
+			}
+			if a.Score > b.Score {
+				estimate := float64(a.CRF) + (a.Score-plan.Target)*float64(b.CRF-a.CRF)/(a.Score-b.Score)
+				if !math.IsNaN(estimate) && !math.IsInf(estimate, 0) {
+					mid = int(math.Floor(max(float64(low), min(float64(high), estimate))))
+				}
+			}
+		}
+		previousWidth = width
+		candidate, err := evaluate(mid)
+		if err != nil {
+			return result, err
+		}
+		if candidate.Score >= plan.Target {
+			low = mid + 1
+		} else {
+			high = mid - 1
+		}
+	}
+	maxPercent := 100 - plan.MinSavingsPercent
+	var chosen *domain.SearchCandidate
+	for _, candidate := range result.Candidates {
+		if candidate.Score >= plan.Target && candidate.EncodedPercent <= maxPercent && (chosen == nil || candidate.CRF > chosen.CRF) {
+			copy := candidate
+			chosen = &copy
+		}
+	}
+	reason := "CRF search found no candidate satisfying quality and size constraints"
+	if chosen == nil && !plan.ForceEncodeOnNoFit {
+		result.SkipVideoEncode, result.VideoEncodeSkipReason = true, reason
+		return result, nil
+	}
+	if chosen == nil {
+		// Find the quality-favoring edge of the size limit before selecting a
+		// forced result. A failed process or score never becomes a no-fit result.
+		low, high = plan.CRFMin, plan.CRFMax
+		for low <= high {
+			mid := low + (high-low)/2
+			candidate, err := evaluate(mid)
+			if err != nil {
+				return result, err
+			}
+			if candidate.EncodedPercent <= maxPercent {
+				high = mid - 1
+			} else {
+				low = mid + 1
+			}
+		}
+		// Include the highest-quality endpoint even if no tested size fits.
+		if _, err := evaluate(plan.CRFMin); err != nil {
+			return result, err
+		}
+		for _, candidate := range result.Candidates {
+			fits := candidate.EncodedPercent <= maxPercent
+			bestFits := chosen != nil && chosen.EncodedPercent <= maxPercent
+			if chosen == nil || (fits && !bestFits) || (fits == bestFits && (candidate.Score > chosen.Score || (candidate.Score == chosen.Score && candidate.EncodedPercent < chosen.EncodedPercent))) {
+				copy := candidate
+				chosen = &copy
+			}
+		}
+		// The additional probes can find a passing candidate with irregular scores.
+		if chosen.Score < plan.Target || chosen.EncodedPercent > maxPercent {
+			result.ForcedVideoEncodeReason = fmt.Sprintf("%s; forcing encode with best tested CRF %d", reason, chosen.CRF)
+		}
+	}
+	result.CRF = chosen.CRF
 	if plan.Metric == domain.QualityMetricXPSNR {
-		qualityArg = "--min-xpsnr"
+		result.XPSNR = chosen.Score
+	} else {
+		result.VMAF = chosen.Score
 	}
-	args = append(args, qualityArg, strconv.FormatFloat(plan.Target, 'f', -1, 64))
-	if plan.MinSavingsPercent > 0 {
-		maxEncodedPercent := 100 - plan.MinSavingsPercent
-		if maxEncodedPercent < 0 {
-			maxEncodedPercent = 0
-		}
-		args = append(args, "--max-encoded-percent", strconv.FormatFloat(maxEncodedPercent, 'f', -1, 64))
-	}
-	if plan.VideoCodec != "" {
-		args = append(args, "--encoder", plan.VideoCodec)
-	}
-	if plan.Preset != "" {
-		args = append(args, "--preset", plan.Preset)
-	}
-	if pixelFormat := searchPixelFormat(plan); pixelFormat != "" {
-		args = append(args, "--pix-format", pixelFormat)
-	}
-	if filter := searchVideoFilter(plan); filter != "" {
-		args = append(args, "--vfilter", filter)
-	}
-	if plan.Threads > 0 {
-		threads := strconv.Itoa(plan.Threads)
-		args = append(args, "--enc", "threads="+threads, "--vmaf", "n_threads="+threads)
-	}
-	if len(plan.ABAV1Args) > 0 {
-		args = append(args, plan.ABAV1Args...)
-	}
-	return args
+	return result, nil
 }
 
-type Block struct {
-	Searcher Searcher
-}
+type Block struct{ Searcher Searcher }
 
-func (Block) Name() string {
-	return "crf-search"
-}
-
+func (Block) Name() string { return "crf-search" }
 func (b Block) Run(ctx context.Context, job *pipeline.JobContext) error {
-	video, codec := effectiveVideo(job)
-	if codec == "" && len(job.Profile.Video.Overrides) > 0 {
-		return errors.New("source video codec is required to apply video overrides")
+	plan, err := ffmpeg.BuildPlanFromRequest(ffmpeg.BuildPlanRequest{
+		Profile: job.Profile, InputPath: job.InputPath, OutputPath: job.OutputPath,
+		Resources: job.Resources, Metadata: job.Metadata, Probe: job.Probe,
+	})
+	if err != nil {
+		return err
 	}
-	if video.SkipEncode {
-		reason := skipEncodeReason(codec)
-		result := domain.SearchResult{
-			Metric:                video.Metric,
-			SkipVideoEncode:       true,
-			VideoEncodeSkipReason: reason,
-			RawOutput:             "skipped: " + reason,
-		}
-		job.Search = &result
+	if plan.VideoCopy {
+		job.Search = &domain.SearchResult{Metric: plan.Metric, SkipVideoEncode: true, VideoEncodeSkipReason: plan.VideoCopyReason}
 		return nil
 	}
 	searcher := b.Searcher
 	if searcher == nil {
-		searcher = ABAV1{}
+		searcher = FFmpeg{}
 	}
-	plan := searchPlan(job)
 	result, err := searcher.Search(ctx, plan, job.StagingDir)
 	if err != nil {
 		return err
 	}
 	job.Search = &result
 	return nil
-}
-
-func effectiveVideo(job *pipeline.JobContext) (domain.VideoProfile, string) {
-	inputVideoCodec, _, _ := inputVideo(job.Probe)
-	return domain.EffectiveVideoProfile(job.Profile, job.Metadata, inputVideoCodec), inputVideoCodec
-}
-
-func skipEncodeReason(sourceCodec string) string {
-	sourceCodec = strings.ToLower(strings.TrimSpace(sourceCodec))
-	if sourceCodec == "" {
-		return "video encoding disabled by profile"
-	}
-	return fmt.Sprintf("video encoding disabled by profile for %s source", sourceCodec)
-}
-
-func searchPlan(job *pipeline.JobContext) domain.EncodePlan {
-	inputVideoCodec, inputWidth, inputHeight := inputVideo(job.Probe)
-	video := domain.EffectiveVideoProfile(job.Profile, job.Metadata, inputVideoCodec)
-	return domain.EncodePlan{
-		InputPath:          job.InputPath,
-		OutputPath:         job.OutputPath,
-		VideoCodec:         videocodec.ResolveEncoder(video.Codec, video.Accelerator),
-		InputVideoCodec:    inputVideoCodec,
-		InputWidth:         inputWidth,
-		InputHeight:        inputHeight,
-		Accelerator:        videocodec.ResolveAccelerator(video.Accelerator),
-		Preset:             video.Preset,
-		BitDepth:           videocodec.NormalizeBitDepth(video.BitDepth),
-		PixelFormat:        videocodec.SoftwarePixelFormat(video.BitDepth),
-		CRFMin:             video.CRFMin,
-		CRFMax:             video.CRFMax,
-		SearchSamples:      video.Samples,
-		Metric:             video.Metric,
-		Target:             video.Target,
-		MinSavingsPercent:  video.MinSavingsPercent,
-		ForceEncodeOnNoFit: video.ForceEncodeOnNoFit,
-		Threads:            job.Resources.Threads,
-		Container:          job.Profile.Container,
-		CropFilter:         job.Metadata.CropFilter,
-		CropPolicy:         job.Profile.Crop,
-		ABAV1Args:          append([]string(nil), video.ABAV1Args...),
-		HDR:                job.Metadata.HDR,
-	}
-}
-
-func searchVideoFilter(plan domain.EncodePlan) string {
-	if strings.TrimSpace(plan.CropFilter) == "" || videocodec.NoOpCrop(plan.CropFilter, plan.InputWidth, plan.InputHeight) {
-		return ""
-	}
-	if _, _, err := videocodec.ValidateCropFilter(
-		plan.CropFilter,
-		plan.InputWidth,
-		plan.InputHeight,
-		plan.CropPolicy.MinWidth,
-		plan.CropPolicy.MinHeight,
-		plan.CropPolicy.MinRetainedAreaPercent,
-		plan.CropPolicy.RequiredAlignment,
-	); err != nil {
-		return ""
-	}
-	return plan.CropFilter
-}
-
-func searchPixelFormat(plan domain.EncodePlan) string {
-	if plan.BitDepth != 0 {
-		return videocodec.SoftwarePixelFormat(plan.BitDepth)
-	}
-	return strings.TrimSpace(plan.PixelFormat)
-}
-
-func inputVideo(probe *domain.ProbeResult) (string, int, int) {
-	if probe == nil {
-		return "", 0, 0
-	}
-	stream, ok := domain.PrimaryVideoStream(probe.Streams)
-	if !ok {
-		return "", 0, 0
-	}
-	return stream.Codec, stream.Width, stream.Height
-}
-
-func crfMin(plan domain.EncodePlan) int {
-	if plan.CRFMin > 0 {
-		return plan.CRFMin
-	}
-	return max(plan.CRF, 0)
-}
-
-func crfMax(plan domain.EncodePlan) int {
-	if plan.CRFMax > 0 {
-		return plan.CRFMax
-	}
-	return max(plan.CRF, 0)
-}
-
-var (
-	crfPattern            = regexp.MustCompile(`(?i)\bcrf\b[^0-9]*(\d{1,3})`)
-	vmafPattern           = regexp.MustCompile(`(?i)\bvmaf\b[^0-9]*(\d+(?:\.\d+)?)`)
-	xpsnrPattern          = regexp.MustCompile(`(?i)\bxpsnr\b[^0-9-]*(-?\d+(?:\.\d+)?)`)
-	encodedPercentPattern = regexp.MustCompile(`\((\d+(?:\.\d+)?)%\)`)
-	noGoodCRFPattern      = regexp.MustCompile(`(?i)(failed to find a suitable crf|no suitable crf|no good crf|not worth (?:av1 )?encoding)`)
-	fatalSearchPattern    = regexp.MustCompile(`(?i)(panicked at|failed to create temp-dir|permission denied|invalid value|unknown option|unrecognized option)`)
-)
-
-func ParseResultForPlan(output []byte, plan domain.EncodePlan) (domain.SearchResult, error) {
-	text := string(output)
-	if search, ok := ParseNoFitResult(text, plan); ok {
-		return search, nil
-	}
-	crf, ok := lastIntMatch(crfPattern, text)
-	if !ok {
-		return domain.SearchResult{}, fmt.Errorf("parse ab-av1 output: CRF not found")
-	}
-	result := qualityResult(text, plan.Metric)
-	result.CRF = crf
-	return result, nil
-}
-
-func ParseNoFitResult(text string, plan domain.EncodePlan) (domain.SearchResult, bool) {
-	if !noGoodCRFPattern.MatchString(text) {
-		return domain.SearchResult{}, false
-	}
-	metric := activeMetric(plan.Metric)
-	if plan.ForceEncodeOnNoFit {
-		crf, score, ok := bestCRFObservation(text, metric, max(100-plan.MinSavingsPercent, 0))
-		if !ok {
-			crf = crfMin(plan)
-		}
-		if crf > 0 {
-			result := searchResultForScore(metric, score)
-			result.CRF = crf
-			result.ForcedVideoEncodeReason = forceNoGoodCRFReason(text, crf)
-			return result, true
-		}
-	}
-	return domain.SearchResult{
-		Metric:                metric,
-		SkipVideoEncode:       true,
-		VideoEncodeSkipReason: noGoodCRFReason(text),
-	}, true
-}
-
-func fatalSearchFailure(text string) bool {
-	return fatalSearchPattern.MatchString(text)
-}
-
-func lastIntMatch(pattern *regexp.Regexp, text string) (int, bool) {
-	matches := pattern.FindAllStringSubmatch(text, -1)
-	if len(matches) == 0 {
-		return 0, false
-	}
-	value, err := strconv.Atoi(matches[len(matches)-1][1])
-	return value, err == nil
-}
-
-func lastFloatMatch(pattern *regexp.Regexp, text string) (float64, bool) {
-	matches := pattern.FindAllStringSubmatch(text, -1)
-	if len(matches) == 0 {
-		return 0, false
-	}
-	value, err := strconv.ParseFloat(matches[len(matches)-1][1], 64)
-	return value, err == nil
-}
-
-func qualityResult(text string, preferred domain.QualityMetric) domain.SearchResult {
-	vmaf, hasVMAF := lastFloatMatch(vmafPattern, text)
-	xpsnr, hasXPSNR := lastFloatMatch(xpsnrPattern, text)
-	switch {
-	case preferred == domain.QualityMetricXPSNR && hasXPSNR:
-		return searchResultForScore(domain.QualityMetricXPSNR, xpsnr)
-	case preferred != domain.QualityMetricXPSNR && hasVMAF:
-		return searchResultForScore(domain.QualityMetricVMAF, vmaf)
-	case hasXPSNR:
-		return searchResultForScore(domain.QualityMetricXPSNR, xpsnr)
-	case hasVMAF:
-		return searchResultForScore(domain.QualityMetricVMAF, vmaf)
-	default:
-		return domain.SearchResult{Metric: activeMetric(preferred)}
-	}
-}
-
-func activeMetric(metric domain.QualityMetric) domain.QualityMetric {
-	if metric == domain.QualityMetricXPSNR {
-		return domain.QualityMetricXPSNR
-	}
-	return domain.QualityMetricVMAF
-}
-
-func searchResultForScore(metric domain.QualityMetric, score float64) domain.SearchResult {
-	result := domain.SearchResult{Metric: metric}
-	if metric == domain.QualityMetricXPSNR {
-		result.XPSNR = score
-		return result
-	}
-	result.VMAF = score
-	return result
-}
-
-func bestCRFObservation(text string, metric domain.QualityMetric, maxEncodedPercent float64) (int, float64, bool) {
-	bestCRF, bestScore := 0, 0.0
-	bestFits := false
-	found := false
-	scorePattern := vmafPattern
-	if metric == domain.QualityMetricXPSNR {
-		scorePattern = xpsnrPattern
-	}
-	for _, line := range strings.Split(text, "\n") {
-		if !strings.Contains(line, "command::crf_search]") {
-			continue
-		}
-		crf, hasCRF := lastIntMatch(crfPattern, line)
-		score, hasScore := lastFloatMatch(scorePattern, line)
-		percent, hasPercent := lastFloatMatch(encodedPercentPattern, line)
-		if !hasCRF || !hasScore || !hasPercent {
-			continue
-		}
-		fits := percent <= maxEncodedPercent
-		if !found || (fits && !bestFits) || (fits == bestFits && score > bestScore) {
-			bestCRF, bestScore = crf, score
-			bestFits = fits
-			found = true
-		}
-	}
-	return bestCRF, bestScore, found
-}
-
-func noGoodCRFReason(text string) string {
-	for _, line := range strings.Split(text, "\n") {
-		line = strings.TrimSpace(line)
-		if noGoodCRFPattern.MatchString(line) {
-			return "ab-av1 did not find a CRF satisfying quality/size constraints: " + line
-		}
-	}
-	return "ab-av1 did not find a CRF satisfying quality/size constraints"
-}
-
-func forceNoGoodCRFReason(text string, crf int) string {
-	return fmt.Sprintf("%s; forcing encode with best tested CRF %d", noGoodCRFReason(text), crf)
-}
-
-func combinedOutput(result process.Result) string {
-	stdout := strings.TrimSpace(string(result.Stdout))
-	stderr := strings.TrimSpace(string(result.Stderr))
-	switch {
-	case stdout == "":
-		return stderr
-	case stderr == "":
-		return stdout
-	default:
-		return stdout + "\n" + stderr
-	}
-}
-
-func outputHint(result process.Result) string {
-	text := combinedOutput(result)
-	if text == "" {
-		return ""
-	}
-	text = strings.ReplaceAll(text, "\n", " ")
-	if len(text) > 500 {
-		text = text[:500] + "..."
-	}
-	return ": " + text
 }

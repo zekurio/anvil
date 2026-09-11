@@ -128,7 +128,7 @@ func writePipelineContext(w *textout.Writer, context control.PipelineContextDeta
 			w.Printf("  Crop dimensions: %dx%d -> %dx%d\n", context.CropSourceWidth, context.CropSourceHeight, context.CropOutputWidth, context.CropOutputHeight)
 		}
 	}
-	if context.SearchCRF > 0 || context.SearchSkipReason != "" {
+	if context.SearchMetric != "" || context.SearchCRF > 0 || context.SearchSkipReason != "" {
 		if context.SearchSkipReason != "" {
 			w.Printf("  Search: skipped video encode (%s)\n", context.SearchSkipReason)
 		} else {

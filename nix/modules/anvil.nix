@@ -103,7 +103,6 @@ in
       type = types.listOf types.package;
       default = [
         ffmpegPackage
-        pkgs.ab-av1
       ];
       description = "Packages added to the service PATH for media tools.";
     };

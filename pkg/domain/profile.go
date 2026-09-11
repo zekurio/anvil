@@ -42,20 +42,20 @@ type VideoProfile struct {
 	CRFMin             int
 	CRFMax             int
 	Samples            int
+	SampleDuration     time.Duration
 	Metric             QualityMetric
 	Target             float64
 	MinSavingsPercent  float64
 	ForceEncodeOnNoFit bool
 	SkipEncode         bool
 	FFmpegArgs         []string
-	ABAV1Args          []string
 	Overrides          map[string]VideoOverride
 }
 
 // VideoOverride adjusts the base video settings when its condition — the
 // canonical source video codec family (hevc, h264, av1, ...) — matches.
+// FFmpegArgs append to the base arguments.
 // Nil fields inherit the base value; set fields replace it, even when zero.
-// FFmpegArgs and ABAV1Args append to the base args instead of replacing.
 type VideoOverride struct {
 	Codec              *string
 	Accelerator        *string
@@ -69,7 +69,6 @@ type VideoOverride struct {
 	ForceEncodeOnNoFit *bool
 	SkipEncode         *bool
 	FFmpegArgs         []string
-	ABAV1Args          []string
 }
 
 type StreamFallback string
