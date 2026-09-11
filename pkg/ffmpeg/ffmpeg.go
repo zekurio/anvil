@@ -29,6 +29,9 @@ func (e Encoder) Encode(ctx context.Context, plan domain.EncodePlan) (process.Re
 	if plan.OutputPath == "" {
 		return process.Result{}, errors.New("encode output path is required")
 	}
+	if err := ValidateEncoderArgs(plan.FFmpegArgs); err != nil {
+		return process.Result{}, err
+	}
 	runner := e.Runner
 	if runner == nil {
 		runner = process.OSRunner{}
@@ -65,40 +68,45 @@ func BuildPlanFromRequest(request BuildPlanRequest) (domain.EncodePlan, error) {
 		return domain.EncodePlan{}, errors.New("source video stream is required to apply video overrides")
 	}
 	video := domain.EffectiveVideoProfile(request.Profile, request.Metadata, inputVideo.Codec)
+	if err := ValidateEncoderArgs(video.FFmpegArgs); err != nil {
+		return domain.EncodePlan{}, err
+	}
 	videoCopy, videoCopyReason := videoCopyState(video, request.Search)
 	crf := selectedCRF(video, videoCopy, request.Search)
 	plan := domain.EncodePlan{
-		InputPath:          request.InputPath,
-		OutputPath:         request.OutputPath,
-		ProfileName:        request.Profile.Name,
-		VideoCodec:         videocodec.ResolveEncoder(video.Codec, video.Accelerator),
-		InputVideoCodec:    inputVideo.Codec,
-		InputWidth:         inputVideo.Width,
-		InputHeight:        inputVideo.Height,
-		Accelerator:        videocodec.ResolveAccelerator(video.Accelerator),
-		VideoCopy:          videoCopy,
-		VideoCopyReason:    videoCopyReason,
-		Preset:             video.Preset,
-		BitDepth:           videocodec.NormalizeBitDepth(video.BitDepth),
-		PixelFormat:        videocodec.SoftwarePixelFormat(video.BitDepth),
-		CRF:                crf,
-		CRFMin:             video.CRFMin,
-		CRFMax:             video.CRFMax,
-		Metric:             video.Metric,
-		Target:             video.Target,
-		MinSavingsPercent:  video.MinSavingsPercent,
-		ForceEncodeOnNoFit: video.ForceEncodeOnNoFit,
-		Threads:            request.Resources.Threads,
-		Container:          request.Profile.Container,
-		CropFilter:         request.Metadata.CropFilter,
-		CropPolicy:         request.Profile.Crop,
-		MetadataMode:       request.Profile.Metadata.Mode,
-		TrackTitleMode:     trackTitleModeOrDefault(request.Profile.Metadata.TrackTitles),
-		AttachmentMode:     request.Profile.Attachments.Mode,
-		ChapterMode:        request.Profile.Chapters.Mode,
-		FFmpegArgs:         append([]string(nil), video.FFmpegArgs...),
-		ABAV1Args:          append([]string(nil), video.ABAV1Args...),
-		HDR:                request.Metadata.HDR,
+		InputPath:            request.InputPath,
+		OutputPath:           request.OutputPath,
+		ProfileName:          request.Profile.Name,
+		VideoCodec:           videocodec.ResolveEncoder(video.Codec, video.Accelerator),
+		InputVideoCodec:      inputVideo.Codec,
+		InputPixelFormat:     inputVideo.PixelFormat,
+		InputWidth:           inputVideo.Width,
+		InputHeight:          inputVideo.Height,
+		Accelerator:          videocodec.ResolveAccelerator(video.Accelerator),
+		VideoCopy:            videoCopy,
+		VideoCopyReason:      videoCopyReason,
+		Preset:               video.Preset,
+		BitDepth:             videocodec.NormalizeBitDepth(video.BitDepth),
+		PixelFormat:          videocodec.SoftwarePixelFormat(video.BitDepth),
+		CRF:                  crf,
+		CRFMin:               video.CRFMin,
+		CRFMax:               video.CRFMax,
+		SearchSamples:        video.Samples,
+		SearchSampleDuration: video.SampleDuration,
+		Metric:               video.Metric,
+		Target:               video.Target,
+		MinSavingsPercent:    video.MinSavingsPercent,
+		ForceEncodeOnNoFit:   video.ForceEncodeOnNoFit,
+		Threads:              request.Resources.Threads,
+		Container:            request.Profile.Container,
+		CropFilter:           request.Metadata.CropFilter,
+		CropPolicy:           request.Profile.Crop,
+		MetadataMode:         request.Profile.Metadata.Mode,
+		TrackTitleMode:       trackTitleModeOrDefault(request.Profile.Metadata.TrackTitles),
+		AttachmentMode:       request.Profile.Attachments.Mode,
+		ChapterMode:          request.Profile.Chapters.Mode,
+		FFmpegArgs:           append([]string(nil), video.FFmpegArgs...),
+		HDR:                  request.Metadata.HDR,
 	}
 	if inputVideoFound {
 		plan.VideoSelectionApplied = true
@@ -141,7 +149,7 @@ func selectedCRF(video domain.VideoProfile, videoCopy bool, search *domain.Searc
 	if videoCopy {
 		return 0
 	}
-	if search != nil && search.CRF > 0 {
+	if search != nil {
 		return search.CRF
 	}
 	return video.CRFMin
@@ -172,13 +180,7 @@ func Args(plan domain.EncodePlan) []string {
 	args = append(args, inputArgs(plan)...)
 	args = append(args, "-i", plan.InputPath)
 	args = append(args, mapArgs(plan)...)
-	if filter := videoFilter(plan); filter != "" && !plan.VideoCopy {
-		args = append(args, "-vf", filter)
-	}
-	args = append(args, videoArgs(plan)...)
-	if !plan.VideoCopy && len(plan.FFmpegArgs) > 0 {
-		args = append(args, plan.FFmpegArgs...)
-	}
+	args = append(args, videoOutputArgs(plan)...)
 	args = append(args, audioArgs()...)
 	args = append(args, subtitleArgs()...)
 	if plan.MetadataMode == domain.MetadataModeStrip {
@@ -407,7 +409,7 @@ func finalPixelFormat(plan domain.EncodePlan) string {
 }
 
 func qualityArgs(plan domain.EncodePlan) []string {
-	if plan.CRF <= 0 {
+	if plan.CRF < 0 {
 		return nil
 	}
 	value := strconv.Itoa(plan.CRF)

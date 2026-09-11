@@ -218,3 +218,26 @@ func TestReferenceConfigLoads(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestNativeSearchConfiguration(t *testing.T) {
+	cfg, err := load(t, `[profiles.default-av1.video]
+samples = 4
+sample_duration = "10s"
+ffmpeg_args = ["-svtav1-params", "tune=0"]
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	video := cfg.Profiles[DefaultProfileName].ToDomain().Video
+	if video.Samples != 4 || video.SampleDuration != 10*time.Second {
+		t.Fatalf("video = %+v", video)
+	}
+	for _, field := range []string{`sample_duration = "0s"`, `ab_av1_args = []`, `ffmpeg_args = ["-crf", "20"]`} {
+		if _, err := load(t, "[profiles.default-av1.video]\n"+field); err == nil {
+			t.Fatalf("accepted %s", field)
+		}
+	}
+	if _, err := load(t, "[profiles.default-av1.video.overrides.hevc]\nab_av1_args = []"); err == nil || !strings.Contains(err.Error(), "was removed") {
+		t.Fatalf("migration error = %v", err)
+	}
+}

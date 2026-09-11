@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/zekurio/anvil/pkg/ffmpeg"
 	"github.com/zekurio/anvil/pkg/video"
 )
 
@@ -106,6 +107,12 @@ func (c Config) Validate() error {
 		if profile.Video.CRFMin > profile.Video.CRFMax {
 			problems = append(problems, fmt.Sprintf("profile %q crf_min must be less than or equal to crf_max", name))
 		}
+		if profile.Video.SampleDuration.Duration <= 0 {
+			problems = append(problems, fmt.Sprintf("profile %q video.sample_duration must be positive", name))
+		}
+		if err := ffmpeg.ValidateEncoderArgs(profile.Video.FFmpegArgs); err != nil {
+			problems = append(problems, fmt.Sprintf("profile %q video.%s", name, err))
+		}
 		if profile.Video.Samples < 0 {
 			problems = append(problems, fmt.Sprintf("profile %q video.samples must be non-negative", name))
 		}
@@ -114,17 +121,18 @@ func (c Config) Validate() error {
 		} else if !validQualityTarget(profile.Video.Metric, profile.Video.Target) {
 			problems = append(problems, fmt.Sprintf("profile %q video.target must be between 0 and 100 for metric %q", name, profile.Video.Metric))
 		} else if profile.Video.Metric == "xpsnr" && profile.Video.Target == 0 {
-			// There is no sensible XPSNR default: without --min-xpsnr ab-av1
-			// falls back to its VMAF default, silently ignoring the metric.
 			problems = append(problems, fmt.Sprintf("profile %q video.target must be set when metric is \"xpsnr\" (typical targets are 35-50)", name))
 		}
-		if profile.Video.MinSavingsPercent < 0 || profile.Video.MinSavingsPercent > 100 {
+		if math.IsNaN(profile.Video.MinSavingsPercent) || math.IsInf(profile.Video.MinSavingsPercent, 0) || profile.Video.MinSavingsPercent < 0 || profile.Video.MinSavingsPercent > 100 {
 			problems = append(problems, fmt.Sprintf("profile %q min_savings_percent must be between 0 and 100", name))
 		}
 		problems = append(problems, videoOverrideKeyProblems(name, profile.Video.Overrides)...)
 		for _, key := range sortedKeys(profile.Video.Overrides) {
 			override := profile.Video.Overrides[key]
 			prefix := fmt.Sprintf("profile %q video.overrides.%s", name, key)
+			if err := ffmpeg.ValidateEncoderArgs(override.FFmpegArgs); err != nil {
+				problems = append(problems, fmt.Sprintf("%s.%s", prefix, err))
+			}
 			if override.Codec != nil {
 				if strings.TrimSpace(*override.Codec) == "" {
 					problems = append(problems, prefix+".codec must not be empty")
@@ -153,11 +161,9 @@ func (c Config) Validate() error {
 			if override.Target != nil && validQualityMetric(effectiveMetric) && !validQualityTarget(effectiveMetric, *override.Target) {
 				problems = append(problems, fmt.Sprintf("%s.target must be between 0 and 100 for metric %q", prefix, effectiveMetric))
 			} else if override.Target != nil && *override.Target == 0 && effectiveMetric == "xpsnr" {
-				// A zero target omits --min-xpsnr, so ab-av1 would silently
-				// search against its VMAF default instead of XPSNR.
 				problems = append(problems, fmt.Sprintf("%s.target must be positive for metric \"xpsnr\" (typical targets are 35-50)", prefix))
 			}
-			if override.MinSavingsPercent != nil && (*override.MinSavingsPercent < 0 || *override.MinSavingsPercent > 100) {
+			if override.MinSavingsPercent != nil && (math.IsNaN(*override.MinSavingsPercent) || math.IsInf(*override.MinSavingsPercent, 0) || *override.MinSavingsPercent < 0 || *override.MinSavingsPercent > 100) {
 				problems = append(problems, prefix+".min_savings_percent must be between 0 and 100")
 			}
 			if override.CRFMin != nil && *override.CRFMin < 0 {

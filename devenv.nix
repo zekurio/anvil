@@ -14,7 +14,6 @@ let
     with pkgs;
     [
       goPackage
-      ab-av1
       coreutils
       curl
       ffmpegPackage

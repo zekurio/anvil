@@ -48,7 +48,6 @@
           ffmpegPackage = pkgs.jellyfin-ffmpeg or pkgs.ffmpeg;
           runtimePackages = [
             ffmpegPackage
-            pkgs.ab-av1
           ];
         in
         rec {
