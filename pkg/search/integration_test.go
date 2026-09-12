@@ -119,3 +119,50 @@ func TestNativeSearchWithFFmpeg(t *testing.T) {
 		})
 	}
 }
+
+// Run with ANVIL_QSV_TEST=1 and an FFmpeg/driver pair that supports QSV.
+func TestQSVSearchWithTimestampGaps(t *testing.T) {
+	if os.Getenv("ANVIL_QSV_TEST") != "1" {
+		t.Skip("set ANVIL_QSV_TEST=1 to run the QSV timestamp regression")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	root := t.TempDir()
+	input := filepath.Join(root, "gapped.mkv")
+	runner := process.OSRunner{}
+	// Reproduce the sparse tail left by copying part of a reordered GOP:
+	// all 123 frames exist, but the last two timestamps have three-frame gaps.
+	_, err := runner.Run(ctx, process.Command{Name: "ffmpeg", Args: []string{
+		"-hide_banner", "-nostdin", "-n", "-f", "lavfi", "-i", "testsrc2=size=192x128:rate=24000/1001",
+		"-frames:v", "123", "-vf", "setpts='PTS+if(gte(N,121),(N-120)*3/(24000/1001)/TB,0)'",
+		"-fps_mode", "passthrough", "-c:v", "ffv1", "-pix_fmt", "yuv420p10le", "-threads", "1", input,
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	frames, err := sampleFrames(ctx, runner, input, 4)
+	if err != nil || frames != 123 {
+		t.Fatalf("source frames = %d, %v", frames, err)
+	}
+	source, err := (probe.FFProbe{}).Probe(ctx, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile := domain.Profile{Container: "mkv", Video: domain.VideoProfile{
+		Codec: "hevc", Accelerator: "qsv", Preset: "veryslow", BitDepth: 10,
+		CRFMin: 24, CRFMax: 24, Samples: 1, Metric: domain.QualityMetricVMAF,
+		FFmpegArgs: []string{"-extbrc", "1", "-look_ahead_depth", "40", "-adaptive_i", "1", "-adaptive_b", "1", "-b_strategy", "1", "-bf", "7"},
+	}}
+	plan, err := ffmpeg.BuildPlanFromRequest(ffmpeg.BuildPlanRequest{Profile: profile, InputPath: input, OutputPath: filepath.Join(root, "final.mkv"), Probe: &source, Resources: domain.ResourceAllocation{Threads: 4}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := (FFmpeg{}).Search(ctx, plan, filepath.Join(root, "scratch"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.SkipVideoEncode || result.CRF != 24 || len(result.Candidates) != 1 || result.VMAF <= 0 {
+		t.Fatalf("result = %+v", result)
+	}
+	t.Log(result.RawOutput)
+}

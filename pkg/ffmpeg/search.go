@@ -9,19 +9,27 @@ import (
 )
 
 // SampleArgs encodes a video-only reference clip using the final encode's
-// decoder, filters, rate control, pixel format, preset, and encoder options.
+// decoder, crop, rate control, pixel format, preset, and encoder options.
 func SampleArgs(plan domain.EncodePlan) []string {
 	args := []string{"-hide_banner", "-nostdin", "-n", "-xerror", "-nostats", "-progress", "pipe:1"}
 	args = append(args, inputArgs(plan)...)
 	args = append(args, "-threads", strconv.Itoa(max(plan.Threads, 1)), "-i", plan.InputPath,
 		"-map", "0:v:0")
-	args = append(args, videoOutputArgs(plan)...)
+	// Cutting a reordered GOP can leave gaps near the end of a sample. QSV
+	// can emit backwards DTS when flushing those frames. Samples are compared
+	// by frame order, so give them a continuous timeline without dropping frames.
+	// Keep the reported frame rate, or use 25 when the input rate is unknown.
+	filter := "setpts='N/(if(gt(FRAME_RATE,0),FRAME_RATE,25)*TB)'"
+	if crop := videoFilter(plan); crop != "" {
+		filter += "," + crop
+	}
+	args = append(args, videoOutputArgs(plan, filter)...)
 	return append(args, "-an", "-sn", "-dn", "-map_metadata", "-1", "-map_chapters", "-1", "-f", "matroska", plan.OutputPath)
 }
 
-func videoOutputArgs(plan domain.EncodePlan) []string {
+func videoOutputArgs(plan domain.EncodePlan, filter string) []string {
 	var args []string
-	if filter := videoFilter(plan); filter != "" && !plan.VideoCopy {
+	if filter != "" && !plan.VideoCopy {
 		args = append(args, "-vf", filter)
 	}
 	args = append(args, videoArgs(plan)...)

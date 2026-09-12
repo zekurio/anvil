@@ -180,7 +180,7 @@ func Args(plan domain.EncodePlan) []string {
 	args = append(args, inputArgs(plan)...)
 	args = append(args, "-i", plan.InputPath)
 	args = append(args, mapArgs(plan)...)
-	args = append(args, videoOutputArgs(plan)...)
+	args = append(args, videoOutputArgs(plan, videoFilter(plan))...)
 	args = append(args, audioArgs()...)
 	args = append(args, subtitleArgs()...)
 	if plan.MetadataMode == domain.MetadataModeStrip {
