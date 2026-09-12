@@ -93,7 +93,9 @@ input, rounded up; `sample_duration = "20s"` controls their length. If the
 requested samples cover at least 85% of the input, Anvil uses the whole video
 once. Clips are copied from seekable keyframes and may include preroll. The
 same clips are reused for every candidate, with the same encoder settings as
-the final encode. Each encoded clip must decode to the reference frame count.
+the final encode. Sample timestamps are regenerated at the reported frame rate,
+or 25 fps when unknown, to avoid gaps from cutting reordered GOPs. Final encodes
+retain source timing. Each encoded clip must decode to the reference frame count.
 
 VMAF uses FFmpeg's default model and the arithmetic mean across frames, then
 across samples. XPSNR uses the minimum of the Y/U/V plane averages reported by
