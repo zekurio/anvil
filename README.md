@@ -78,9 +78,10 @@ restart.
 ### CRF search
 
 Anvil searches integer CRFs between `video.crf_min` and `video.crf_max`.
-It tests the upper endpoint first, then estimates the next CRF from measured
-scores, falling back to binary search when estimates make slow progress. It
-finds the highest CRF meeting `video.target`. Quality and size are assumed to decrease
+It measures the upper endpoint first, then bisects the range. Once the interval
+has halved, it estimates the next CRF from the last two measured scores, and any
+estimate that fails to halve the interval again hands the next step back to
+bisection. It finds the highest CRF meeting `video.target`. Quality and size are assumed to decrease
 as CRF increases; only measured candidates can be accepted. The chosen result
 must also meet `video.min_savings_percent`. If none fits, Anvil copies the video.
 With `force_encode_on_no_fit = true`, it searches the size boundary and chooses
@@ -95,14 +96,19 @@ once. Clips are copied from seekable keyframes and may include preroll. The
 same clips are reused for every candidate, with the same encoder settings as
 the final encode. Sample timestamps are regenerated at the reported frame rate,
 or 25 fps when unknown, to avoid gaps from cutting reordered GOPs. Final encodes
-retain source timing. Each encoded clip must decode to the reference frame count.
+keep the source timeline and pass every source frame to the encoder, so
+duplicate-timestamp and VFR sources are not silently shortened. Each encoded
+clip must decode to the reference frame count.
 
-VMAF uses FFmpeg's default model and the arithmetic mean across frames, then
-across samples. XPSNR uses the minimum of the Y/U/V plane averages reported by
-FFmpeg, then the arithmetic mean across samples. Comparisons pair frames by
-index at fixed analysis rates of 25 fps for VMAF and 60 fps for XPSNR. Infinite
-XPSNR for identical images is recorded as 100 to keep results valid JSON.
-No HDR tone mapping or HDR-specific metric model is applied.
+VMAF matches ab-av1's default model and scaling: sources smaller than 1728x972
+are bicubic scaled up to 1080p, sources larger than 2560x1440 use the
+`vmaf_4k_v0.6.1` model, and those smaller than 3456x1944 are scaled up to 4K.
+This keeps a VMAF target's meaning consistent across resolutions. XPSNR uses the
+minimum of the Y/U/V plane averages reported by FFmpeg, then the arithmetic mean
+across samples. Comparisons pair frames by index at fixed analysis rates of
+25 fps for VMAF and 60 fps for XPSNR. Infinite XPSNR for identical images is
+recorded as 100 to keep results valid JSON. No HDR tone mapping or HDR-specific
+metric model is applied.
 
 Savings compare the total encoded clip bytes against the reference clip bytes.
 These are video-only Matroska clips, including their container overhead; audio,
@@ -116,7 +122,10 @@ base profiles and overrides, even when empty. Move encoder options to
 `ffmpeg_args` as option/value pairs, for example
 `["-svtav1-params", "tune=0:film-grain=8"]`. These now apply to both search and
 final encoding. Anvil manages codec, preset, CRF, pixel format, threads, stream
-mapping, filters, and timing; those command-line overrides are rejected.
+mapping, filters, and timing; those command-line overrides are rejected,
+including `crf=`, `qp=`, `preset=`, and `rc=` keys inside `-svtav1-params`,
+`-x265-params`, or `-x264-params`. VMAF targets keep their ab-av1 calibration
+because search uses the same resolution-dependent scaling and 4k model.
 Use `samples` and `sample_duration` for sampling. Other ab-av1-specific options
 have no automatic translation. Existing checkpoints are invalidated on upgrade.
 

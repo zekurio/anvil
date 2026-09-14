@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -56,6 +57,54 @@ func TestFailedCandidateCleansOnlyItsScratch(t *testing.T) {
 	}
 }
 
+// TestSearchUsesConfiguredBinaries checks that search routes every ffmpeg and
+// ffprobe invocation through the configured executables.
+func TestSearchUsesConfiguredBinaries(t *testing.T) {
+	root := t.TempDir()
+	used := make(map[string]bool)
+	failure := errors.New("stop after sample encode")
+	runner := runnerFunc(func(_ context.Context, command process.Command) (process.Result, error) {
+		used[command.Name] = true
+		result := process.Result{Command: command.ArgsWithName()}
+		switch {
+		case command.Name == "custom-probe" && slices.Contains(command.Args, "-show_format"):
+			result.Stdout = []byte(`{"format":{"duration":"2","size":"1000"},"streams":[{"index":0,"codec_type":"video","codec_name":"h264"}]}`)
+		case command.Name == "custom-probe":
+			result.Stdout = []byte(`{"streams":[{"nb_read_frames":"24"}]}`)
+		case command.Name == "custom-ffmpeg" && slices.Contains(command.Args, "copy"):
+			path := command.Args[len(command.Args)-1]
+			if err := os.WriteFile(path, []byte("sample"), 0o600); err != nil {
+				return result, err
+			}
+		default:
+			result.ExitCode, result.Stderr = 1, []byte("stop")
+			return result, failure
+		}
+		return result, nil
+	})
+	plan := domain.EncodePlan{InputPath: "input.mkv", CRFMin: 20, CRFMax: 22, Metric: domain.QualityMetricVMAF, ForceEncodeOnNoFit: true}
+	if _, err := (FFmpeg{Runner: runner, Binary: "custom-ffmpeg", ProbeBinary: "custom-probe"}).Search(context.Background(), plan, root); !errors.Is(err, failure) {
+		t.Fatalf("error = %v", err)
+	}
+	if used["ffmpeg"] || used["ffprobe"] {
+		t.Fatalf("used default binaries: %v", used)
+	}
+	if !used["custom-ffmpeg"] || !used["custom-probe"] {
+		t.Fatalf("configured binaries unused: %v", used)
+	}
+}
+
+// ffmpegSupports reports whether the ffmpeg build lists name in the given
+// capability listing, such as -encoders or -filters.
+func ffmpegSupports(ctx context.Context, t *testing.T, listing, name string) bool {
+	t.Helper()
+	result, err := (process.OSRunner{}).Run(ctx, process.Command{Name: "ffmpeg", Args: []string{"-hide_banner", listing}, RequireFullStdout: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return strings.Contains(string(result.Stdout), name)
+}
+
 // Run with ANVIL_MEDIA_TEST=1 inside nix develop. Uses synthetic media only.
 func TestNativeSearchWithFFmpeg(t *testing.T) {
 	if os.Getenv("ANVIL_MEDIA_TEST") != "1" {
@@ -82,6 +131,9 @@ func TestNativeSearchWithFFmpeg(t *testing.T) {
 	}
 	for _, metric := range []domain.QualityMetric{domain.QualityMetricVMAF, domain.QualityMetricXPSNR} {
 		t.Run(string(metric), func(t *testing.T) {
+			if metric == domain.QualityMetricVMAF && !ffmpegSupports(ctx, t, "-filters", "libvmaf") {
+				t.Skip("ffmpeg build has no libvmaf filter")
+			}
 			profile := domain.Profile{Container: "mkv", Video: domain.VideoProfile{Codec: "av1", Accelerator: "software", Preset: "12", BitDepth: 10, CRFMin: 22, CRFMax: 24, Samples: 2, SampleDuration: 500 * time.Millisecond, Metric: metric, Target: 0, FFmpegArgs: []string{"-svtav1-params", "lp=2"}}, Crop: domain.CropPolicy{MinWidth: 128, MinHeight: 64, MinRetainedAreaPercent: 70, RequiredAlignment: 2}}
 			request := ffmpeg.BuildPlanRequest{Profile: profile, InputPath: input, OutputPath: filepath.Join(root, string(metric)+".mkv"), Probe: &source, Resources: domain.ResourceAllocation{Threads: 2}, Metadata: domain.JobMetadata{CropFilter: "crop=160:128:16:0"}}
 			plan, err := ffmpeg.BuildPlanFromRequest(request)
@@ -112,12 +164,60 @@ func TestNativeSearchWithFFmpeg(t *testing.T) {
 			if _, err := (ffmpeg.Encoder{}).Encode(ctx, final); err != nil {
 				t.Fatal(err)
 			}
-			frames, err := sampleFrames(ctx, runner, final.OutputPath, 2)
+			frames, err := sampleFrames(ctx, runner, "ffprobe", final.OutputPath, 2)
 			if err != nil || frames != 36 {
 				t.Fatalf("final frames = %d, %v", frames, err)
 			}
 		})
 	}
+}
+
+// Run with ANVIL_MEDIA_TEST=1 inside nix develop. x265 defaults to open GOP,
+// so copying a sample leaves leading B-frames whose DTS precedes the seek
+// point; the extraction must survive the CLI's timestamp fixup.
+func TestSearchExtractsOpenGOPSamples(t *testing.T) {
+	if os.Getenv("ANVIL_MEDIA_TEST") != "1" {
+		t.Skip("set ANVIL_MEDIA_TEST=1 to run real FFmpeg encodes")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+	if !ffmpegSupports(ctx, t, "-encoders", "libx265") {
+		t.Skip("ffmpeg build has no libx265 encoder")
+	}
+	root := t.TempDir()
+	input := filepath.Join(root, "opengop.mkv")
+	_, err := (process.OSRunner{}).Run(ctx, process.Command{Name: "ffmpeg", Args: []string{
+		"-hide_banner", "-nostdin", "-n", "-f", "lavfi", "-i", "testsrc2=size=320x180:rate=24:duration=12",
+		"-c:v", "libx265", "-preset", "veryfast", "-x265-params", "keyint=24:min-keyint=24:log-level=error",
+		"-pix_fmt", "yuv420p", input,
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	source, err := (probe.FFProbe{}).Probe(ctx, input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile := domain.Profile{Container: "mkv", Video: domain.VideoProfile{
+		Codec: "av1", Accelerator: "software", Preset: "12", BitDepth: 8,
+		CRFMin: 30, CRFMax: 32, Samples: 2, SampleDuration: 2 * time.Second,
+		Metric: domain.QualityMetricXPSNR, Target: 0, ForceEncodeOnNoFit: true,
+		FFmpegArgs: []string{"-svtav1-params", "lp=2"},
+	}}
+	plan, err := ffmpeg.BuildPlanFromRequest(ffmpeg.BuildPlanRequest{Profile: profile, InputPath: input, OutputPath: filepath.Join(root, "final.mkv"), Probe: &source, Resources: domain.ResourceAllocation{Threads: 2}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := (FFmpeg{}).Search(ctx, plan, filepath.Join(root, "scratch"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The point is that extraction and scoring complete on open-GOP input, not
+	// that the already-compressed source fits the savings target.
+	if result.SkipVideoEncode || len(result.Candidates) == 0 {
+		t.Fatalf("result = %+v", result)
+	}
+	t.Log(result.RawOutput)
 }
 
 // Run with ANVIL_QSV_TEST=1 and an FFmpeg/driver pair that supports QSV.
@@ -140,7 +240,7 @@ func TestQSVSearchWithTimestampGaps(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	frames, err := sampleFrames(ctx, runner, input, 4)
+	frames, err := sampleFrames(ctx, runner, "ffprobe", input, 4)
 	if err != nil || frames != 123 {
 		t.Fatalf("source frames = %d, %v", frames, err)
 	}

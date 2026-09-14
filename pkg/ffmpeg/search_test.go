@@ -50,6 +50,14 @@ func TestOnlySamplesNormalizeTimestamps(t *testing.T) {
 	if !slices.Contains(args, "-xerror") || strings.Contains(strings.Join(Args(plan), " "), "setpts=") {
 		t.Fatal("lost strict sample error handling or changed final encode timestamps")
 	}
+	// Final encodes keep the source timeline but still pass every frame to the
+	// encoder, so a duplicate-timestamp or VFR source is not silently shortened.
+	for _, got := range [][]string{args, Args(plan)} {
+		at := slices.Index(got, "-fps_mode")
+		if at < 0 || at+1 >= len(got) || got[at+1] != "passthrough" {
+			t.Fatalf("fps_mode = %q", got)
+		}
+	}
 }
 
 func TestEncoderArgumentsCannotOverrideSearch(t *testing.T) {
@@ -58,7 +66,30 @@ func TestEncoderArgumentsCannotOverrideSearch(t *testing.T) {
 			t.Fatalf("accepted %q", args)
 		}
 	}
-	if err := ValidateEncoderArgs([]string{"-svtav1-params", "tune=0:film-grain=8", "-g", "120"}); err != nil {
-		t.Fatal(err)
+	for _, args := range [][]string{
+		{"-svtav1-params", "tune=0:film-grain=8", "-g", "120"},
+		{"-svtav1-params", "lp=2:keyint=120"},
+		{"-x265-params", "aq-mode=3:info=0"},
+		{"-x264-params", "ref=4:me=umh"},
+	} {
+		if err := ValidateEncoderArgs(args); err != nil {
+			t.Fatalf("rejected %q: %v", args, err)
+		}
+	}
+	// The codec params string is applied after the FFmpeg-level options, so a
+	// managed key there would silently override the searched CRF or preset.
+	for _, args := range [][]string{
+		{"-svtav1-params", "crf=60"},
+		{"-svtav1-params", "preset=4:film-grain=8"},
+		{"-svtav1-params", "rc=1:tbr=8000"},
+		{"-x265-params", "crf=20:info=0"},
+		{"-x265-params", "qp=18"},
+		{"-x264-params", "qpmin=10:ref=4"},
+		{"-x264-params", "bitrate=5000"},
+		{"-svtav1-params", "CRF=60"},
+	} {
+		if err := ValidateEncoderArgs(args); err == nil {
+			t.Fatalf("accepted %q", args)
+		}
 	}
 }
