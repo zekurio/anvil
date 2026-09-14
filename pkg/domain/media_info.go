@@ -68,7 +68,6 @@ type SearchResult struct {
 	VideoEncodeSkipReason   string
 	ForcedVideoEncodeReason string
 	RawOutput               string
-	RawCommand              []string
 }
 
 type AudioSelection struct {

@@ -22,7 +22,38 @@ type Searcher interface {
 
 // FFmpeg owns sample selection, CRF selection, and quality/size acceptance.
 // Only the actual encoding and metric calculation are delegated to FFmpeg.
-type FFmpeg struct{ Runner process.Runner }
+// Binary and ProbeBinary override the ffmpeg and ffprobe executables, matching
+// the Binary fields on ffmpeg.Encoder, crop.Detector, and probe.FFProbe.
+type FFmpeg struct {
+	Runner      process.Runner
+	Binary      string
+	ProbeBinary string
+}
+
+// tools names the external programs search invokes. Empty fields fall back to
+// the default PATH lookup.
+type tools struct {
+	ffmpeg  string
+	ffprobe string
+}
+
+func (s FFmpeg) tools() tools {
+	return tools{ffmpeg: s.Binary, ffprobe: s.ProbeBinary}
+}
+
+func (t tools) ffmpegName() string {
+	if t.ffmpeg == "" {
+		return "ffmpeg"
+	}
+	return t.ffmpeg
+}
+
+func (t tools) ffprobeName() string {
+	if t.ffprobe == "" {
+		return "ffprobe"
+	}
+	return t.ffprobe
+}
 
 func (s FFmpeg) Search(ctx context.Context, plan domain.EncodePlan, scratchDir string) (result domain.SearchResult, err error) {
 	if err := validatePlan(plan); err != nil {
@@ -35,11 +66,12 @@ func (s FFmpeg) Search(ctx context.Context, plan domain.EncodePlan, scratchDir s
 	if runner == nil {
 		runner = process.OSRunner{}
 	}
+	bin := s.tools()
 	plan.InputPath, err = filepath.Abs(plan.InputPath)
 	if err != nil {
 		return result, fmt.Errorf("resolve search input: %w", err)
 	}
-	source, err := (probe.FFProbe{Runner: runner}).Probe(ctx, plan.InputPath)
+	source, err := (probe.FFProbe{Runner: runner, Binary: bin.ffprobeName()}).Probe(ctx, plan.InputPath)
 	if err != nil {
 		return result, err
 	}
@@ -75,12 +107,12 @@ func (s FFmpeg) Search(ctx context.Context, plan domain.EncodePlan, scratchDir s
 	if err != nil {
 		return result, fmt.Errorf("resolve search scratch directory: %w", err)
 	}
-	samples, err := prepareSamples(ctx, runner, plan, windows, dir)
+	samples, err := prepareSamples(ctx, runner, plan, windows, dir, bin)
 	if err != nil {
 		return result, err
 	}
 	return searchCRF(ctx, plan, func(ctx context.Context, crf int) (domain.SearchCandidate, error) {
-		return measureCandidate(ctx, runner, plan, samples, dir, crf)
+		return measureCandidate(ctx, runner, plan, samples, dir, crf, bin)
 	})
 }
 
@@ -129,7 +161,7 @@ func searchCRF(ctx context.Context, plan domain.EncodePlan, measure func(context
 		result.RawOutput += fmt.Sprintf("crf %d %s %.4f encoded %.2f%%\n", crf, plan.Metric, candidate.Score, candidate.EncodedPercent)
 		return candidate, nil
 	}
-	// ponytail: search assumes quality falls and size shrinks as CRF rises.
+	// Caveat: search assumes quality falls and size shrinks as CRF rises.
 	// A sweep is needed to guarantee an optimum for non-monotonic encoders.
 	endpoint, err := evaluate(plan.CRFMax)
 	if err != nil {
@@ -172,8 +204,7 @@ func searchCRF(ctx context.Context, plan domain.EncodePlan, measure func(context
 	var chosen *domain.SearchCandidate
 	for _, candidate := range result.Candidates {
 		if candidate.Score >= plan.Target && candidate.EncodedPercent <= maxPercent && (chosen == nil || candidate.CRF > chosen.CRF) {
-			copy := candidate
-			chosen = &copy
+			chosen = &candidate
 		}
 	}
 	reason := "CRF search found no candidate satisfying quality and size constraints"
@@ -205,8 +236,7 @@ func searchCRF(ctx context.Context, plan domain.EncodePlan, measure func(context
 			fits := candidate.EncodedPercent <= maxPercent
 			bestFits := chosen != nil && chosen.EncodedPercent <= maxPercent
 			if chosen == nil || (fits && !bestFits) || (fits == bestFits && (candidate.Score > chosen.Score || (candidate.Score == chosen.Score && candidate.EncodedPercent < chosen.EncodedPercent))) {
-				copy := candidate
-				chosen = &copy
+				chosen = &candidate
 			}
 		}
 		// The additional probes can find a passing candidate with irregular scores.
