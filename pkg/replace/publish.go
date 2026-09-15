@@ -281,6 +281,14 @@ func (m Manager) publish(ctx context.Context, op *PublishOperation) error {
 	if err := verifyRecordedIdentity(op.ArtifactPath, op.ArtifactIdentity); err != nil {
 		return m.conflict(ctx, op, fmt.Sprintf("artifact identity changed: %v", err))
 	}
+	if op.SetHandoffModes {
+		// Mode lives on the inode the link will share, so the destination is
+		// importable the instant it appears, even if the importer takes it
+		// before cleanup can revisit it.
+		if err := os.Chmod(op.ArtifactPath, handoffFileMode); err != nil {
+			return fmt.Errorf("set handoff artifact mode: %w", err)
+		}
+	}
 	if err := m.publishArtifact(op); err != nil {
 		if errors.Is(err, os.ErrExist) {
 			matches, digest, matchErr := m.destinationMatches(ctx, *op)
@@ -382,11 +390,12 @@ func (m Manager) prepareReplacement(ctx context.Context, op *PublishOperation) (
 
 func (m Manager) cleanup(ctx context.Context, op *PublishOperation) error {
 	if op.SetHandoffModes {
-		if err := os.Chmod(op.DestinationPath, handoffFileMode); err != nil {
-			return fmt.Errorf("set handoff destination mode: %w", err)
-		}
-		if err := syncFile(op.DestinationPath); err != nil {
-			return fmt.Errorf("sync handoff destination mode: %w", err)
+		// The importer may already have taken the published file: a
+		// download destination is handed off precisely so that it moves on.
+		// That consumes the publication rather than failing it, so a missing
+		// destination here must not pin the journal at published forever.
+		if err := setHandoffFileMode(op.DestinationPath); err != nil {
+			return err
 		}
 		if err := m.boundary(BoundaryDestinationMode); err != nil {
 			return err
@@ -835,4 +844,21 @@ func pendingUnlessConflict(err error) error {
 		return err
 	}
 	return pending(err)
+}
+
+// setHandoffFileMode applies the handoff file mode to a published destination.
+// A destination that no longer exists was consumed by the importer, which is
+// the intended end state, so it is not an error.
+func setHandoffFileMode(path string) error {
+	err := os.Chmod(path, handoffFileMode)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("set handoff destination mode: %w", err)
+	}
+	if err := syncFile(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("sync handoff destination mode: %w", err)
+	}
+	return nil
 }

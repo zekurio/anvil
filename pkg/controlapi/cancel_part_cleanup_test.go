@@ -74,7 +74,7 @@ func TestCleanupOrphanedPartProtectsAnotherJobsLegacyArtifact(t *testing.T) {
 	// A part beside the destination predates the handoff work directory and
 	// must still be reclaimed alongside the current work-directory part.
 	scoped := replacepkg.PartPath(destination, replacepkg.PartJobLabel(job.ID))
-	workPart := filepath.Join(handoffRoot, replacepkg.HandoffWorkDir, "movie.mkv.job-42"+replacepkg.PartSuffix)
+	workPart := replacepkg.ArtifactPath(domain.Library{Kind: domain.LibraryKindDownload, Download: domain.DownloadLibraryPolicy{HandoffPath: handoffRoot}}, destination, replacepkg.PartJobLabel(job.ID))
 	if err := os.MkdirAll(filepath.Dir(workPart), 0o750); err != nil {
 		t.Fatal(err)
 	}
