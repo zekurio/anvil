@@ -53,3 +53,13 @@ func TestResumeCropRevalidatesCachedCandidate(t *testing.T) {
 		t.Fatalf("CRF search resume = %v, %v; want rerun", resumed, err)
 	}
 }
+
+func TestNativeSearchRejectsOldCheckpoint(t *testing.T) {
+	base := domain.JobPipelineContext{Version: domain.JobPipelineContextVersion, InputPath: "movie.mkv"}
+	cached := base
+	cached.Version = 4
+	cached.Search = &domain.SearchResult{CRF: 27}
+	if pipelineContextMatches(base, cached) {
+		t.Fatal("accepted pre-native-search checkpoint")
+	}
+}

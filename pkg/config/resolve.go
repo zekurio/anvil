@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 
 	"github.com/zekurio/anvil/pkg/video"
 )
@@ -105,10 +106,7 @@ func resolveProfile(name string, raw rawProfileConfig) (ProfileConfig, error) {
 	}
 
 	metric := strings.ToLower(orDefault(raw.Video.Metric, "vmaf"))
-	// An unset VMAF target means ab-av1's own 95 default anyway; making it
-	// explicit keeps the effective config honest. An unset XPSNR target stays
-	// zero so validation can demand one instead of silently searching at the
-	// VMAF default.
+	// XPSNR has no default target; validation requires an explicit choice.
 	target := float64(0)
 	if raw.Video.Target != nil {
 		target = *raw.Video.Target
@@ -138,13 +136,13 @@ func resolveProfile(name string, raw rawProfileConfig) (ProfileConfig, error) {
 			CRFMin:             valueOr(raw.Video.CRFMin, DefaultCRFMin),
 			CRFMax:             valueOr(raw.Video.CRFMax, DefaultCRFMax),
 			Samples:            valueOr(raw.Video.Samples, 0),
+			SampleDuration:     valueOr(raw.Video.SampleDuration, Duration{Duration: 20 * time.Second}),
 			Metric:             metric,
 			Target:             target,
 			MinSavingsPercent:  valueOr(raw.Video.MinSavingsPercent, float64(DefaultMinSavingsPct)),
 			ForceEncodeOnNoFit: raw.Video.ForceEncodeOnNoFit,
 			SkipEncode:         raw.Video.SkipEncode,
 			FFmpegArgs:         raw.Video.FFmpegArgs,
-			ABAV1Args:          raw.Video.ABAV1Args,
 			Overrides:          overrides,
 		},
 		Audio: AudioConfig{

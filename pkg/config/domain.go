@@ -135,7 +135,6 @@ func (p ProfileConfig) ToDomain() domain.Profile {
 				ForceEncodeOnNoFit: clonePointer(override.ForceEncodeOnNoFit),
 				SkipEncode:         clonePointer(override.SkipEncode),
 				FFmpegArgs:         append([]string(nil), override.FFmpegArgs...),
-				ABAV1Args:          append([]string(nil), override.ABAV1Args...),
 			}
 		}
 	}
@@ -162,13 +161,13 @@ func (p ProfileConfig) ToDomain() domain.Profile {
 			CRFMin:             p.Video.CRFMin,
 			CRFMax:             p.Video.CRFMax,
 			Samples:            p.Video.Samples,
+			SampleDuration:     p.Video.SampleDuration.Duration,
 			Metric:             domain.QualityMetric(p.Video.Metric),
 			Target:             p.Video.Target,
 			MinSavingsPercent:  p.Video.MinSavingsPercent,
 			ForceEncodeOnNoFit: p.Video.ForceEncodeOnNoFit,
 			SkipEncode:         p.Video.SkipEncode,
 			FFmpegArgs:         append([]string(nil), p.Video.FFmpegArgs...),
-			ABAV1Args:          append([]string(nil), p.Video.ABAV1Args...),
 			Overrides:          videoOverrides,
 		},
 		Audio: domain.AudioProfile{

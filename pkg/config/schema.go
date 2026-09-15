@@ -169,32 +169,34 @@ type VideoConfig struct {
 	CRFMin int `toml:"crf_min"`
 	// Highest search CRF; integer no lower than crf_min.
 	CRFMax int `toml:"crf_max"`
-	// Fixed sample count for each CRF candidate; 0 uses ab-av1's
-	// duration-based count; integer >= 0.
+	// Fixed sample count per CRF; 0 uses one per 12 minutes, rounded up.
+	// Short inputs use one whole-file sample.
 	Samples int `toml:"samples"`
-	// Quality metric passed to ab-av1; "vmaf" or "xpsnr".
+	// Length of each search sample; positive Go duration, default "20s".
+	SampleDuration Duration `toml:"sample_duration"`
+	// Quality metric measured by FFmpeg; "vmaf" or "xpsnr".
 	Metric string `toml:"metric"`
 	// Minimum score for metric; number from 0 through 100. Required when
 	// metric is "xpsnr" (typical XPSNR target: 35-50).
 	Target float64 `toml:"target"`
-	// Skip a result that saves too little space; number from 0 through 100.
+	// Minimum estimated video-only savings from sample sizes, including
+	// container overhead; number from 0 through 100.
 	MinSavingsPercent float64 `toml:"min_savings_percent"`
-	// Encode at the lowest observed CRF instead of preserving video when
-	// search finds no fit.
+	// On no fit, use the best measured quality within the size limit, or
+	// the best measured quality overall if no candidate fits the size limit.
 	ForceEncodeOnNoFit bool `toml:"force_encode_on_no_fit"`
 	// Copy video instead of searching and encoding when policy requires it.
 	SkipEncode bool `toml:"skip_encode"`
-	// Extra ffmpeg arguments appended to Anvil's command.
+	// Extra encoder option/value pairs shared by search and final encoding.
+	// Stream mapping, filters, timing, and rate control are managed by Anvil.
 	FFmpegArgs []string `toml:"ffmpeg_args"`
-	// Extra ab-av1 arguments appended to the search command.
-	ABAV1Args []string `toml:"ab_av1_args"`
 	// Per-source-codec adjustments; see VideoOverrideConfig.
 	Overrides map[string]VideoOverrideConfig `toml:"overrides"`
 }
 
 // VideoOverrideConfig adjusts video settings for canonical source codec
 // family keys (hevc, h264, av1, ...). Absent fields inherit base video
-// settings; ffmpeg_args and ab_av1_args append to the base args.
+// settings; ffmpeg_args append to the base args.
 type VideoOverrideConfig struct {
 	// Override output codec for matching sources; omit to inherit.
 	Codec *string `toml:"codec"`
@@ -222,8 +224,6 @@ type VideoOverrideConfig struct {
 	SkipEncode *bool `toml:"skip_encode"`
 	// Append source-specific ffmpeg arguments.
 	FFmpegArgs []string `toml:"ffmpeg_args"`
-	// Append source-specific ab-av1 arguments.
-	ABAV1Args []string `toml:"ab_av1_args"`
 }
 
 // AudioConfig declares track retention intent. It is conservative by default.
