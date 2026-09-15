@@ -360,6 +360,12 @@ func (Block) Name() string {
 func (b Block) Run(ctx context.Context, job *pipeline.JobContext) error {
 	result, err := b.Validator.Validate(ctx, RequestFromJob(job))
 	job.Validation = &result
+	// Quality findings are observational, but an artifact that no longer
+	// exists is not a finding: nothing can be published, so the attempt must
+	// fail here instead of reporting the encode as accepted.
+	if errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("encode artifact missing: %w", err)
+	}
 	if err != nil {
 		slog.Warn("validation observations recorded; accepting encode authority", "error", err, "errors", result.Errors)
 	}

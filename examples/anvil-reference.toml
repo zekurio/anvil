@@ -16,7 +16,7 @@
 # sections are examples.
 
 [daemon]
-temp_dir = "/var/lib/anvil/tmp" # Scratch directory for search samples and process logs. Encode artifacts are written next to their publish destination as <name>.job-<id>.anvil-part. store_path and control_socket default to locations inside this directory.
+temp_dir = "/var/lib/anvil/tmp" # Scratch directory for search samples and process logs. Encode artifacts are written on the destination filesystem as <name>.job-<id>.anvil-part: beside the destination for media libraries, under <handoff_path>/.anvil-work for download libraries. store_path and control_socket default to locations inside this directory.
 store_path = "/var/lib/anvil/anvil.db" # SQLite state path. Defaults to anvil.db inside temp_dir; any non-empty path.
 control_socket = "/run/anvil/anvild.sock" # Daemon Unix socket. Defaults to anvild.sock inside temp_dir; must be absolute.
 worker_count = 2 # Simultaneous jobs. Defaults to the CPU count; integer >= 1.
@@ -149,7 +149,7 @@ concurrency_limit = 1 # Cap active jobs from this library; 0 means no per-librar
 arr = "tv" # Use this Arr instance for metadata; omit to disable lookup; existing arr name.
 
 [libraries.downloads.download]
-handoff_path = "/srv/imports/tv" # Destination watched by the importer; non-empty path for download libraries.
+handoff_path = "/srv/imports/tv" # Destination watched by the importer; non-empty path for download libraries. Anvil encodes into <handoff_path>/.anvil-work and only creates the package directory at publish time.
 stable_for = "5m" # Fallback quiet period when no completion event is observed; close-write and moved-in transfers enqueue after debounce; duration >= 0.
 package_mode = "auto" # Treat a download as a file or directory; "auto", "directory", or "file".
 handoff_mode = "move" # Copy for safety or move when the downloader no longer needs it; "move" or "copy".

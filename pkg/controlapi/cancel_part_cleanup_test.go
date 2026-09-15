@@ -45,8 +45,12 @@ func TestStagedDestinationsUseAttemptSnapshots(t *testing.T) {
 		filepath.Join(oldRoot, "season", "movie.mkv"),
 		filepath.Join(newRoot, "season", "movie.mkv"),
 	}
-	if !reflect.DeepEqual(destinations, want) {
-		t.Fatalf("stagedDestinations = %#v, want %#v", destinations, want)
+	var paths []string
+	for _, destination := range destinations {
+		paths = append(paths, destination.Path)
+	}
+	if !reflect.DeepEqual(paths, want) {
+		t.Fatalf("stagedDestinations = %#v, want %#v", paths, want)
 	}
 }
 
@@ -67,9 +71,15 @@ func TestCleanupOrphanedPartProtectsAnotherJobsLegacyArtifact(t *testing.T) {
 		domain.Profile{Name: "encode", Container: "mkv"},
 	)
 	destination := filepath.Join(handoffRoot, "movie.mkv")
+	// A part beside the destination predates the handoff work directory and
+	// must still be reclaimed alongside the current work-directory part.
 	scoped := replacepkg.PartPath(destination, replacepkg.PartJobLabel(job.ID))
+	workPart := filepath.Join(handoffRoot, replacepkg.HandoffWorkDir, "movie.mkv.job-42"+replacepkg.PartSuffix)
+	if err := os.MkdirAll(filepath.Dir(workPart), 0o750); err != nil {
+		t.Fatal(err)
+	}
 	legacy := destination + replacepkg.PartSuffix
-	for _, path := range []string{scoped, legacy} {
+	for _, path := range []string{scoped, workPart, legacy} {
 		if err := os.WriteFile(path, []byte(path), 0o600); err != nil {
 			t.Fatalf("write %q: %v", path, err)
 		}
@@ -78,8 +88,10 @@ func TestCleanupOrphanedPartProtectsAnotherJobsLegacyArtifact(t *testing.T) {
 
 	Service{Store: store}.cleanupOrphanedPart(context.Background(), job.ID)
 
-	if _, err := os.Stat(scoped); !os.IsNotExist(err) {
-		t.Fatalf("canceled job scoped part still exists (stat error %v)", err)
+	for _, path := range []string{scoped, workPart} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("canceled job part %q still exists (stat error %v)", path, err)
+		}
 	}
 	if _, err := os.Stat(legacy); err != nil {
 		t.Fatalf("journal-owned legacy artifact: %v", err)

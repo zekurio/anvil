@@ -382,13 +382,20 @@ func (s Service) cleanupOrphanedPart(ctx context.Context, jobID domain.JobID) {
 		log("resolve some staged destinations", destErr)
 	}
 	for _, destination := range destinations {
-		if err := replacepkg.CleanupPartFiles(destination, replacepkg.PartJobLabel(jobID)); err != nil {
+		if err := replacepkg.CleanupPartFiles(destination.Library, destination.Path, replacepkg.PartJobLabel(jobID)); err != nil {
 			log("remove part files", err)
 		}
-		if err := replacepkg.CleanupLegacyPartFiles(ctx, s.Store, destination); err != nil {
+		if err := replacepkg.CleanupLegacyPartFiles(ctx, s.Store, destination.Path); err != nil {
 			log("remove legacy part files", err)
 		}
 	}
+}
+
+// stagedDestination is a publish destination together with the library
+// snapshot that placed it, which also decides where its part file was written.
+type stagedDestination struct {
+	Library domain.Library
+	Path    string
 }
 
 // stagedDestinations reports every destination the job's attempts staged at.
@@ -396,12 +403,12 @@ func (s Service) cleanupOrphanedPart(ctx context.Context, jobID domain.JobID) {
 // config, so the persisted per-attempt snapshots — not the current runtime
 // config, which a reload may have changed or removed since — decide where an
 // orphaned part file can be.
-func stagedDestinations(ctx context.Context, store Store, job domain.Job, source domain.MediaSource, asset domain.MediaAsset) ([]string, error) {
+func stagedDestinations(ctx context.Context, store Store, job domain.Job, source domain.MediaSource, asset domain.MediaAsset) ([]stagedDestination, error) {
 	attempts, err := store.ListAttemptsForJob(ctx, job.ID)
 	if err != nil {
 		return nil, fmt.Errorf("list attempts: %w", err)
 	}
-	var destinations []string
+	var destinations []stagedDestination
 	seen := make(map[string]struct{})
 	var errs []error
 	for _, attempt := range attempts {
@@ -430,7 +437,7 @@ func stagedDestinations(ctx context.Context, store Store, job domain.Job, source
 		}
 		if _, ok := seen[destination]; !ok {
 			seen[destination] = struct{}{}
-			destinations = append(destinations, destination)
+			destinations = append(destinations, stagedDestination{Library: library, Path: destination})
 		}
 	}
 	return destinations, errors.Join(errs...)

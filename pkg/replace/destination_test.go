@@ -63,7 +63,7 @@ func TestCleanupPartFilesRemovesOnlyTheJobsArtifact(t *testing.T) {
 	legacyPart := destination + PartSuffix
 
 	writePaths(t, destination, jobPart, otherJobPart, legacyPart)
-	if err := CleanupPartFiles(destination, "42"); err != nil {
+	if err := CleanupPartFiles(domain.Library{Kind: domain.LibraryKindMedia}, destination, "42"); err != nil {
 		t.Fatalf("CleanupPartFiles: %v", err)
 	}
 	assertMissing(t, jobPart)
@@ -170,4 +170,62 @@ func assertPresent(t *testing.T, paths ...string) {
 			t.Errorf("preserved path %q: %v", path, err)
 		}
 	}
+}
+
+func TestArtifactPathKeepsDownloadArtifactsOutOfPackageDirectories(t *testing.T) {
+	handoffRoot := t.TempDir()
+	destination := filepath.Join(handoffRoot, "Show.S01", "Show.S01E02.mkv")
+	library := domain.Library{Kind: domain.LibraryKindDownload, Download: domain.DownloadLibraryPolicy{HandoffPath: handoffRoot}}
+
+	got := ArtifactPath(library, destination, "42")
+	want := filepath.Join(handoffRoot, HandoffWorkDir, "Show.S01E02.mkv.job-42"+PartSuffix)
+	if got != want {
+		t.Fatalf("ArtifactPath() = %q, want %q", got, want)
+	}
+	if media := ArtifactPath(domain.Library{Kind: domain.LibraryKindMedia}, destination, "42"); media != PartPath(destination, "42") {
+		t.Fatalf("media ArtifactPath() = %q, want %q", media, PartPath(destination, "42"))
+	}
+}
+
+func TestPrepareDestinationDoesNotCreateHandoffPackageDirectory(t *testing.T) {
+	handoffRoot := filepath.Join(t.TempDir(), "converted")
+	job := &pipeline.JobContext{
+		Job:     domain.Job{ID: 42},
+		Library: domain.Library{Kind: domain.LibraryKindDownload, Download: domain.DownloadLibraryPolicy{HandoffPath: handoffRoot}},
+	}
+	job.DestinationPath = filepath.Join(handoffRoot, "Show.S01", "Show.S01E02.mkv")
+	job.OutputPath = ArtifactPath(job.Library, job.DestinationPath, PartJobLabel(job.Job.ID))
+	stale := job.OutputPath
+	if err := os.MkdirAll(filepath.Dir(stale), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	writePaths(t, stale)
+
+	if err := PrepareDestination(job); err != nil {
+		t.Fatalf("PrepareDestination: %v", err)
+	}
+	assertMissing(t, stale, filepath.Dir(job.DestinationPath))
+	info, err := os.Stat(filepath.Dir(job.OutputPath))
+	if err != nil || !info.IsDir() {
+		t.Fatalf("handoff work dir: %v", err)
+	}
+}
+
+func TestCleanupPartFilesReclaimsDownloadPartBesideDestination(t *testing.T) {
+	handoffRoot := t.TempDir()
+	library := domain.Library{Kind: domain.LibraryKindDownload, Download: domain.DownloadLibraryPolicy{HandoffPath: handoffRoot}}
+	destination := filepath.Join(handoffRoot, "movie.mkv")
+	workPart := ArtifactPath(library, destination, "42")
+	if err := os.MkdirAll(filepath.Dir(workPart), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	besidePart := PartPath(destination, "42")
+	otherJobPart := ArtifactPath(library, destination, "43")
+	writePaths(t, destination, workPart, besidePart, otherJobPart)
+
+	if err := CleanupPartFiles(library, destination, "42"); err != nil {
+		t.Fatalf("CleanupPartFiles: %v", err)
+	}
+	assertMissing(t, workPart, besidePart)
+	assertPresent(t, destination, otherJobPart)
 }
