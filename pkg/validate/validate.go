@@ -20,6 +20,10 @@ const defaultDurationToleranceSeconds = 2
 
 var ErrValidationFailed = errors.New("validation failed")
 
+// ErrOutputMissing reports that the encode artifact does not exist. Unlike
+// quality findings it is not observational: nothing can be published.
+var ErrOutputMissing = errors.New("encode artifact missing")
+
 type Prober interface {
 	Probe(ctx context.Context, path string) (domain.ProbeResult, error)
 }
@@ -71,6 +75,10 @@ func (v Validator) Validate(ctx context.Context, request Request) (domain.Valida
 		return result, ErrValidationFailed
 	}
 	info, err := os.Stat(outputPath)
+	if errors.Is(err, os.ErrNotExist) {
+		addError(&result, fmt.Sprintf("output stat failed: %v", err))
+		return result, fmt.Errorf("validate output: %w: %w", ErrOutputMissing, err)
+	}
 	if err != nil {
 		addError(&result, fmt.Sprintf("output stat failed: %v", err))
 		return result, fmt.Errorf("validate output: %w", err)
@@ -363,8 +371,8 @@ func (b Block) Run(ctx context.Context, job *pipeline.JobContext) error {
 	// Quality findings are observational, but an artifact that no longer
 	// exists is not a finding: nothing can be published, so the attempt must
 	// fail here instead of reporting the encode as accepted.
-	if errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("encode artifact missing: %w", err)
+	if errors.Is(err, ErrOutputMissing) {
+		return err
 	}
 	if err != nil {
 		slog.Warn("validation observations recorded; accepting encode authority", "error", err, "errors", result.Errors)

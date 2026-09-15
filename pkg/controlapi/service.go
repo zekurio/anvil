@@ -435,8 +435,11 @@ func stagedDestinations(ctx context.Context, store Store, job domain.Job, source
 			errs = append(errs, fmt.Errorf("plan destination for attempt %d: %w", attempt.Number, err))
 			continue
 		}
-		if _, ok := seen[destination]; !ok {
-			seen[destination] = struct{}{}
+		// Two snapshots can plan the same destination from different handoff
+		// roots, and the part path follows the root, so dedup on the part.
+		part := replacepkg.ArtifactPath(library, destination, replacepkg.PartJobLabel(job.ID))
+		if _, ok := seen[part]; !ok {
+			seen[part] = struct{}{}
 			destinations = append(destinations, stagedDestination{Library: library, Path: destination})
 		}
 	}

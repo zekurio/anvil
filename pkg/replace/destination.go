@@ -115,12 +115,8 @@ func PrepareDestination(job *pipeline.JobContext) error {
 	}
 	dir := filepath.Dir(job.OutputPath)
 	if job.Library.Kind == domain.LibraryKindDownload {
-		root := job.Library.Download.HandoffPath
-		if err := prepareHandoffDestination(root, root); err != nil {
+		if err := prepareHandoffDestination(job.Library.Download.HandoffPath, dir); err != nil {
 			return err
-		}
-		if err := os.MkdirAll(dir, 0o750); err != nil {
-			return fmt.Errorf("create handoff work dir: %w", err)
 		}
 	} else if err := os.MkdirAll(dir, 0o750); err != nil {
 		return fmt.Errorf("create destination dir: %w", err)
