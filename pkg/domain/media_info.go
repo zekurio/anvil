@@ -51,7 +51,15 @@ type ProbeResult struct {
 	Streams         []MediaStream
 }
 
+// SearchCandidate records the measured mean quality and sampled video size ratio.
+type SearchCandidate struct {
+	CRF            int
+	Score          float64
+	EncodedPercent float64
+}
+
 type SearchResult struct {
+	Candidates              []SearchCandidate
 	CRF                     int
 	Metric                  QualityMetric
 	VMAF                    float64
@@ -60,7 +68,6 @@ type SearchResult struct {
 	VideoEncodeSkipReason   string
 	ForcedVideoEncodeReason string
 	RawOutput               string
-	RawCommand              []string
 }
 
 type AudioSelection struct {
@@ -107,6 +114,7 @@ type EncodePlan struct {
 	ProfileName              ProfileName
 	VideoCodec               string
 	InputVideoCodec          string
+	InputPixelFormat         string
 	InputWidth               int
 	InputHeight              int
 	Accelerator              string
@@ -119,6 +127,7 @@ type EncodePlan struct {
 	CRFMin                   int
 	CRFMax                   int
 	SearchSamples            int
+	SearchSampleDuration     time.Duration
 	Metric                   QualityMetric
 	Target                   float64
 	MinSavingsPercent        float64
@@ -139,7 +148,6 @@ type EncodePlan struct {
 	AttachmentMode           MetadataMode
 	ChapterMode              MetadataMode
 	FFmpegArgs               []string
-	ABAV1Args                []string
 	HDR                      HDRMetadata
 }
 
@@ -240,6 +248,5 @@ func applyVideoOverride(video VideoProfile, override VideoOverride) VideoProfile
 		video.SkipEncode = *override.SkipEncode
 	}
 	video.FFmpegArgs = append(append([]string(nil), video.FFmpegArgs...), override.FFmpegArgs...)
-	video.ABAV1Args = append(append([]string(nil), video.ABAV1Args...), override.ABAV1Args...)
 	return video
 }

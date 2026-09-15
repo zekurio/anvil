@@ -63,7 +63,7 @@ type processLogSession struct {
 
 func (r *processLogRecorder) StartProcess(ctx context.Context, command process.Command) (process.Logger, error) {
 	switch filepath.Base(command.Name) {
-	case "ffmpeg", "ab-av1":
+	case "ffmpeg":
 	default:
 		return nil, nil
 	}

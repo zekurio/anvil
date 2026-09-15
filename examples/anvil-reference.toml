@@ -42,14 +42,14 @@ preset = "6" # Trade speed for compression to match the selected encoder; any en
 bit_depth = 10 # Preserve more tonal detail when the encoder supports it; 8 or 10.
 crf_min = 18 # Lowest search CRF; integer no greater than crf_max.
 crf_max = 40 # Highest search CRF; integer no lower than crf_min.
-samples = 0 # Fixed sample count for each CRF candidate; 0 uses ab-av1's duration-based count; integer >= 0.
-metric = "vmaf" # Quality metric passed to ab-av1; "vmaf" or "xpsnr".
+samples = 0 # Samples per CRF; 0 uses one per 12 minutes, rounded up; short inputs use one whole-file sample.
+sample_duration = "20s" # Length of each search sample; positive Go duration.
+metric = "vmaf" # Quality metric measured by FFmpeg; "vmaf" or "xpsnr".
 target = 95.0 # Minimum score for metric; number from 0 through 100. Required when metric is "xpsnr" (typical XPSNR target: 35-50).
-min_savings_percent = 20.0 # Skip a result that saves too little space; number from 0 through 100.
-force_encode_on_no_fit = false # Encode at the lowest observed CRF instead of preserving video when search finds no fit.
+min_savings_percent = 20.0 # Minimum estimated video-only savings from sample sizes, including container overhead; number from 0 through 100.
+force_encode_on_no_fit = false # On no fit, use best measured quality within the size limit, or best measured quality overall when no size fits.
 skip_encode = false # Copy video instead of searching and encoding when policy requires it.
-ffmpeg_args = [] # Extra ffmpeg arguments appended to Anvil's command.
-ab_av1_args = [] # Extra ab-av1 arguments appended to the search command.
+ffmpeg_args = [] # Encoder option/value pairs shared by search and final encoding; Anvil manages mapping, filters, timing, and rate control.
 
 [profiles.default-av1.crop]
 seek_offsets = ["0s", "2m", "5m", "12m", "20m", "30m"] # Sample crop candidates at these input offsets; an empty list uses the default; non-negative Go duration strings.
@@ -83,7 +83,6 @@ min_savings_percent = 40.0 # Override the savings floor for matching sources; om
 force_encode_on_no_fit = false # Override no-fit behavior for matching sources; omit to inherit.
 skip_encode = false # Copy matching video instead of encoding only when explicitly needed; omit to inherit.
 ffmpeg_args = [] # Append source-specific ffmpeg arguments.
-ab_av1_args = [] # Append source-specific ab-av1 arguments.
 
 [profiles.default-av1.audio]
 languages_to_keep = [] # Retain original language plus chosen tags; language tags and "orig".
