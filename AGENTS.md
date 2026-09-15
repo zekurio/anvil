@@ -165,13 +165,15 @@ process output goes to per-attempt log files plus artifact events
   `jobs.pipeline_context_json`, guarded by an input/config fingerprint.
   Attempt-local output is never resumed except through the publish journal.
 - `validate` is observational: `validate.Block.Run` logs and returns `nil` even
-  on `ErrValidationFailed`. Native CRF search in `pkg/search` is the encode acceptance authority.
+  on `ErrValidationFailed`. A missing artifact is the one hard failure. Native CRF search in `pkg/search` is the encode acceptance authority.
 - Publication (`pkg/replace`) goes through a durable journal
   (`prepared → published → source_cleaned → committed`, or `conflict`). Never
   overwrite an existing destination, and record intent before mutating the
   filesystem. The `stage` step plans the destination (`replace.PlanDestination`)
-  and the artifact is written next to it as `<name>.job-<id>.anvil-part`, so publish is
-  fsync + hardlink + unlink, never a bulk copy; `pkg/staging` keeps only
+  and the artifact is written on the destination filesystem as
+  `<name>.job-<id>.anvil-part` (beside the destination for media libraries,
+  under `<handoff_path>/.anvil-work` for download libraries, so an importer
+  never sees it), so publish is fsync + hardlink + unlink, never a bulk copy; `pkg/staging` keeps only
   scratch (search samples) under `temp_dir`.
   `pkg/store/protection.go` defines the jobs maintenance must not disturb;
   staging cleanup and job pruning both depend on it.

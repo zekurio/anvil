@@ -180,10 +180,14 @@ already journaled — only the daemon can finish that destination safely. Job
 pruning and staging cleanup likewise skip anything active or holding an
 unresolved publish journal, and report it under `protected_jobs`.
 
-Encodes are written next to their publish destination as
+Encodes are written on the destination filesystem as
 `<name>.mkv.job-<id>.anvil-part` and linked into place under the final name
 once validated, so publishing never copies the file across filesystems and
-the destination only ever appears complete. A part file left behind by a
+the destination only ever appears complete. Media libraries write the part
+beside its destination. Download libraries write it under
+`<handoff_path>/.anvil-work` and create the package directory only at publish
+time, so an importer that sweeps a package directory after taking one episode
+cannot delete a sibling job's unpublished artifact. A part file left behind by a
 crashed attempt is removed when the job retries or is canceled; media
 scanners and Arrs ignore the suffix. `temp_dir` only holds scratch that
 never publishes: search samples and process logs.

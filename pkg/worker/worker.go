@@ -528,8 +528,8 @@ func (r Runner) cleanupFailedStaging(ctx context.Context, job *pipeline.JobConte
 		err := staging.Manager{Root: staging.Root(r.tempDir(cfg))}.Cleanup(job)
 		errs = append(errs, err)
 	}
-	// The artifact lives next to its publish destination, not in scratch.
-	errs = append(errs, replacepkg.CleanupPartFiles(job.DestinationPath, replacepkg.PartJobLabel(job.Job.ID)))
+	// The artifact lives on the destination filesystem, not in scratch.
+	errs = append(errs, replacepkg.CleanupPartFiles(job.Library, job.DestinationPath, replacepkg.PartJobLabel(job.Job.ID)))
 	err := errors.Join(errs...)
 	if err == nil || r.Store == nil {
 		return
