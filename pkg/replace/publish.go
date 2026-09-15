@@ -554,10 +554,10 @@ func (m Manager) publishArtifact(op *PublishOperation) error {
 	if err := syncFile(op.ArtifactPath); err != nil {
 		return fmt.Errorf("sync artifact before publish: %w", err)
 	}
-	// The artifact is written next to its destination (see PartPath), so the
-	// link is a same-directory metadata operation and never a bulk copy. The
-	// copy fallback only serves journals written before that layout, whose
-	// artifact can still live on a different filesystem.
+	// The artifact is written on the destination filesystem (see
+	// ArtifactPath), so the link is a metadata operation and never a bulk
+	// copy. The copy fallback only serves journals written before that layout,
+	// whose artifact can still live on a different filesystem.
 	link := m.LinkArtifact
 	if link == nil {
 		link = os.Link

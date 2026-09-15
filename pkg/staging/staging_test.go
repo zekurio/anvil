@@ -25,7 +25,7 @@ func TestStageBlockLeavesLegacyArtifactForMaintenance(t *testing.T) {
 	if _, err := os.Stat(legacy); err != nil {
 		t.Fatalf("protected legacy artifact: %v", err)
 	}
-	wantOutput := replace.PartPath(destination, replace.PartJobLabel(job.Job.ID))
+	wantOutput := replace.ArtifactPath(job.Library, destination, replace.PartJobLabel(job.Job.ID))
 	if job.OutputPath != wantOutput {
 		t.Fatalf("OutputPath = %q, want %q", job.OutputPath, wantOutput)
 	}

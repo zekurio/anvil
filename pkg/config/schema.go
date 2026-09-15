@@ -78,9 +78,10 @@ type Config struct {
 // DaemonConfig contains process-wide runtime settings.
 type DaemonConfig struct {
 	// Scratch directory for search samples and process logs. Encode artifacts
-	// are written next to their publish destination as
-	// <name>.job-<id>.anvil-part. store_path and control_socket default to
-	// locations inside this directory.
+	// are written on the destination filesystem as <name>.job-<id>.anvil-part:
+	// beside the destination for media libraries, under
+	// <handoff_path>/.anvil-work for download libraries. store_path and
+	// control_socket default to locations inside this directory.
 	TempDir string `toml:"temp_dir"`
 	// SQLite state path. Defaults to anvil.db inside temp_dir; any non-empty path.
 	StorePath string `toml:"store_path"`
