@@ -66,6 +66,9 @@ func (c Config) Validate() error {
 		if !validContainer(profile.Container) {
 			problems = append(problems, fmt.Sprintf("profile %q container %q is invalid; Anvil outputs MKV only", name, profile.Container))
 		}
+		if profile.Crop.Samples < 0 {
+			problems = append(problems, fmt.Sprintf("profile %q crop.samples must be non-negative", name))
+		}
 		if profile.Crop.FrameCount < 1 {
 			problems = append(problems, fmt.Sprintf("profile %q crop.frame_count must be at least 1", name))
 		}
@@ -336,10 +339,7 @@ func validateNonNegativeDuration(problems *[]string, name string, value Duration
 }
 
 func validateCropSeekOffsets(problems *[]string, profileName string, values []Duration) {
-	if len(values) == 0 {
-		*problems = append(*problems, fmt.Sprintf("profile %q crop.seek_offsets must not be empty", profileName))
-		return
-	}
+	// An empty list selects spread sampling, so only explicit offsets are checked.
 	for i, value := range values {
 		if value.Duration < 0 {
 			*problems = append(*problems, fmt.Sprintf("profile %q crop.seek_offsets[%d] must be non-negative", profileName, i))
