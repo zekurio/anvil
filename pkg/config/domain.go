@@ -144,6 +144,7 @@ func (p ProfileConfig) ToDomain() domain.Profile {
 		Container: p.Container,
 		Crop: domain.CropPolicy{
 			SeekOffsets:            stdDurations(p.Crop.SeekOffsets),
+			Samples:                p.Crop.Samples,
 			FrameCount:             p.Crop.FrameCount,
 			Limit:                  p.Crop.Limit,
 			Round:                  p.Crop.Round,

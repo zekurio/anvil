@@ -118,7 +118,8 @@ func resolveProfile(name string, raw rawProfileConfig) (ProfileConfig, error) {
 		Name:      name,
 		Container: normalizeContainer(orDefault(raw.Container, "mkv")),
 		Crop: CropConfig{
-			SeekOffsets:        orDefaultSlice(raw.Crop.SeekOffsets, DefaultCropSeekOffsets),
+			SeekOffsets:        raw.Crop.SeekOffsets,
+			Samples:            raw.Crop.Samples, // 0 infers the window count from the runtime.
 			FrameCount:         valueOr(raw.Crop.FrameCount, DefaultCropFrameCount),
 			Limit:              valueOr(raw.Crop.Limit, DefaultCropDetectLimit),
 			Round:              valueOr(raw.Crop.Round, DefaultCropDetectRound),
@@ -254,11 +255,4 @@ func orDefault(value string, fallback string) string {
 		return fallback
 	}
 	return strings.TrimSpace(value)
-}
-
-func orDefaultSlice[T any](value []T, fallback []T) []T {
-	if len(value) == 0 {
-		return append([]T(nil), fallback...)
-	}
-	return value
 }

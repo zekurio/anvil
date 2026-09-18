@@ -63,6 +63,7 @@ type rawVideoConfig struct {
 
 type rawCropConfig struct {
 	SeekOffsets        []Duration `toml:"seek_offsets"`
+	Samples            int        `toml:"samples"`
 	FrameCount         *int       `toml:"frame_count"`
 	Limit              *int       `toml:"limit"`
 	Round              *int       `toml:"round"`

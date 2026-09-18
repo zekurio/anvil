@@ -143,7 +143,7 @@ in
         {
           daemon.log_level = "info";
           profiles."default-av1".crop = {
-            seek_offsets = [ "0s" "2m" "5m" "12m" "20m" "30m" ];
+            samples = 0;
             frame_count = 300;
             limit = 64;
             round = 16;
