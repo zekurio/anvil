@@ -39,17 +39,6 @@ const (
 	DefaultStableFor       = 5 * time.Minute
 )
 
-// DefaultCropSeekOffsets sample the beginning and several points through
-// typical episode- and movie-length content.
-var DefaultCropSeekOffsets = []Duration{
-	{Duration: 0},
-	{Duration: 2 * time.Minute},
-	{Duration: 5 * time.Minute},
-	{Duration: 12 * time.Minute},
-	{Duration: 20 * time.Minute},
-	{Duration: 30 * time.Minute},
-}
-
 // DefaultIgnorableGlobs are excluded from download-package discovery and stability handling.
 // External subtitle sidecars are intentionally preserved by default.
 var DefaultIgnorableGlobs = []string{
@@ -131,9 +120,12 @@ type ProfileConfig struct {
 
 // CropConfig controls crop sampling and the safety policy applied to candidates.
 type CropConfig struct {
-	// Sample crop candidates at these input offsets; an empty list uses the
-	// default; non-negative Go duration strings.
+	// Sample crop candidates at these input offsets; an empty list spreads
+	// windows across the input instead; non-negative Go duration strings.
 	SeekOffsets []Duration `toml:"seek_offsets"`
+	// Crop windows spread across the input, one per sample slice; 0 uses one
+	// per 3 minutes of runtime, clamped to 4-24 windows; integer >= 0.
+	Samples int `toml:"samples"`
 	// Frames analyzed at each seek offset; integer >= 1.
 	FrameCount int `toml:"frame_count"`
 	// ffmpeg cropdetect black threshold; integer from 1 through 255.
