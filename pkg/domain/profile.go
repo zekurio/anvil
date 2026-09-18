@@ -17,6 +17,7 @@ type Profile struct {
 
 type CropPolicy struct {
 	SeekOffsets            []time.Duration
+	Samples                int
 	FrameCount             int
 	Limit                  int
 	Round                  int

@@ -1,6 +1,7 @@
 package crop
 
 import (
+	"math"
 	"slices"
 	"strings"
 	"testing"
@@ -174,36 +175,118 @@ func TestApplySafetyPolicyRejectsWhiplashCrop(t *testing.T) {
 	}
 }
 
+func samplesFor(filters ...string) []domain.CropSample {
+	samples := make([]domain.CropSample, 0, len(filters))
+	for _, filter := range filters {
+		samples = append(samples, domain.CropSample{Filter: filter})
+	}
+	return samples
+}
+
 func TestSelectSamples(t *testing.T) {
 	tests := []struct {
 		name    string
-		filters []string
+		samples []domain.CropSample
 		want    string
 		reason  string
 	}{
-		{"dark scenes", []string{"crop=1696:576:96:228", "crop=1856:480:60:318", "crop=1824:560:0:2", "crop=1616:752:254:2", "crop=1920:800:0:2"}, "crop=1920:802:0:2", "disagree"},
-		{"letterbox", []string{"crop=1920:800:0:140", "crop=1920:800:0:140"}, "crop=1920:800:0:140", ""},
-		{"pillarbox", []string{"crop=1440:1080:240:0", "crop=1440:1080:240:0"}, "crop=1440:1080:240:0", ""},
-		{"rounding", []string{"crop=1920:800:0:140", "crop=1920:804:0:138"}, "crop=1920:804:0:138", ""},
-		{"full frame evidence", []string{"crop=1920:800:0:140", "crop=1920:1080:0:0"}, "crop=1920:1080:0:0", "disagree"},
-		{"no evidence", []string{"", ""}, "", "fewer than two"},
-		{"one sample", []string{"crop=1920:800:0:140", ""}, "crop=1920:800:0:140", "fewer than two"},
+		{"letterbox", samplesFor("crop=1920:800:0:140", "crop=1920:800:0:140"), "crop=1920:800:0:140", ""},
+		{"pillarbox", samplesFor("crop=1440:1080:240:0", "crop=1440:1080:240:0"), "crop=1440:1080:240:0", ""},
+		{"rounding", samplesFor("crop=1920:800:0:140", "crop=1920:804:0:138"), "crop=1920:804:0:138", ""},
+		// Dark scenes report rectangles inside the picture. The windows that saw
+		// more must win, not the ones that agree most.
+		{"dark scenes", samplesFor("crop=1696:576:96:228", "crop=1856:480:60:318", "crop=1824:560:0:2", "crop=1616:752:254:2", "crop=1920:800:0:2"), "crop=1920:802:0:2", ""},
+		{"full frame evidence", samplesFor("crop=1920:800:0:140", "crop=1920:1080:0:0"), "crop=1920:1080:0:0", ""},
+		{
+			"failed window",
+			[]domain.CropSample{{Filter: "crop=1920:800:0:140"}, {Filter: "crop=1920:800:0:140", Error: "decode failed"}, {Filter: "crop=1920:798:0:142"}},
+			"crop=1920:800:0:140",
+			"",
+		},
+		{"no evidence", samplesFor("", ""), "", "no crop sample contains picture evidence"},
+		{"one sample", samplesFor("crop=1920:800:0:140", ""), "crop=1920:800:0:140", "fewer than two crop samples contain picture evidence"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			var samples []domain.CropSample
-			for _, filter := range tt.filters {
-				samples = append(samples, domain.CropSample{Filter: filter})
-			}
-			got, reason := selectSamples(samples)
-			if got != tt.want || (tt.reason == "" && reason != "") || !strings.Contains(reason, tt.reason) {
-				t.Fatalf("got %q, %q", got, reason)
+			got, reason := selectSamples(tt.samples)
+			if got != tt.want || reason != tt.reason {
+				t.Fatalf("selectSamples = %q, %q; want %q, %q", got, reason, tt.want, tt.reason)
 			}
 			result := ApplySafetyPolicy(domain.CropResult{CandidateFilter: got, SelectionReason: reason}, videoProbe(1920, 1080), domain.CropPolicy{})
 			if reason != "" && (result.Filter != "" || result.RejectionReason != reason) {
 				t.Fatalf("lost rejection: %#v", result)
 			}
 		})
+	}
+}
+
+// Windows recorded by the Dead City E07 job: five dark scenes and one bright
+// scene that shows the real 2:1 letterbox. The crop must survive them.
+func TestSelectSamplesKeepsLetterboxFromDarkWindows(t *testing.T) {
+	samples := samplesFor("crop=384:400:450:438", "crop=1920:662:0:60", "crop=1824:724:4:134", "crop=1920:952:0:60", "crop=1536:208:382:60", "crop=1920:960:0:60")
+	candidate, reason := selectSamples(samples)
+	if candidate != "crop=1920:960:0:60" || reason != "" {
+		t.Fatalf("selectSamples = %q, %q", candidate, reason)
+	}
+	result := ApplySafetyPolicy(domain.CropResult{CandidateFilter: candidate, SelectionReason: reason, Samples: samples}, videoProbe(1920, 1080), domain.CropPolicy{})
+	if result.Filter != "crop=1920:960:0:60" || result.RejectionReason != "" {
+		t.Fatalf("crop rejected: %#v", result)
+	}
+}
+
+func TestSpreadOffsets(t *testing.T) {
+	explicit := spreadOffsets(300, 4)
+	want := []time.Duration{37500 * time.Millisecond, 112500 * time.Millisecond, 187500 * time.Millisecond, 262500 * time.Millisecond}
+	if !slices.Equal(explicit, want) {
+		t.Fatalf("explicit = %v, want %v", explicit, want)
+	}
+	durations := []struct {
+		name     string
+		duration float64
+		count    int
+		first    time.Duration
+		last     time.Duration
+		spacing  time.Duration
+	}{
+		{"episode", (45 * time.Minute).Seconds(), 15, 90 * time.Second, 2610 * time.Second, 180 * time.Second},
+		{"feature", (4 * time.Hour).Seconds(), 24, 300 * time.Second, 14100 * time.Second, 600 * time.Second},
+		{"short clip", (10 * time.Minute).Seconds(), 4, 75 * time.Second, 525 * time.Second, 150 * time.Second},
+	}
+	for _, tt := range durations {
+		t.Run(tt.name, func(t *testing.T) {
+			offsets := spreadOffsets(tt.duration, 0)
+			if len(offsets) != tt.count {
+				t.Fatalf("windows = %d, want %d", len(offsets), tt.count)
+			}
+			if offsets[0] != tt.first || offsets[len(offsets)-1] != tt.last {
+				t.Fatalf("offsets span %v..%v, want %v..%v", offsets[0], offsets[len(offsets)-1], tt.first, tt.last)
+			}
+			for i := 1; i < len(offsets); i++ {
+				if offsets[i]-offsets[i-1] != tt.spacing {
+					t.Fatalf("spacing %v, want %v", offsets[i]-offsets[i-1], tt.spacing)
+				}
+			}
+		})
+	}
+	for _, duration := range []float64{0, -1, math.NaN(), math.Inf(1)} {
+		if offsets := spreadOffsets(duration, 0); offsets != nil {
+			t.Fatalf("spreadOffsets(%v) = %v, want none", duration, offsets)
+		}
+	}
+}
+
+func TestSeekOffsets(t *testing.T) {
+	configured := []time.Duration{time.Minute, 2 * time.Minute}
+	got := seekOffsets(domain.CropPolicy{SeekOffsets: configured, Samples: 3}, (45 * time.Minute).Seconds())
+	if !slices.Equal(got, configured) {
+		t.Fatalf("seekOffsets = %v, want configured offsets %v", got, configured)
+	}
+	got[0] = time.Hour
+	if configured[0] != time.Minute {
+		t.Fatal("seekOffsets aliases profile offsets")
+	}
+	if offsets := seekOffsets(domain.CropPolicy{}, 0); !slices.Equal(offsets, fallbackSeekOffsets) {
+		t.Fatalf("seekOffsets without duration = %v, want fallback %v", offsets, fallbackSeekOffsets)
 	}
 }
 

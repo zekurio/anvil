@@ -28,12 +28,19 @@ const (
 	defaultRequiredAlignment    = 2
 	// Allow small edge differences caused by cropdetect rounding.
 	maxBorderDifference = 16
+	// Spread crop windows across the whole input: dark scenes hide the picture
+	// edges, so evidence has to come from wherever bright scenes happen to be.
+	spreadSampleInterval = 3 * time.Minute
+	minSpreadSamples     = 4
+	maxSpreadSamples     = 24
 )
 
 // CropSelectionArtifact is the attempt-event name used for crop decisions.
 const CropSelectionArtifact = "crop-selection"
 
-var defaultSeekOffsets = []time.Duration{
+// fallbackSeekOffsets sample the start of an input whose probe reported no
+// usable duration, so windows cannot be spread across the whole file.
+var fallbackSeekOffsets = []time.Duration{
 	0,
 	2 * time.Minute,
 	5 * time.Minute,
@@ -105,7 +112,7 @@ func (d FFmpegDetector) Detect(ctx context.Context, path string) (domain.CropRes
 		Samples:         samples,
 		SelectionReason: selectionReason,
 	}
-	if len(errs) == len(offsets) || (crop.Filter == "" && len(errs) > 0) {
+	if len(errs) == len(offsets) || (candidate == "" && len(errs) > 0) {
 		return crop, fmt.Errorf("ffmpeg cropdetect: %w", errors.Join(errs...))
 	}
 	return crop, nil
@@ -152,11 +159,66 @@ func (d FFmpegDetector) seekOffsets() []time.Duration {
 	if len(d.SeekOffsets) > 0 {
 		return append([]time.Duration(nil), d.SeekOffsets...)
 	}
-	return append([]time.Duration(nil), defaultSeekOffsets...)
+	return append([]time.Duration(nil), fallbackSeekOffsets...)
+}
+
+// seekOffsets returns the offsets one detection run samples. Profile offsets
+// win; otherwise windows are spread across the input so letterbox evidence
+// from any part of it is seen, with the count inferred from the runtime when
+// the profile does not fix it.
+func seekOffsets(policy domain.CropPolicy, durationSeconds float64) []time.Duration {
+	if len(policy.SeekOffsets) > 0 {
+		return append([]time.Duration(nil), policy.SeekOffsets...)
+	}
+	if offsets := spreadOffsets(durationSeconds, policy.Samples); len(offsets) > 0 {
+		return offsets
+	}
+	return append([]time.Duration(nil), fallbackSeekOffsets...)
+}
+
+// spreadOffsets places one window in the middle of each of samples equal
+// slices of the input. Slice middles stay clear of intros, logos, and trailing
+// credits while giving every part of the input the same chance of being seen.
+func spreadOffsets(durationSeconds float64, samples int) []time.Duration {
+	if math.IsNaN(durationSeconds) || math.IsInf(durationSeconds, 0) || durationSeconds <= 0 {
+		return nil
+	}
+	if samples <= 0 {
+		samples = int(math.Ceil(durationSeconds / spreadSampleInterval.Seconds()))
+		samples = min(max(samples, minSpreadSamples), maxSpreadSamples)
+	}
+	duration := time.Duration(durationSeconds * float64(time.Second))
+	offsets := make([]time.Duration, samples)
+	for i := range offsets {
+		offsets[i] = duration * time.Duration(2*i+1) / time.Duration(2*samples)
+	}
+	return offsets
 }
 
 type Block struct {
+	// Detector overrides ffmpeg detection, for tests and tools; an override
+	// owns its own sampling and never uses the profile windows.
 	Detector Detector
+}
+
+// jobDetector builds the ffmpeg detector with the windows the profile and the
+// probed runtime ask for.
+func jobDetector(job *pipeline.JobContext) FFmpegDetector {
+	policy := effectivePolicy(job.Profile.Crop)
+	stream, hasVideo := primaryVideo(job.Probe)
+	duration := float64(0)
+	if job.Probe != nil {
+		duration = job.Probe.DurationSeconds
+	}
+	return FFmpegDetector{
+		FrameCount:       policy.FrameCount,
+		SeekOffsets:      seekOffsets(job.Profile.Crop, duration),
+		Limit:            policy.Limit,
+		Round:            policy.Round,
+		ResetCount:       policy.ResetCount,
+		MapVideoStream:   hasVideo,
+		VideoStreamIndex: stream.Index,
+	}
 }
 
 func (Block) Name() string {
@@ -166,17 +228,7 @@ func (Block) Name() string {
 func (b Block) Run(ctx context.Context, job *pipeline.JobContext) error {
 	detector := b.Detector
 	if detector == nil {
-		policy := effectivePolicy(job.Profile.Crop)
-		stream, hasVideo := primaryVideo(job.Probe)
-		detector = FFmpegDetector{
-			FrameCount:       policy.FrameCount,
-			SeekOffsets:      policy.SeekOffsets,
-			Limit:            policy.Limit,
-			Round:            policy.Round,
-			ResetCount:       policy.ResetCount,
-			MapVideoStream:   hasVideo,
-			VideoStreamIndex: stream.Index,
-		}
+		detector = jobDetector(job)
 	}
 	result, err := detector.Detect(ctx, job.InputPath)
 	if err != nil {
@@ -195,12 +247,15 @@ func (Block) Artifact(job *pipeline.JobContext) (pipeline.ArtifactReport, bool) 
 	result := job.Crop
 	message := "no crop detected; using source dimensions"
 	switch {
-	case result.RejectionReason != "":
+	case result.RejectionReason != "" && result.CandidateFilter != "":
 		message = fmt.Sprintf("rejected %s; using no crop: %s", result.CandidateFilter, result.RejectionReason)
+	case result.RejectionReason != "":
+		message = fmt.Sprintf("using no crop: %s", result.RejectionReason)
 	case result.NoOp:
-		message = fmt.Sprintf("selected %s removes only small edge strips; using source dimensions", result.CandidateFilter)
+		message = fmt.Sprintf("selected %s removes at most small edge strips; using source dimensions", result.CandidateFilter)
 	case result.Filter != "":
-		message = fmt.Sprintf("selected %s (%.2f%% retained area)", result.Filter, result.RetainedAreaPercent)
+		message = fmt.Sprintf("selected %s (%.2f%% retained area; %d of %d windows agree)",
+			result.Filter, result.RetainedAreaPercent, supportingWindows(result), len(result.Samples))
 	}
 	return pipeline.ArtifactReport{
 		Name:    CropSelectionArtifact,
@@ -311,9 +366,6 @@ func primaryVideo(probe *domain.ProbeResult) (domain.MediaStream, bool) {
 }
 
 func effectivePolicy(policy domain.CropPolicy) domain.CropPolicy {
-	if len(policy.SeekOffsets) == 0 {
-		policy.SeekOffsets = append([]time.Duration(nil), defaultSeekOffsets...)
-	}
 	if policy.FrameCount <= 0 {
 		policy.FrameCount = defaultFrameCount
 	}
@@ -387,40 +439,61 @@ func formatBounds(spec video.CropSpec) string {
 	return fmt.Sprintf("crop=%d:%d:%d:%d", spec.Width, spec.Height, spec.X, spec.Y)
 }
 
+// selectSamples returns the picture bounds that the sampled windows support.
+// A window's rectangle lies inside the real picture because cropdetect only
+// reports what it can see above the black threshold: dark scenes shrink it.
+// Wider evidence therefore always wins, and windows that saw less must not
+// veto the crop. Failed windows stay in the sample list for diagnostics but
+// contribute no bounds. ApplySafetyPolicy decides whether the union is a
+// plausible crop at all.
 func selectSamples(samples []domain.CropSample) (string, string) {
 	var bounds video.CropSpec
-	var specs []video.CropSpec
-	failed := false
+	evidence := 0
 	for _, sample := range samples {
 		if sample.Error != "" {
-			failed = true
 			continue
 		}
 		spec, ok := video.ParseCropFilter(sample.Filter)
 		if !ok {
 			continue
 		}
-		specs = append(specs, spec)
 		bounds = unionBounds(bounds, spec)
+		evidence++
 	}
-	candidate := ""
-	if len(specs) > 0 {
-		candidate = formatBounds(bounds)
+	if evidence == 0 {
+		return "", "no crop sample contains picture evidence"
 	}
-	if failed {
-		return candidate, "crop sample failed"
-	}
-	if len(specs) < 2 {
+	candidate := formatBounds(bounds)
+	if evidence < 2 {
 		return candidate, "fewer than two crop samples contain picture evidence"
 	}
-	for _, spec := range specs {
-		if spec.X-bounds.X > maxBorderDifference || spec.Y-bounds.Y > maxBorderDifference ||
-			bounds.X+bounds.Width-spec.X-spec.Width > maxBorderDifference ||
-			bounds.Y+bounds.Height-spec.Y-spec.Height > maxBorderDifference {
-			return candidate, "crop samples disagree on picture bounds"
-		}
-	}
 	return candidate, ""
+}
+
+// supportingWindows counts the sampled windows whose picture bounds match the
+// applied filter, so the crop record shows how much evidence backs it.
+func supportingWindows(result *domain.CropResult) int {
+	applied, ok := video.ParseCropFilter(result.Filter)
+	if !ok {
+		return 0
+	}
+	support := 0
+	for _, sample := range result.Samples {
+		if sample.Error != "" {
+			continue
+		}
+		spec, ok := video.ParseCropFilter(sample.Filter)
+		if !ok {
+			continue
+		}
+		if abs(spec.X-applied.X) > maxBorderDifference || abs(spec.Y-applied.Y) > maxBorderDifference ||
+			abs(spec.X+spec.Width-applied.X-applied.Width) > maxBorderDifference ||
+			abs(spec.Y+spec.Height-applied.Y-applied.Height) > maxBorderDifference {
+			continue
+		}
+		support++
+	}
+	return support
 }
 
 func abs(n int) int {

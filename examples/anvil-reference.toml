@@ -52,7 +52,8 @@ skip_encode = false # Copy video instead of searching and encoding when policy r
 ffmpeg_args = [] # Encoder option/value pairs shared by search and final encoding; Anvil manages mapping, filters, timing, and rate control.
 
 [profiles.default-av1.crop]
-seek_offsets = ["0s", "2m", "5m", "12m", "20m", "30m"] # Sample crop candidates at these input offsets; an empty list uses the default; non-negative Go duration strings.
+seek_offsets = [] # Sample crop candidates at these input offsets; an empty list spreads windows across the input instead; non-negative Go duration strings.
+samples = 0 # Crop windows spread across the input, one per sample slice; 0 uses one per 3 minutes of runtime, clamped to 4-24 windows; integer >= 0.
 frame_count = 300 # Frames analyzed at each seek offset; integer >= 1.
 limit = 64 # ffmpeg cropdetect black threshold; integer from 1 through 255.
 round = 16 # Round crop width and height to this multiple during detection; integer >= 1.
@@ -62,6 +63,9 @@ min_width = 128 # Reject a crop narrower than this encoder safety floor; integer
 min_height = 128 # Reject a crop shorter than this encoder safety floor; integer >= 1.
 required_alignment = 2 # Require crop dimensions and offsets to be divisible by this encoder alignment; integer >= 1.
 
+# Detection unions the picture bounds every window reports. Dark scenes only
+# reveal part of the picture, so they can never veto the wider bounds another
+# window saw; the safety checks above are what reject an implausible candidate.
 # Unsafe crop candidates are recorded in job events and saved context, then
 # discarded before CRF search and encode; cached candidates are revalidated
 # before retries reuse them. Lower the retained-area threshold explicitly for
