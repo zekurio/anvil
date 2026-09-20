@@ -4,6 +4,7 @@
 // the union of the picture bounds those windows report, so a window that saw
 // less never vetoes wider evidence, and every reported rectangle lies inside
 // the real picture.
+// Any failed window prevents cropping, even when other windows agree.
 // ApplySafetyPolicy then rejects a candidate that is implausible for the
 // source: it must keep enough of the source area, stay inside it, keep
 // opposite borders even within 16 pixels, and remove more than a small edge
