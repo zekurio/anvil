@@ -48,11 +48,11 @@ func (r *sampleRunner) Run(_ context.Context, command process.Command) (process.
 	return process.Result{Command: command.ArgsWithName(), Stderr: []byte(r.outputs[i])}, r.failures[i]
 }
 
-func TestDetectorKeepsEvidenceFromGoodWindows(t *testing.T) {
+func TestDetectorRejectsCropAfterFailedWindow(t *testing.T) {
 	runner := &sampleRunner{
 		outputs: []string{
 			"[Parsed_cropdetect_0 @ 0x1] crop=1920:800:0:140",
-			"[Parsed_cropdetect_0 @ 0x1] crop=1920:800:0:140",
+			"[Parsed_cropdetect_0 @ 0x1] crop=1920:1080:0:0",
 			"[Parsed_cropdetect_0 @ 0x1] crop=1920:798:0:142",
 		},
 		failures: []error{nil, errors.New("decode failed"), nil},
@@ -62,7 +62,7 @@ func TestDetectorKeepsEvidenceFromGoodWindows(t *testing.T) {
 		t.Fatal(err)
 	}
 	result = ApplySafetyPolicy(result, videoProbe(1920, 1080), domain.CropPolicy{})
-	if result.Filter != "crop=1920:800:0:140" || result.SelectionReason != "" {
+	if result.Filter != "" || result.SelectionReason != "crop sample failed" || result.RejectionReason != "crop sample failed" {
 		t.Fatalf("result = %#v", result)
 	}
 	if len(result.Samples) != 3 || result.Samples[0].Observations != 1 || result.Samples[1].Offset != time.Minute || result.Samples[1].Error != "decode failed" {

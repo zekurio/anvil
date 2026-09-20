@@ -53,7 +53,7 @@ ffmpeg_args = [] # Encoder option/value pairs shared by search and final encodin
 
 [profiles.default-av1.crop]
 seek_offsets = [] # Sample crop candidates at these input offsets; an empty list spreads windows across the input instead; non-negative Go duration strings.
-samples = 0 # Crop windows spread across the input, one per sample slice; 0 uses one per 3 minutes of runtime, clamped to 4-24 windows; integer >= 0.
+samples = 0 # Crop windows spread across the input, one per sample slice; 0 uses one per 3 minutes of runtime, clamped to 4-24 windows; 0 or integer >= 2.
 frame_count = 300 # Frames analyzed at each seek offset; integer >= 1.
 limit = 64 # ffmpeg cropdetect black threshold; integer from 1 through 255.
 round = 16 # Round crop width and height to this multiple during detection; integer >= 1.

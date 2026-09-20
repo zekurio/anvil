@@ -124,7 +124,7 @@ type CropConfig struct {
 	// windows across the input instead; non-negative Go duration strings.
 	SeekOffsets []Duration `toml:"seek_offsets"`
 	// Crop windows spread across the input, one per sample slice; 0 uses one
-	// per 3 minutes of runtime, clamped to 4-24 windows; integer >= 0.
+	// per 3 minutes of runtime, clamped to 4-24 windows; 0 or integer >= 2.
 	Samples int `toml:"samples"`
 	// Frames analyzed at each seek offset; integer >= 1.
 	FrameCount int `toml:"frame_count"`
