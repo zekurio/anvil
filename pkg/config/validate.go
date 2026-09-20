@@ -66,8 +66,8 @@ func (c Config) Validate() error {
 		if !validContainer(profile.Container) {
 			problems = append(problems, fmt.Sprintf("profile %q container %q is invalid; Anvil outputs MKV only", name, profile.Container))
 		}
-		if profile.Crop.Samples < 0 {
-			problems = append(problems, fmt.Sprintf("profile %q crop.samples must be non-negative", name))
+		if profile.Crop.Samples < 0 || profile.Crop.Samples == 1 {
+			problems = append(problems, fmt.Sprintf("profile %q crop.samples must be 0 (automatic) or at least 2", name))
 		}
 		if profile.Crop.FrameCount < 1 {
 			problems = append(problems, fmt.Sprintf("profile %q crop.frame_count must be at least 1", name))

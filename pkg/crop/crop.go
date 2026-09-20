@@ -294,6 +294,11 @@ type cropSelectionPayload struct {
 // current source dimensions and profile. Rejected candidates become an
 // explicit no-crop result so search and encode cannot accidentally reuse them.
 func ApplySafetyPolicy(result domain.CropResult, probe *domain.ProbeResult, configured domain.CropPolicy) domain.CropResult {
+	// Cached decisions must satisfy the current selection rules too.
+	if len(result.Samples) > 0 {
+		result.CandidateFilter, result.SelectionReason = selectSamples(result.Samples)
+		result.Filter = result.CandidateFilter
+	}
 	policy := effectivePolicy(configured)
 	candidate := strings.TrimSpace(result.CandidateFilter)
 	if candidate == "" {
@@ -443,14 +448,16 @@ func formatBounds(spec video.CropSpec) string {
 // A window's rectangle lies inside the real picture because cropdetect only
 // reports what it can see above the black threshold: dark scenes shrink it.
 // Wider evidence therefore always wins, and windows that saw less must not
-// veto the crop. Failed windows stay in the sample list for diagnostics but
-// contribute no bounds. ApplySafetyPolicy decides whether the union is a
-// plausible crop at all.
+// veto the crop. A failed window prevents cropping because its missing or
+// partial observations cannot establish safe bounds. ApplySafetyPolicy decides
+// whether the union is a plausible crop at all.
 func selectSamples(samples []domain.CropSample) (string, string) {
 	var bounds video.CropSpec
 	evidence := 0
+	failed := false
 	for _, sample := range samples {
 		if sample.Error != "" {
+			failed = true
 			continue
 		}
 		spec, ok := video.ParseCropFilter(sample.Filter)
@@ -459,6 +466,13 @@ func selectSamples(samples []domain.CropSample) (string, string) {
 		}
 		bounds = unionBounds(bounds, spec)
 		evidence++
+	}
+	if failed {
+		candidate := ""
+		if evidence > 0 {
+			candidate = formatBounds(bounds)
+		}
+		return candidate, "crop sample failed"
 	}
 	if evidence == 0 {
 		return "", "no crop sample contains picture evidence"

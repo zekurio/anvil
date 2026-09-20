@@ -201,7 +201,7 @@ func TestSelectSamples(t *testing.T) {
 			"failed window",
 			[]domain.CropSample{{Filter: "crop=1920:800:0:140"}, {Filter: "crop=1920:800:0:140", Error: "decode failed"}, {Filter: "crop=1920:798:0:142"}},
 			"crop=1920:800:0:140",
-			"",
+			"crop sample failed",
 		},
 		{"no evidence", samplesFor("", ""), "", "no crop sample contains picture evidence"},
 		{"one sample", samplesFor("crop=1920:800:0:140", ""), "crop=1920:800:0:140", "fewer than two crop samples contain picture evidence"},
