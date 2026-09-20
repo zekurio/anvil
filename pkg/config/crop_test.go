@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -73,6 +74,26 @@ samples = 12
 	}
 }
 
+func TestLoadCropSampleCountBoundaries(t *testing.T) {
+	for _, count := range []int{0, 2} {
+		t.Run(fmt.Sprint(count), func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "anvil.toml")
+			data := []byte(fmt.Sprintf("[profiles.default-av1.crop]\nsamples = %d\n", count))
+			if err := os.WriteFile(path, data, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := Load(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			profile, ok := cfg.FindProfile(DefaultProfileName)
+			if !ok || profile.ToDomain().Crop.Samples != count {
+				t.Fatalf("sample count %d did not round-trip", count)
+			}
+		})
+	}
+}
+
 func TestLoadRejectsInvalidCropPolicy(t *testing.T) {
 	tests := []struct {
 		name string
@@ -80,6 +101,7 @@ func TestLoadRejectsInvalidCropPolicy(t *testing.T) {
 	}{
 		{"negative seek offset", `seek_offsets = ["-1s"]`},
 		{"negative samples", `samples = -3`},
+		{"single sample", `samples = 1`},
 		{"retained area above 100", `min_retained_area_percent = 101`},
 	}
 	for _, tt := range tests {
