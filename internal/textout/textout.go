@@ -14,8 +14,9 @@ import (
 // Writer accumulates the first write error instead of forcing every print in a
 // long report to be checked. Callers check once, at the end.
 type Writer struct {
-	out io.Writer
-	err error
+	out   io.Writer
+	err   error
+	width int
 }
 
 func newWriter(out io.Writer) *Writer {

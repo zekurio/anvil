@@ -60,8 +60,9 @@ var jobsHelp = commandHelp{
 	},
 	notes: []string{
 		"Selectors combine to narrow the result. --path requires --library and cannot be used with --absolute-path.",
+		"Jobs are grouped by library and source folder. Rows show numeric IDs and filenames; show JOB retains full paths and slugs.",
 		"Without --limit, listings return 20 jobs unless --path or --absolute-path makes an exact query. An explicit --limit 0 is unbounded.",
-		"--absolute-path matches source, asset, and destination paths. The MATCHED column identifies the matching side.",
+		"--absolute-path matches source, asset, and destination paths. The Matched column identifies the matching side.",
 	},
 	examples: []string{
 		"anvilctl jobs",
@@ -244,13 +245,13 @@ var helpHelp = commandHelp{
 }
 
 func writeUsage(out io.Writer) error {
-	return textout.Write(out, func(w *textout.Writer) {
+	return textout.WriteReport(out, func(w *textout.Writer) {
 		w.Println("anvilctl controls a running anvild over its Unix control socket.")
 		w.Println()
-		w.Println("Usage:")
+		w.Heading("Usage")
 		w.Println("  anvilctl [GLOBAL] COMMAND [OPTIONS]")
 		w.Println()
-		w.Println("Commands:")
+		w.Heading("Commands")
 		w.Println("  status                 show daemon state, worker usage, and queue counts")
 		w.Println("  version                show client, daemon, and protocol versions")
 		w.Println("  jobs                   list jobs")
@@ -268,7 +269,7 @@ func writeUsage(out io.Writer) error {
 		w.Println()
 		writeGlobalOptions(w)
 		w.Println()
-		w.Println("Exit status:")
+		w.Heading("Exit status")
 		w.Println("  0  success")
 		w.Println("  1  command failed")
 		w.Println("  2  usage or argument error")
@@ -329,13 +330,13 @@ func commandHelpFor(args []string) (commandHelp, bool) {
 }
 
 func writeCommandHelp(out io.Writer, help commandHelp) error {
-	return textout.Write(out, func(w *textout.Writer) {
+	return textout.WriteReport(out, func(w *textout.Writer) {
 		w.Println(help.description)
 		w.Println()
-		w.Println("Usage:")
+		w.Heading("Usage")
 		w.Printf("  %s\n", help.usage)
 		w.Println()
-		w.Println("Options:")
+		w.Heading("Options")
 		w.Println("  -h, --help")
 		w.Println("      show this help")
 		for _, option := range help.options {
@@ -346,13 +347,13 @@ func writeCommandHelp(out io.Writer, help commandHelp) error {
 		writeGlobalOptions(w)
 		if len(help.notes) > 0 {
 			w.Println()
-			w.Println("Notes:")
+			w.Heading("Notes")
 			for _, note := range help.notes {
 				w.Printf("  %s\n", note)
 			}
 		}
 		w.Println()
-		w.Println("Examples:")
+		w.Heading("Examples")
 		for _, example := range help.examples {
 			w.Printf("  %s\n", example)
 		}
@@ -360,11 +361,12 @@ func writeCommandHelp(out io.Writer, help commandHelp) error {
 }
 
 func writeGlobalOptions(w *textout.Writer) {
-	w.Println("Global options (before COMMAND):")
+	w.Heading("Global options (before COMMAND)")
 	w.Println("  --socket PATH")
 	w.Println("      control socket (default: $ANVIL_CONTROL_SOCKET or /run/anvil/anvild.sock)")
 	w.Println("  --timeout DURATION")
 	w.Println("      override the per-command deadline (default: 0s)")
 	w.Println("  -j, --json")
 	w.Println("      write JSON output; also accepted after COMMAND (default: false)")
+	w.Println("  Human output uses color on terminals; set NO_COLOR=1 to disable it.")
 }

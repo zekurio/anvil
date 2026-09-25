@@ -18,12 +18,10 @@ import (
 // dropping them: an omitted decision reads as "nothing was dropped", which is a
 // different and much worse answer.
 func writeJobShow(out io.Writer, report control.JobShowResponse) error {
-	return textout.Write(out, func(w *textout.Writer) {
+	return textout.WriteReport(out, func(w *textout.Writer) {
 		job := report.Job
-		w.Printf("Job %s (id=%d)\n", job.Slug, job.ID)
-		w.Printf("  State: %s\n", job.State)
-		w.Printf("  Library: %s\n", job.Library)
-		w.Printf("  Attempts: %d\n", job.AttemptCount)
+		w.Heading(fmt.Sprintf("Job #%d  %s", job.ID, job.Slug))
+		w.Printf("  %s  ·  %s  ·  %d attempts\n", w.State(job.State), job.Library, job.AttemptCount)
 		w.Printf("  Updated: %s\n", formatTime(job.UpdatedAt))
 		w.Printf("  Source path: %s\n", textout.OrNone(job.SourcePath))
 		w.Printf("  Asset path: %s\n", textout.OrNone(job.AssetPath))
@@ -35,7 +33,8 @@ func writeJobShow(out io.Writer, report control.JobShowResponse) error {
 		}
 		if report.PublishOperation != nil {
 			operation := report.PublishOperation
-			w.Printf("\nPublish operation:\n")
+			w.Println()
+			w.Heading("Publish operation")
 			w.Printf("  Kind: %s\n", operation.Kind)
 			w.Printf("  Mode: %s\n", operation.Mode)
 			w.Printf("  Stage: %s\n", operation.Stage)
@@ -55,7 +54,7 @@ func writeJobShow(out io.Writer, report control.JobShowResponse) error {
 				}
 			}
 			w.Printf("  Backup: %s\n", textout.OrNone(operation.BackupPath))
-			w.Printf("  Artifact size: %d bytes\n", operation.ArtifactSizeBytes)
+			w.Field("Artifact size", textout.Bytes(operation.ArtifactSizeBytes))
 			w.Printf("  Digest: %s\n", textout.OrNone(strings.TrimSpace(operation.DigestAlgorithm)))
 			w.Printf("  Conflict: %s\n", textout.OrNone(operation.ConflictDescription))
 			w.Printf("  Updated: %s\n", formatTime(operation.UpdatedAt))
@@ -76,10 +75,11 @@ func writeJobShow(out io.Writer, report control.JobShowResponse) error {
 			w.Printf("\nAttempts: none\n")
 			return
 		}
-		w.Printf("\nAttempts:\n")
+		w.Println()
+		w.Heading("Attempts")
 		for _, attempt := range report.Attempts {
-			w.Printf("\n  Attempt %d\n", attempt.Number)
-			w.Printf("    State: %s\n", attempt.State)
+			w.Println()
+			w.Heading(fmt.Sprintf("  Attempt %d  %s", attempt.Number, w.State(attempt.State)))
 			w.Printf("    Worker: %s\n", textout.OrNone(attempt.WorkerID))
 			w.Printf("    Started: %s\n", formatTime(attempt.StartedAt))
 			w.Printf("    Finished: %s\n", formatTimePtr(attempt.FinishedAt))
@@ -110,7 +110,8 @@ func writeJobShow(out io.Writer, report control.JobShowResponse) error {
 }
 
 func writePipelineContext(w *textout.Writer, context control.PipelineContextDetail) {
-	w.Printf("\nSaved context:\n")
+	w.Println()
+	w.Heading("Saved context")
 	w.Printf("  Version: %d\n", context.Version)
 	if context.CropEvaluated {
 		switch {
