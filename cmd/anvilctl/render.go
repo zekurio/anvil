@@ -53,36 +53,19 @@ func writeVersion(out io.Writer, report versionReport) error {
 }
 
 func writeJobs(out io.Writer, response control.JobListResponse) error {
-	// Preserve first-seen group order and server order within each group.
-	// The absolute parent keeps reconfigured library roots distinct.
-	type groupKey struct{ library, parent, destination string }
+	// Preserve first-seen library order and server order within each library.
 	type group struct {
-		key  groupKey
-		jobs []control.JobResponse
+		library string
+		jobs    []control.JobResponse
 	}
 	var groups []group
-	indexes := make(map[groupKey]int)
+	indexes := make(map[string]int)
 	for _, job := range response.Jobs {
-		source := jobInputPath(job)
-		parent := filepath.Dir(source)
-		if source == "" {
-			parent = "(unknown folder)"
-		}
-		// Media replacements stay in the input folder. Handoffs have a
-		// separate destination folder, shared by all rows in this group.
-		destination := ""
-		if job.DestinationPath != "" {
-			destination = filepath.Dir(job.DestinationPath)
-			if destination == parent {
-				destination = ""
-			}
-		}
-		key := groupKey{job.Library, parent, destination}
-		index, ok := indexes[key]
+		index, ok := indexes[job.Library]
 		if !ok {
 			index = len(groups)
-			indexes[key] = index
-			groups = append(groups, group{key: key})
+			indexes[job.Library] = index
+			groups = append(groups, group{library: job.Library})
 		}
 		groups[index].jobs = append(groups[index].jobs, job)
 	}
@@ -94,38 +77,30 @@ func writeJobs(out io.Writer, response control.JobListResponse) error {
 			if i > 0 {
 				w.Println()
 			}
-			w.Heading(group.key.library + "  " + group.key.parent)
-			if group.key.destination != "" {
-				w.Field("Destination", group.key.destination)
+			count := "1 job"
+			if len(group.jobs) != 1 {
+				count = fmt.Sprintf("%d jobs", len(group.jobs))
 			}
-			headers := []string{"ID", "State", "Updated", "File"}
-			matched := false
+			w.Heading(group.library + "  ·  " + count)
 			for _, job := range group.jobs {
-				if len(job.MatchedOn) > 0 {
-					matched = true
-					break
-				}
-			}
-			if matched {
-				headers = append(headers, "Matched")
-			}
-			rows := make([][]string, 0, len(group.jobs))
-			for _, job := range group.jobs {
-				source := jobInputPath(job)
+				w.Println()
+				w.Paragraph(fmt.Sprintf("#%d  %s  ·  updated %s", job.ID, w.State(job.State), job.UpdatedAt.Local().Format("Jan 02 15:04")))
 				name := "(unknown source)"
-				if source != "" {
+				if source := jobInputPath(job); source != "" {
 					name = filepath.Base(source)
 				}
+				w.Paragraph(name)
 				if job.LastError != "" {
-					name += "\nError: " + job.LastError
+					w.Field("Last error", job.LastError)
 				}
-				row := []string{strconv.FormatInt(job.ID, 10), w.State(job.State), job.UpdatedAt.Local().Format("Jan 02 15:04"), name}
-				if matched {
-					row = append(row, formatMatchedOn(job.MatchedOn))
+				if len(job.MatchedOn) > 0 {
+					w.Field("Matched", formatMatchedOn(job.MatchedOn))
 				}
-				rows = append(rows, row)
 			}
-			w.Table(headers, rows)
+		}
+		if len(response.Jobs) > 0 {
+			w.Println()
+			w.Paragraph("Full paths and history: anvilctl show <ID>")
 		}
 		if response.PathOutsideLibraries {
 			w.Println("Path is outside configured library roots; an existing job may not own it.")

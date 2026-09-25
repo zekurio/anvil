@@ -43,7 +43,12 @@ func (w *Writer) Heading(title string) {
 }
 
 func (w *Writer) Field(label string, value any) {
-	w.Printf("  %s  %v\n", labelStyle.Render(label), value)
+	w.Paragraph(fmt.Sprintf("%s  %v", labelStyle.Render(label), value))
+}
+
+// Paragraph wraps indented report text to the available terminal width.
+func (w *Writer) Paragraph(value string) {
+	w.Println(lipgloss.NewStyle().PaddingLeft(2).Width(w.width).Render(value))
 }
 
 // State retains the text so status never depends on color alone.

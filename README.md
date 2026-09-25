@@ -154,10 +154,10 @@ daemon unreachable or protocol mismatch, `4` not found. `--socket` or
 `ANVIL_CONTROL_SOCKET` overrides the default `/run/anvil/anvild.sock`.
 
 Human output uses Lip Gloss styling, with color on terminals and plain text
-when redirected or when `NO_COLOR=1` is set. Job listings group by library and
-source folder, showing the folder once and filenames beside numeric job IDs.
-Handoff destination folders appear once per group; media replacements omit
-the destination. Rows show the input filename and any error. Use `show JOB`
+when redirected or when `NO_COLOR=1` is set. Job listings group by library, with a count and
+one entry per job. Each entry shows its numeric ID, state, update time, input
+filename, and last error when present. Long filenames and errors wrap to the
+terminal width. Use `show JOB`
 for full paths and slugs, or `--json` for automation. JSON fields and exit codes
 are independent of the human presentation. Listing times use the client's
 local timezone; JSON retains the daemon's timestamps.
