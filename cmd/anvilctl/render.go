@@ -55,7 +55,7 @@ func writeVersion(out io.Writer, report versionReport) error {
 func writeJobs(out io.Writer, response control.JobListResponse) error {
 	// Preserve first-seen group order and server order within each group.
 	// The absolute parent keeps reconfigured library roots distinct.
-	type groupKey struct{ library, parent string }
+	type groupKey struct{ library, parent, destination string }
 	type group struct {
 		key  groupKey
 		jobs []control.JobResponse
@@ -63,15 +63,21 @@ func writeJobs(out io.Writer, response control.JobListResponse) error {
 	var groups []group
 	indexes := make(map[groupKey]int)
 	for _, job := range response.Jobs {
-		source := job.Source.AbsolutePath
-		if source == "" {
-			source = job.Source.Path
-		}
+		source := jobInputPath(job)
 		parent := filepath.Dir(source)
 		if source == "" {
 			parent = "(unknown folder)"
 		}
-		key := groupKey{job.Library, parent}
+		// Media replacements stay in the input folder. Handoffs have a
+		// separate destination folder, shared by all rows in this group.
+		destination := ""
+		if job.DestinationPath != "" {
+			destination = filepath.Dir(job.DestinationPath)
+			if destination == parent {
+				destination = ""
+			}
+		}
+		key := groupKey{job.Library, parent, destination}
 		index, ok := indexes[key]
 		if !ok {
 			index = len(groups)
@@ -89,6 +95,9 @@ func writeJobs(out io.Writer, response control.JobListResponse) error {
 				w.Println()
 			}
 			w.Heading(group.key.library + "  " + group.key.parent)
+			if group.key.destination != "" {
+				w.Field("Destination", group.key.destination)
+			}
 			headers := []string{"ID", "State", "Updated", "File"}
 			matched := false
 			for _, job := range group.jobs {
@@ -102,20 +111,10 @@ func writeJobs(out io.Writer, response control.JobListResponse) error {
 			}
 			rows := make([][]string, 0, len(group.jobs))
 			for _, job := range group.jobs {
-				source := job.Source.AbsolutePath
-				if source == "" {
-					source = job.Source.Path
-				}
+				source := jobInputPath(job)
 				name := "(unknown source)"
 				if source != "" {
 					name = filepath.Base(source)
-				}
-				if job.DestinationPath != "" && job.DestinationPath != source {
-					destination := job.DestinationPath
-					if filepath.Dir(destination) == group.key.parent {
-						destination = filepath.Base(destination)
-					}
-					name += "\n→ " + destination
 				}
 				if job.LastError != "" {
 					name += "\nError: " + job.LastError
@@ -136,6 +135,17 @@ func writeJobs(out io.Writer, response control.JobListResponse) error {
 			w.Printf("\nShowing %d of %d matching jobs. Use --limit 0 to show all.\n", len(response.Jobs), response.Matched)
 		}
 	})
+}
+
+// A download source can be a whole package; its asset identifies the video.
+func jobInputPath(job control.JobResponse) string {
+	if job.Asset != nil && job.Asset.AbsolutePath != "" {
+		return job.Asset.AbsolutePath
+	}
+	if job.Source.AbsolutePath != "" {
+		return job.Source.AbsolutePath
+	}
+	return job.Source.Path
 }
 
 func formatMatchedOn(sides []control.PathMatchSide) string {

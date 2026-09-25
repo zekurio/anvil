@@ -61,6 +61,7 @@ var jobsHelp = commandHelp{
 	notes: []string{
 		"Selectors combine to narrow the result. --path requires --library and cannot be used with --absolute-path.",
 		"Jobs are grouped by library and source folder. Rows show numeric IDs and filenames; show JOB retains full paths and slugs.",
+		"Handoff destination folders appear once per group. Media replacements omit the destination.",
 		"Without --limit, listings return 20 jobs unless --path or --absolute-path makes an exact query. An explicit --limit 0 is unbounded.",
 		"--absolute-path matches source, asset, and destination paths. The Matched column identifies the matching side.",
 	},
