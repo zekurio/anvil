@@ -35,10 +35,13 @@ func TestJobListingGroupsWithoutLosingIdentity(t *testing.T) {
 			t.Fatalf("folder not shown exactly once: %q\n%s", parent, text)
 		}
 	}
-	for _, value := range []string{"one.mkv", "two.mkv", "two.av1.mkv", "encoder failed", "destination", "Showing 3 of 5"} {
+	for _, value := range []string{"one.mkv", "two.mkv", "encoder failed", "destination", "Showing 3 of 5"} {
 		if !strings.Contains(text, value) {
 			t.Errorf("missing %q\n%s", value, text)
 		}
+	}
+	if strings.Contains(text, "two.av1.mkv") || strings.Contains(text, "Destination") {
+		t.Fatal("media listing includes destination information")
 	}
 	if strings.Contains(text, "\x1b") {
 		t.Fatal("ANSI in redirected output")
@@ -57,5 +60,28 @@ func TestJobListingGroupsWithoutLosingIdentity(t *testing.T) {
 	}
 	if !reflect.DeepEqual(decoded, report) {
 		t.Fatal("JSON lost data or reordered jobs")
+	}
+
+	// Package jobs use the video asset, not the package directory, as the
+	// filename. Different handoff destinations must remain separate groups.
+	for i := range report.Jobs {
+		job := &report.Jobs[i]
+		job.Source.AbsolutePath = "/downloads/Season 1"
+		job.Asset = &control.OccurrenceResponse{AbsolutePath: "/downloads/Season 1/episode.mkv"}
+		job.DestinationPath = "/handoff/Season 1/episode.mkv"
+	}
+	report.Jobs[2].DestinationPath = "/handoff/other/episode.mkv"
+	out.Reset()
+	if err := writeJobs(&out, report); err != nil {
+		t.Fatal(err)
+	}
+	text = out.String()
+	for _, folder := range []string{"/handoff/Season 1", "/handoff/other"} {
+		if strings.Count(text, folder) != 1 {
+			t.Fatalf("handoff folder not shown exactly once: %q\n%s", folder, text)
+		}
+	}
+	if strings.Count(text, "episode.mkv") != len(report.Jobs) {
+		t.Fatalf("expected only input filenames in rows\n%s", text)
 	}
 }
