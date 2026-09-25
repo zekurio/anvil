@@ -30,24 +30,22 @@ func TestJobListingGroupsWithoutLosingIdentity(t *testing.T) {
 	}
 	text := out.String()
 	t.Log("\n" + text)
-	for _, parent := range []string{"/media/Season 1", "/other/Season 1"} {
-		if strings.Count(text, parent) != 1 {
-			t.Fatalf("folder not shown exactly once: %q\n%s", parent, text)
-		}
+	if strings.Count(text, "tv  ·  3 jobs") != 1 {
+		t.Fatalf("expected one library heading\n%s", text)
 	}
-	for _, value := range []string{"one.mkv", "two.mkv", "encoder failed", "destination", "Showing 3 of 5"} {
+	for _, value := range []string{"#1", "#2", "#3", "one.mkv", "two.mkv", "Last error", "encoder failed", "destination", "Showing 3 of 5", "anvilctl show <ID>"} {
 		if !strings.Contains(text, value) {
 			t.Errorf("missing %q\n%s", value, text)
 		}
 	}
-	if strings.Contains(text, "two.av1.mkv") || strings.Contains(text, "Destination") {
-		t.Fatal("media listing includes destination information")
+	if strings.Contains(text, "/media/") || strings.Contains(text, "/other/") || strings.Contains(text, "two.av1.mkv") {
+		t.Fatal("listing includes full paths or destination filenames")
 	}
 	if strings.Contains(text, "\x1b") {
 		t.Fatal("ANSI in redirected output")
 	}
-	if strings.Index(text, "two.mkv") > strings.Index(text, "/other/Season 1") {
-		t.Fatal("same-folder jobs not grouped together")
+	if strings.Index(text, "#2") > strings.Index(text, "#3") {
+		t.Fatal("server order lost within library")
 	}
 
 	out.Reset()
@@ -63,7 +61,7 @@ func TestJobListingGroupsWithoutLosingIdentity(t *testing.T) {
 	}
 
 	// Package jobs use the video asset, not the package directory, as the
-	// filename. Different handoff destinations must remain separate groups.
+	// filename. Different handoff destinations still share one library heading.
 	for i := range report.Jobs {
 		job := &report.Jobs[i]
 		job.Source.AbsolutePath = "/downloads/Season 1"
@@ -77,8 +75,8 @@ func TestJobListingGroupsWithoutLosingIdentity(t *testing.T) {
 	}
 	text = out.String()
 	for _, folder := range []string{"/handoff/Season 1", "/handoff/other"} {
-		if strings.Count(text, folder) != 1 {
-			t.Fatalf("handoff folder not shown exactly once: %q\n%s", folder, text)
+		if strings.Contains(text, folder) {
+			t.Fatalf("handoff folder shown in listing: %q\n%s", folder, text)
 		}
 	}
 	if strings.Count(text, "episode.mkv") != len(report.Jobs) {
