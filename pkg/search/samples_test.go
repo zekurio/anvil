@@ -3,7 +3,10 @@ package search
 import (
 	"context"
 	"errors"
+	"fmt"
+	"os"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/zekurio/anvil/pkg/domain"
@@ -60,6 +63,33 @@ func TestSampleFramesRejectsUnusableProbes(t *testing.T) {
 			frames, err := sampleFrames(context.Background(), runner, "ffprobe", "sample.mkv", 2)
 			if err == nil || frames != 0 {
 				t.Fatalf("frames = %d, %v", frames, err)
+			}
+		})
+	}
+}
+
+func TestCandidateRejectsFrameMismatchBeforeScoring(t *testing.T) {
+	for _, frames := range []int{23, 25, 26, 27} {
+		t.Run(fmt.Sprint(frames), func(t *testing.T) {
+			scored := false
+			runner := runnerFunc(func(_ context.Context, command process.Command) (process.Result, error) {
+				var result process.Result
+				switch {
+				case command.Name == "ffprobe":
+					result.Stdout = fmt.Appendf(nil, `{"streams":[{"nb_read_frames":"%d"}]}`, frames)
+				case slices.Contains(command.Args, "-filter_complex"):
+					scored = true
+				default:
+					if err := os.WriteFile(command.Args[len(command.Args)-1], []byte("encoded"), 0o600); err != nil {
+						return result, err
+					}
+				}
+				return result, nil
+			})
+			refs := []sample{{path: "reference.mkv", frames: 24, bytes: 100}}
+			_, err := measureCandidate(context.Background(), runner, domain.EncodePlan{}, refs, t.TempDir(), 28, tools{})
+			if err == nil || !strings.Contains(err.Error(), fmt.Sprintf("has %d frames, expected 24", frames)) || scored {
+				t.Fatalf("error = %v, scored = %v", err, scored)
 			}
 		})
 	}
