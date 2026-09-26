@@ -44,7 +44,7 @@ func TestOnlySamplesNormalizeTimestamps(t *testing.T) {
 	plan := domain.EncodePlan{VideoCodec: "hevc_qsv", InputVideoCodec: "hevc", Accelerator: "qsv", InputWidth: 1920, InputHeight: 1080, BitDepth: 10, CropFilter: "crop=1920:1000:0:40"}
 	args := SampleArgs(plan)
 	i := slices.Index(args, "-vf")
-	if i < 0 || !strings.HasPrefix(args[i+1], "setpts=") || !strings.Contains(args[i+1], ",vpp_qsv=") {
+	if i < 0 || !strings.HasPrefix(args[i+1], "setpts=") || !strings.Contains(args[i+1], ","+plan.CropFilter) {
 		t.Fatalf("sample timestamp/crop filters = %q", args)
 	}
 	if !slices.Contains(args, "-xerror") || strings.Contains(strings.Join(Args(plan), " "), "setpts=") {
@@ -56,6 +56,46 @@ func TestOnlySamplesNormalizeTimestamps(t *testing.T) {
 		at := slices.Index(got, "-fps_mode")
 		if at < 0 || at+1 >= len(got) || got[at+1] != "passthrough" {
 			t.Fatalf("fps_mode = %q", got)
+		}
+	}
+}
+
+func TestQSVSamplesUseSoftwareFrames(t *testing.T) {
+	for _, codec := range []string{"h264", "hevc", "av1", "vp9"} {
+		for _, depth := range []int{8, 10} {
+			plan := domain.EncodePlan{
+				InputPath: "reference.mkv", OutputPath: "candidate.mkv",
+				VideoCodec: "hevc_qsv", InputVideoCodec: codec, Accelerator: "qsv",
+				InputWidth: 1920, InputHeight: 1080, BitDepth: depth,
+				CropFilter: "crop=1920:816:0:132", CRF: 28, Preset: "veryslow", Threads: 2,
+			}
+			for _, crop := range []string{plan.CropFilter, ""} {
+				plan.CropFilter = crop
+				args := SampleArgs(plan)
+				input := slices.Index(args, "-i")
+				if input < 0 || slices.Contains(args[:input], "-c:v") || slices.Contains(args, "-hwaccel") {
+					t.Fatalf("sample does not use the default software decoder: %q", args)
+				}
+				filterAt := slices.Index(args, "-vf")
+				format := "nv12"
+				if depth == 10 {
+					format = "p010le"
+				}
+				if filterAt < 0 || !strings.HasSuffix(args[filterAt+1], ",format="+format) ||
+					strings.Contains(args[filterAt+1], "qsv") ||
+					(crop != "" && !strings.Contains(args[filterAt+1], ","+crop+",")) {
+					t.Fatalf("sample crop/format = %q", args)
+				}
+				encoder := slices.Index(args, "-c:v")
+				if encoder < input || args[encoder+1] != plan.VideoCodec {
+					t.Fatalf("sample lost QSV encoding: %q", args)
+				}
+				final := Args(plan)
+				decoder := slices.Index(final, "-c:v")
+				if decoder < 0 || final[decoder+1] != codec+"_qsv" || !slices.Contains(final, "-hwaccel") {
+					t.Fatalf("final encode lost QSV decoding: %q", final)
+				}
+			}
 		}
 	}
 }

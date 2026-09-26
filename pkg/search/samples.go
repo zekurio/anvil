@@ -56,8 +56,9 @@ func sampleWindows(duration float64, count int, length time.Duration) ([]sampleW
 }
 
 func copySampleArgs(plan domain.EncodePlan, window sampleWindow, output string) []string {
-	// Copy from a seekable keyframe so both the reference and every candidate
-	// decode the exact same frames. Actual clips may include keyframe preroll.
+	// Copy from a seekable keyframe, retaining compressed bytes for the savings
+	// estimate. Clips may include keyframe preroll and partial GOPs; reference
+	// counting, candidate encoding, and scoring must use the same decoder.
 	// No -xerror here: seeking into an open GOP — x265's default — leaves the
 	// leading B-frames with non-monotonic DTS, and the CLI must stay free to
 	// fix those up instead of aborting. Frame counts are verified separately,

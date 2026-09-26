@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -218,6 +219,83 @@ func TestSearchExtractsOpenGOPSamples(t *testing.T) {
 		t.Fatalf("result = %+v", result)
 	}
 	t.Log(result.RawOutput)
+}
+
+// Exercise packet-copy cuts inside reordered H.264 GOPs without the original
+// episodes. QSV runs opt in separately because they require an Intel device.
+func TestSearchSamplesWithOpenGOPH264(t *testing.T) {
+	if os.Getenv("ANVIL_MEDIA_TEST") != "1" && os.Getenv("ANVIL_QSV_TEST") != "1" {
+		t.Skip("set ANVIL_MEDIA_TEST=1 or ANVIL_QSV_TEST=1 to run real FFmpeg encodes")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+	if !ffmpegSupports(ctx, t, "-encoders", "libx264") {
+		t.Skip("ffmpeg build has no libx264 encoder")
+	}
+	root := t.TempDir()
+	input := filepath.Join(root, "opengop.mkv")
+	runner := process.OSRunner{}
+	_, err := runner.Run(ctx, process.Command{Name: "ffmpeg", Args: []string{
+		"-hide_banner", "-nostdin", "-n", "-f", "lavfi", "-i", "testsrc2=size=320x240:rate=24000/1001:duration=12",
+		"-c:v", "libx264", "-preset", "veryfast",
+		"-x264-params", "open-gop=1:keyint=48:min-keyint=48:scenecut=0:bframes=3",
+		"-pix_fmt", "yuv420p", "-threads", "2", input,
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan := domain.EncodePlan{
+		InputPath: input, InputVideoCodec: "h264", InputPixelFormat: "yuv420p",
+		InputWidth: 320, InputHeight: 240, CropFilter: "crop=320:192:0:24",
+		VideoCodec: "libx264", BitDepth: 8, CRF: 28, Preset: "veryfast",
+		Threads: 2, Metric: domain.QualityMetricXPSNR,
+	}
+	refs, err := prepareSamples(ctx, runner, plan, []sampleWindow{
+		{offset: 4.25, duration: 2}, {offset: 8.125, duration: 2},
+	}, root, tools{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, encoder := range []string{"libx264", "hevc_qsv"} {
+		for _, depth := range []int{8, 10} {
+			t.Run(fmt.Sprintf("%s-%d", encoder, depth), func(t *testing.T) {
+				if encoder == "hevc_qsv" && os.Getenv("ANVIL_QSV_TEST") != "1" {
+					t.Skip("set ANVIL_QSV_TEST=1 to run QSV sample encodes")
+				}
+				plan := plan
+				plan.VideoCodec, plan.BitDepth = encoder, depth
+				if encoder == "hevc_qsv" {
+					plan.Accelerator, plan.Preset = "qsv", "veryslow"
+				}
+				for i, ref := range refs {
+					plan.InputPath = ref.path
+					plan.OutputPath = filepath.Join(root, fmt.Sprintf("%s-%d-%d.mkv", encoder, depth, i))
+					if _, err := runner.Run(ctx, process.Command{Name: "ffmpeg", Args: ffmpeg.SampleArgs(plan)}); err != nil {
+						t.Fatal(err)
+					}
+					frames, err := sampleFrames(ctx, runner, "ffprobe", plan.OutputPath, plan.Threads)
+					if err != nil || frames != ref.frames {
+						t.Fatalf("sample %d frames = %d, expected %d: %v", i+1, frames, ref.frames, err)
+					}
+					encoded, err := (probe.FFProbe{}).Probe(ctx, plan.OutputPath)
+					if err != nil {
+						t.Fatal(err)
+					}
+					video, ok := domain.PrimaryVideoStream(encoded.Streams)
+					wantFormat := "yuv420p"
+					if depth == 10 {
+						wantFormat = "yuv420p10le"
+					}
+					if !ok || video.Width != 320 || video.Height != 192 || video.PixelFormat != wantFormat {
+						t.Fatalf("encoded video = %+v, expected 320x192 %s", video, wantFormat)
+					}
+					if _, err := measureQuality(ctx, runner, plan, ref, plan.OutputPath, root, "ffmpeg"); err != nil {
+						t.Fatalf("score sample %d: %v", i+1, err)
+					}
+				}
+			})
+		}
+	}
 }
 
 // Run with ANVIL_QSV_TEST=1 and an FFmpeg/driver pair that supports QSV.
