@@ -6,15 +6,19 @@ import (
 	"strings"
 
 	"github.com/zekurio/anvil/pkg/domain"
+	"github.com/zekurio/anvil/pkg/video"
 )
 
-// SampleArgs encodes a video-only reference clip using the final encode's
-// decoder, crop, rate control, pixel format, preset, and encoder options.
+// SampleArgs encodes a video-only reference clip using the final encode's crop,
+// rate control, pixel format, preset, and encoder options. Samples use software
+// decoding and cropping, like the reference frame count and quality metric.
 func SampleArgs(plan domain.EncodePlan) []string {
 	// Sample progress only feeds the per-process diagnostic log, so keep it but
 	// match the final encode's period instead of a block every half second.
 	args := []string{"-hide_banner", "-nostdin", "-n", "-xerror", "-nostats", "-stats_period", "5", "-progress", "pipe:1"}
-	args = append(args, inputArgs(plan)...)
+	// Do not use inputArgs here: QSV and software decoders can emit different
+	// frames at a copied GOP boundary. Decode the same packets with the same
+	// default software decoder used by ffprobe and the metric, even for QSV.
 	args = append(args, "-threads", strconv.Itoa(max(plan.Threads, 1)), "-i", plan.InputPath,
 		"-map", "0:v:0")
 	// Cutting a reordered GOP can leave gaps near the end of a sample. QSV
@@ -22,8 +26,13 @@ func SampleArgs(plan domain.EncodePlan) []string {
 	// by frame order, so give them a continuous timeline without dropping frames.
 	// Keep the reported frame rate, or use 25 when the input rate is unknown.
 	filter := "setpts='N/(if(gt(FRAME_RATE,0),FRAME_RATE,25)*TB)'"
-	if crop := videoFilter(plan); crop != "" {
+	if crop := ReferenceFilter(plan); crop != "" {
 		filter += "," + crop
+	}
+	if video.EncoderAccelerator(plan.VideoCodec) == video.AcceleratorQSV {
+		// QSV encoders upload software frames internally. Pin the input format
+		// to the requested depth instead of letting negotiation choose 8-bit.
+		filter += ",format=" + video.QSVVPPFormat(plan.BitDepth)
 	}
 	args = append(args, videoOutputArgs(plan, filter)...)
 	return append(args, "-an", "-sn", "-dn", "-map_metadata", "-1", "-map_chapters", "-1", "-f", "matroska", plan.OutputPath)
