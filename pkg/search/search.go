@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"math/bits"
 	"os"
 	"path/filepath"
 	"strings"
@@ -171,13 +172,15 @@ func searchCRF(ctx context.Context, plan domain.EncodePlan, measure func(context
 	if endpoint.Score >= plan.Target {
 		low = plan.CRFMax
 	}
-	previousWidth := 0
+	// Allow local estimates to approach the boundary without requiring each
+	// trial to halve the interval. Cap non-midpoint trials at the number of
+	// bisections the original interval needs, then finish with bisection.
+	// Including the endpoint, quality search takes at most 1+2*bits.Len(span)
+	// measurements even when the score curve makes interpolation unhelpful.
+	estimatesLeft := bits.Len(uint(plan.CRFMax - plan.CRFMin))
 	for low <= high {
-		width := high - low + 1
 		mid := low + (high-low)/2
-		// Estimate the quality boundary from the last two scores. Only do so
-		// after halving the interval, so poor estimates fall back to bisection.
-		if n := len(result.Candidates); n >= 2 && width <= previousWidth/2 {
+		if n := len(result.Candidates); n >= 2 && estimatesLeft > 0 {
 			a, b := result.Candidates[n-2], result.Candidates[n-1]
 			if a.CRF > b.CRF {
 				a, b = b, a
@@ -185,11 +188,14 @@ func searchCRF(ctx context.Context, plan domain.EncodePlan, measure func(context
 			if a.Score > b.Score {
 				estimate := float64(a.CRF) + (a.Score-plan.Target)*float64(b.CRF-a.CRF)/(a.Score-b.Score)
 				if !math.IsNaN(estimate) && !math.IsInf(estimate, 0) {
-					mid = int(math.Floor(max(float64(low), min(float64(high), estimate))))
+					next := int(math.Floor(max(float64(low), min(float64(high), estimate))))
+					if next != mid {
+						estimatesLeft--
+					}
+					mid = next
 				}
 			}
 		}
-		previousWidth = width
 		candidate, err := evaluate(mid)
 		if err != nil {
 			return result, err

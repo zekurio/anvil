@@ -78,10 +78,12 @@ restart.
 ### CRF search
 
 Anvil searches integer CRFs between `video.crf_min` and `video.crf_max`.
-It measures the upper endpoint first, then bisects the range. Once the interval
-has halved, it estimates the next CRF from the last two measured scores, and any
-estimate that fails to halve the interval again hands the next step back to
-bisection. It finds the highest CRF meeting `video.target`. Quality and size are assumed to decrease
+It measures the upper endpoint first, then the midpoint, and estimates the next
+CRF from the last two measured scores. Non-midpoint estimates have a fixed trial
+budget equal to the number of bisections needed for the original remaining range.
+Flat or reversed score slopes, or an exhausted budget, fall back to bisection.
+This lets useful estimates converge without allowing a slow walk through every
+CRF. It finds the highest CRF meeting `video.target`. Quality and size are assumed to decrease
 as CRF increases; only measured candidates can be accepted. The chosen result
 must also meet `video.min_savings_percent`. If none fits, Anvil copies the video.
 With `force_encode_on_no_fit = true`, it searches the size boundary and chooses
