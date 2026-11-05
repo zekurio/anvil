@@ -221,7 +221,7 @@ func resolveLibrary(name string, raw rawLibraryConfig) (LibraryConfig, error) {
 		Arr:              raw.Arr,
 		Media:            raw.Media,
 	}
-	if kind != "download" {
+	if !library.IsDownload() {
 		library.Media.ReplacementMode = orDefault(library.Media.ReplacementMode, DefaultReplacementMode)
 		return library, nil
 	}
