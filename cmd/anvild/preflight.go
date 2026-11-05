@@ -14,7 +14,6 @@ import (
 	"github.com/zekurio/anvil/internal/textout"
 	"github.com/zekurio/anvil/pkg/config"
 	"github.com/zekurio/anvil/pkg/domain"
-	"github.com/zekurio/anvil/pkg/mediapath"
 	"github.com/zekurio/anvil/pkg/pipeline"
 	replacepkg "github.com/zekurio/anvil/pkg/replace"
 	"github.com/zekurio/anvil/pkg/scanner"
@@ -267,64 +266,11 @@ func buildPreflightCandidate(ctx context.Context, cfg config.Config, state prefl
 		status.OccurrenceAction = "deferred_unstable"
 	}
 	if state != nil && !candidate.Ignored && !candidate.Unstable {
-		storedSource, ok, err := state.FindMediaSourceByPath(ctx, candidate.LibraryName, candidate.SourceRelativePath)
-		if err != nil {
+		if err := matchStoredOccurrence(ctx, state, candidate, &source, &asset, &status); err != nil {
 			return preflightCandidate{}, err
-		}
-		if ok {
-			status.ExistingSource = true
-			storedGeneration := max(storedSource.Generation, 1)
-			reuseSource := storedSource.Current && (candidate.SourceKind == domain.SourceKindPackage || preflightFingerprintMatches(storedSource.Fingerprint, source.Fingerprint))
-			if reuseSource {
-				source.ID = storedSource.ID
-				source.Generation = storedGeneration
-				source.Status = storedSource.Status
-				status.OccurrenceAction = "retain_occurrence"
-			} else {
-				source.Generation = storedGeneration + 1
-			}
-			if reuseSource {
-				storedAsset, ok, err := state.FindMediaAssetByPath(ctx, source.ID, candidate.AssetRelativePath)
-				if err != nil {
-					return preflightCandidate{}, err
-				}
-				if !ok {
-					status.OccurrenceAction = "new_asset_generation"
-					source.Status = domain.MediaSourceActive
-				} else {
-					status.ExistingAsset = true
-					storedGeneration := max(storedAsset.Generation, 1)
-					reuseAsset := storedAsset.Current && preflightFingerprintMatches(storedAsset.Fingerprint, asset.Fingerprint)
-					if !reuseAsset {
-						asset.Generation = storedGeneration + 1
-						status.OccurrenceAction = "new_asset_generation"
-						source.Status = domain.MediaSourceActive
-					} else {
-						asset.ID = storedAsset.ID
-						asset.Generation = storedGeneration
-						asset.Status = storedAsset.Status
-						if storedAsset.Status == domain.MediaAssetProcessed {
-							status.WouldEnqueueNewJob = false
-						}
-						job, ok, err := state.FindJobForTarget(ctx, source.ID, storedAsset.ID)
-						if err != nil {
-							return preflightCandidate{}, err
-						}
-						if ok {
-							status.AlreadyHasJob = true
-							status.WouldEnqueueNewJob = false
-							status.ExistingJobID = job.ID
-							status.ExistingJobSlug = job.Label()
-							status.ExistingJobState = job.State
-							status.ExistingAttemptHint = "attempt-<new>"
-						}
-					}
-				}
-			}
 		}
 	}
 
-	inputPath := mediapath.Input(library.Path, source, asset)
 	jobLabel := "<new>"
 	if status.AlreadyHasJob {
 		jobLabel = status.ExistingJobSlug
@@ -333,13 +279,9 @@ func buildPreflightCandidate(ctx context.Context, cfg config.Config, state prefl
 	if err != nil {
 		return preflightCandidate{}, err
 	}
-	jobContext := &pipeline.JobContext{
-		Source:     source,
-		Asset:      asset,
-		Library:    library,
-		InputPath:  inputPath,
-		StagingDir: stagingDir,
-	}
+	jobContext := pipeline.NewJobContext(domain.Job{}, source, asset, library, domain.Profile{})
+	jobContext.StagingDir = stagingDir
+	inputPath := jobContext.InputPath
 	destination, err := replacepkg.PlanDestination(jobContext)
 	if err != nil {
 		return preflightCandidate{}, err
@@ -382,25 +324,85 @@ func buildPreflightCandidate(ctx context.Context, cfg config.Config, state prefl
 		Cleanup: preflightCleanupPlan(library, jobContext),
 	}
 	item.Publish, item.Warnings = preflightPublishPlan(library, jobContext)
-	if item.Cleanup.DownloadCleanupSource {
-		item.Warnings = append(item.Warnings, "download cleanup_source_media=true would remove source media after handoff")
-	}
-	if item.Cleanup.DownloadCleanupSource && item.Cleanup.DownloadPruneEmptyDirs {
-		switch {
-		case item.Cleanup.DownloadCleanupPlanError != "":
-			item.Warnings = append(item.Warnings, "download residue cleanup planning failed: "+item.Cleanup.DownloadCleanupPlanError)
-		case len(item.Cleanup.DownloadCleanupBlockers) > 0:
-			item.Warnings = append(item.Warnings, fmt.Sprintf("download residue cleanup is blocked by %d unignorable or unsafe package entries; no package residue or directories would be removed", len(item.Cleanup.DownloadCleanupBlockers)))
-		default:
-			item.Warnings = append(item.Warnings, "download prune_empty_dirs=true would prune empty parent directories after journaled source and residue cleanup")
-			if len(item.Cleanup.DownloadCleanupEntries) > 0 {
-				item.Warnings = append(item.Warnings, fmt.Sprintf("download residue cleanup would journal and remove %d explicitly ignorable package files", len(item.Cleanup.DownloadCleanupEntries)))
-			}
-		}
-	}
+	item.Warnings = append(item.Warnings, preflightCleanupWarnings(item.Cleanup)...)
 	item.Warnings = append(item.Warnings, preflightExcludeWarnings(candidate)...)
 	item.Description = preflightDescription(item.Status)
 	return item, nil
+}
+
+// matchStoredOccurrence predicts what a scan would do with a candidate the
+// store already knows: keep the occurrence, start a new generation, or leave
+// it to the job that already covers it.
+func matchStoredOccurrence(ctx context.Context, state preflightStore, candidate scanner.CandidatePlan, source *domain.MediaSource, asset *domain.MediaAsset, status *preflightStatus) error {
+	storedSource, ok, err := state.FindMediaSourceByPath(ctx, candidate.LibraryName, candidate.SourceRelativePath)
+	if err != nil || !ok {
+		return err
+	}
+	status.ExistingSource = true
+	reuseSource := storedSource.Current && (candidate.SourceKind == domain.SourceKindPackage || preflightFingerprintMatches(storedSource.Fingerprint, source.Fingerprint))
+	if !reuseSource {
+		source.Generation = max(storedSource.Generation, 1) + 1
+		return nil
+	}
+	source.ID = storedSource.ID
+	source.Generation = max(storedSource.Generation, 1)
+	source.Status = storedSource.Status
+	status.OccurrenceAction = "retain_occurrence"
+
+	storedAsset, ok, err := state.FindMediaAssetByPath(ctx, source.ID, candidate.AssetRelativePath)
+	if err != nil {
+		return err
+	}
+	status.ExistingAsset = ok
+	if !ok || !storedAsset.Current || !preflightFingerprintMatches(storedAsset.Fingerprint, asset.Fingerprint) {
+		if ok {
+			asset.Generation = max(storedAsset.Generation, 1) + 1
+		}
+		status.OccurrenceAction = "new_asset_generation"
+		source.Status = domain.MediaSourceActive
+		return nil
+	}
+	asset.ID = storedAsset.ID
+	asset.Generation = max(storedAsset.Generation, 1)
+	asset.Status = storedAsset.Status
+	if storedAsset.Status == domain.MediaAssetProcessed {
+		status.WouldEnqueueNewJob = false
+	}
+	job, ok, err := state.FindJobForTarget(ctx, source.ID, storedAsset.ID)
+	if err != nil || !ok {
+		return err
+	}
+	status.AlreadyHasJob = true
+	status.WouldEnqueueNewJob = false
+	status.ExistingJobID = job.ID
+	status.ExistingJobSlug = job.Label()
+	status.ExistingJobState = job.State
+	status.ExistingAttemptHint = "attempt-<new>"
+	return nil
+}
+
+// preflightCleanupWarnings spells out which destructive download cleanup a
+// publish would perform.
+func preflightCleanupWarnings(cleanup preflightCleanup) []string {
+	if !cleanup.DownloadCleanupSource {
+		return nil
+	}
+	warnings := []string{"download cleanup_source_media=true would remove source media after handoff"}
+	if !cleanup.DownloadPruneEmptyDirs {
+		return warnings
+	}
+	switch {
+	case cleanup.DownloadCleanupPlanError != "":
+		warnings = append(warnings, "download residue cleanup planning failed: "+cleanup.DownloadCleanupPlanError)
+	case len(cleanup.DownloadCleanupBlockers) > 0:
+		warnings = append(warnings, fmt.Sprintf("download residue cleanup is blocked by %d unignorable or unsafe package entries; no package residue or directories would be removed", len(cleanup.DownloadCleanupBlockers)))
+	default:
+		warnings = append(warnings, "download prune_empty_dirs=true would prune empty parent directories after journaled source and residue cleanup")
+		if len(cleanup.DownloadCleanupEntries) > 0 {
+			warnings = append(warnings, fmt.Sprintf("download residue cleanup would journal and remove %d explicitly ignorable package files", len(cleanup.DownloadCleanupEntries)))
+		}
+	}
+	return warnings
 }
 
 func preflightPublishPlan(library domain.Library, job *pipeline.JobContext) (preflightPublish, []string) {

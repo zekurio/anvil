@@ -42,14 +42,12 @@ func startControlService(ctx context.Context, wg *sync.WaitGroup, listener net.L
 		DaemonVersion:    control.BuildVersion,
 	}}
 	failures := make(chan error, 1)
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		defer close(failures)
 		if err := server.Serve(ctx, listener); err != nil {
 			failures <- err
 		}
-	}()
+	})
 	slog.Info("control service listening",
 		"socket", listener.Addr().String(),
 		"api_version", control.Version,

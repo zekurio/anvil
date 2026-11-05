@@ -1,23 +1,25 @@
 # Anvil
 
-A Linux-only daemon that keeps media libraries encoded in AV1. Anvil relies on
-Linux inotify, `flock`, Unix-domain sockets, and POSIX process groups for safe
-filesystem monitoring, singleton ownership, operator control, and process-tree
-cancellation. It scans configured libraries, searches CRF using its own FFmpeg sample
-encodes, owns the final `ffmpeg` command, and publishes results by
-replacing the source in place or handing off finished downloads to an import
-directory.
+Anvil is a Linux daemon that keeps media libraries encoded in AV1. It scans
+the libraries you configure, picks a CRF for each file by encoding and scoring
+samples with FFmpeg, runs the final `ffmpeg` encode itself, and publishes the
+result. In a media library the encode replaces the source in place. In a
+download library it goes to an import directory.
 
-`anvild` is the service; `anvilctl` is the operator client, the way `systemctl`
-is for systemd. It opens no database and runs no media tools — it asks the
-running daemon over a Unix socket, because a second writer on a live store is
-how half-published files happen.
+Linux is a hard requirement. Anvil watches the filesystem with inotify, holds a
+`flock` so a second daemon can't open the same store, takes operator commands
+over a Unix socket, and cancels work by killing whole process groups.
 
-This project is early and under active development. Expect sharp edges.
+There are two binaries. `anvild` is the service. `anvilctl` is the operator
+client, the way `systemctl` is for systemd. `anvilctl` never opens the database
+or runs a media tool. It asks the running daemon instead, because a second
+writer on a live store is how half-published files happen.
 
-### Deployment
+Anvil is early and changes often. Expect sharp edges.
 
-The NixOS module is the preferred deployment path. Add Anvil to your flake
+## Deployment
+
+The NixOS module is the supported way to deploy. Add Anvil to your flake
 inputs:
 
 ```nix
@@ -47,20 +49,21 @@ Then import and configure the module:
 }
 ```
 
-`services.anvil.settings` uses the same snake_case keys as the reference TOML.
-The module renders `/etc/anvil/anvil.toml`, creates `/var/lib/anvil`, exposes
-the control socket from `RuntimeDirectory`, and adds Jellyfin ffmpeg
-to the service PATH. The socket is `0660` inside a
-`0750` directory owned by `services.anvil.group`, so group membership — not
-having `anvilctl` installed — is what grants operator access.
+`services.anvil.settings` takes the same snake_case keys as the reference TOML.
+The module renders `/etc/anvil/anvil.toml`, creates `/var/lib/anvil`, puts the
+control socket in `RuntimeDirectory`, and adds Jellyfin's ffmpeg to the service
+PATH. The socket is `0660` inside a `0750` directory owned by
+`services.anvil.group`. Membership in that group is what grants operator
+access. Installing `anvilctl` grants nothing.
 
-Without Nix, install `ffmpeg`/`ffprobe` with the selected encoder and
-`libvmaf` or `xpsnr` filter,
-then run `anvild --config /etc/anvil/anvil.toml`.
-[`examples/anvil.toml`](examples/anvil.toml) is the minimal quick-start;
-[`examples/anvil-reference.toml`](examples/anvil-reference.toml) documents every
-setting, including daemon, profiles, Arrs, and media and download
-libraries. Validate a config before starting anything:
+Without Nix, install `ffmpeg` and `ffprobe` built with your encoder and with
+the `libvmaf` or `xpsnr` filter, then run
+`anvild --config /etc/anvil/anvil.toml`.
+[`examples/anvil.toml`](examples/anvil.toml) is a minimal starting point.
+[`examples/anvil-reference.toml`](examples/anvil-reference.toml) documents
+every setting for the daemon, profiles, Arrs, and media and download libraries.
+
+Check a config before you start anything:
 
 ```sh
 anvild check-config --config examples/anvil.toml
@@ -68,70 +71,75 @@ anvild preflight --config examples/anvil.toml --library movies --limit 20
 ```
 
 `anvild check-config --config PATH --show` prints the effective config with
-defaults applied and secrets redacted.
+defaults filled in and secrets redacted.
 
-Both are local and read-only; every command that touches live state lives in
-`anvilctl`. `SIGHUP` reloads libraries, profiles, and most daemon
-settings in place; `store_path`, `temp_dir`, and `control_socket` require a
-restart.
+Both commands are local and read-only. Anything that touches live state is in
+`anvilctl`. `SIGHUP` reloads libraries, profiles, and most daemon settings in
+place. Changing `store_path`, `temp_dir`, or `control_socket` needs a restart.
 
-### CRF search
+## CRF search
 
-Anvil searches integer CRFs between `video.crf_min` and `video.crf_max`.
-It measures the upper endpoint first, then the midpoint, and estimates the next
-CRF from the last two measured scores. Non-midpoint estimates have a fixed trial
-budget equal to the number of bisections needed for the original remaining range.
-Flat or reversed score slopes, or an exhausted budget, fall back to bisection.
-This lets useful estimates converge without allowing a slow walk through every
-CRF. It finds the highest CRF meeting `video.target`. Quality and size are assumed to decrease
-as CRF increases; only measured candidates can be accepted. The chosen result
-must also meet `video.min_savings_percent`. If none fits, Anvil copies the video.
-With `force_encode_on_no_fit = true`, it searches the size boundary and chooses
-the best measured quality within the size limit, or the best measured quality
-overall when no candidate fits the size limit. Process and scoring failures
-always fail the attempt, including in forced mode.
+Anvil looks for the highest integer CRF between `video.crf_min` and
+`video.crf_max` that still meets `video.target`. It measures the upper
+endpoint first, then the midpoint. After that it estimates the next CRF from
+the last two scores. Estimates get a fixed budget, the number of bisections the
+original range would need. A flat or reversed slope, or a spent budget, falls
+back to plain bisection. Good estimates converge fast, and a bad score curve
+still can't drag the search through every CRF.
 
-Samples are evenly spaced. `samples = 0` uses one sample per 12 minutes of
-input, rounded up; `sample_duration = "20s"` controls their length. If the
-requested samples cover at least 85% of the input, Anvil uses the whole video
-once. Clips are copied from seekable keyframes and may include preroll. The
-same clips are reused for every candidate, with the same encoder settings as
-the final encode. Sample timestamps are regenerated at the reported frame rate,
-or 25 fps when unknown, to avoid gaps from cutting reordered GOPs. Final encodes
-keep the source timeline and pass every source frame to the encoder, so
-duplicate-timestamp and VFR sources are not silently shortened. Each encoded
-clip must decode to the reference frame count.
+The search assumes quality and size both drop as CRF rises, and it only
+accepts CRFs it actually measured. The winner also has to meet
+`video.min_savings_percent`. If nothing fits, Anvil copies the video stream.
+With `force_encode_on_no_fit = true` it also searches the size boundary, then
+picks the best measured quality within the size limit, or the best measured
+quality overall if no candidate fits the limit. A failed process or score always
+fails the attempt, in forced mode too.
 
-VMAF matches ab-av1's default model and scaling: sources smaller than 1728x972
-are bicubic scaled up to 1080p, sources larger than 2560x1440 use the
-`vmaf_4k_v0.6.1` model, and those smaller than 3456x1944 are scaled up to 4K.
-This keeps a VMAF target's meaning consistent across resolutions. XPSNR uses the
-minimum of the Y/U/V plane averages reported by FFmpeg, then the arithmetic mean
-across samples. Comparisons pair frames by index at fixed analysis rates of
-25 fps for VMAF and 60 fps for XPSNR. Infinite XPSNR for identical images is
-recorded as 100 to keep results valid JSON. No HDR tone mapping or HDR-specific
-metric model is applied.
+Samples are evenly spaced. `samples = 0` takes one sample per 12 minutes of
+input, rounded up, and `sample_duration = "20s"` sets their length. When the
+samples would cover 85% or more of the input, Anvil scores the whole video once
+instead. It cuts clips at seekable keyframes, so a clip can include preroll.
+Every candidate reuses the same clips and the same encoder settings as the
+final encode. Anvil regenerates sample timestamps at the reported frame rate,
+or 25 fps when that is unknown, so cutting reordered GOPs leaves no gaps. Final
+encodes keep the source timeline and pass every source frame to the encoder,
+so duplicate-timestamp and VFR sources come out full length. Each encoded clip
+must decode to the same frame count as its reference.
 
-Savings compare the total encoded clip bytes against the reference clip bytes.
-These are video-only Matroska clips, including their container overhead; audio,
-subtitles, and attachments are excluded. Sample estimates do not guarantee
-whole-file quality or final file size. Candidate CRFs, scores, and size ratios
-are saved in the pipeline checkpoint, and commands have per-attempt process
-logs. Interrupted searches restart; completed searches resume from checkpoints.
+VMAF uses ab-av1's default model and scaling. Sources smaller than 1728x972
+get bicubic upscaling to 1080p. Sources larger than 2560x1440 use the
+`vmaf_4k_v0.6.1` model, and those smaller than 3456x1944 get upscaled to 4K.
+That way a VMAF target means the same thing at every resolution. XPSNR takes
+the lowest of the Y, U, and V plane averages FFmpeg reports, then the
+arithmetic mean across samples. Comparisons pair frames by index at fixed
+analysis rates, 25 fps for VMAF and 60 fps for XPSNR. FFmpeg reports infinite
+XPSNR for identical images, and Anvil records that as 100 so results stay valid
+JSON. There is no HDR tone mapping and no HDR-specific metric model.
 
-The native implementation replaces ab-av1 entirely. Remove `ab_av1_args` from
-base profiles and overrides, even when empty. Move encoder options to
+Savings compare the total bytes of the encoded clips with the reference clips.
+Both are video-only Matroska clips, container overhead included. Audio,
+subtitles, and attachments don't count. Sample estimates guarantee neither
+whole-file quality nor final file size. The pipeline checkpoint stores every
+candidate CRF, score, and size ratio, and each command writes a per-attempt
+process log. An interrupted search starts over. A finished one resumes from its
+checkpoint.
+
+### Moving off ab-av1
+
+The native search replaces ab-av1 completely. Remove `ab_av1_args` from base
+profiles and overrides, even where it is empty. Move encoder options to
 `ffmpeg_args` as option/value pairs, for example
-`["-svtav1-params", "tune=0:film-grain=8"]`. These now apply to both search and
-final encoding. Anvil manages codec, preset, CRF, pixel format, threads, stream
-mapping, filters, and timing; those command-line overrides are rejected,
-including `crf=`, `qp=`, `preset=`, and `rc=` keys inside `-svtav1-params`,
-`-x265-params`, or `-x264-params`. VMAF targets keep their ab-av1 calibration
-because search uses the same resolution-dependent scaling and 4k model.
-Use `samples` and `sample_duration` for sampling. Other ab-av1-specific options
-have no automatic translation. Existing checkpoints are invalidated on upgrade.
+`["-svtav1-params", "tune=0:film-grain=8"]`. They now apply to both the search
+and the final encode. Anvil owns codec, preset, CRF, pixel format, threads,
+stream mapping, filters, and timing, and rejects overrides for any of them.
+That includes `crf=`, `qp=`, `preset=`, and `rc=` keys inside
+`-svtav1-params`, `-x265-params`, or `-x264-params`. VMAF targets keep their
+ab-av1 calibration, since the search uses the same resolution-dependent scaling
+and 4K model. Use `samples` and `sample_duration` for sampling. Other ab-av1
+options have no automatic translation. Upgrading invalidates existing
+checkpoints.
 
-### Operating
+## Operating
 
 ```
 anvilctl status                                  daemon state, workers, queue counts
@@ -150,19 +158,20 @@ anvilctl backup DESTINATION
 anvilctl help [COMMAND]
 ```
 
-Jobs are addressed by numeric id or slug. `--json` (or `-j`) works globally
-and per command. Exit status is `0` success, `1` command failed, `2` usage error, `3`
-daemon unreachable or protocol mismatch, `4` not found. `--socket` or
+Name a job by its numeric id or its slug. `--json`, or `-j`, works globally and
+per command. Exit status is `0` on success, `1` when the command failed, `2`
+for a usage error, `3` when the daemon is unreachable or speaks a different
+protocol version, and `4` when something was not found. `--socket` or
 `ANVIL_CONTROL_SOCKET` overrides the default `/run/anvil/anvild.sock`.
 
-Human output uses Lip Gloss styling, with color on terminals and plain text
-when redirected or when `NO_COLOR=1` is set. Job listings group by library, with a count and
-one entry per job. Each entry shows its numeric ID, state, update time, input
-filename, and last error when present. Long filenames and errors wrap to the
-terminal width. Use `show JOB`
-for full paths and slugs, or `--json` for automation. JSON fields and exit codes
-are independent of the human presentation. Listing times use the client's
-local timezone; JSON retains the daemon's timestamps.
+Human output is styled with Lip Gloss. You get color on a terminal and plain
+text when the output is redirected or `NO_COLOR=1` is set. Job listings group
+by library, with a count and one entry per job. Each entry shows the job's
+numeric id, state, update time, input filename, and last error if it has one.
+Long filenames and errors wrap to the terminal width. `show JOB` prints full
+paths and slugs, and `--json` is the format for scripts. JSON fields and exit
+codes don't change with the human presentation. Listings print times in the
+client's local timezone, while JSON keeps the daemon's timestamps.
 
 ```sh
 anvilctl jobs --state pending,failed --json
@@ -174,49 +183,50 @@ anvilctl staging cleanup --older-than 24h --dry-run
 anvilctl backup /srv/backups/anvil-$(date +%F).db
 ```
 
-Legacy output artifacts are cleaned only on request. Use
-`anvilctl staging cleanup --older-than 24h --legacy-parts --dry-run` to preview
-old unscoped `.mkv.anvil-part` files in configured output libraries. Remove
-`--dry-run` to delete eligible files. Current job parts and artifacts held by
-publish journals are preserved. Job startup no longer lists destination
-directories for this maintenance.
+Anvil only cleans up legacy output artifacts when you ask.
+`anvilctl staging cleanup --older-than 24h --legacy-parts --dry-run` lists old
+unscoped `.mkv.anvil-part` files in configured output libraries. Run it again
+without `--dry-run` to delete the eligible ones. It keeps current job parts and
+anything a publish journal still holds. Job startup no longer lists destination
+directories to do this.
 
-The scheduler wakes when work arrives or a worker finishes. Its timer remains
-a fallback. `daemon.max_threads_per_job = 0` divides the thread budget across
-worker slots so later arrivals can start. Set a positive value to choose a
-per-job cap. Allocations remain fixed for each running job.
+The scheduler wakes when work arrives or a worker finishes. Its timer is only a
+fallback. `daemon.max_threads_per_job = 0` splits the thread budget across
+worker slots, so jobs that arrive later can still start. A positive value sets
+a fixed per-job cap. A running job keeps its allocation until it ends.
 
-`cancel` requires a narrowing selector, and refuses a job whose publish is
-already journaled — only the daemon can finish that destination safely. Job
-pruning and staging cleanup likewise skip anything active or holding an
-unresolved publish journal, and report it under `protected_jobs`.
+`cancel` needs a selector that narrows the set. It refuses a job whose publish
+is already journaled, because only the daemon can finish that destination
+safely. Job pruning and staging cleanup skip anything active or holding an
+unresolved publish journal too, and list it under `protected_jobs`.
 
-Encodes are written on the destination filesystem as
-`<name>.mkv.job-<id>.anvil-part` and linked into place under the final name
-once validated, so publishing never copies the file across filesystems and
-the destination only ever appears complete. Media libraries write the part
-beside its destination. Download libraries write it under
+Anvil writes each encode on the destination filesystem as
+`<name>.mkv.job-<id>.anvil-part`. After the validate step it links the file into
+place under its final name. Publishing never copies across filesystems, and the
+destination never appears half-written. Media libraries put the part file next
+to its destination. Download libraries put it under
 `<handoff_path>/.anvil-work` and create the package directory only at publish
-time, so an importer that sweeps a package directory after taking one episode
-cannot delete a sibling job's unpublished artifact. A part file left behind by a
-crashed attempt is removed when the job retries or is canceled; media
-scanners and Arrs ignore the suffix. `temp_dir` only holds scratch that
-never publishes: search samples and process logs.
+time. An importer that sweeps a package directory after taking one episode
+can't delete a sibling job's unpublished artifact that way. When a crashed
+attempt leaves a part file behind, Anvil removes it once the job retries or is
+canceled. Media scanners and Arrs ignore the suffix in the meantime. `temp_dir`
+only holds scratch that never gets published, which means search samples and
+process logs.
 
-### Development
+## Development
 
-Deployment targets Linux only (the scanner relies on inotify), but day-to-day
-development — building, linting, `gopls`, running `anvilctl` — also works on
-macOS. With [Nix](https://nixos.org/) and [direnv](https://direnv.net/)
-(provides Go, `golangci-lint`, `gopls`, ffmpeg, and SQLite):
+Deployment needs Linux because the scanner depends on inotify. Everyday work
+runs on macOS as well: building, linting, `gopls`, and running `anvilctl`. With
+[Nix](https://nixos.org/) and [direnv](https://direnv.net/), the dev shell
+brings Go, `golangci-lint`, `gopls`, ffmpeg, and SQLite:
 
 ```sh
 direnv allow
 make build
 ```
 
-Without Nix: install Go 1.26 or newer plus the media tools above, then use the
-same `make` targets. `make lint` wraps `golangci-lint` in `nix develop`.
+Without Nix, install Go 1.26 or newer plus the media tools above and use the
+same `make` targets. `make lint` runs `golangci-lint` inside `nix develop`.
 
 ```sh
 make fmt      # go fmt ./...
@@ -225,20 +235,20 @@ make build    # bin/anvild and bin/anvilctl
 go run ./cmd/anvild --config examples/anvil.toml
 ```
 
-Flake outputs: `packages.default` (both binaries), `packages.anvild` (wrapped
-with its media tools), `packages.anvilctl` (standalone, deliberately unwrapped),
-`apps.*`, and `nixosModules.anvil`. Bump `vendorHash` in `flake.nix` when Go
-dependencies change.
+The flake exposes `packages.default` with both binaries, `packages.anvild`
+wrapped with its media tools, `packages.anvilctl` standalone and deliberately
+unwrapped, `apps.*`, and `nixosModules.anvil`. Bump `vendorHash` in `flake.nix`
+when Go dependencies change.
 
-Run `make fmt && make lint` before opening a pull request; add `make build` when
-entrypoints or package wiring changed. [`AGENTS.md`](AGENTS.md) covers branch,
-commit, and code conventions.
+Run `make fmt && make lint` before opening a pull request. Add `make build`
+when you changed entrypoints or package wiring. [`AGENTS.md`](AGENTS.md) covers
+branch, commit, and code conventions.
 
-### Contributing
+## Contributing
 
 Found a bug or have an idea?
 [Open an issue](https://github.com/zekurio/anvil/issues/new).
 
-### License
+## License
 
 [MIT](LICENSE)

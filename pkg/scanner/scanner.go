@@ -88,30 +88,39 @@ func (s Scanner) Scan(ctx context.Context, cfg config.Config) (ScanResult, error
 }
 
 func (s Scanner) ScanLibrary(ctx context.Context, library config.LibraryConfig) (ScanResult, error) {
-	if s.Store == nil {
-		return ScanResult{}, fmt.Errorf("scanner store is required")
+	root := strings.TrimSpace(library.Path)
+	if root == "" {
+		return ScanResult{}, fmt.Errorf("library path is required")
 	}
-
-	libraryName := domain.LibraryName(library.Name)
-	token, err := s.Store.BeginLibraryScan(ctx, libraryName)
-	if err != nil {
-		return ScanResult{}, fmt.Errorf("begin library scan: %w", err)
-	}
-	plan, err := s.PlanLibrary(ctx, library)
-	if err != nil {
-		return ScanResult{}, err
-	}
-	plan.ScanToken = token
-	return s.applyPlan(ctx, plan)
+	return s.scan(ctx, library, root, nil)
 }
 
+// PlanLibrary observes a whole library without applying the result.
 func (s Scanner) PlanLibrary(ctx context.Context, library config.LibraryConfig) (LibraryPlan, error) {
 	root := strings.TrimSpace(library.Path)
 	if root == "" {
 		return LibraryPlan{}, fmt.Errorf("library path is required")
 	}
-
 	return s.planPaths(ctx, library, root, nil)
+}
+
+// scan takes the scan token before observing the filesystem, so the store can
+// reject this result if a later scan of the same sources has already applied.
+// A nil paths slice scans the whole library.
+func (s Scanner) scan(ctx context.Context, library config.LibraryConfig, root string, paths []string) (ScanResult, error) {
+	if s.Store == nil {
+		return ScanResult{}, fmt.Errorf("scanner store is required")
+	}
+	token, err := s.Store.BeginLibraryScan(ctx, domain.LibraryName(library.Name))
+	if err != nil {
+		return ScanResult{}, fmt.Errorf("begin library scan: %w", err)
+	}
+	plan, err := s.planPaths(ctx, library, root, paths)
+	if err != nil {
+		return ScanResult{}, err
+	}
+	plan.ScanToken = token
+	return s.applyPlan(ctx, plan)
 }
 
 func (s Scanner) planPaths(ctx context.Context, library config.LibraryConfig, root string, paths []string) (LibraryPlan, error) {
@@ -137,7 +146,7 @@ func (s Scanner) planPaths(ctx context.Context, library config.LibraryConfig, ro
 				stat.pendingModTime = candidate.info.ModTime()
 			}
 		}
-		unstable := library.Kind == "download" && !stable(stat.pendingModTime, now, stableFor)
+		unstable := library.IsDownload() && !stable(stat.pendingModTime, now, stableFor)
 		if candidate.ignored {
 			unstable = false
 		}
@@ -192,7 +201,7 @@ func (s Scanner) applyPlan(ctx context.Context, plan LibraryPlan) (ScanResult, e
 	}
 	applied, err := s.Store.ApplyLibraryScan(ctx, plan.ScanToken, store.ApplyScanInput{
 		SourcePaths: plan.SourcePaths, LibraryName: domain.LibraryName(plan.Library.Name), Priority: plan.Library.Priority,
-		RequeueExisting: plan.Library.Kind == string(domain.LibraryKindDownload), Entries: entries, CompletedAt: now,
+		RequeueExisting: plan.Library.IsDownload(), Entries: entries, CompletedAt: now,
 	})
 	if err != nil {
 		return result, fmt.Errorf("apply library scan: %w", err)
@@ -247,173 +256,197 @@ func discoverCandidates(ctx context.Context, root string, library config.Library
 	return discoverPaths(ctx, root, library, completion, nil)
 }
 
+// discovery is one walk over a library tree. It classifies every file it
+// visits as a candidate, an ignored candidate, or a source-size contribution.
+type discovery struct {
+	ctx        context.Context
+	root       string
+	library    config.LibraryConfig
+	completion *CompletionTracker
+	exclude    []string
+	ignore     []*regexp.Regexp
+
+	candidates []candidate
+	stats      map[string]sourceStat
+	skipped    int
+}
+
 func discoverPaths(ctx context.Context, root string, library config.LibraryConfig, completion *CompletionTracker, paths []string) ([]candidate, map[string]sourceStat, int, error) {
-	var candidates []candidate
-	sourceStats := make(map[string]sourceStat)
-	var skipped int
-	excludePatterns := effectiveExcludeGlobs(library)
-	ignoreRegexps, err := compileIgnoreRegexps(library.IgnoreRegex)
+	ignore, err := compileIgnoreRegexps(library.IgnoreRegex)
 	if err != nil {
-		return nil, nil, skipped, err
+		return nil, nil, 0, err
 	}
-
-	visit := func(absPath string, entry fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
+	d := &discovery{
+		ctx:        ctx,
+		root:       root,
+		library:    library,
+		completion: completion,
+		exclude:    effectiveExcludeGlobs(library),
+		ignore:     ignore,
+		stats:      make(map[string]sourceStat),
+	}
+	if paths == nil {
+		if err := filepath.WalkDir(root, d.visit); err != nil {
+			return nil, nil, d.skipped, err
 		}
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-
-		if absPath == root {
-			return nil
-		}
-
-		rel, err := filepath.Rel(root, absPath)
+		return d.candidates, d.stats, d.skipped, nil
+	}
+	for _, rel := range paths {
+		walkRoot := filepath.Join(root, filepath.FromSlash(rel))
+		skip, err := d.skipScopedRoot(walkRoot)
 		if err != nil {
-			return err
+			return nil, nil, d.skipped, err
+		}
+		if skip {
+			continue
+		}
+		if err := filepath.WalkDir(walkRoot, d.visit); err != nil {
+			return nil, nil, d.skipped, err
+		}
+	}
+	return d.candidates, d.stats, d.skipped, nil
+}
+
+// skipScopedRoot reports whether a scoped walk root must not be walked: it
+// sits below an excluded or ignored directory a full walk would have pruned,
+// or it no longer exists.
+func (d *discovery) skipScopedRoot(walkRoot string) (bool, error) {
+	for parent := filepath.Dir(walkRoot); parent != d.root && parent != filepath.Dir(parent); parent = filepath.Dir(parent) {
+		rel, err := filepath.Rel(d.root, parent)
+		if err != nil {
+			return false, err
 		}
 		rel = filepath.ToSlash(rel)
-
-		if ignoredByRegex(ignoreRegexps, rel, entry.IsDir()) {
-			skipped++
-			if entry.IsDir() {
-				return filepath.SkipDir
-			}
-			if !likelyMediaFile(rel) {
-				return nil
-			}
-			info, err := entry.Info()
-			if err != nil {
-				return err
-			}
-			if likelyMediaFile(rel) {
-				candidates = append(candidates, buildCandidate(library, absPath, rel, info, true, "ignore_regex"))
-			}
-			return nil
-		}
-
-		excluded, err := matchesAny(excludePatterns, rel)
+		excluded, err := matchesExcludedPath(d.exclude, rel, true)
 		if err != nil {
-			return err
+			return false, err
 		}
-		if excluded {
-			if entry.IsDir() {
-				return filepath.SkipDir
-			}
-			if !likelyMediaFile(rel) {
-				return nil
-			}
-			info, err := entry.Info()
-			if err != nil {
-				return err
-			}
-			if likelyMediaFile(rel) {
-				candidates = append(candidates, buildCandidate(library, absPath, rel, info, true, "excluded"))
-			}
-			skipped++
-			return nil
+		if excluded || ignoredByRegex(d.ignore, rel, true) {
+			return true, nil
 		}
+	}
+	if _, err := os.Lstat(walkRoot); errors.Is(err, fs.ErrNotExist) {
+		return true, nil
+	} else if err != nil {
+		return false, err
+	}
+	return false, nil
+}
 
-		if entry.IsDir() {
-			excludedDir, err := matchesAny(excludePatterns, rel+"/")
-			if err != nil {
-				return err
-			}
-			if excludedDir {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if entry.Type()&fs.ModeType != 0 {
-			return nil
-		}
-		if !likelyMediaFile(rel) && (library.Kind != "download" || library.Download.PackageMode == "file" || !strings.Contains(rel, "/")) {
-			return nil
-		}
-		if strings.HasSuffix(rel, ".anvil-part") {
-			return nil
-		}
-		info, err := entry.Info()
-		if err != nil {
-			return err
-		}
-
-		if !likelyMediaFile(rel) {
-			recordSourceStat(sourceStats, library, absPath, rel, info, completion)
-			return nil
-		}
-		if stat, ok := info.Sys().(*syscall.Stat_t); ok && stat.Nlink > 1 {
-			skipped++
-			return nil
-		}
-		if replacepkg.IsAnvilCopyOutputPath(rel) {
-			candidates = append(candidates, buildCandidate(library, absPath, rel, info, true, "anvil_output"))
-			skipped++
-			return nil
-		}
-		recordSourceStat(sourceStats, library, absPath, rel, info, completion)
-
-		included, err := includedBy(library.Include, rel)
-		if err != nil {
-			return err
-		}
-		if !included {
-			candidates = append(candidates, buildCandidate(library, absPath, rel, info, true, "not_included"))
-			skipped++
-			return nil
-		}
-
-		role := classifyMediaAsset(rel)
-		if role == domain.MediaAssetRoleSample {
-			candidates = append(candidates, buildCandidate(library, absPath, rel, info, true, "sample"))
-			skipped++
-			return nil
-		}
-
-		candidates = append(candidates, buildCandidate(library, absPath, rel, info, false, ""))
+func (d *discovery) visit(absPath string, entry fs.DirEntry, walkErr error) error {
+	if walkErr != nil {
+		return walkErr
+	}
+	if err := d.ctx.Err(); err != nil {
+		return err
+	}
+	if absPath == d.root {
 		return nil
 	}
-	walkRoots := []string{root}
-	if paths != nil {
-		walkRoots = nil
-		for _, rel := range paths {
-			walkRoots = append(walkRoots, filepath.Join(root, filepath.FromSlash(rel)))
-		}
+	rel, err := filepath.Rel(d.root, absPath)
+	if err != nil {
+		return err
 	}
-	for _, walkRoot := range walkRoots {
-		if paths != nil {
-			ignored := false
-			for parent := filepath.Dir(walkRoot); parent != root && parent != filepath.Dir(parent); parent = filepath.Dir(parent) {
-				rel, relErr := filepath.Rel(root, parent)
-				if relErr != nil {
-					return nil, nil, skipped, relErr
-				}
-				rel = filepath.ToSlash(rel)
-				excluded, matchErr := matchesExcludedPath(excludePatterns, rel, true)
-				if matchErr != nil {
-					return nil, nil, skipped, matchErr
-				}
-				if excluded || ignoredByRegex(ignoreRegexps, rel, true) {
-					ignored = true
-					break
-				}
-			}
-			if ignored {
-				continue
-			}
-			if _, statErr := os.Lstat(walkRoot); errors.Is(statErr, fs.ErrNotExist) {
-				continue
-			} else if statErr != nil {
-				return nil, nil, skipped, statErr
-			}
-		}
-		if err := filepath.WalkDir(walkRoot, visit); err != nil {
-			return nil, nil, skipped, err
-		}
+	rel = filepath.ToSlash(rel)
+	if entry.IsDir() {
+		return d.visitDir(rel)
 	}
+	return d.visitFile(absPath, rel, entry)
+}
 
-	return candidates, sourceStats, skipped, nil
+func (d *discovery) visitDir(rel string) error {
+	if ignoredByRegex(d.ignore, rel, true) {
+		d.skipped++
+		return filepath.SkipDir
+	}
+	excluded, err := matchesExcludedPath(d.exclude, rel, true)
+	if err != nil {
+		return err
+	}
+	if excluded {
+		return filepath.SkipDir
+	}
+	return nil
+}
+
+func (d *discovery) visitFile(absPath, rel string, entry fs.DirEntry) error {
+	media := likelyMediaFile(rel)
+	if ignoredByRegex(d.ignore, rel, false) {
+		if !media {
+			// Ignored non-media still counts as skipped, unlike excluded files.
+			d.skipped++
+			return nil
+		}
+		return d.skipEntry(absPath, rel, entry, "ignore_regex")
+	}
+	excluded, err := matchesAny(d.exclude, rel)
+	if err != nil {
+		return err
+	}
+	if excluded {
+		if !media {
+			return nil
+		}
+		return d.skipEntry(absPath, rel, entry, "excluded")
+	}
+	if entry.Type()&fs.ModeType != 0 {
+		return nil
+	}
+	// Non-media files only matter as package residue that contributes to a
+	// package's size and stability.
+	if !media && (!d.library.GroupsPackages() || !strings.Contains(rel, "/")) {
+		return nil
+	}
+	if strings.HasSuffix(rel, replacepkg.PartSuffix) {
+		return nil
+	}
+	info, err := entry.Info()
+	if err != nil {
+		return err
+	}
+	if !media {
+		recordSourceStat(d.stats, d.library, absPath, rel, info, d.completion)
+		return nil
+	}
+	if stat, ok := info.Sys().(*syscall.Stat_t); ok && stat.Nlink > 1 {
+		d.skipped++
+		return nil
+	}
+	if replacepkg.IsAnvilCopyOutputPath(rel) {
+		d.skip(absPath, rel, info, "anvil_output")
+		return nil
+	}
+	recordSourceStat(d.stats, d.library, absPath, rel, info, d.completion)
+	included, err := includedBy(d.library.Include, rel)
+	if err != nil {
+		return err
+	}
+	if !included {
+		d.skip(absPath, rel, info, "not_included")
+		return nil
+	}
+	if classifyMediaAsset(rel) == domain.MediaAssetRoleSample {
+		d.skip(absPath, rel, info, "sample")
+		return nil
+	}
+	d.candidates = append(d.candidates, buildCandidate(d.library, absPath, rel, info, false, ""))
+	return nil
+}
+
+func (d *discovery) skipEntry(absPath, rel string, entry fs.DirEntry, reason string) error {
+	info, err := entry.Info()
+	if err != nil {
+		return err
+	}
+	d.skip(absPath, rel, info, reason)
+	return nil
+}
+
+// skip records an ignored media file. It stays a candidate so the store can
+// still track the occurrence, but it is never enqueued.
+func (d *discovery) skip(absPath, rel string, info fs.FileInfo, reason string) {
+	d.candidates = append(d.candidates, buildCandidate(d.library, absPath, rel, info, true, reason))
+	d.skipped++
 }
 
 func compileIgnoreRegexps(patterns []string) ([]*regexp.Regexp, error) {
@@ -465,7 +498,7 @@ func buildCandidate(library config.LibraryConfig, absPath string, rel string, in
 
 func effectiveExcludeGlobs(library config.LibraryConfig) []string {
 	exclude := append([]string(nil), library.Exclude...)
-	if library.Kind == "download" {
+	if library.IsDownload() {
 		exclude = append(exclude, library.Download.IgnorableGlobs...)
 	}
 	return exclude
@@ -497,7 +530,7 @@ func sourceKey(kind domain.SourceKind, relativePath string) string {
 }
 
 func sourceFor(library config.LibraryConfig, rel string) (string, string, domain.SourceKind) {
-	if library.Kind != "download" || library.Download.PackageMode == "file" {
+	if !library.GroupsPackages() {
 		return rel, rel, domain.SourceKindFile
 	}
 
@@ -594,12 +627,10 @@ func (s Scanner) ScanPaths(ctx context.Context, library config.LibraryConfig, pa
 			return s.ScanLibrary(ctx, library)
 		}
 		rel = filepath.ToSlash(rel)
-		source, _, _ := sourceFor(library, rel)
-		if library.Kind != "download" || library.Download.PackageMode == "file" {
-			if !likelyMediaFile(rel) {
-				return s.ScanLibrary(ctx, library)
-			}
+		if !library.GroupsPackages() && !likelyMediaFile(rel) {
+			return s.ScanLibrary(ctx, library)
 		}
+		source, _, _ := sourceFor(library, rel)
 		sources[source] = struct{}{}
 	}
 	if len(sources) == 0 {
@@ -610,19 +641,7 @@ func (s Scanner) ScanPaths(ctx context.Context, library config.LibraryConfig, pa
 		selected = append(selected, source)
 	}
 	sort.Strings(selected)
-	if s.Store == nil {
-		return ScanResult{}, fmt.Errorf("scanner store is required")
-	}
-	token, err := s.Store.BeginLibraryScan(ctx, domain.LibraryName(library.Name))
-	if err != nil {
-		return ScanResult{}, err
-	}
-	plan, err := s.planPaths(ctx, library, root, selected)
-	if err != nil {
-		return ScanResult{}, err
-	}
-	plan.ScanToken = token
-	return s.applyPlan(ctx, plan)
+	return s.scan(ctx, library, root, selected)
 }
 
 func matchesExcludedPath(patterns []string, rel string, directory bool) (bool, error) {

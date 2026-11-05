@@ -85,6 +85,19 @@ func (c Config) StagingCleanupAge() time.Duration {
 	return c.Daemon.StagingCleanupAge.Duration
 }
 
+// IsDownload reports whether the library processes downloader output and
+// hands it off instead of replacing media in place.
+func (l LibraryConfig) IsDownload() bool {
+	return l.Kind == string(domain.LibraryKindDownload)
+}
+
+// GroupsPackages reports whether each top-level directory is one package
+// source. Media libraries and file-mode downloads treat every file as its own
+// source.
+func (l LibraryConfig) GroupsPackages() bool {
+	return l.IsDownload() && l.Download.PackageMode != string(domain.DownloadPackageModeFile)
+}
+
 func (l LibraryConfig) ToDomain(arr ArrConfig) domain.Library {
 	return domain.Library{
 		Name:             domain.LibraryName(l.Name),
@@ -96,7 +109,7 @@ func (l LibraryConfig) ToDomain(arr ArrConfig) domain.Library {
 		ExcludeGlobs:     append([]string(nil), l.Exclude...),
 		ConcurrencyLimit: l.ConcurrencyLimit,
 		Metadata: domain.MetadataProviderPolicy{
-			Provider:   domain.MetadataProviderKind(arrProvider(arr)),
+			Provider:   domain.MetadataProviderKind(arr.Type),
 			BaseURL:    arr.BaseURL,
 			APIKey:     arr.APIKey,
 			APIKeyFile: arr.APIKeyFile,

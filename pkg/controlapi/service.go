@@ -364,18 +364,10 @@ func (s Service) cleanupOrphanedPart(ctx context.Context, jobID domain.JobID) {
 		log("load job", err)
 		return
 	}
-	source, err := s.Store.GetMediaSource(ctx, job.SourceID)
+	source, asset, err := s.jobOccurrence(ctx, job)
 	if err != nil {
-		log("load source", err)
+		log("load occurrence", err)
 		return
-	}
-	var asset domain.MediaAsset
-	if job.AssetID != 0 {
-		asset, err = s.Store.GetMediaAsset(ctx, job.AssetID)
-		if err != nil {
-			log("load asset", err)
-			return
-		}
 	}
 	destinations, destErr := stagedDestinations(ctx, s.Store, job, source, asset)
 	if destErr != nil {
@@ -425,12 +417,7 @@ func stagedDestinations(ctx context.Context, store Store, job domain.Job, source
 			errs = append(errs, fmt.Errorf("decode attempt %d resolved profile: %w", attempt.Number, err))
 			continue
 		}
-		jobContext := &pipeline.JobContext{
-			Job: job, Source: source, Asset: asset,
-			Library: library, Profile: profile,
-			InputPath: mediapath.Input(library.Path, source, asset),
-		}
-		destination, err := replacepkg.PlanDestination(jobContext)
+		destination, err := replacepkg.PlanDestination(pipeline.NewJobContext(job, source, asset, library, profile))
 		if err != nil {
 			errs = append(errs, fmt.Errorf("plan destination for attempt %d: %w", attempt.Number, err))
 			continue
@@ -547,16 +534,9 @@ func uniqueAbsoluteKeys(keys ...absolutePathKey) []absolutePathKey {
 }
 
 func (s Service) jobResponse(ctx context.Context, cfg config.Config, summary store.JobSummary) (control.JobResponse, jobPathKeys, bool, error) {
-	source, err := s.Store.GetMediaSource(ctx, summary.Job.SourceID)
+	source, asset, err := s.jobOccurrence(ctx, summary.Job)
 	if err != nil {
-		return control.JobResponse{}, jobPathKeys{}, false, fmt.Errorf("get source for job %d: %w", summary.Job.ID, err)
-	}
-	var asset domain.MediaAsset
-	if summary.Job.AssetID != 0 {
-		asset, err = s.Store.GetMediaAsset(ctx, summary.Job.AssetID)
-		if err != nil {
-			return control.JobResponse{}, jobPathKeys{}, false, fmt.Errorf("get asset for job %d: %w", summary.Job.ID, err)
-		}
+		return control.JobResponse{}, jobPathKeys{}, false, err
 	}
 	library, libraryOK := cfg.FindLibrary(summary.Job.LibraryName)
 	sourceAbsolute := ""
@@ -624,17 +604,29 @@ func (s Service) jobResponse(ctx context.Context, cfg config.Config, summary sto
 	return item, keys, current, nil
 }
 
+// jobOccurrence loads the source and, for jobs that have one, the asset a job
+// processes. A job without an asset returns the zero asset.
+func (s Service) jobOccurrence(ctx context.Context, job domain.Job) (domain.MediaSource, domain.MediaAsset, error) {
+	source, err := s.Store.GetMediaSource(ctx, job.SourceID)
+	if err != nil {
+		return domain.MediaSource{}, domain.MediaAsset{}, fmt.Errorf("get source for job %d: %w", job.ID, err)
+	}
+	if job.AssetID == 0 {
+		return source, domain.MediaAsset{}, nil
+	}
+	asset, err := s.Store.GetMediaAsset(ctx, job.AssetID)
+	if err != nil {
+		return domain.MediaSource{}, domain.MediaAsset{}, fmt.Errorf("get asset for job %d: %w", job.ID, err)
+	}
+	return source, asset, nil
+}
+
 func plannedDestination(cfg config.Config, job domain.Job, source domain.MediaSource, asset domain.MediaAsset) string {
 	library, profile, err := cfg.ResolveForLibrary(job.LibraryName)
 	if err != nil {
 		return ""
 	}
-	inputPath := mediapath.Input(library.Path, source, asset)
-	jobContext := &pipeline.JobContext{
-		Job: job, Source: source, Asset: asset, Library: library,
-		Profile: profile, InputPath: inputPath,
-	}
-	destination, err := replacepkg.PlanDestination(jobContext)
+	destination, err := replacepkg.PlanDestination(pipeline.NewJobContext(job, source, asset, library, profile))
 	if err != nil {
 		return ""
 	}

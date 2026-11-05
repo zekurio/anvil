@@ -171,7 +171,7 @@ func parseVMAF(data []byte, frames int) (float64, error) {
 		return 0, fmt.Errorf("parse VMAF log: %w", err)
 	}
 	score := result.Pooled.VMAF.Mean
-	if frames <= 0 || len(result.Frames) != frames || score == nil || math.IsNaN(*score) || math.IsInf(*score, 0) || *score < 0 || *score > 100 {
+	if frames <= 0 || len(result.Frames) != frames || score == nil || !finite(*score) || *score < 0 || *score > 100 {
 		return 0, fmt.Errorf("invalid VMAF log: expected %d scored frames and a finite mean in [0,100]", frames)
 	}
 	return *score, nil

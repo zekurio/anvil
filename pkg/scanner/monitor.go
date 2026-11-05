@@ -69,14 +69,12 @@ func (m *Monitor) Run(ctx context.Context) error {
 
 	watcherCtx, stopWatcher := context.WithCancel(ctx)
 	var watcherWG sync.WaitGroup
-	watcherWG.Add(1)
-	go func() {
-		defer watcherWG.Done()
+	watcherWG.Go(func() {
 		err := eventSource.Run(watcherCtx, m.ConfigProvider, triggers)
 		if err != nil && watcherCtx.Err() == nil {
 			m.eventError(err)
 		}
-	}()
+	})
 	defer func() {
 		stopWatcher()
 		watcherWG.Wait()
@@ -269,7 +267,7 @@ func (m *Monitor) triggerDue(cfg config.Config, library config.LibraryConfig, tr
 }
 
 func (m *Monitor) stabilityRetryDue(cfg config.Config, library config.LibraryConfig, result ScanResult) (time.Time, bool) {
-	if result.SkippedUnstable <= 0 || library.Kind != "download" {
+	if result.SkippedUnstable <= 0 || !library.IsDownload() {
 		return time.Time{}, false
 	}
 	now := m.now()
@@ -305,7 +303,7 @@ func filesystemReason(reason string) bool {
 }
 
 func downloadStableFor(library config.LibraryConfig) time.Duration {
-	if library.Kind != "download" {
+	if !library.IsDownload() {
 		return 0
 	}
 	return library.Download.StableFor.Duration
