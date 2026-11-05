@@ -24,7 +24,7 @@ type sample struct {
 }
 
 func sampleWindows(duration float64, count int, length time.Duration) ([]sampleWindow, error) {
-	if math.IsNaN(duration) || math.IsInf(duration, 0) || duration <= 0 {
+	if !finite(duration) || duration <= 0 {
 		return nil, errors.New("search requires a finite, positive input duration")
 	}
 	if count < 0 || length < 0 {

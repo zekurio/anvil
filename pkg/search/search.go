@@ -127,46 +127,92 @@ func validatePlan(plan domain.EncodePlan) error {
 	if plan.Metric != domain.QualityMetricVMAF && plan.Metric != domain.QualityMetricXPSNR {
 		return fmt.Errorf("unsupported search metric %q", plan.Metric)
 	}
-	if math.IsNaN(plan.Target) || math.IsInf(plan.Target, 0) || plan.Target < 0 || plan.Target > 100 {
+	if !finite(plan.Target) || plan.Target < 0 || plan.Target > 100 {
 		return errors.New("search quality target must be finite and between 0 and 100")
 	}
-	if math.IsNaN(plan.MinSavingsPercent) || math.IsInf(plan.MinSavingsPercent, 0) || plan.MinSavingsPercent < 0 || plan.MinSavingsPercent > 100 {
+	if !finite(plan.MinSavingsPercent) || plan.MinSavingsPercent < 0 || plan.MinSavingsPercent > 100 {
 		return errors.New("search savings target must be finite and between 0 and 100")
 	}
 	return ffmpeg.ValidateEncoderArgs(plan.FFmpegArgs)
 }
 
+const noFitReason = "CRF search found no candidate satisfying quality and size constraints"
+
+// crfSearch is one CRF search over a fixed set of samples. Each CRF is
+// measured at most once; Candidates keeps the measurement order.
+type crfSearch struct {
+	plan     domain.EncodePlan
+	measure  func(context.Context, int) (domain.SearchCandidate, error)
+	measured map[int]domain.SearchCandidate
+	result   domain.SearchResult
+	// estimatesLeft caps interpolated (non-midpoint) quality trials.
+	estimatesLeft int
+}
+
 func searchCRF(ctx context.Context, plan domain.EncodePlan, measure func(context.Context, int) (domain.SearchCandidate, error)) (domain.SearchResult, error) {
-	result := domain.SearchResult{Metric: plan.Metric}
-	measured := make(map[int]domain.SearchCandidate)
-	evaluate := func(crf int) (domain.SearchCandidate, error) {
-		if err := ctx.Err(); err != nil {
-			return domain.SearchCandidate{}, err
+	s := &crfSearch{
+		plan:     plan,
+		measure:  measure,
+		measured: make(map[int]domain.SearchCandidate),
+		result:   domain.SearchResult{Metric: plan.Metric},
+	}
+	if err := s.findQualityEdge(ctx); err != nil {
+		return s.result, err
+	}
+	maxPercent := 100 - plan.MinSavingsPercent
+	chosen, ok := s.highestFit(maxPercent)
+	if !ok {
+		if !plan.ForceEncodeOnNoFit {
+			s.result.SkipVideoEncode, s.result.VideoEncodeSkipReason = true, noFitReason
+			return s.result, nil
 		}
-		if candidate, ok := measured[crf]; ok {
-			return candidate, nil
+		var err error
+		if chosen, err = s.forcedChoice(ctx, maxPercent); err != nil {
+			return s.result, err
 		}
-		candidate, err := measure(ctx, crf)
-		if err != nil {
-			return candidate, err
-		}
-		if err := ctx.Err(); err != nil {
-			return candidate, err
-		}
-		if math.IsNaN(candidate.Score) || math.IsInf(candidate.Score, 0) || math.IsNaN(candidate.EncodedPercent) || math.IsInf(candidate.EncodedPercent, 0) || candidate.EncodedPercent <= 0 {
-			return candidate, errors.New("search candidate has invalid quality or size measurements")
-		}
-		candidate.CRF = crf
-		measured[crf] = candidate
-		result.Candidates = append(result.Candidates, candidate)
-		result.RawOutput += fmt.Sprintf("crf %d %s %.4f encoded %.2f%%\n", crf, plan.Metric, candidate.Score, candidate.EncodedPercent)
+	}
+	s.result.CRF = chosen.CRF
+	if plan.Metric == domain.QualityMetricXPSNR {
+		s.result.XPSNR = chosen.Score
+	} else {
+		s.result.VMAF = chosen.Score
+	}
+	return s.result, nil
+}
+
+func (s *crfSearch) evaluate(ctx context.Context, crf int) (domain.SearchCandidate, error) {
+	if err := ctx.Err(); err != nil {
+		return domain.SearchCandidate{}, err
+	}
+	if candidate, ok := s.measured[crf]; ok {
 		return candidate, nil
 	}
-	// Caveat: search assumes quality falls and size shrinks as CRF rises.
-	// A sweep is needed to guarantee an optimum for non-monotonic encoders.
-	endpoint, err := evaluate(plan.CRFMax)
+	candidate, err := s.measure(ctx, crf)
 	if err != nil {
-		return result, err
+		return candidate, err
+	}
+	if err := ctx.Err(); err != nil {
+		return candidate, err
+	}
+	if !finite(candidate.Score) || !finite(candidate.EncodedPercent) || candidate.EncodedPercent <= 0 {
+		return candidate, errors.New("search candidate has invalid quality or size measurements")
+	}
+	candidate.CRF = crf
+	s.measured[crf] = candidate
+	s.result.Candidates = append(s.result.Candidates, candidate)
+	s.result.RawOutput += fmt.Sprintf("crf %d %s %.4f encoded %.2f%%\n", crf, s.plan.Metric, candidate.Score, candidate.EncodedPercent)
+	return candidate, nil
+}
+
+// findQualityEdge searches for the highest CRF that still meets the target.
+//
+// Caveat: search assumes quality falls and size shrinks as CRF rises. A sweep
+// is needed to guarantee an optimum for non-monotonic encoders.
+func (s *crfSearch) findQualityEdge(ctx context.Context) error {
+	plan := s.plan
+	endpoint, err := s.evaluate(ctx, plan.CRFMax)
+	if err != nil {
+		return err
 	}
 	low, high := plan.CRFMin, plan.CRFMax-1
 	if endpoint.Score >= plan.Target {
@@ -177,86 +223,110 @@ func searchCRF(ctx context.Context, plan domain.EncodePlan, measure func(context
 	// bisections the original interval needs, then finish with bisection.
 	// Including the endpoint, quality search takes at most 1+2*bits.Len(span)
 	// measurements even when the score curve makes interpolation unhelpful.
-	estimatesLeft := bits.Len(uint(plan.CRFMax - plan.CRFMin))
+	s.estimatesLeft = bits.Len(uint(plan.CRFMax - plan.CRFMin))
 	for low <= high {
-		mid := low + (high-low)/2
-		if n := len(result.Candidates); n >= 2 && estimatesLeft > 0 {
-			a, b := result.Candidates[n-2], result.Candidates[n-1]
-			if a.CRF > b.CRF {
-				a, b = b, a
-			}
-			if a.Score > b.Score {
-				estimate := float64(a.CRF) + (a.Score-plan.Target)*float64(b.CRF-a.CRF)/(a.Score-b.Score)
-				if !math.IsNaN(estimate) && !math.IsInf(estimate, 0) {
-					next := int(math.Floor(max(float64(low), min(float64(high), estimate))))
-					if next != mid {
-						estimatesLeft--
-					}
-					mid = next
-				}
-			}
-		}
-		candidate, err := evaluate(mid)
+		candidate, err := s.evaluate(ctx, s.nextQualityTrial(low, high))
 		if err != nil {
-			return result, err
+			return err
 		}
 		if candidate.Score >= plan.Target {
-			low = mid + 1
+			low = candidate.CRF + 1
 		} else {
+			high = candidate.CRF - 1
+		}
+	}
+	return nil
+}
+
+// nextQualityTrial picks the next CRF in [low, high]: a linear estimate from
+// the last two measurements while the estimate budget lasts, else the midpoint.
+func (s *crfSearch) nextQualityTrial(low, high int) int {
+	mid := low + (high-low)/2
+	n := len(s.result.Candidates)
+	if n < 2 || s.estimatesLeft <= 0 {
+		return mid
+	}
+	a, b := s.result.Candidates[n-2], s.result.Candidates[n-1]
+	if a.CRF > b.CRF {
+		a, b = b, a
+	}
+	// Flat or reversed slopes give no usable estimate.
+	if a.Score <= b.Score {
+		return mid
+	}
+	estimate := float64(a.CRF) + (a.Score-s.plan.Target)*float64(b.CRF-a.CRF)/(a.Score-b.Score)
+	if !finite(estimate) {
+		return mid
+	}
+	next := int(math.Floor(max(float64(low), min(float64(high), estimate))))
+	if next != mid {
+		s.estimatesLeft--
+	}
+	return next
+}
+
+// highestFit is the highest measured CRF meeting both the quality target and
+// the size limit.
+func (s *crfSearch) highestFit(maxPercent float64) (domain.SearchCandidate, bool) {
+	var chosen domain.SearchCandidate
+	found := false
+	for _, candidate := range s.result.Candidates {
+		if candidate.Score >= s.plan.Target && candidate.EncodedPercent <= maxPercent && (!found || candidate.CRF > chosen.CRF) {
+			chosen, found = candidate, true
+		}
+	}
+	return chosen, found
+}
+
+// forcedChoice runs when nothing fits and the profile forces an encode. It
+// finds the quality-favoring edge of the size limit, then picks the best
+// measured candidate. A failed process or score never becomes a no-fit result.
+func (s *crfSearch) forcedChoice(ctx context.Context, maxPercent float64) (domain.SearchCandidate, error) {
+	low, high := s.plan.CRFMin, s.plan.CRFMax
+	for low <= high {
+		mid := low + (high-low)/2
+		candidate, err := s.evaluate(ctx, mid)
+		if err != nil {
+			return domain.SearchCandidate{}, err
+		}
+		if candidate.EncodedPercent <= maxPercent {
 			high = mid - 1
+		} else {
+			low = mid + 1
 		}
 	}
-	maxPercent := 100 - plan.MinSavingsPercent
-	var chosen *domain.SearchCandidate
-	for _, candidate := range result.Candidates {
-		if candidate.Score >= plan.Target && candidate.EncodedPercent <= maxPercent && (chosen == nil || candidate.CRF > chosen.CRF) {
-			chosen = &candidate
+	// Include the highest-quality endpoint even if no tested size fits.
+	if _, err := s.evaluate(ctx, s.plan.CRFMin); err != nil {
+		return domain.SearchCandidate{}, err
+	}
+	chosen := s.result.Candidates[0]
+	for _, candidate := range s.result.Candidates[1:] {
+		if preferForced(candidate, chosen, maxPercent) {
+			chosen = candidate
 		}
 	}
-	reason := "CRF search found no candidate satisfying quality and size constraints"
-	if chosen == nil && !plan.ForceEncodeOnNoFit {
-		result.SkipVideoEncode, result.VideoEncodeSkipReason = true, reason
-		return result, nil
+	// The additional probes can find a passing candidate with irregular scores.
+	if chosen.Score < s.plan.Target || chosen.EncodedPercent > maxPercent {
+		s.result.ForcedVideoEncodeReason = fmt.Sprintf("%s; forcing encode with best tested CRF %d", noFitReason, chosen.CRF)
 	}
-	if chosen == nil {
-		// Find the quality-favoring edge of the size limit before selecting a
-		// forced result. A failed process or score never becomes a no-fit result.
-		low, high = plan.CRFMin, plan.CRFMax
-		for low <= high {
-			mid := low + (high-low)/2
-			candidate, err := evaluate(mid)
-			if err != nil {
-				return result, err
-			}
-			if candidate.EncodedPercent <= maxPercent {
-				high = mid - 1
-			} else {
-				low = mid + 1
-			}
-		}
-		// Include the highest-quality endpoint even if no tested size fits.
-		if _, err := evaluate(plan.CRFMin); err != nil {
-			return result, err
-		}
-		for _, candidate := range result.Candidates {
-			fits := candidate.EncodedPercent <= maxPercent
-			bestFits := chosen != nil && chosen.EncodedPercent <= maxPercent
-			if chosen == nil || (fits && !bestFits) || (fits == bestFits && (candidate.Score > chosen.Score || (candidate.Score == chosen.Score && candidate.EncodedPercent < chosen.EncodedPercent))) {
-				chosen = &candidate
-			}
-		}
-		// The additional probes can find a passing candidate with irregular scores.
-		if chosen.Score < plan.Target || chosen.EncodedPercent > maxPercent {
-			result.ForcedVideoEncodeReason = fmt.Sprintf("%s; forcing encode with best tested CRF %d", reason, chosen.CRF)
-		}
+	return chosen, nil
+}
+
+// preferForced orders forced candidates: fitting the size limit first, then
+// higher quality, then smaller size.
+func preferForced(candidate, best domain.SearchCandidate, maxPercent float64) bool {
+	fits, bestFits := candidate.EncodedPercent <= maxPercent, best.EncodedPercent <= maxPercent
+	if fits != bestFits {
+		return fits
 	}
-	result.CRF = chosen.CRF
-	if plan.Metric == domain.QualityMetricXPSNR {
-		result.XPSNR = chosen.Score
-	} else {
-		result.VMAF = chosen.Score
+	if candidate.Score != best.Score {
+		return candidate.Score > best.Score
 	}
-	return result, nil
+	return candidate.EncodedPercent < best.EncodedPercent
+}
+
+func finite(value float64) bool {
+	return !math.IsNaN(value) && !math.IsInf(value, 0)
 }
 
 type Block struct{ Searcher Searcher }
