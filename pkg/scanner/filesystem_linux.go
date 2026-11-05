@@ -441,35 +441,7 @@ func (w *inotifyFilesystemWatcher) markCompletion(path string, isDir bool, at ti
 }
 
 func (w *inotifyFilesystemWatcher) reconcile(ctx context.Context, cfg config.Config, full bool) {
-	names := make([]string, 0, len(cfg.Libraries))
-	for name := range cfg.Libraries {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-
-	next := make(map[domain.LibraryName]filesystemLibrary, len(names))
-	for _, name := range names {
-		library := cfg.Libraries[name]
-		configured := filesystemLibrary{
-			name:   domain.LibraryName(name),
-			config: library,
-		}
-		root := strings.TrimSpace(library.Path)
-		if root != "" {
-			absRoot, err := filepath.Abs(root)
-			if err != nil {
-				slog.Warn("resolve library filesystem watch path", "library", name, "path", root, "error", err)
-			} else {
-				configured.root = filepath.Clean(absRoot)
-			}
-		}
-		var ignoreErr error
-		configured.ignores, ignoreErr = compileIgnoreRegexps(library.IgnoreRegex)
-		if ignoreErr != nil {
-			slog.Warn("compile filesystem ignore patterns", "library", name, "error", ignoreErr)
-		}
-		next[configured.name] = configured
-	}
+	names, next := configuredFilesystemLibraries(cfg)
 
 	w.mu.Lock()
 	changed := len(next) != len(w.libraries)
@@ -491,33 +463,82 @@ func (w *inotifyFilesystemWatcher) reconcile(ctx context.Context, cfg config.Con
 	full = full || changed || w.repairAll
 	w.repairAll = false
 	w.mu.Unlock()
+
 	w.replaceLibraries(next)
 	if full {
 		w.removeUnneededWatches(next)
 	}
+	w.repairDirectories(ctx, dirty, completions)
+	w.watchLibraryRoots(ctx, names, next, full)
+}
+
+// configuredFilesystemLibraries resolves each configured library's watch root
+// and ignore patterns. Names come back sorted so roots are watched in a stable
+// order.
+func configuredFilesystemLibraries(cfg config.Config) ([]string, map[domain.LibraryName]filesystemLibrary) {
+	names := make([]string, 0, len(cfg.Libraries))
+	for name := range cfg.Libraries {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	libraries := make(map[domain.LibraryName]filesystemLibrary, len(names))
+	for _, name := range names {
+		library := cfg.Libraries[name]
+		configured := filesystemLibrary{
+			name:   domain.LibraryName(name),
+			config: library,
+		}
+		if root := strings.TrimSpace(library.Path); root != "" {
+			absRoot, err := filepath.Abs(root)
+			if err != nil {
+				slog.Warn("resolve library filesystem watch path", "library", name, "path", root, "error", err)
+			} else {
+				configured.root = filepath.Clean(absRoot)
+			}
+		}
+		var err error
+		configured.ignores, err = compileIgnoreRegexps(library.IgnoreRegex)
+		if err != nil {
+			slog.Warn("compile filesystem ignore patterns", "library", name, "error", err)
+		}
+		libraries[configured.name] = configured
+	}
+	return names, libraries
+}
+
+// repairDirectories watches new directory trees. A completed directory
+// transfer is marked ready only after its whole tree is watched.
+func (w *inotifyFilesystemWatcher) repairDirectories(ctx context.Context, dirty map[string]struct{}, completions map[string]directoryCompletion) {
 	for root := range dirty {
 		added, err := w.addRecursive(ctx, root)
 		if err != nil && ctx.Err() == nil {
 			slog.Warn("repair directory watches", "path", root, "error", err)
 		}
-		if completion, ok := completions[root]; ok && added && err == nil {
-			w.mu.Lock()
-			if w.readyCompletions == nil {
-				w.readyCompletions = make(map[string]directoryCompletion)
-			}
-			if len(w.readyCompletions) < scanPathLimit {
-				w.readyCompletions[root] = completion
-			}
-			w.mu.Unlock()
-			if err := wakeFilesystemReader(w.wakeWrite); err != nil {
-				slog.Warn("wake filesystem reader after repair", "error", err)
-			}
+		completion, ok := completions[root]
+		if !ok || !added || err != nil {
+			continue
+		}
+		w.mu.Lock()
+		if w.readyCompletions == nil {
+			w.readyCompletions = make(map[string]directoryCompletion)
+		}
+		if len(w.readyCompletions) < scanPathLimit {
+			w.readyCompletions[root] = completion
+		}
+		w.mu.Unlock()
+		if err := wakeFilesystemReader(w.wakeWrite); err != nil {
+			slog.Warn("wake filesystem reader after repair", "error", err)
 		}
 	}
+}
 
-	seenRoots := make(map[string]struct{}, len(next))
+// watchLibraryRoots makes sure every library root is watched. Outside a full
+// repair, a root whose watch still matches its identity is left alone.
+func (w *inotifyFilesystemWatcher) watchLibraryRoots(ctx context.Context, names []string, libraries map[domain.LibraryName]filesystemLibrary, full bool) {
+	seenRoots := make(map[string]struct{}, len(libraries))
 	for _, name := range names {
-		library := next[domain.LibraryName(name)]
+		library := libraries[domain.LibraryName(name)]
 		if library.root == "" {
 			continue
 		}
@@ -525,17 +546,8 @@ func (w *inotifyFilesystemWatcher) reconcile(ctx context.Context, cfg config.Con
 			continue
 		}
 		seenRoots[library.root] = struct{}{}
-		if !full {
-			w.mu.Lock()
-			wd, exists := w.dirToWD[library.root]
-			var alias filesystemWatchAlias
-			if watch := w.wdToWatch[wd]; watch != nil {
-				alias = watch.aliases[library.root]
-			}
-			w.mu.Unlock()
-			if exists && filesystemWatchIdentityMatches(alias) {
-				continue
-			}
+		if !full && w.rootWatchIntact(library.root) {
+			continue
 		}
 		added, err := w.addRecursive(ctx, library.root)
 		if err != nil {
@@ -548,6 +560,17 @@ func (w *inotifyFilesystemWatcher) reconcile(ctx context.Context, cfg config.Con
 			slog.Warn("library path unavailable for filesystem watch", "library", library.name, "path", library.root)
 		}
 	}
+}
+
+func (w *inotifyFilesystemWatcher) rootWatchIntact(root string) bool {
+	w.mu.Lock()
+	wd, exists := w.dirToWD[root]
+	var alias filesystemWatchAlias
+	if watch := w.wdToWatch[wd]; watch != nil {
+		alias = watch.aliases[root]
+	}
+	w.mu.Unlock()
+	return exists && filesystemWatchIdentityMatches(alias)
 }
 
 func (w *inotifyFilesystemWatcher) replaceLibraries(libraries map[domain.LibraryName]filesystemLibrary) {
