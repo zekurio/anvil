@@ -457,5 +457,5 @@ func normalizeConfigVideoCodec(codec string) string {
 }
 
 func validAccelerator(value string) bool {
-	return slices.Contains(accelerators, strings.ToLower(strings.TrimSpace(value)))
+	return slices.Contains(accelerators, video.NormalizeAccelerator(value))
 }

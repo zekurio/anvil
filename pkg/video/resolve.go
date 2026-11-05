@@ -18,16 +18,7 @@ func NormalizeCodec(codec string) string {
 }
 
 func NormalizeAccelerator(accelerator string) string {
-	switch strings.ToLower(strings.TrimSpace(accelerator)) {
-	case "":
-		return ""
-	case "software":
-		return AcceleratorSoftware
-	case AcceleratorQSV, AcceleratorVAAPI, AcceleratorAMF:
-		return strings.ToLower(strings.TrimSpace(accelerator))
-	default:
-		return strings.ToLower(strings.TrimSpace(accelerator))
-	}
+	return strings.ToLower(strings.TrimSpace(accelerator))
 }
 
 func CanonicalCodec(codec string) string {
@@ -53,13 +44,10 @@ func ResolveEncoder(codec string, accelerator string) string {
 }
 
 func ResolveAccelerator(accelerator string) string {
-	accelerator = NormalizeAccelerator(accelerator)
-	switch accelerator {
-	case "":
+	if accelerator = NormalizeAccelerator(accelerator); accelerator == "" {
 		return AcceleratorSoftware
-	default:
-		return accelerator
 	}
+	return accelerator
 }
 
 func NormalizeBitDepth(bitDepth int) int {
@@ -126,44 +114,16 @@ func QSVDecoder(codec string) (string, bool) {
 	}
 }
 
+// encoders maps an accelerator and canonical output codec to the FFmpeg
+// encoder that produces it.
+var encoders = map[string]map[string]string{
+	AcceleratorSoftware: {"av1": "libsvtav1", "hevc": "libx265", "h264": "libx264"},
+	AcceleratorQSV:      {"av1": "av1_qsv", "hevc": "hevc_qsv", "h264": "h264_qsv"},
+	AcceleratorVAAPI:    {"av1": "av1_vaapi", "hevc": "hevc_vaapi", "h264": "h264_vaapi"},
+	AcceleratorAMF:      {"av1": "av1_amf", "hevc": "hevc_amf", "h264": "h264_amf"},
+}
+
 func encoderFor(codec string, accelerator string) (string, bool) {
-	switch accelerator {
-	case AcceleratorQSV:
-		switch codec {
-		case "av1":
-			return "av1_qsv", true
-		case "hevc":
-			return "hevc_qsv", true
-		case "h264":
-			return "h264_qsv", true
-		}
-	case AcceleratorVAAPI:
-		switch codec {
-		case "av1":
-			return "av1_vaapi", true
-		case "hevc":
-			return "hevc_vaapi", true
-		case "h264":
-			return "h264_vaapi", true
-		}
-	case AcceleratorAMF:
-		switch codec {
-		case "av1":
-			return "av1_amf", true
-		case "hevc":
-			return "hevc_amf", true
-		case "h264":
-			return "h264_amf", true
-		}
-	case AcceleratorSoftware:
-		switch codec {
-		case "av1":
-			return "libsvtav1", true
-		case "hevc":
-			return "libx265", true
-		case "h264":
-			return "libx264", true
-		}
-	}
-	return "", false
+	encoder, ok := encoders[accelerator][codec]
+	return encoder, ok
 }
