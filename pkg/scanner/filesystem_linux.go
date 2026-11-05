@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -308,18 +309,7 @@ func (w *inotifyFilesystemWatcher) parseEvents(ctx context.Context, buffer []byt
 
 func (w *inotifyFilesystemWatcher) handleEvent(ctx context.Context, wd int, mask uint32, name string, batch filesystemTriggerBatch) {
 	if mask&unix.IN_Q_OVERFLOW != 0 {
-		slog.Warn("filesystem event queue overflow", "action", "clear completion confidence and reconcile watches")
-		w.completion.Reset()
-		w.clearPendingTriggers()
-		w.mu.Lock()
-		w.repairAll = true
-		w.mu.Unlock()
-		w.requestReconcile()
-		for _, libraryName := range w.libraryNames() {
-			// Ordering was lost, so replace stronger completion events from this
-			// batch with a full-library scan that cannot bypass stability.
-			batch[libraryName] = ScanTrigger{LibraryName: libraryName, Reason: "filesystem"}
-		}
+		w.handleOverflow(batch)
 		return
 	}
 	if mask&unix.IN_IGNORED != 0 {
@@ -342,72 +332,24 @@ func (w *inotifyFilesystemWatcher) handleEvent(ctx context.Context, wd int, mask
 			w.completion.Invalidate(path)
 		}
 	}
-
 	if mask&(unix.IN_DELETE_SELF|unix.IN_MOVE_SELF) != 0 {
-		w.mu.Lock()
-		w.repairAll = true
-		w.mu.Unlock()
-		w.requestReconcile()
+		w.requestRepairAll()
 	}
 	if isDir && mask&(unix.IN_CREATE|unix.IN_MOVED_TO) != 0 {
-		w.mu.Lock()
-		if w.dirty == nil {
-			w.dirty = make(map[string]struct{})
-		}
-		for _, path := range targets {
-			if len(w.dirty) < scanPathLimit {
-				w.dirty[path] = struct{}{}
-			} else {
-				w.repairAll = true
-			}
-		}
-		w.mu.Unlock()
-		w.requestReconcile()
+		w.markDirty(targets)
 	}
 	// Directory completion marks avoid walking the tree in the event reader.
 	if mask&filesystemTriggerMask == 0 {
 		return
 	}
 
-	completionEvent := mask&unix.IN_MOVED_TO != 0 || (!isDir && mask&unix.IN_CLOSE_WRITE != 0)
+	movedIn := mask&unix.IN_MOVED_TO != 0
+	completionEvent := movedIn || (!isDir && mask&unix.IN_CLOSE_WRITE != 0)
 	markedAt := time.Now().UTC()
 	for _, path := range targets {
-		libraries := w.librariesFor(path)
-		if isDir && mask&unix.IN_MOVED_TO != 0 {
-			w.mu.Lock()
-			for _, library := range w.libraries {
-				if library.root != path && pathWithinRoot(library.root, path) {
-					libraries = append(libraries, library)
-				}
-			}
-			w.mu.Unlock()
-		}
-		filtered := libraries[:0]
-		for _, library := range libraries {
-			if filesystemPathRelevant(library, path, isDir) {
-				filtered = append(filtered, library)
-			}
-		}
-		libraries = filtered
-		if completionEvent {
-			for _, library := range libraries {
-				if library.config.IsDownload() {
-					if isDir {
-						w.mu.Lock()
-						if w.directoryCompletions == nil {
-							w.directoryCompletions = make(map[string]directoryCompletion)
-						}
-						if len(w.directoryCompletions) < scanPathLimit {
-							w.directoryCompletions[path] = directoryCompletion{at: markedAt, generation: w.completion.currentGeneration()}
-						}
-						w.mu.Unlock()
-						w.requestReconcile()
-					} else {
-						w.completion.Mark(path, markedAt)
-					}
-					break
-				}
-			}
+		libraries := w.relevantLibraries(path, isDir, isDir && movedIn)
+		if completionEvent && slices.ContainsFunc(libraries, func(library filesystemLibrary) bool { return library.config.IsDownload() }) {
+			w.markCompletion(path, isDir, markedAt)
 		}
 		for _, library := range libraries {
 			trigger := ScanTrigger{LibraryName: library.name, Reason: "filesystem", Path: path}
@@ -421,6 +363,81 @@ func (w *inotifyFilesystemWatcher) handleEvent(ctx context.Context, wd int, mask
 			queueFilesystemTrigger(batch, trigger)
 		}
 	}
+}
+
+// handleOverflow recovers from lost events: completion confidence is gone and
+// every watch has to be checked again.
+func (w *inotifyFilesystemWatcher) handleOverflow(batch filesystemTriggerBatch) {
+	slog.Warn("filesystem event queue overflow", "action", "clear completion confidence and reconcile watches")
+	w.completion.Reset()
+	w.clearPendingTriggers()
+	w.requestRepairAll()
+	for _, libraryName := range w.libraryNames() {
+		// Ordering was lost, so replace stronger completion events from this
+		// batch with a full-library scan that cannot bypass stability.
+		batch[libraryName] = ScanTrigger{LibraryName: libraryName, Reason: "filesystem"}
+	}
+}
+
+func (w *inotifyFilesystemWatcher) requestRepairAll() {
+	w.mu.Lock()
+	w.repairAll = true
+	w.mu.Unlock()
+	w.requestReconcile()
+}
+
+// markDirty queues new directories for watch repair, falling back to a full
+// repair once scanPathLimit paths are pending.
+func (w *inotifyFilesystemWatcher) markDirty(paths []string) {
+	w.mu.Lock()
+	if w.dirty == nil {
+		w.dirty = make(map[string]struct{})
+	}
+	for _, path := range paths {
+		if len(w.dirty) < scanPathLimit {
+			w.dirty[path] = struct{}{}
+		} else {
+			w.repairAll = true
+		}
+	}
+	w.mu.Unlock()
+	w.requestReconcile()
+}
+
+// relevantLibraries is every library an event path matters to. A directory
+// moved in can contain library roots, which then see the event too.
+func (w *inotifyFilesystemWatcher) relevantLibraries(path string, isDir, includeNestedRoots bool) []filesystemLibrary {
+	libraries := w.librariesFor(path)
+	if includeNestedRoots {
+		w.mu.Lock()
+		for _, library := range w.libraries {
+			if library.root != path && pathWithinRoot(library.root, path) {
+				libraries = append(libraries, library)
+			}
+		}
+		w.mu.Unlock()
+	}
+	return slices.DeleteFunc(libraries, func(library filesystemLibrary) bool {
+		return !filesystemPathRelevant(library, path, isDir)
+	})
+}
+
+// markCompletion records a finished transfer. A file is marked directly; a
+// directory is marked once reconcile has watched its tree.
+func (w *inotifyFilesystemWatcher) markCompletion(path string, isDir bool, at time.Time) {
+	if !isDir {
+		w.completion.Mark(path, at)
+		return
+	}
+	w.mu.Lock()
+	if w.directoryCompletions == nil {
+		w.directoryCompletions = make(map[string]directoryCompletion)
+	}
+	if len(w.directoryCompletions) < scanPathLimit {
+		w.directoryCompletions[path] = directoryCompletion{at: at, generation: w.completion.currentGeneration()}
+	}
+	w.mu.Unlock()
+	w.requestReconcile()
 }
 
 func (w *inotifyFilesystemWatcher) reconcile(ctx context.Context, cfg config.Config, full bool) {
