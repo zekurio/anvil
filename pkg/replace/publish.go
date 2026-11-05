@@ -262,16 +262,8 @@ func (m Manager) publish(ctx context.Context, op *PublishOperation) error {
 	}
 
 	if _, err := os.Lstat(op.DestinationPath); err == nil {
-		matches, digest, matchErr := m.destinationMatches(ctx, *op)
-		if matchErr != nil {
-			return matchErr
-		}
-		if !matches {
-			return m.conflict(ctx, op, "destination exists with different artifact content")
-		}
-		if digest != "" {
-			op.DigestAlgorithm = digestAlgorithmSHA256
-			op.DigestValue = digest
+		if err := m.adoptDestination(ctx, op, "destination exists with different artifact content"); err != nil {
+			return err
 		}
 		return m.markPublished(ctx, op)
 	} else if !errors.Is(err, os.ErrNotExist) {
@@ -290,19 +282,10 @@ func (m Manager) publish(ctx context.Context, op *PublishOperation) error {
 		}
 	}
 	if err := m.publishArtifact(op); err != nil {
-		if errors.Is(err, os.ErrExist) {
-			matches, digest, matchErr := m.destinationMatches(ctx, *op)
-			if matchErr != nil {
-				return matchErr
-			}
-			if !matches {
-				return m.conflict(ctx, op, "destination appeared with different artifact content")
-			}
-			if digest != "" {
-				op.DigestAlgorithm = digestAlgorithmSHA256
-				op.DigestValue = digest
-			}
-		} else {
+		if !errors.Is(err, os.ErrExist) {
+			return err
+		}
+		if err := m.adoptDestination(ctx, op, "destination appeared with different artifact content"); err != nil {
 			return err
 		}
 	}
@@ -334,16 +317,8 @@ func (m Manager) prepareReplacement(ctx context.Context, op *PublishOperation) (
 				return false, nil
 			}
 		}
-		matches, digest, err := m.destinationMatches(ctx, *op)
-		if err != nil {
+		if err := m.adoptDestination(ctx, op, "replacement target exists with different artifact content"); err != nil {
 			return false, err
-		}
-		if !matches {
-			return false, m.conflict(ctx, op, "replacement target exists with different artifact content")
-		}
-		if digest != "" {
-			op.DigestAlgorithm = digestAlgorithmSHA256
-			op.DigestValue = digest
 		}
 		return true, nil
 	}
@@ -402,13 +377,8 @@ func (m Manager) cleanup(ctx context.Context, op *PublishOperation) error {
 		}
 	}
 	if op.CleanupArtifact && pathExists(op.ArtifactPath) {
-		if err := verifyRecordedIdentity(op.ArtifactPath, op.ArtifactIdentity); err != nil {
-			return m.conflict(ctx, op, fmt.Sprintf("artifact changed before cleanup: %v", err))
-		}
-		if err := removeAndSync(op.ArtifactPath); err != nil {
-			return fmt.Errorf("remove published artifact source: %w", err)
-		}
-		if err := m.boundary(BoundaryArtifactRemoved); err != nil {
+		if err := m.removeRecorded(ctx, op, op.ArtifactPath, op.ArtifactIdentity,
+			"artifact changed before cleanup", "remove published artifact source", BoundaryArtifactRemoved); err != nil {
 			return err
 		}
 	}
@@ -421,13 +391,8 @@ func (m Manager) cleanup(ctx context.Context, op *PublishOperation) error {
 		if op.CleanupIdentity == nil {
 			return errors.New("cleanup source identity is missing")
 		}
-		if err := verifyRecordedIdentity(op.CleanupSourcePath, *op.CleanupIdentity); err != nil {
-			return m.conflict(ctx, op, fmt.Sprintf("cleanup source identity changed: %v", err))
-		}
-		if err := removeAndSync(op.CleanupSourcePath); err != nil {
-			return fmt.Errorf("remove source media after handoff: %w", err)
-		}
-		if err := m.boundary(BoundarySourceRemoved); err != nil {
+		if err := m.removeRecorded(ctx, op, op.CleanupSourcePath, *op.CleanupIdentity,
+			"cleanup source identity changed", "remove source media after handoff", BoundarySourceRemoved); err != nil {
 			return err
 		}
 	}
@@ -446,13 +411,8 @@ func (m Manager) cleanup(ctx context.Context, op *PublishOperation) error {
 		if op.CleanupIdentity == nil {
 			return errors.New("replacement backup identity is missing")
 		}
-		if err := verifyRecordedIdentity(op.BackupPath, *op.CleanupIdentity); err != nil {
-			return m.conflict(ctx, op, fmt.Sprintf("replacement backup identity changed: %v", err))
-		}
-		if err := removeAndSync(op.BackupPath); err != nil {
-			return fmt.Errorf("remove replacement backup: %w", err)
-		}
-		if err := m.boundary(BoundaryBackupRemoved); err != nil {
+		if err := m.removeRecorded(ctx, op, op.BackupPath, *op.CleanupIdentity,
+			"replacement backup identity changed", "remove replacement backup", BoundaryBackupRemoved); err != nil {
 			return err
 		}
 	}
@@ -460,6 +420,36 @@ func (m Manager) cleanup(ctx context.Context, op *PublishOperation) error {
 		return err
 	}
 	return m.boundary(BoundarySourceCleaned)
+}
+
+// adoptDestination accepts a destination that already holds the artifact's
+// content, as after a crash between linking and journaling, and keeps the
+// digest that proved it. Any other content is a conflict.
+func (m Manager) adoptDestination(ctx context.Context, op *PublishOperation, conflictReason string) error {
+	matches, digest, err := m.destinationMatches(ctx, *op)
+	if err != nil {
+		return err
+	}
+	if !matches {
+		return m.conflict(ctx, op, conflictReason)
+	}
+	if digest != "" {
+		op.DigestAlgorithm = digestAlgorithmSHA256
+		op.DigestValue = digest
+	}
+	return nil
+}
+
+// removeRecorded deletes a file the journal recorded, but only while it is
+// still that file. Anything else at the path is a conflict and stays put.
+func (m Manager) removeRecorded(ctx context.Context, op *PublishOperation, path string, identity FileIdentity, conflictReason, removeContext string, boundary PublishBoundary) error {
+	if err := verifyRecordedIdentity(path, identity); err != nil {
+		return m.conflict(ctx, op, fmt.Sprintf("%s: %v", conflictReason, err))
+	}
+	if err := removeAndSync(path); err != nil {
+		return fmt.Errorf("%s: %w", removeContext, err)
+	}
+	return m.boundary(boundary)
 }
 
 func (m Manager) replacementOperation(job *pipeline.JobContext) (PublishOperation, error) {
