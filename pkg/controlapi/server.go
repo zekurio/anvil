@@ -136,14 +136,12 @@ func (s Server) Serve(ctx context.Context, listener net.Listener) error {
 		if slots != nil {
 			slots <- struct{}{}
 		}
-		connections.Add(1)
-		go func() {
-			defer connections.Done()
+		connections.Go(func() {
 			if slots != nil {
 				defer func() { <-slots }()
 			}
 			s.handleConnection(ctx, connection)
-		}()
+		})
 	}
 }
 

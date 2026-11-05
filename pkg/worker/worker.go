@@ -561,9 +561,7 @@ func (r Runner) startHeartbeat(ctx context.Context, jobID domain.JobID, workerID
 
 	heartbeatCtx, cancel := context.WithCancel(ctx)
 	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		for {
@@ -575,7 +573,7 @@ func (r Runner) startHeartbeat(ctx context.Context, jobID domain.JobID, workerID
 				_, _ = r.Store.HeartbeatJob(heartbeatCtx, jobID, workerID, now.Add(leaseDuration), now) //nolint:errcheck // next heartbeat or stale recovery handles transient heartbeat failure
 			}
 		}
-	}()
+	})
 	return func() {
 		cancel()
 		wg.Wait()

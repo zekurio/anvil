@@ -466,9 +466,7 @@ func logScanComplete(message string, library string, reason string, result scann
 }
 
 func startReloadLoop(ctx context.Context, wg *sync.WaitGroup, opts options, runtimeCfg *runtimeConfig, reloadSignals <-chan os.Signal) {
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		for {
 			select {
 			case <-ctx.Done():
@@ -492,7 +490,7 @@ func startReloadLoop(ctx context.Context, wg *sync.WaitGroup, opts options, runt
 				slog.Info("config reloaded", "config", configPathLabel(opts.configPath), "libraries", len(next.Libraries), "profiles", len(next.Profiles), "workers", next.Daemon.WorkerCount, "threads", next.Daemon.TotalThreads, "filesystem_event_debounce", next.FilesystemEventDebounce(), "log_level", next.Daemon.LogLevel)
 			}
 		}
-	}()
+	})
 }
 
 func configureLogging(logLevel string) error {
@@ -552,19 +550,15 @@ func startScannerLoop(ctx context.Context, wg *sync.WaitGroup, cfgProvider func(
 		},
 	}
 
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		if err := monitor.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
 			slog.Error("scanner monitor stopped", "error", err)
 		}
-	}()
+	})
 }
 
 func startRecoveryLoop(ctx context.Context, wg *sync.WaitGroup, cfgProvider func() config.Config, state *store.SQLiteStore) {
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		for {
 			cfg := cfgProvider()
 			timer := time.NewTimer(cfg.SchedulerInterval())
@@ -584,7 +578,7 @@ func startRecoveryLoop(ctx context.Context, wg *sync.WaitGroup, cfgProvider func
 				}
 			}
 		}
-	}()
+	})
 }
 
 func startSchedulerLoop(ctx context.Context, workerCtx context.Context, wg *sync.WaitGroup, cfgProvider func() config.Config, state *store.SQLiteStore) *scheduler.Scheduler {
@@ -602,13 +596,11 @@ func startSchedulerLoop(ctx context.Context, workerCtx context.Context, wg *sync
 		WorkerContext:  workerCtx,
 	}
 
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		if err := planner.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
 			slog.Error("scheduler stopped", "error", err)
 		}
-	}()
+	})
 	return planner
 }
 

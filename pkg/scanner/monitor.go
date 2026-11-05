@@ -69,14 +69,12 @@ func (m *Monitor) Run(ctx context.Context) error {
 
 	watcherCtx, stopWatcher := context.WithCancel(ctx)
 	var watcherWG sync.WaitGroup
-	watcherWG.Add(1)
-	go func() {
-		defer watcherWG.Done()
+	watcherWG.Go(func() {
 		err := eventSource.Run(watcherCtx, m.ConfigProvider, triggers)
 		if err != nil && watcherCtx.Err() == nil {
 			m.eventError(err)
 		}
-	}()
+	})
 	defer func() {
 		stopWatcher()
 		watcherWG.Wait()
