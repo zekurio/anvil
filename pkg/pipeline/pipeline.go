@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/zekurio/anvil/pkg/domain"
+	"github.com/zekurio/anvil/pkg/mediapath"
 	"github.com/zekurio/anvil/pkg/process"
 )
 
@@ -39,6 +40,19 @@ type JobContext struct {
 	Validation *domain.ValidationResult
 }
 
+// NewJobContext starts a job context for one occurrence of a library's media.
+// The input path follows from the library root and the occurrence paths.
+func NewJobContext(job domain.Job, source domain.MediaSource, asset domain.MediaAsset, library domain.Library, profile domain.Profile) *JobContext {
+	return &JobContext{
+		Job:       job,
+		Source:    source,
+		Asset:     asset,
+		Library:   library,
+		Profile:   profile,
+		InputPath: mediapath.Input(library.Path, source, asset),
+	}
+}
+
 type Block interface {
 	Name() string
 	Run(ctx context.Context, job *JobContext) error
@@ -66,70 +80,71 @@ func (r Runner) Run(ctx context.Context, job *JobContext) error {
 		return errors.New("pipeline job context is required")
 	}
 	for index, block := range r.Blocks {
-		step := block.Name()
-		resumed, err := r.resumeStep(ctx, step, job)
-		if err != nil {
-			return err
-		}
-		startPayload := map[string]any{"step_index": index}
-		if resumed {
-			startPayload["resumed"] = true
-		}
-		if err := r.record(ctx, job.Attempt.ID, domain.AttemptEventBlockStarted, step, "", startPayload); err != nil {
-			return err
-		}
-		started := time.Now()
-		if resumed {
-			slog.Info("pipeline step resumed", "job", job.Job.Label(), "attempt", job.Attempt.Number, "step", step, "step_index", index)
-			// The block itself did not run, so re-emit its decision: the log of
-			// the attempt that originally decided may already be rotated away.
-			if decision, ok := blockDecision(block, job); ok {
-				LogStreamSelection(job, decision)
-			}
-			if err := r.recordDecision(ctx, block, job); err != nil {
-				return err
-			}
-			if err := r.recordBlockArtifact(ctx, block, job); err != nil {
-				return err
-			}
-			if err := r.record(ctx, job.Attempt.ID, domain.AttemptEventBlockFinished, step, "", map[string]any{"step_index": index, "resumed": true}); err != nil {
-				return err
-			}
-			continue
-		}
-		if r.BeforeStep != nil {
-			if err := r.BeforeStep(ctx, step, job); err != nil {
-				_ = r.record(ctx, job.Attempt.ID, domain.AttemptEventBlockFailed, step, err.Error(), map[string]any{"step_index": index}) //nolint:errcheck // preserve the pre-step error
-				return fmt.Errorf("before block %q: %w", step, err)
-			}
-		}
-		slog.Info("pipeline step started", "job", job.Job.Label(), "attempt", job.Attempt.Number, "step", step, "step_index", index)
-		stepCtx := process.WithStep(ctx, step)
-		if err := block.Run(stepCtx, job); err != nil {
-			slog.Error("pipeline step failed", "job", job.Job.Label(), "attempt", job.Attempt.Number, "step", step, "step_index", index, "duration", time.Since(started), "error", err)
-			// A failing block can still have decided something worth keeping —
-			// a fail_job stream selection is exactly the case where the record
-			// explains the failure the error message cannot.
-			_ = r.recordDecision(ctx, block, job)                                                                                     //nolint:errcheck // preserve the block error; decision recording is best-effort
-			_ = r.recordBlockArtifact(ctx, block, job)                                                                                //nolint:errcheck // preserve the block error; result recording is best-effort
-			_ = r.record(ctx, job.Attempt.ID, domain.AttemptEventBlockFailed, step, err.Error(), map[string]any{"step_index": index}) //nolint:errcheck // preserve the block error; failed-event recording is best-effort
-			return fmt.Errorf("run block %q: %w", step, err)
-		}
-		slog.Info("pipeline step finished", "job", job.Job.Label(), "attempt", job.Attempt.Number, "step", step, "step_index", index, "duration", time.Since(started))
-		if err := r.stepSucceeded(ctx, step, job); err != nil {
-			return err
-		}
-		if err := r.recordDecision(ctx, block, job); err != nil {
-			return err
-		}
-		if err := r.recordBlockArtifact(ctx, block, job); err != nil {
-			return err
-		}
-		if err := r.record(ctx, job.Attempt.ID, domain.AttemptEventBlockFinished, step, "", map[string]any{"step_index": index}); err != nil {
+		if err := r.runStep(ctx, index, block, job); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func (r Runner) runStep(ctx context.Context, index int, block Block, job *JobContext) error {
+	step := block.Name()
+	log := slog.With("job", job.Job.Label(), "attempt", job.Attempt.Number, "step", step, "step_index", index)
+	resumed, err := r.resumeStep(ctx, step, job)
+	if err != nil {
+		return err
+	}
+	payload := map[string]any{"step_index": index}
+	if resumed {
+		payload["resumed"] = true
+	}
+	if err := r.record(ctx, job.Attempt.ID, domain.AttemptEventBlockStarted, step, "", payload); err != nil {
+		return err
+	}
+	if resumed {
+		log.Info("pipeline step resumed")
+		// The block itself did not run, so re-emit its decision: the log of
+		// the attempt that originally decided may already be rotated away.
+		if decision, ok := blockDecision(block, job); ok {
+			LogStreamSelection(job, decision)
+		}
+		return r.recordOutcome(ctx, block, job, payload)
+	}
+	if r.BeforeStep != nil {
+		if err := r.BeforeStep(ctx, step, job); err != nil {
+			_ = r.record(ctx, job.Attempt.ID, domain.AttemptEventBlockFailed, step, err.Error(), payload) //nolint:errcheck // preserve the pre-step error
+			return fmt.Errorf("before block %q: %w", step, err)
+		}
+	}
+	log.Info("pipeline step started")
+	started := time.Now()
+	if err := block.Run(process.WithStep(ctx, step), job); err != nil {
+		log.Error("pipeline step failed", "duration", time.Since(started), "error", err)
+		// A failing block can still have decided something worth keeping —
+		// a fail_job stream selection is exactly the case where the record
+		// explains the failure the error message cannot.
+		_ = r.recordDecision(ctx, block, job)                                                         //nolint:errcheck // preserve the block error; decision recording is best-effort
+		_ = r.recordBlockArtifact(ctx, block, job)                                                    //nolint:errcheck // preserve the block error; result recording is best-effort
+		_ = r.record(ctx, job.Attempt.ID, domain.AttemptEventBlockFailed, step, err.Error(), payload) //nolint:errcheck // preserve the block error; failed-event recording is best-effort
+		return fmt.Errorf("run block %q: %w", step, err)
+	}
+	log.Info("pipeline step finished", "duration", time.Since(started))
+	if err := r.stepSucceeded(ctx, step, job); err != nil {
+		return err
+	}
+	return r.recordOutcome(ctx, block, job, payload)
+}
+
+// recordOutcome records what a finished or resumed step decided and produced,
+// then marks it finished.
+func (r Runner) recordOutcome(ctx context.Context, block Block, job *JobContext, payload map[string]any) error {
+	if err := r.recordDecision(ctx, block, job); err != nil {
+		return err
+	}
+	if err := r.recordBlockArtifact(ctx, block, job); err != nil {
+		return err
+	}
+	return r.record(ctx, job.Attempt.ID, domain.AttemptEventBlockFinished, block.Name(), "", payload)
 }
 
 func (r Runner) resumeStep(ctx context.Context, step string, job *JobContext) (bool, error) {

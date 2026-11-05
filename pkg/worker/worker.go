@@ -21,7 +21,6 @@ import (
 	"github.com/zekurio/anvil/pkg/domain"
 	"github.com/zekurio/anvil/pkg/ffmpeg"
 	"github.com/zekurio/anvil/pkg/marker"
-	"github.com/zekurio/anvil/pkg/mediapath"
 	"github.com/zekurio/anvil/pkg/pipeline"
 	"github.com/zekurio/anvil/pkg/probe"
 	"github.com/zekurio/anvil/pkg/process"
@@ -91,29 +90,15 @@ func (r Runner) Run(ctx context.Context, assignment scheduler.Assignment) error 
 	if resolveErr != nil {
 		return r.fail(ctx, assignment.Job, attempt, cfg, resolveErr)
 	}
-	source, err := r.Store.GetMediaSource(ctx, assignment.Job.SourceID)
+	source, asset, err := r.loadOccurrence(ctx, assignment.Job.SourceID, assignment.Job.AssetID)
 	if err != nil {
-		return r.fail(ctx, assignment.Job, attempt, cfg, fmt.Errorf("get media source: %w", err))
-	}
-	var asset domain.MediaAsset
-	if assignment.Job.AssetID != 0 {
-		asset, err = r.Store.GetMediaAsset(ctx, assignment.Job.AssetID)
-		if err != nil {
-			return r.fail(ctx, assignment.Job, attempt, cfg, fmt.Errorf("get media asset: %w", err))
-		}
+		return r.fail(ctx, assignment.Job, attempt, cfg, err)
 	}
 
-	inputPath := mediapath.Input(library.Path, source, asset)
-	jobContext := &pipeline.JobContext{
-		Job:       assignment.Job,
-		Attempt:   attempt,
-		Source:    source,
-		Asset:     asset,
-		Library:   library,
-		Profile:   profile,
-		Resources: assignment.Resources,
-		InputPath: inputPath,
-	}
+	jobContext := pipeline.NewJobContext(assignment.Job, source, asset, library, profile)
+	jobContext.Attempt = attempt
+	jobContext.Resources = assignment.Resources
+	inputPath := jobContext.InputPath
 	pipelineRunner := r.Pipeline
 	if recovered, recoverErr := recoverPendingPublish(ctx, pipelineRunner, jobContext); recoverErr != nil {
 		return r.fail(ctx, assignment.Job, attempt, cfg, recoverErr)
@@ -235,18 +220,28 @@ func (r Runner) verifyCurrentOccurrence(ctx context.Context, job *pipeline.JobCo
 	if job == nil {
 		return errors.New("pipeline job context is required")
 	}
-	source, err := r.Store.GetMediaSource(ctx, job.Source.ID)
+	source, asset, err := r.loadOccurrence(ctx, job.Source.ID, job.Asset.ID)
 	if err != nil {
-		return fmt.Errorf("refresh source occurrence before publish: %w", err)
-	}
-	asset := job.Asset
-	if asset.ID != 0 {
-		asset, err = r.Store.GetMediaAsset(ctx, asset.ID)
-		if err != nil {
-			return fmt.Errorf("refresh asset occurrence before publish: %w", err)
-		}
+		return fmt.Errorf("refresh occurrence before publish: %w", err)
 	}
 	return r.verifyOccurrenceInput(job.InputPath, source, asset)
+}
+
+// loadOccurrence reads the current state of a job's source and, when the job
+// has one, its asset. A zero assetID returns the zero asset.
+func (r Runner) loadOccurrence(ctx context.Context, sourceID domain.MediaSourceID, assetID domain.MediaAssetID) (domain.MediaSource, domain.MediaAsset, error) {
+	source, err := r.Store.GetMediaSource(ctx, sourceID)
+	if err != nil {
+		return domain.MediaSource{}, domain.MediaAsset{}, fmt.Errorf("get media source: %w", err)
+	}
+	if assetID == 0 {
+		return source, domain.MediaAsset{}, nil
+	}
+	asset, err := r.Store.GetMediaAsset(ctx, assetID)
+	if err != nil {
+		return domain.MediaSource{}, domain.MediaAsset{}, fmt.Errorf("get media asset: %w", err)
+	}
+	return source, asset, nil
 }
 
 func DefaultPipeline(tempDir string, journal replacepkg.PublishJournal) pipeline.Runner {
