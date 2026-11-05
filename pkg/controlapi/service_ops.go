@@ -336,7 +336,7 @@ func (s Service) CleanupStaging(ctx context.Context, request control.StagingClea
 		var roots []string
 		for _, library := range cfg.Libraries {
 			root := library.Path
-			if library.Kind == "download" {
+			if library.IsDownload() {
 				root = library.Download.HandoffPath
 			}
 			absolute, err := filepath.Abs(root)

@@ -15,7 +15,7 @@ import (
 )
 
 func TestFilesystemEventsFilterArtifactsAndOrderDirectoryCompletion(t *testing.T) {
-	library := filesystemLibrary{name: "download", root: "/library", download: true, config: config.LibraryConfig{Kind: "download", Exclude: []string{"excluded/**"}}}
+	library := filesystemLibrary{name: "download", root: "/library", config: config.LibraryConfig{Kind: "download", Exclude: []string{"excluded/**"}}}
 	w := &inotifyFilesystemWatcher{completion: &CompletionTracker{}, libraries: map[domain.LibraryName]filesystemLibrary{"download": library}, wdToWatch: map[int]*filesystemWatch{1: {aliases: map[string]filesystemWatchAlias{"/library": {path: "/library"}}}}, reconcileRequests: make(chan struct{}, 1)}
 	batch := make(filesystemTriggerBatch)
 	w.handleEvent(context.Background(), 1, unix.IN_MODIFY, "film.job-1.anvil-part", batch)
@@ -74,7 +74,7 @@ func TestInotifyMoveRepairAndLaterWrite(t *testing.T) {
 	w := &inotifyFilesystemWatcher{
 		fd: fd, wakeRead: wake[0], wakeWrite: wake[1], completion: &CompletionTracker{}, triggers: triggers,
 		reconcileRequests: repairs, triggerReady: make(chan struct{}, 1), pendingTriggers: make(map[domain.LibraryName]ScanTrigger),
-		libraries: map[domain.LibraryName]filesystemLibrary{"download": {name: "download", root: root, download: true, config: config.LibraryConfig{Kind: "download"}}},
+		libraries: map[domain.LibraryName]filesystemLibrary{"download": {name: "download", root: root, config: config.LibraryConfig{Kind: "download"}}},
 		wdToWatch: make(map[int]*filesystemWatch), dirToWD: make(map[string]int), ignoredPending: make(map[int]int),
 	}
 	ctx, cancel := context.WithCancel(context.Background())

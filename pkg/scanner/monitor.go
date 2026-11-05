@@ -269,7 +269,7 @@ func (m *Monitor) triggerDue(cfg config.Config, library config.LibraryConfig, tr
 }
 
 func (m *Monitor) stabilityRetryDue(cfg config.Config, library config.LibraryConfig, result ScanResult) (time.Time, bool) {
-	if result.SkippedUnstable <= 0 || library.Kind != "download" {
+	if result.SkippedUnstable <= 0 || !library.IsDownload() {
 		return time.Time{}, false
 	}
 	now := m.now()
@@ -305,7 +305,7 @@ func filesystemReason(reason string) bool {
 }
 
 func downloadStableFor(library config.LibraryConfig) time.Duration {
-	if library.Kind != "download" {
+	if !library.IsDownload() {
 		return 0
 	}
 	return library.Download.StableFor.Duration

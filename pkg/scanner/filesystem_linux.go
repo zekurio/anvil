@@ -44,11 +44,10 @@ const filesystemTriggerMask = unix.IN_CREATE |
 	unix.IN_MOVE_SELF
 
 type filesystemLibrary struct {
-	name     domain.LibraryName
-	root     string
-	download bool
-	config   config.LibraryConfig
-	ignores  []*regexp.Regexp
+	name    domain.LibraryName
+	root    string
+	config  config.LibraryConfig
+	ignores []*regexp.Regexp
 }
 
 type filesystemWatchAlias struct {
@@ -392,7 +391,7 @@ func (w *inotifyFilesystemWatcher) handleEvent(ctx context.Context, wd int, mask
 		libraries = filtered
 		if completionEvent {
 			for _, library := range libraries {
-				if library.download {
+				if library.config.IsDownload() {
 					if isDir {
 						w.mu.Lock()
 						if w.directoryCompletions == nil {
@@ -412,10 +411,10 @@ func (w *inotifyFilesystemWatcher) handleEvent(ctx context.Context, wd int, mask
 		}
 		for _, library := range libraries {
 			trigger := ScanTrigger{LibraryName: library.name, Reason: "filesystem", Path: path}
-			if isDir && (library.config.Kind != "download" || library.config.Download.PackageMode == "file") {
+			if isDir && !library.config.GroupsPackages() {
 				trigger.Path = ""
 			}
-			if completionEvent && library.download && w.completion != nil {
+			if completionEvent && library.config.IsDownload() && w.completion != nil {
 				trigger.Reason = "transfer-complete"
 				trigger.Completed = true
 			}
@@ -435,9 +434,8 @@ func (w *inotifyFilesystemWatcher) reconcile(ctx context.Context, cfg config.Con
 	for _, name := range names {
 		library := cfg.Libraries[name]
 		configured := filesystemLibrary{
-			name:     domain.LibraryName(name),
-			download: library.Kind == "download",
-			config:   library,
+			name:   domain.LibraryName(name),
+			config: library,
 		}
 		root := strings.TrimSpace(library.Path)
 		if root != "" {
@@ -978,7 +976,7 @@ func filesystemPathRelevant(library filesystemLibrary, path string, isDir bool) 
 	if isDir {
 		return true
 	}
-	if library.download && library.config.Download.PackageMode != "file" {
+	if library.config.GroupsPackages() {
 		return true
 	}
 	return likelyMediaFile(rel)
