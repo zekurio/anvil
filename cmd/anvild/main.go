@@ -245,22 +245,9 @@ func runDaemon(ctx context.Context, cfg config.Config, opts options) error {
 	signal.Notify(reloadSignals, syscall.SIGHUP)
 	defer signal.Stop(shutdownSignals)
 	defer signal.Stop(reloadSignals)
-	shutdown := make(chan shutdownRequest, 1)
 	stopSignalWatcher := make(chan struct{})
 	defer close(stopSignalWatcher)
-	go func() {
-		var request shutdownRequest
-		select {
-		case sig := <-shutdownSignals:
-			request.signal = sig
-		case <-ctx.Done():
-			request.err = ctx.Err()
-		case <-stopSignalWatcher:
-			return
-		}
-		shutdown <- request
-		stopServices()
-	}()
+	shutdown := watchShutdown(ctx, shutdownSignals, stopSignalWatcher, stopServices)
 
 	mode := "foreground"
 	if opts.daemonMode {
@@ -336,21 +323,7 @@ func runDaemon(ctx context.Context, cfg config.Config, opts options) error {
 	plannerRef.Store(planner)
 	startScannerLoop(serviceCtx, &wg, runtimeCfg.Get, state, completion, planner.ActiveCount)
 
-	var request shutdownRequest
-	select {
-	case request = <-shutdown:
-	case err, ok := <-control:
-		if !ok || err == nil {
-			// The control service only stops cleanly because the service
-			// context was canceled, and whoever canceled it has already queued
-			// the real shutdown reason. Reporting the stop itself would replace
-			// that reason with a nil error.
-			request = <-shutdown
-			break
-		}
-		request.err = fmt.Errorf("control service stopped: %w", err)
-		stopServices()
-	}
+	request := awaitShutdown(shutdown, control, stopServices)
 	shutdownCfg := runtimeCfg.Get()
 	if request.err != nil {
 		slog.Info("stopping anvild", "reason", request.err, "policy", shutdownCfg.Daemon.ShutdownPolicy)
@@ -372,6 +345,46 @@ func runDaemon(ctx context.Context, cfg config.Config, opts options) error {
 		return err
 	}
 	return nil
+}
+
+// watchShutdown turns the first shutdown signal or parent cancellation into a
+// shutdown request and stops the services. Closing stop ends the watch
+// without a request.
+func watchShutdown(ctx context.Context, signals <-chan os.Signal, stop <-chan struct{}, stopServices context.CancelFunc) <-chan shutdownRequest {
+	shutdown := make(chan shutdownRequest, 1)
+	go func() {
+		var request shutdownRequest
+		select {
+		case sig := <-signals:
+			request.signal = sig
+		case <-ctx.Done():
+			request.err = ctx.Err()
+		case <-stop:
+			return
+		}
+		shutdown <- request
+		stopServices()
+	}()
+	return shutdown
+}
+
+// awaitShutdown blocks until the daemon has to stop, either by request or
+// because the control service failed.
+func awaitShutdown(shutdown <-chan shutdownRequest, control <-chan error, stopServices context.CancelFunc) shutdownRequest {
+	select {
+	case request := <-shutdown:
+		return request
+	case err, ok := <-control:
+		if !ok || err == nil {
+			// The control service only stops cleanly because the service
+			// context was canceled, and whoever canceled it has already queued
+			// the real shutdown reason. Reporting the stop itself would replace
+			// that reason with a nil error.
+			return <-shutdown
+		}
+		stopServices()
+		return shutdownRequest{err: fmt.Errorf("control service stopped: %w", err)}
+	}
 }
 
 func daemonContexts(ctx context.Context) (context.Context, context.CancelFunc, context.Context, context.CancelFunc) {
