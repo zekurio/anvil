@@ -159,46 +159,104 @@ WHERE name = ?
 	return updated, nil
 }
 
+// DeletedJob names a job that went away with its library. The daemon uses it
+// to remove what the job left under its temp dir.
+type DeletedJob struct {
+	ID   domain.JobID
+	Slug string
+}
+
+// LibraryBusyError is why DeleteLibrary refused, in counts. It wraps
+// ErrActiveWork.
+type LibraryBusyError struct {
+	Library string
+	// Running counts jobs a worker holds: leased, running, validating, or
+	// replacing.
+	Running int64
+	// Publishing counts jobs whose publish journal has not reached committed,
+	// whatever their state.
+	Publishing int64
+}
+
+func (e *LibraryBusyError) Error() string {
+	switch {
+	case e.Running > 0 && e.Publishing > 0:
+		return fmt.Sprintf("%v: library %q has %d running job(s) and %d job(s) with an unfinished publish", ErrActiveWork, e.Library, e.Running, e.Publishing)
+	case e.Running > 0:
+		return fmt.Sprintf("%v: library %q has %d running job(s); cancel them or let them finish, then delete it", ErrActiveWork, e.Library, e.Running)
+	default:
+		return fmt.Sprintf("%v: library %q has %d job(s) with an unfinished publish; retry them so the publish completes, then delete it", ErrActiveWork, e.Library, e.Publishing)
+	}
+}
+
+func (e *LibraryBusyError) Unwrap() error {
+	return ErrActiveWork
+}
+
 // DeleteLibrary removes a library together with every source, asset, job,
-// attempt, and scan record it owns, in one transaction. The media files are
-// not touched.
+// attempt, and scan record it owns, in one transaction, and returns the jobs
+// that went with it. The media files are not touched.
 //
-// It refuses with ErrActiveWork while the library has a job that is queued or
-// running, or one that maintenance must not disturb (see ProtectedJobs): a job
-// with an unresolved publish journal owns a destination file and possibly a
-// backup on disk, and deleting its row would strand them.
-func (s *SQLiteStore) DeleteLibrary(ctx context.Context, name string) error {
+// Jobs that only wait go with the library: a pending job has never run, and
+// one waiting to retry holds nothing a worker is using. The delete is refused
+// with a *LibraryBusyError in exactly two cases, and nothing is deleted then:
+//
+//   - a worker holds one of the library's jobs (leased, running, validating,
+//     or replacing). Its attempt writes a part file and may be about to
+//     replace a media file; deleting the row under it would leave that work
+//     without a record.
+//   - a job is one maintenance must not disturb because its publish journal
+//     has not reached committed (see ProtectedJobs). The journal names a
+//     destination file and possibly a backup on disk, and deleting the row
+//     would strand them. This holds whatever the job's state, so a job
+//     waiting to retry an interrupted publish keeps its library.
+//
+// Checking and deleting share the transaction, and the store has a single
+// connection, so no job can be leased between the two.
+func (s *SQLiteStore) DeleteLibrary(ctx context.Context, name string) ([]DeletedJob, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("begin library deletion: %w", err)
+		return nil, fmt.Errorf("begin library deletion: %w", err)
 	}
 	defer rollback(tx)
 	if _, err := getLibrary(ctx, tx, name); err != nil {
-		return err
+		return nil, err
 	}
 
-	terminal := terminalJobStates()
+	busy := LibraryBusyError{Library: name}
+	held := []domain.JobState{domain.JobStateLeased, domain.JobStateRunning, domain.JobStateValidating, domain.JobStateReplacing}
 	args := []any{name}
-	for _, state := range terminal {
+	for _, state := range held {
 		args = append(args, string(state))
 	}
-	var active int64
 	if err := tx.QueryRowContext(ctx, `
-SELECT count(*) FROM jobs j WHERE j.library_name = ? AND j.state NOT IN (`+placeholders(len(terminal))+`)
-`, args...).Scan(&active); err != nil {
-		return fmt.Errorf("count active jobs of library %q: %w", name, err)
+SELECT count(*) FROM jobs j WHERE j.library_name = ? AND j.state IN (`+placeholders(len(held))+`)
+`, args...).Scan(&busy.Running); err != nil {
+		return nil, fmt.Errorf("count running jobs of library %q: %w", name, err)
 	}
-	if active > 0 {
-		return fmt.Errorf("%w: library %q has %d queued or running job(s); cancel them or let them finish, then delete it", ErrActiveWork, name, active)
-	}
-	var journaled int64
 	if err := tx.QueryRowContext(ctx, `
 SELECT count(*) FROM jobs j WHERE j.library_name = ? AND `+unresolvedPublishCondition,
-		name, committedPublishStage()).Scan(&journaled); err != nil {
-		return fmt.Errorf("count journaled jobs of library %q: %w", name, err)
+		name, committedPublishStage()).Scan(&busy.Publishing); err != nil {
+		return nil, fmt.Errorf("count journaled jobs of library %q: %w", name, err)
 	}
-	if journaled > 0 {
-		return fmt.Errorf("%w: library %q has %d job(s) with an unfinished publish; retry them so the publish completes, then delete it", ErrActiveWork, name, journaled)
+	if busy.Running > 0 || busy.Publishing > 0 {
+		return nil, &busy
+	}
+
+	rows, err := tx.QueryContext(ctx, `SELECT id, COALESCE(slug, '') FROM jobs WHERE library_name = ? ORDER BY id`, name)
+	if err != nil {
+		return nil, fmt.Errorf("list jobs of library %q: %w", name, err)
+	}
+	var deleted []DeletedJob
+	for rows.Next() {
+		var job DeletedJob
+		if err := rows.Scan(&job.ID, &job.Slug); err != nil {
+			return nil, errors.Join(fmt.Errorf("scan job of library %q: %w", name, err), rows.Close())
+		}
+		deleted = append(deleted, job)
+	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		return nil, fmt.Errorf("list jobs of library %q: %w", name, err)
 	}
 
 	// Jobs go first by name: a job row always carries its library, also when
@@ -212,13 +270,13 @@ SELECT count(*) FROM jobs j WHERE j.library_name = ? AND `+unresolvedPublishCond
 		`DELETE FROM libraries WHERE name = ?`,
 	} {
 		if _, err := tx.ExecContext(ctx, statement, name); err != nil {
-			return fmt.Errorf("delete library %q: %w", name, err)
+			return nil, fmt.Errorf("delete library %q: %w", name, err)
 		}
 	}
 	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit library deletion: %w", err)
+		return nil, fmt.Errorf("commit library deletion: %w", err)
 	}
-	return nil
+	return deleted, nil
 }
 
 // LibraryOverview summarizes one library: what a scan last found, how its

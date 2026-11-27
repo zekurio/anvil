@@ -25,6 +25,101 @@ func Root(tempDir string) string {
 	return filepath.Join(tempDir, "staging")
 }
 
+// ProcessLogRoot reports where per-attempt process logs live inside a daemon
+// temp dir: one directory per job, named by the job's slug.
+func ProcessLogRoot(tempDir string) string {
+	return filepath.Join(tempDir, "process-logs")
+}
+
+// Job names a job whose scratch RemoveJobScratch removes.
+type Job struct {
+	ID   int64
+	Slug string
+}
+
+// RemoveJobScratch deletes what jobs that no longer exist left under a daemon
+// temp dir: their per-attempt staging directories and their process logs.
+// The caller must know that no attempt of these jobs can be running.
+//
+// It only ever removes a directory directly below the staging root or the
+// process log root whose name is exactly one Anvil gives such a directory for
+// one of the jobs. Media files live elsewhere and are never touched: nothing
+// here follows a path stored in a job, and a slug that could name anything
+// but a plain directory is refused. Every job is tried; the failures are
+// returned together.
+func RemoveJobScratch(tempDir string, jobs []Job) error {
+	tempDir = strings.TrimSpace(tempDir)
+	if len(jobs) == 0 {
+		return nil
+	}
+	if tempDir == "" || !filepath.IsAbs(tempDir) {
+		return fmt.Errorf("refusing to remove job scratch below temp dir %q: it must be an absolute path", tempDir)
+	}
+	stagingRoot := filepath.Clean(Root(tempDir))
+	if err := safeRoot(stagingRoot); err != nil {
+		return err
+	}
+	ids := make(map[int64]struct{}, len(jobs))
+	for _, job := range jobs {
+		ids[job.ID] = struct{}{}
+	}
+
+	var failures []error
+	entries, err := os.ReadDir(stagingRoot)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		failures = append(failures, fmt.Errorf("read staging root: %w", err))
+	}
+	for _, entry := range entries {
+		jobID, _, owned := parseStagingDirName(entry.Name())
+		if _, wanted := ids[jobID]; !owned || !wanted || !entry.IsDir() {
+			continue
+		}
+		if err := os.RemoveAll(filepath.Join(stagingRoot, entry.Name())); err != nil {
+			failures = append(failures, fmt.Errorf("remove staging of job %d: %w", jobID, err))
+		}
+	}
+
+	logRoot := filepath.Clean(ProcessLogRoot(tempDir))
+	for _, job := range jobs {
+		// The worker names the directory by the slug, or job-<id> for a job
+		// without one.
+		for _, label := range []string{job.Slug, fmt.Sprintf("job-%d", job.ID)} {
+			if !plainDirName(label) {
+				continue
+			}
+			dir := filepath.Join(logRoot, label)
+			info, err := os.Lstat(dir)
+			if errors.Is(err, os.ErrNotExist) || (err == nil && !info.IsDir()) {
+				continue
+			}
+			if err == nil {
+				err = os.RemoveAll(dir)
+			}
+			if err != nil {
+				failures = append(failures, fmt.Errorf("remove process logs of job %d: %w", job.ID, err))
+			}
+		}
+	}
+	return errors.Join(failures...)
+}
+
+// plainDirName reports whether a label can only name one entry directly
+// inside a directory: non-empty, made of the characters job slugs use, and so
+// neither ".", "..", nor a path.
+func plainDirName(label string) bool {
+	if label == "" {
+		return false
+	}
+	for _, r := range label {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '-', r == '_':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
 // CleanupStaleOptions describes one stale-staging sweep.
 type CleanupStaleOptions struct {
 	OlderThan time.Duration

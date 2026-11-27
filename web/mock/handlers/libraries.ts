@@ -146,7 +146,10 @@ export function libraryRoutes(router: Router): void {
   router.on("DELETE", "/libraries/:name", (ctx) => {
     const library = find(ctx);
     const running = db.files.filter((f) => f.library === library.name && f.status === "running").length;
-    if (running > 0) throw conflict(`${running} ${running === 1 ? "job is" : "jobs are"} still running in "${library.name}". Cancel ${running === 1 ? "it" : "them"} or wait until ${running === 1 ? "it finishes" : "they finish"}, then delete the library.`);
+    // As pkg/webapi: only a running job (or an unfinished publish) refuses; waiting jobs go with the library.
+    if (running > 0) {
+      throw conflict(`The library "${library.name}" cannot be deleted yet: ${running === 1 ? "1 job is running. Cancel it or wait until it has finished." : `${running} jobs are running. Cancel them or wait until they have finished.`} Jobs that only wait in the queue are deleted with the library.`);
+    }
     db.libraries.splice(db.libraries.indexOf(library), 1);
     db.files = db.files.filter((f) => f.library !== library.name);
     return noContent();

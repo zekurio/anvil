@@ -41,7 +41,7 @@ type Store interface {
 	GetLibrary(context.Context, string) (store.Library, error)
 	CreateLibrary(context.Context, config.LibraryConfig, time.Time) (store.Library, error)
 	UpdateLibrary(context.Context, config.LibraryConfig, time.Time) (store.Library, error)
-	DeleteLibrary(context.Context, string) error
+	DeleteLibrary(context.Context, string) ([]store.DeletedJob, error)
 	LibraryOverviews(context.Context) (map[string]store.LibraryOverview, error)
 	ListLibraryFiles(context.Context, store.LibraryFileFilter) ([]store.LibraryFile, int64, error)
 

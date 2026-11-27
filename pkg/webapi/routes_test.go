@@ -3,9 +3,12 @@ package webapi
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -229,11 +232,10 @@ func TestEveryRoute(t *testing.T) {
 	if inUse = wantError(t, f.send(http.MethodDelete, "/api/v1/arrs/radarr", nil), http.StatusConflict, CodeConflict); !strings.Contains(inUse.Message, "movies") {
 		t.Fatalf("arr in use = %+v, want it to name the library", inUse)
 	}
-	busy := wantError(t, f.send(http.MethodDelete, "/api/v1/libraries/movies", nil), http.StatusConflict, CodeConflict)
-	if !strings.Contains(busy.Message, "queued or running") {
-		t.Fatalf("library with a pending job = %+v", busy)
+	// The library still has a pending job. Jobs that only wait go with it.
+	if pending := want[Library](t, f.get("/api/v1/libraries/movies"), http.StatusOK).Stats.Pending; pending == 0 {
+		t.Fatal("the library has no pending job left to delete it with")
 	}
-	want[JobActionResult](t, f.send(http.MethodPost, "/api/v1/jobs/cancel", JobActionRequest{Library: "movies"}), http.StatusOK)
 	wantNoContent(t, f.send(http.MethodDelete, "/api/v1/libraries/movies", nil))
 	if len(f.config().Libraries) != 0 {
 		t.Fatal("the deleted library is still in the runtime snapshot")
@@ -511,5 +513,86 @@ func TestRuleChangeTakesDeniedFilesOffTheQueue(t *testing.T) {
 	}
 	if status := want[Status](t, f.get("/api/v1/status"), http.StatusOK); status.Queue["pending"] != 0 {
 		t.Fatalf("queue = %+v, want nothing pending", status.Queue)
+	}
+}
+
+// TestDeleteLibraryTakesWaitingJobsAndTheirScratchButNoMedia deletes a busy
+// library: it is refused only while a worker holds a job, takes its queue and
+// history along otherwise, removes what those jobs left under the temp dir,
+// and leaves every media file and every other job's scratch where it is.
+func TestDeleteLibraryTakesWaitingJobsAndTheirScratchButNoMedia(t *testing.T) {
+	ctx := context.Background()
+	f := newFixture(t, "", nil)
+	media := []string{f.writeMedia("a.mkv"), f.writeMedia("b.mkv"), f.writeMedia("Extras/c.mkv")}
+	f.mediaLibrary("movies", f.defaultFlow().ID)
+	want[ScanResult](t, f.send(http.MethodPost, "/api/v1/libraries/movies/scan", nil), http.StatusOK)
+
+	now := time.Now().UTC()
+	held, err := f.state.LeaseNextJob(ctx, "worker-1", now.Add(time.Hour), now)
+	if err != nil || held == nil {
+		t.Fatalf("LeaseNextJob = %v, %v", held, err)
+	}
+	refused := wantError(t, f.send(http.MethodDelete, "/api/v1/libraries/movies", nil), http.StatusConflict, CodeConflict)
+	if !strings.Contains(refused.Message, "1 job is running") || refused.Field != "" {
+		t.Fatalf("delete with a leased job = %+v, want it to say a job is running", refused)
+	}
+	if list := want[LibraryList](t, f.get("/api/v1/libraries"), http.StatusOK); len(list.Libraries) != 1 {
+		t.Fatal("the refused delete removed the library")
+	}
+	if _, err := f.state.ReleaseLeasedJob(ctx, held.ID, "worker-1", now); err != nil {
+		t.Fatal(err)
+	}
+
+	// Scratch of this library's jobs, of a job that is not its, and a
+	// directory nobody recognizes.
+	temp := f.config().Daemon.TempDir
+	jobs := want[JobList](t, f.get("/api/v1/jobs?library=movies"), http.StatusOK).Jobs
+	if len(jobs) != 3 {
+		t.Fatalf("jobs = %+v", jobs)
+	}
+	var own []string
+	for _, job := range jobs {
+		own = append(own,
+			filepath.Join(temp, "staging", fmt.Sprintf("job-%d-attempt-1", job.ID)),
+			filepath.Join(temp, "process-logs", job.Slug, "attempt-1"),
+		)
+	}
+	foreign := []string{
+		filepath.Join(temp, "staging", "job-999999-attempt-1"),
+		filepath.Join(temp, "staging", "operator-notes"),
+		filepath.Join(temp, "process-logs", "some-other-job-0123456789ab", "attempt-1"),
+	}
+	for _, dir := range append(slices.Clone(own), foreign...) {
+		if err := os.MkdirAll(dir, 0o750); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "encode-ffmpeg.stderr.log"), []byte("frame=1"), 0o640); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	wantNoContent(t, f.send(http.MethodDelete, "/api/v1/libraries/movies", nil))
+	if left := want[JobList](t, f.get("/api/v1/jobs"), http.StatusOK); left.Total != 0 {
+		t.Fatalf("jobs after the delete = %+v, want the queue gone with the library", left)
+	}
+	for _, dir := range own {
+		// The job's own directory is what goes; for process logs that is the
+		// parent of the attempt directory.
+		if _, err := os.Stat(dir); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("scratch %s of a deleted job is still there (%v)", dir, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(temp, "process-logs", jobs[0].Slug)); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the process log directory of a deleted job is still there (%v)", err)
+	}
+	for _, dir := range foreign {
+		if _, err := os.Stat(filepath.Join(dir, "encode-ffmpeg.stderr.log")); err != nil {
+			t.Errorf("scratch that is not the library's was touched: %v", err)
+		}
+	}
+	for _, file := range media {
+		if info, err := os.Stat(file); err != nil || info.Size() != 5000 {
+			t.Errorf("media file %s after the delete: %v, %v", file, info, err)
+		}
 	}
 }

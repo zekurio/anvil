@@ -3,6 +3,8 @@ package webapi
 import (
 	"context"
 	"errors"
+	"fmt"
+	"log/slog"
 	"net/http"
 	"path/filepath"
 	"regexp"
@@ -13,6 +15,7 @@ import (
 	"github.com/zekurio/anvil/pkg/controlapi"
 	"github.com/zekurio/anvil/pkg/domain"
 	"github.com/zekurio/anvil/pkg/flow"
+	"github.com/zekurio/anvil/pkg/staging"
 	"github.com/zekurio/anvil/pkg/store"
 )
 
@@ -226,15 +229,49 @@ func (s *Server) deleteLibrary(_ http.ResponseWriter, r *http.Request) (int, any
 	if _, err := s.storedLibrary(r.Context(), name); err != nil {
 		return fail(err)
 	}
-	// The store refuses while the library has queued or running jobs or an
-	// unfinished publish, and says which; classify turns that into a 409.
-	if err := s.Store.DeleteLibrary(r.Context(), name); err != nil {
+	// Jobs that only wait go with the library. The store refuses while a
+	// worker holds one of its jobs or a publish has not finished, and says
+	// which.
+	deleted, err := s.Store.DeleteLibrary(r.Context(), name)
+	var busy *store.LibraryBusyError
+	switch {
+	case errors.As(err, &busy):
+		return fail(conflictf("%s", libraryBusy(busy)))
+	case err != nil:
 		return fail(err)
 	}
 	if err := s.refresh(r.Context()); err != nil {
 		return fail(err)
 	}
+	// The deleted jobs' scratch goes last and cannot fail the request: the
+	// library is gone either way, and what is left is only disk space the
+	// staging cleanup also knows how to reclaim.
+	scratch := make([]staging.Job, 0, len(deleted))
+	for _, job := range deleted {
+		scratch = append(scratch, staging.Job{ID: int64(job.ID), Slug: job.Slug})
+	}
+	if err := staging.RemoveJobScratch(s.Config().Daemon.TempDir, scratch); err != nil {
+		slog.Warn("scratch of a deleted library could not be removed", "library", name, "jobs", len(deleted), "error", err)
+	}
 	return noContent()
+}
+
+// libraryBusy says why a library cannot be deleted right now, and what to do.
+func libraryBusy(busy *store.LibraryBusyError) string {
+	count := func(n int64, one, many string) string {
+		if n == 1 {
+			return "1 " + one
+		}
+		return fmt.Sprintf("%d %s", n, many)
+	}
+	var reasons []string
+	if busy.Running > 0 {
+		reasons = append(reasons, count(busy.Running, "job is running. Cancel it or wait until it has finished.", "jobs are running. Cancel them or wait until they have finished."))
+	}
+	if busy.Publishing > 0 {
+		reasons = append(reasons, count(busy.Publishing, "job has not finished publishing its result. Retry it so the publish completes.", "jobs have not finished publishing their results. Retry them so the publishes complete."))
+	}
+	return fmt.Sprintf("The library %q cannot be deleted yet: %s Jobs that only wait in the queue are deleted with the library.", busy.Library, strings.Join(reasons, " Also, "))
 }
 
 func (s *Server) scanLibrary(_ http.ResponseWriter, r *http.Request) (int, any, error) {

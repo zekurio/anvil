@@ -6,7 +6,7 @@ import { FormBar, FormSection } from "../../../features/layout/Form";
 import { homeTarget } from "../../../features/libraries/home";
 import { replacesInPlace, resumeConsequence, toWrite } from "../../../features/libraries/library";
 import { createDraft } from "../../../lib/draft";
-import { formatGoDuration, plural } from "../../../lib/format";
+import { formatCount, formatGoDuration, plural } from "../../../lib/format";
 import { useUnsavedChanges } from "../../../lib/guard";
 import { run } from "../../../lib/mutate";
 import { useAppData } from "../../../shell/data";
@@ -239,7 +239,7 @@ function SettingsForm(props: { library: Library }) {
           </FormSection>
         </Show>
 
-        <FormSection danger title="Delete library" description="anvil forgets this library, its rules and its job history. No media file is deleted or changed.">
+        <FormSection danger title="Delete library" description="anvil forgets this library, its rules, its queue and its job history. No media file is deleted or changed.">
           <div>
             <Button variant="danger" icon="trash-2" class="av-btn-danger-outline" onClick={() => setDeleting(true)}>
               Delete library
@@ -273,6 +273,21 @@ function SettingsForm(props: { library: Library }) {
   );
 }
 
+/**
+ * What deleting a library does, as the daemon does it (pkg/store DeleteLibrary):
+ * waiting jobs go with the library, and only a running job or an unfinished
+ * publish refuses the delete.
+ */
+function deleteConsequence(library: Library): string {
+  const { files, pending, running } = library.stats;
+  const queue = pending > 0 ? ` ${pending === 1 ? "The 1 job that waits in its queue is deleted with it and never runs." : `The ${formatCount(pending)} jobs that wait in its queue are deleted with it and never run.`}` : "";
+  const refused =
+    running > 0
+      ? ` ${running === 1 ? "1 job is running: cancel it or wait until it has finished, or the daemon refuses the delete." : `${formatCount(running)} jobs are running: cancel them or wait until they have finished, or the daemon refuses the delete.`}`
+      : " The daemon refuses the delete while a job is running or has not finished publishing its result.";
+  return `anvil forgets this library: its rules, the ${plural(files, "file")} it tracks and its job history, along with the process logs and scratch files of its jobs under the daemon's temp dir.${queue} No media file is deleted or changed: everything in ${library.path} stays as it is.${refused}`;
+}
+
 /** Asks for the library's name before deleting it, and keeps the daemon's refusal on screen. */
 function DeleteLibraryDialog(props: { library: Library; onClose: () => void; onDeleted: () => void }) {
   const navigate = useNavigate();
@@ -281,7 +296,6 @@ function DeleteLibraryDialog(props: { library: Library; onClose: () => void; onD
   const [refusal, setRefusal] = createSignal<string | null>(null);
   const [busy, setBusy] = createSignal(false);
   const name = () => props.library.name;
-  const stats = () => props.library.stats;
 
   const remove = async (event: SubmitEvent) => {
     event.preventDefault();
@@ -294,7 +308,7 @@ function DeleteLibraryDialog(props: { library: Library; onClose: () => void; onD
     try {
       await api.libraries.remove(deleted);
     } catch (error) {
-      // 409: jobs are active or protected. The daemon says which, so its words stay in the dialog.
+      // 409: a job is running or has not finished publishing. The daemon says which, so its words stay in the dialog.
       setRefusal(errorMessage(error));
       setBusy(false);
       return;
@@ -314,7 +328,7 @@ function DeleteLibraryDialog(props: { library: Library; onClose: () => void; onD
       dismissible={!busy()}
       onClose={props.onClose}
       title={`Delete the library ${name()}?`}
-      description={`anvil forgets this library, its rules and the history of its ${plural(stats().files, "file")}. No media file is deleted or changed: everything in ${props.library.path} stays as it is.`}
+      description={deleteConsequence(props.library)}
       footer={
         <>
           <Button onClick={props.onClose} disabled={busy()}>

@@ -182,7 +182,7 @@ func TestScansOfAnUnknownLibraryAreRefused(t *testing.T) {
 	}
 	// The library is deleted while the scan walks the filesystem: applying
 	// its result must not bring sources back.
-	if err := state.DeleteLibrary(ctx, "movies"); err != nil {
+	if _, err := state.DeleteLibrary(ctx, "movies"); err != nil {
 		t.Fatal(err)
 	}
 	entry := scanTestEntry(1)
@@ -594,7 +594,7 @@ func TestFlowAndArrInUseCannotBeDeleted(t *testing.T) {
 	}
 
 	for _, name := range []string{"shows", "movies"} {
-		if err := state.DeleteLibrary(ctx, name); err != nil {
+		if _, err := state.DeleteLibrary(ctx, name); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -786,43 +786,88 @@ func TestDeleteLibraryRefusesLiveWorkAndRemovesEverythingElse(t *testing.T) {
 	}
 	jobs := seedLibraryFiles(t, state, "movies")
 	seedLibraryFiles(t, state, "shows")
+	remaining := func(table, column string) int {
+		t.Helper()
+		var count int
+		if err := state.db.QueryRowContext(ctx, `SELECT count(*) FROM `+table+` WHERE `+column+` = 'movies'`).Scan(&count); err != nil {
+			t.Fatal(err)
+		}
+		return count
+	}
+	wantBusy := func(err error, running, publishing int64, words string) {
+		t.Helper()
+		var busy *LibraryBusyError
+		if !errors.As(err, &busy) || !errors.Is(err, ErrActiveWork) || busy.Running != running || busy.Publishing != publishing || !strings.Contains(err.Error(), words) {
+			t.Fatalf("delete = %v, want it refused for %d running and %d publishing job(s), saying %q", err, running, publishing, words)
+		}
+		// A refusal deletes nothing.
+		if remaining("jobs", "library_name") != 3 || remaining("libraries", "name") != 1 {
+			t.Fatal("a refused delete removed rows")
+		}
+	}
 
-	if err := state.DeleteLibrary(ctx, "movies"); !errors.Is(err, ErrActiveWork) || !strings.Contains(err.Error(), "3 queued or running") {
-		t.Fatalf("delete with pending jobs = %v", err)
+	// A job a worker holds refuses the delete, in every state a worker can
+	// hold it in. The two jobs that only wait do not.
+	now := time.Now().UTC()
+	leased, err := state.LeaseNextJobForLibraries(ctx, "worker-1", now.Add(time.Hour), now, []domain.LibraryName{"movies"})
+	if err != nil || leased == nil {
+		t.Fatalf("LeaseNextJobForLibraries = %v, %v", leased, err)
 	}
-	ids := make([]domain.JobID, 0, len(jobs))
-	for _, job := range jobs {
-		ids = append(ids, job.ID)
-	}
-	if _, err := state.CancelJobs(ctx, CancelJobsInput{IDs: ids, Now: time.Now()}); err != nil {
+	_, err = state.DeleteLibrary(ctx, "movies")
+	wantBusy(err, 1, 0, "1 running job(s)")
+	attempt, err := state.StartAttempt(ctx, leased.ID, "worker-1", nil, nil, nil, now)
+	if err != nil {
 		t.Fatal(err)
 	}
+	for _, held := range []domain.JobState{domain.JobStateRunning, domain.JobStateValidating, domain.JobStateReplacing} {
+		if _, err := state.TransitionJob(ctx, leased.ID, held, now, ""); err != nil {
+			t.Fatal(err)
+		}
+		_, err = state.DeleteLibrary(ctx, "movies")
+		wantBusy(err, 1, 0, "running job(s)")
+	}
 
-	// A terminal job that still owns an unfinished publish names files on
-	// disk only its own recovery can resolve.
-	journaled := jobs["gamma.mkv"].ID
+	// The attempt fails and the job waits to retry: nothing holds it any
+	// more. With an unfinished publish it still keeps its library, because
+	// the journal names files on disk only the job's own recovery can
+	// resolve.
+	if _, err := state.FinishAttempt(ctx, attempt.ID, domain.AttemptStateFailed, "publish interrupted", now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := state.TransitionJob(ctx, leased.ID, domain.JobStateRetrying, now, "publish interrupted"); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := state.db.ExecContext(ctx, `
 INSERT INTO publish_operations (job_id, stage, operation_json, created_at, updated_at) VALUES (?, ?, '{}', ?, ?)
-`, int64(journaled), string(replacepkg.PublishStagePublished), encodeTime(time.Now()), encodeTime(time.Now())); err != nil {
+`, int64(leased.ID), string(replacepkg.PublishStagePublished), encodeTime(now), encodeTime(now)); err != nil {
 		t.Fatal(err)
 	}
-	if err := state.DeleteLibrary(ctx, "movies"); !errors.Is(err, ErrActiveWork) || !strings.Contains(err.Error(), "unfinished publish") {
-		t.Fatalf("delete with a publish journal = %v", err)
-	}
-	if _, err := state.db.ExecContext(ctx, `UPDATE publish_operations SET stage = 'committed' WHERE job_id = ?`, int64(journaled)); err != nil {
+	_, err = state.DeleteLibrary(ctx, "movies")
+	wantBusy(err, 0, 1, "unfinished publish")
+	if _, err := state.db.ExecContext(ctx, `UPDATE publish_operations SET stage = 'committed' WHERE job_id = ?`, int64(leased.ID)); err != nil {
 		t.Fatal(err)
 	}
 
-	if err := state.DeleteLibrary(ctx, "movies"); err != nil {
-		t.Fatalf("DeleteLibrary: %v", err)
+	// Two pending jobs and one waiting to retry: the library goes, and takes
+	// them and their history with it.
+	deleted, err := state.DeleteLibrary(ctx, "movies")
+	if err != nil {
+		t.Fatalf("DeleteLibrary with waiting jobs: %v", err)
+	}
+	if len(deleted) != len(jobs) {
+		t.Fatalf("deleted jobs = %+v, want all %d", deleted, len(jobs))
+	}
+	for _, job := range deleted {
+		if job.ID == 0 || job.Slug == "" {
+			t.Errorf("deleted job %+v lacks its id or slug", job)
+		}
 	}
 	for table, column := range map[string]string{
 		"jobs": "library_name", "media_sources": "library_name", "library_scans": "library_name",
 		"source_scans": "library_name", "libraries": "name",
 	} {
-		var remaining int
-		if err := state.db.QueryRowContext(ctx, `SELECT count(*) FROM `+table+` WHERE `+column+` = 'movies'`).Scan(&remaining); err != nil || remaining != 0 {
-			t.Errorf("%s still has %d rows of the deleted library, %v", table, remaining, err)
+		if count := remaining(table, column); count != 0 {
+			t.Errorf("%s still has %d rows of the deleted library", table, count)
 		}
 	}
 	for _, table := range []string{"media_assets", "attempts", "publish_operations"} {
@@ -838,11 +883,24 @@ INSERT INTO publish_operations (job_id, stage, operation_json, created_at, updat
 			t.Errorf("%s has %d orphaned rows, %v", table, orphans, err)
 		}
 	}
-	// The other library is untouched.
+	// The other library is untouched, and nothing of the deleted one can be
+	// leased any more.
 	if files, total, err := state.ListLibraryFiles(ctx, LibraryFileFilter{LibraryName: "shows"}); err != nil || total != 3 || len(files) != 3 {
 		t.Fatalf("other library after delete: %d files, total %d, %v", len(files), total, err)
 	}
-	if err := state.DeleteLibrary(ctx, "movies"); !errors.Is(err, ErrNotFound) {
+	for {
+		next, err := state.LeaseNextJob(ctx, "worker-1", now.Add(time.Hour), now)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if next == nil {
+			break
+		}
+		if next.LibraryName != "shows" {
+			t.Fatalf("leased %+v, a job of the deleted library", next)
+		}
+	}
+	if _, err := state.DeleteLibrary(ctx, "movies"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("second delete = %v, want ErrNotFound", err)
 	}
 }

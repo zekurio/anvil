@@ -165,7 +165,7 @@ func (r Runner) Run(ctx context.Context, assignment scheduler.Assignment) error 
 		pipelineRunner.StepPersistence = contextPersistence
 	}
 	pipelineCtx := process.WithLogger(ctx, &processLogRecorder{
-		root:      filepath.Join(r.tempDir(cfg), "process-logs"),
+		root:      staging.ProcessLogRoot(r.tempDir(cfg)),
 		jobID:     assignment.Job.ID,
 		jobSlug:   assignment.Job.Slug,
 		attemptID: attempt.ID,
