@@ -3,6 +3,7 @@ package webapi
 import (
 	"time"
 
+	"github.com/zekurio/anvil/pkg/config"
 	"github.com/zekurio/anvil/pkg/control"
 	"github.com/zekurio/anvil/pkg/flow"
 )
@@ -20,6 +21,7 @@ import (
 //
 //	GET    /api/v1/status                     Status
 //	GET    /api/v1/settings                   Settings
+//	PUT    /api/v1/settings/daemon            DaemonSettingsWrite -> Settings
 //	GET    /api/v1/fs?path=&files=            Directory
 //
 //	GET    /api/v1/node-types                 NodeTypes
@@ -144,8 +146,9 @@ type Progress struct {
 	UpdatedAt  time.Time `json:"updated_at"`
 }
 
-// Settings is the read-only view of what the daemon was started with. The
-// file on disk stays the place to change these.
+// Settings is what the daemon runs with. The keys of DaemonValues can be
+// changed with PUT /api/v1/settings/daemon unless anvil.toml or an anvild
+// option sets them; everything else is changed in the file.
 type Settings struct {
 	Version    string         `json:"version"`
 	ConfigPath string         `json:"config_path"`
@@ -153,23 +156,82 @@ type Settings struct {
 	Web        WebSettings    `json:"web"`
 }
 
-// DaemonSettings mirrors the [daemon] table with defaults filled in.
+// DaemonSettings mirrors the [daemon] table as the daemon runs it: defaults
+// filled in, and the values saved in the web UI merged in.
 type DaemonSettings struct {
 	// MediaRoots confines GET /fs and library paths when it is not empty.
 	// It is an empty list, never null, when the daemon sets none.
-	MediaRoots        []string `json:"media_roots"`
-	TempDir           string   `json:"temp_dir"`
-	StorePath         string   `json:"store_path"`
-	ControlSocket     string   `json:"control_socket"`
-	WorkerCount       int      `json:"worker_count"`
-	TotalThreads      int      `json:"total_threads"`
-	MaxThreadsPerJob  int      `json:"max_threads_per_job"`
-	MaxAttempts       int      `json:"max_attempts"`
-	ScanInterval      string   `json:"scan_interval"`
-	LeaseDuration     string   `json:"lease_duration"`
-	ShutdownPolicy    string   `json:"shutdown_policy"`
-	StagingCleanupAge string   `json:"staging_cleanup_age"`
-	LogLevel          string   `json:"log_level"`
+	MediaRoots    []string `json:"media_roots"`
+	TempDir       string   `json:"temp_dir"`
+	StorePath     string   `json:"store_path"`
+	ControlSocket string   `json:"control_socket"`
+	DaemonValues
+	// Defaults holds the value each key of DaemonValues takes when neither
+	// anvil.toml, an option, nor the web UI sets it.
+	Defaults DaemonValues `json:"defaults"`
+	// Keys describes each key of DaemonValues, by its JSON name.
+	Keys map[string]DaemonKey `json:"keys"`
+}
+
+// DaemonValues are the [daemon] keys the web UI can change, in the order of
+// pkg/config. Counts are numbers; durations are Go duration strings.
+type DaemonValues struct {
+	WorkerCount             int    `json:"worker_count"`
+	TotalThreads            int    `json:"total_threads"`
+	MaxThreadsPerJob        int    `json:"max_threads_per_job"`
+	MaxAttempts             int    `json:"max_attempts"`
+	ScanInterval            string `json:"scan_interval"`
+	FilesystemEventDebounce string `json:"filesystem_event_debounce"`
+	SchedulerInterval       string `json:"scheduler_interval"`
+	LeaseDuration           string `json:"lease_duration"`
+	ShutdownPolicy          string `json:"shutdown_policy"`
+	ShutdownTimeout         string `json:"shutdown_timeout"`
+	StagingCleanupAge       string `json:"staging_cleanup_age"`
+	LogLevel                string `json:"log_level"`
+}
+
+// Where the value of a DaemonValues key comes from.
+const (
+	SourceFile    = config.SourceFile    // "file": anvil.toml sets it; not editable
+	SourceFlag    = config.SourceFlag    // "flag": an anvild command-line option sets it; not editable
+	SourceStore   = config.SourceStore   // "store": saved in the web UI
+	SourceDefault = config.SourceDefault // "default": nothing sets it
+)
+
+// DaemonKey says where one value of DaemonValues comes from, and whether the
+// web UI can change it.
+type DaemonKey struct {
+	// Source is one of the Source constants.
+	Source string `json:"source"`
+	// Editable is false when the source is SourceFile or SourceFlag: only
+	// the file or the command line can change the key then.
+	Editable bool `json:"editable"`
+	// AtStart is true for a key the daemon acts on only when it starts: a
+	// change takes effect at the next start.
+	AtStart bool `json:"at_start"`
+	// Choices lists the values an enumerated key accepts, and is empty for
+	// the others.
+	Choices []string `json:"choices"`
+}
+
+// DaemonSettingsWrite replaces every [daemon] value saved in the web UI. A
+// key that is null or absent goes back to its default, so a client sends
+// each editable key it shows. A key whose source is SourceFile or SourceFlag
+// must be null or absent; a value for one is refused with CodeInvalid and the
+// key as Field. The answer is the Settings the daemon now runs with.
+type DaemonSettingsWrite struct {
+	WorkerCount             *int    `json:"worker_count"`
+	TotalThreads            *int    `json:"total_threads"`
+	MaxThreadsPerJob        *int    `json:"max_threads_per_job"`
+	MaxAttempts             *int    `json:"max_attempts"`
+	ScanInterval            *string `json:"scan_interval"`
+	FilesystemEventDebounce *string `json:"filesystem_event_debounce"`
+	SchedulerInterval       *string `json:"scheduler_interval"`
+	LeaseDuration           *string `json:"lease_duration"`
+	ShutdownPolicy          *string `json:"shutdown_policy"`
+	ShutdownTimeout         *string `json:"shutdown_timeout"`
+	StagingCleanupAge       *string `json:"staging_cleanup_age"`
+	LogLevel                *string `json:"log_level"`
 }
 
 // WebSettings mirrors the [web] table.

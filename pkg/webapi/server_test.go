@@ -26,6 +26,7 @@ func TestPasswordGuardsEveryRouteButTheSession(t *testing.T) {
 	for _, c := range []call{
 		{method: http.MethodGet, path: "/api/v1/status"},
 		{method: http.MethodGet, path: "/api/v1/settings"},
+		{method: http.MethodPut, path: "/api/v1/settings/daemon", body: DaemonSettingsWrite{WorkerCount: pointer(1)}},
 		{method: http.MethodGet, path: "/api/v1/fs?path=/"},
 		{method: http.MethodGet, path: "/api/v1/flows"},
 		{method: http.MethodPost, path: "/api/v1/flows", body: FlowWrite{Name: "x", Graph: skipHEVC()}},
@@ -178,6 +179,7 @@ func TestMutationsNeedAJSONContentType(t *testing.T) {
 		for _, c := range []call{
 			{method: http.MethodPost, path: "/api/v1/flows", body: `{"name":"x"}`},
 			{method: http.MethodPut, path: "/api/v1/libraries/movies", body: `{}`},
+			{method: http.MethodPut, path: "/api/v1/settings/daemon", body: `{"worker_count":1}`},
 			{method: http.MethodDelete, path: "/api/v1/flows/1"},
 			{method: http.MethodPost, path: "/api/v1/libraries/movies/scan"},
 			{method: http.MethodPost, path: "/api/v1/session", body: `{"password":"x"}`},
@@ -214,9 +216,7 @@ func TestHostHeaderIsCheckedWithoutAPassword(t *testing.T) {
 	}
 
 	// A daemon told to listen on a name answers to that name.
-	f.mu.Lock()
-	f.cfg.Web.Listen = "anvil.lan:8484"
-	f.mu.Unlock()
+	f.configure(func(cfg *config.Config) { cfg.Web.Listen = "anvil.lan:8484" })
 	if recorder := f.do(call{method: http.MethodGet, path: "/api/v1/status", host: "anvil.lan:8484"}); recorder.Code != http.StatusOK {
 		t.Errorf("listen host: status = %d, body: %s", recorder.Code, recorder.Body.String())
 	}

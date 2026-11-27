@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/zekurio/anvil/pkg/config"
 	"github.com/zekurio/anvil/pkg/domain"
 	"github.com/zekurio/anvil/pkg/flow"
 	"github.com/zekurio/anvil/pkg/flowstep"
@@ -251,9 +252,7 @@ func TestEveryRoute(t *testing.T) {
 
 func TestMediaRootsConfineBrowsingAndLibraryWrites(t *testing.T) {
 	f := newFixture(t, "", nil)
-	f.mu.Lock()
-	f.cfg.Daemon.MediaRoots = []string{f.media}
-	f.mu.Unlock()
+	f.configure(func(cfg *config.Config) { cfg.Daemon.MediaRoots = []string{f.media} })
 
 	outside := t.TempDir()
 	listing := want[Directory](t, f.get("/api/v1/fs?path="+url.QueryEscape(outside)), http.StatusOK)
@@ -279,9 +278,7 @@ func TestLibraryOutsideMediaRootsCanStillBePaused(t *testing.T) {
 	f := newFixture(t, "", nil)
 	f.mediaLibrary("movies", f.defaultFlow().ID)
 	roots := t.TempDir()
-	f.mu.Lock()
-	f.cfg.Daemon.MediaRoots = []string{roots}
-	f.mu.Unlock()
+	f.configure(func(cfg *config.Config) { cfg.Daemon.MediaRoots = []string{roots} })
 
 	write := LibraryWrite{Name: "movies", Kind: "media", Path: f.media, FlowID: f.defaultFlow().ID, Paused: true}
 	if got := want[Library](t, f.send(http.MethodPut, "/api/v1/libraries/movies", write), http.StatusOK); !got.Paused {

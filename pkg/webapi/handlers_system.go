@@ -143,31 +143,6 @@ func (s *Server) progressOf(id int64, library, path, flowName string, updatedAt 
 	return progress
 }
 
-func (s *Server) settings(http.ResponseWriter, *http.Request) (int, any, error) {
-	cfg := s.Config()
-	return ok(Settings{
-		Version:    s.Version,
-		ConfigPath: s.ConfigPath,
-		Daemon: DaemonSettings{
-			// Never null: the UI lists them.
-			MediaRoots:        append([]string{}, cfg.Daemon.MediaRoots...),
-			TempDir:           cfg.Daemon.TempDir,
-			StorePath:         cfg.Daemon.StorePath,
-			ControlSocket:     cfg.Daemon.ControlSocket,
-			WorkerCount:       cfg.Daemon.WorkerCount,
-			TotalThreads:      cfg.Daemon.TotalThreads,
-			MaxThreadsPerJob:  cfg.Daemon.MaxThreadsPerJob,
-			MaxAttempts:       cfg.Daemon.MaxAttempts,
-			ScanInterval:      durationText(cfg.Daemon.ScanInterval.Duration),
-			LeaseDuration:     durationText(cfg.Daemon.LeaseDuration.Duration),
-			ShutdownPolicy:    cfg.Daemon.ShutdownPolicy,
-			StagingCleanupAge: durationText(cfg.Daemon.StagingCleanupAge.Duration),
-			LogLevel:          cfg.Daemon.LogLevel,
-		},
-		Web: WebSettings{Listen: cfg.Web.Listen, AuthRequired: s.auth.required()},
-	})
-}
-
 func (s *Server) nodeTypes(http.ResponseWriter, *http.Request) (int, any, error) {
 	return ok(NodeTypes{NodeTypes: flow.Catalog()})
 }

@@ -26,8 +26,8 @@ import (
 )
 
 // Store is what the web API needs from persistence beyond what it asks of the
-// job service: flows, libraries, and Arr connections, which only it edits,
-// and the read side of files and jobs.
+// job service: flows, libraries, Arr connections, and the daemon settings,
+// which only it edits, and the read side of files and jobs.
 type Store interface {
 	ListFlows(context.Context) ([]store.Flow, error)
 	GetFlow(context.Context, int64) (store.Flow, error)
@@ -57,6 +57,8 @@ type Store interface {
 	ListAttemptsForJob(context.Context, domain.JobID) ([]domain.Attempt, error)
 	LatestAttempts(context.Context, []domain.JobID) (map[domain.JobID]store.LatestAttempt, error)
 	GetJobPipelineContext(context.Context, domain.JobID) (domain.JobPipelineContext, bool, error)
+
+	SetDaemonSettings(context.Context, config.DaemonOverrides) error
 }
 
 // Jobs is the daemon's job service, the same one the control socket serves.
@@ -93,9 +95,11 @@ type Server struct {
 	Jobs  Jobs
 	// Config returns the daemon's runtime snapshot.
 	Config func() config.Config
-	// Refresh re-reads libraries and Arr connections from the store into the
-	// runtime snapshot and wakes the scan monitor. Every change to either is
-	// persisted, then refreshed, and only then answered.
+	// Refresh re-reads the daemon settings, libraries, and Arr connections
+	// from the store into the runtime snapshot, merged over anvil.toml the
+	// way a reload merges them, and wakes the scan monitor and the scheduler.
+	// Every change to any of them is persisted, then refreshed, and only
+	// then answered.
 	Refresh func(context.Context) error
 	// Progress may be nil: no job then reports live progress.
 	Progress ProgressSource
@@ -113,8 +117,9 @@ type Server struct {
 	ProbeTimeout time.Duration
 
 	auth auth
-	// mutations serializes changes to flows, libraries, and Arr connections,
-	// so validating against the current state and then writing is one step.
+	// mutations serializes changes to flows, libraries, Arr connections, and
+	// the daemon settings, so validating against the current state and then
+	// writing is one step.
 	mutations sync.Mutex
 }
 
@@ -175,6 +180,7 @@ func (s *Server) Handler() http.Handler {
 
 	route("GET /api/v1/status", s.status)
 	route("GET /api/v1/settings", s.settings)
+	route("PUT /api/v1/settings/daemon", s.updateDaemonSettings)
 	route("GET /api/v1/fs", s.listDirectory)
 
 	route("GET /api/v1/node-types", s.nodeTypes)

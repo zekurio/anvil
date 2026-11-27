@@ -39,9 +39,12 @@ type fixture struct {
 	// cookie is sent with every request once set.
 	cookie *http.Cookie
 
-	mu  sync.Mutex
-	cfg config.Config
-	now time.Time
+	mu sync.Mutex
+	// loaded is what the fixture's anvil.toml says; cfg is the snapshot
+	// refresh builds from it and the store.
+	loaded config.Config
+	cfg    config.Config
+	now    time.Time
 }
 
 func newFixture(t *testing.T, password string, ui fs.FS) *fixture {
@@ -59,9 +62,10 @@ func newFixture(t *testing.T, password string, ui fs.FS) *fixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	f := &fixture{t: t, state: state, media: media, codec: "h264", cfg: config.Default(), now: time.Now().UTC()}
-	f.cfg.Web.Listen = testHost
-	f.cfg.Daemon.TempDir = t.TempDir()
+	f := &fixture{t: t, state: state, media: media, codec: "h264", loaded: config.Default(), now: time.Now().UTC()}
+	f.loaded.Web.Listen = testHost
+	f.loaded.Daemon.TempDir = t.TempDir()
+	f.cfg = f.loaded
 	f.server = &Server{
 		Store: state,
 		Jobs: controlapi.Service{
@@ -99,7 +103,14 @@ func (f *fixture) advance(by time.Duration) {
 	f.now = f.now.Add(by)
 }
 
+// refresh rebuilds the snapshot the way the daemon's runtime config does:
+// the daemon settings saved in the store merged over loaded, then the
+// libraries and Arr connections of the store.
 func (f *fixture) refresh(ctx context.Context) error {
+	overrides, err := f.state.DaemonSettings(ctx)
+	if err != nil {
+		return err
+	}
 	libraries, err := f.state.ListLibraries(ctx)
 	if err != nil {
 		return err
@@ -110,15 +121,32 @@ func (f *fixture) refresh(ctx context.Context) error {
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.cfg.Libraries = make(map[string]config.LibraryConfig, len(libraries))
+	next, err := f.loaded.WithDaemonOverrides(overrides)
+	if err != nil {
+		return err
+	}
+	next.Libraries = make(map[string]config.LibraryConfig, len(libraries))
 	for _, library := range libraries {
-		f.cfg.Libraries[library.Name] = library.LibraryConfig
+		next.Libraries[library.Name] = library.LibraryConfig
 	}
-	f.cfg.Arrs = make(map[string]config.ArrConfig, len(arrs))
+	next.Arrs = make(map[string]config.ArrConfig, len(arrs))
 	for _, arr := range arrs {
-		f.cfg.Arrs[arr.Name] = arr.ArrConfig
+		next.Arrs[arr.Name] = arr.ArrConfig
 	}
+	f.cfg = next
 	return nil
+}
+
+// configure changes what the fixture's anvil.toml says and rebuilds the
+// snapshot from it, the way a reload does.
+func (f *fixture) configure(change func(*config.Config)) {
+	f.t.Helper()
+	f.mu.Lock()
+	change(&f.loaded)
+	f.mu.Unlock()
+	if err := f.refresh(context.Background()); err != nil {
+		f.t.Fatal(err)
+	}
 }
 
 // Probe stands in for ffprobe: a 1080p file with one stereo English track.

@@ -431,7 +431,7 @@ export interface Progress {
   updated_at: string;
 }
 
-/** Read-only view of what the daemon was started with. */
+/** What the daemon runs with. The keys of DaemonValues can be changed with PUT /settings/daemon unless anvil.toml or an anvild option sets them. */
 export interface Settings {
   version: string;
   config_path: string;
@@ -439,22 +439,56 @@ export interface Settings {
   web: WebSettings;
 }
 
-export interface DaemonSettings {
+/** The [daemon] table as the daemon runs it: defaults filled in, values saved in the web UI merged in. */
+export interface DaemonSettings extends DaemonValues {
   /** Confines GET /fs and library paths when it is not empty. Empty, never null, when the daemon sets none. */
   media_roots: string[];
   temp_dir: string;
   store_path: string;
   control_socket: string;
+  /** The value each key takes when neither anvil.toml, an option, nor the web UI sets it. */
+  defaults: DaemonValues;
+  keys: Record<DaemonKeyName, DaemonKey>;
+}
+
+/** The [daemon] keys the web UI can change, in the order of pkg/config. Durations are Go duration strings. */
+export interface DaemonValues {
   worker_count: number;
   total_threads: number;
   max_threads_per_job: number;
   max_attempts: number;
   scan_interval: string;
+  filesystem_event_debounce: string;
+  scheduler_interval: string;
   lease_duration: string;
   shutdown_policy: string;
+  shutdown_timeout: string;
   staging_cleanup_age: string;
   log_level: string;
 }
+
+export type DaemonKeyName = keyof DaemonValues;
+
+/** file: anvil.toml sets it. flag: an anvild command-line option sets it. store: saved in the web UI. default: nothing sets it. */
+export type DaemonKeySource = "file" | "flag" | "store" | "default";
+
+/** Where one value of DaemonValues comes from, and whether the web UI can change it. */
+export interface DaemonKey {
+  source: DaemonKeySource;
+  /** False for "file" and "flag": only the file or the command line can change the key then. */
+  editable: boolean;
+  /** The daemon acts on the key only when it starts: a change takes effect at the next start. */
+  at_start: boolean;
+  /** The values an enumerated key accepts; empty for the others. */
+  choices: string[];
+}
+
+/**
+ * Replaces every [daemon] value saved in the web UI. A key that is null or
+ * absent goes back to its default, so send each editable key. A value for a
+ * key that is not editable is refused with that key as the error's field.
+ */
+export type DaemonSettingsWrite = { [K in DaemonKeyName]?: DaemonValues[K] | null };
 
 export interface WebSettings {
   listen: string;

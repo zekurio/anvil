@@ -1,7 +1,7 @@
 // The mock daemon's in-memory state. It lives for one dev-server run; restart
 // `npm run dev:mock` to get the fixtures back.
 
-import type { Arr, FileFacts, FileStatus, JobState, Library, LibraryFile, LibraryStats, LibraryWrite, Progress } from "../src/api/types.ts";
+import type { Arr, DaemonValues, FileFacts, FileStatus, JobState, Library, LibraryFile, LibraryStats, LibraryWrite, Progress } from "../src/api/types.ts";
 import { generateFiles, type MockFile } from "./fixtures/files.ts";
 import { initialFlows, type StoredFlow } from "./fixtures/flows.ts";
 
@@ -104,6 +104,8 @@ export const db = {
   ] as StoredArr[],
   nextJobId: 4200,
   nextFlowId: 4,
+  /** The [daemon] values saved in the web UI (PUT /settings/daemon). */
+  daemonSettings: {} as Partial<DaemonValues>,
 };
 
 // Give every file that has a job an id, oldest first, so ids look like history.

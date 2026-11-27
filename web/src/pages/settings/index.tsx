@@ -1,35 +1,55 @@
-import { createSignal, Errored, For, Loading, Show } from "solid-js";
+import { createSignal, Errored, For, Loading, Match, Show, Switch } from "solid-js";
 
-import { api, createQuery, keys, type Arr, type DaemonSettings, type Settings } from "../../api";
-import { FormSection } from "../../features/layout/Form";
+import { api, createQuery, keys, type ApiError, type Arr, type DaemonKeyName, type DaemonSettings, type DaemonSettingsWrite, type Settings } from "../../api";
+import { FormBar, FormSection } from "../../features/layout/Form";
+import { createDraft } from "../../lib/draft";
 import { formatCount } from "../../lib/format";
+import { useUnsavedChanges } from "../../lib/guard";
 import { run } from "../../lib/mutate";
 import { setTheme, theme, type Theme } from "../../lib/theme";
 import { useTitle } from "../../lib/title";
 import { useAppData } from "../../shell/data";
 import { signOut } from "../../shell/session";
-import { Banner, Button, confirm, DataTable, EmptyState, ErrorState, LoadingRows, LoadingState, Menu, Segmented, StatusBadge, Topbar, type DataTableColumn } from "../../ui";
+import { Banner, Button, confirm, DataTable, EmptyState, ErrorState, Field, Input, LoadingRows, LoadingState, Menu, NumberInput, Segmented, Select, StatusBadge, Topbar, type DataTableColumn } from "../../ui";
 import { ArrDialog } from "./ArrDialog";
 
 import "./settings.css";
 
-// The [daemon] table in the order of pkg/config. The hint shows on hover only:
-// the key names are anvil.toml's own, and the reference file explains each.
-const DAEMON_KEYS: { key: keyof DaemonSettings; hint: string }[] = [
+// The [daemon] keys only anvil.toml sets, in the order of pkg/config. The hint shows on hover only.
+const FILE_KEYS: { key: "media_roots" | "temp_dir" | "store_path" | "control_socket"; hint: string }[] = [
   { key: "media_roots", hint: "Folders the web UI may browse and use for libraries." },
   { key: "temp_dir", hint: "Search samples and process logs." },
   { key: "store_path", hint: "Libraries, flows and job history." },
   { key: "control_socket", hint: "Where anvilctl connects." },
-  { key: "worker_count", hint: "Jobs that run at once." },
-  { key: "total_threads", hint: "Encode threads shared by all jobs." },
-  { key: "max_threads_per_job", hint: "0 splits total_threads across the workers." },
-  { key: "max_attempts", hint: "Attempts before a job stays failed." },
-  { key: "scan_interval", hint: "Full rescan, unless a library sets its own." },
-  { key: "lease_duration", hint: "Silence before a job counts as abandoned." },
-  { key: "shutdown_policy", hint: "drain finishes running jobs, cancel stops them." },
-  { key: "staging_cleanup_age", hint: "Age at which leftover scratch is removed. 0s keeps it." },
-  { key: "log_level", hint: "debug, info, warn or error." },
 ];
+
+// The [daemon] keys the daemon lets the web UI change, in the order of pkg/config. Labels are anvil.toml's key names.
+const DAEMON_KEYS: { key: DaemonKeyName; hint?: string }[] = [
+  { key: "worker_count", hint: "Jobs that run at once." },
+  { key: "total_threads", hint: "Shared by all jobs." },
+  { key: "max_threads_per_job", hint: "0 splits total_threads." },
+  { key: "max_attempts", hint: "Before a job stays failed." },
+  { key: "scan_interval", hint: "Unless a library sets one." },
+  { key: "filesystem_event_debounce", hint: "Quiet time before a scan." },
+  { key: "scheduler_interval", hint: "How often the queue is planned." },
+  { key: "lease_duration", hint: "Silence before a job is abandoned." },
+  { key: "shutdown_policy", hint: "drain lets running jobs finish." },
+  { key: "shutdown_timeout", hint: "0s waits for ever." },
+  { key: "staging_cleanup_age", hint: "0s keeps leftover scratch." },
+  { key: "log_level" },
+];
+
+/** What the form edits: the value saved in the web UI for each editable key, null for its default. */
+type DaemonDraft = Partial<Record<DaemonKeyName, string | number | null>>;
+
+function toDraft(daemon: DaemonSettings): DaemonDraft {
+  const draft: DaemonDraft = {};
+  for (const { key } of DAEMON_KEYS) {
+    const described = daemon.keys[key];
+    if (described.editable) draft[key] = described.source === "store" ? daemon[key] : null;
+  }
+  return draft;
+}
 
 /** True when only this machine can reach the listen address. An empty host (":8484") listens on every interface. */
 function isLoopback(listen: string): boolean {
@@ -48,7 +68,7 @@ function formatUptime(startedAt: string, now: string): string {
   return `${minutes} min`;
 }
 
-/** Settings: what the daemon runs with (read-only), who may reach the web UI, Arr connections, the theme, and version facts. */
+/** Settings: what the daemon runs with, who may reach the web UI, Arr connections, the theme, and version facts. */
 export default function SettingsPage() {
   const settings = createQuery(() => keys.settings, api.settings);
   useTitle(() => "Settings");
@@ -56,35 +76,135 @@ export default function SettingsPage() {
     <>
       <Topbar title="Settings" />
       <div class="av-page-body av-surface">
-        <div class="av-form">
-          <Errored fallback={(error, reset) => <ErrorState title="The daemon settings could not be loaded" error={error()} onRetry={reset} />}>
-            <Loading fallback={<LoadingState label="Loading settings" />}>
-              <DaemonSection settings={settings()} />
-              <WebSection settings={settings()} />
-            </Loading>
-          </Errored>
-          <ArrSection />
-          <AppearanceSection />
-          <AboutSection />
-        </div>
+        <Errored fallback={(error, reset) => <ErrorState title="The daemon settings could not be loaded" error={error()} onRetry={reset} />}>
+          <Loading fallback={<LoadingState label="Loading settings" />}>
+            <SettingsForm settings={settings()} />
+          </Loading>
+        </Errored>
       </div>
+    </>
+  );
+}
+
+/** Every section of the page, and the bar that saves the daemon keys. */
+function SettingsForm(props: { settings: Settings }) {
+  const draft = createDraft(() => toDraft(props.settings.daemon));
+  const [errors, setErrors] = createSignal<Partial<Record<DaemonKeyName, string>>>({});
+  const [saving, setSaving] = createSignal(false);
+  useUnsavedChanges(draft.dirty, { title: "Discard the unsaved daemon settings?", description: "The changes made to the daemon settings since the last save are lost." });
+
+  /** Changes one key and clears the error the daemon reported for it. */
+  const set = (key: DaemonKeyName, value: string | number | null) => {
+    draft.patch({ [key]: value });
+    if (errors()[key]) setErrors((current) => ({ ...current, [key]: undefined }));
+  };
+
+  const save = async () => {
+    setSaving(true);
+    setErrors({});
+    const saved = await run(() => api.updateDaemonSettings(draft.value() as DaemonSettingsWrite), {
+      invalidate: [keys.settings, keys.status],
+      success: "Saved the daemon settings.",
+      failure: "The daemon settings could not be saved.",
+      onError: (error: ApiError) => {
+        const field = DAEMON_KEYS.find((entry) => entry.key === error.field)?.key;
+        if (!field) return false;
+        setErrors({ [field]: error.message });
+        return true;
+      },
+    });
+    setSaving(false);
+    if (saved) draft.reset();
+  };
+
+  return (
+    <>
+      <div class="av-form">
+        <FormSection title="Daemon" description="An empty key uses its default.">
+          <div class="av-grid-2">
+            <For each={DAEMON_KEYS} keyed={(entry) => entry.key}>
+              {(entry) => <DaemonField daemon={props.settings.daemon} name={entry().key} hint={entry().hint} value={draft.value()[entry().key] ?? null} error={errors()[entry().key]} onChange={(value) => set(entry().key, value)} />}
+            </For>
+          </div>
+        </FormSection>
+        <LocationSection settings={props.settings} />
+        <WebSection settings={props.settings} />
+        <ArrSection />
+        <AppearanceSection />
+        <AboutSection />
+      </div>
+      <FormBar dirty={draft.dirty()} saving={saving()} saveLabel="Save settings" onSave={save} onDiscard={() => (setErrors({}), draft.reset())} />
     </>
   );
 }
 
 /* ---------- daemon ---------- */
 
-function DaemonSection(props: { settings: Settings }) {
+/**
+ * One key of the Daemon section. A key the file or the command line sets is
+ * shown, not edited. An editable key left empty is saved as null: its
+ * default, which the placeholder shows.
+ */
+function DaemonField(props: { daemon: DaemonSettings; name: DaemonKeyName; hint?: string; value: string | number | null; error?: string; onChange: (value: string | number | null) => void }) {
+  const described = () => props.daemon.keys[props.name];
+  const fallback = () => String(props.daemon.defaults[props.name]);
+  const id = () => `daemon-${props.name}`;
+  const hint = () => [props.hint, described().at_start ? "Applies at the next start." : ""].filter(Boolean).join(" ") || undefined;
   return (
-    <FormSection title="Daemon" description="Read-only. Edit anvil.toml and reload the daemon to change these.">
+    <Show
+      when={described().editable}
+      fallback={
+        <Field label={props.name} hint={described().source === "flag" ? "Set on the anvild command line." : "Set in anvil.toml."}>
+          <p class="av-readonly">{String(props.daemon[props.name])}</p>
+        </Field>
+      }
+    >
+      <Field label={props.name} htmlFor={id()} hint={hint()} error={props.error}>
+        <Switch
+          fallback={
+            <Input
+              id={id()}
+              mono
+              autocomplete="off"
+              spellcheck={false}
+              placeholder={fallback()}
+              invalid={!!props.error}
+              value={typeof props.value === "string" ? props.value : ""}
+              onInput={(event) => props.onChange(event.currentTarget.value.trim() || null)}
+            />
+          }
+        >
+          <Match when={typeof props.daemon.defaults[props.name] === "number"}>
+            <NumberInput id={id()} integer placeholder={fallback()} invalid={!!props.error} value={typeof props.value === "number" ? props.value : null} onChange={(value) => props.onChange(value)} />
+          </Match>
+          <Match when={described().choices.length > 0}>
+            <Select
+              id={id()}
+              invalid={!!props.error}
+              value={typeof props.value === "string" ? props.value : ""}
+              options={[{ value: "", label: `${fallback()} (default)` }, ...described().choices]}
+              onChange={(event) => props.onChange(event.currentTarget.value || null)}
+            />
+          </Match>
+        </Switch>
+      </Field>
+    </Show>
+  );
+}
+
+/** The keys only anvil.toml changes. */
+function LocationSection(props: { settings: Settings }) {
+  const daemon = () => props.settings.daemon;
+  return (
+    <FormSection title="Locations" description="Set in anvil.toml.">
       <dl class="av-dl av-dl-keys">
         <dt>config file</dt>
         <dd class="av-mono">{props.settings.config_path}</dd>
-        <For each={DAEMON_KEYS} keyed={(entry) => entry.key}>
+        <For each={FILE_KEYS} keyed={(entry) => entry.key}>
           {(entry) => (
             <>
               <dt title={entry().hint}>{entry().key}</dt>
-              <dd class="av-mono">{Array.isArray(props.settings.daemon[entry().key]) ? (props.settings.daemon.media_roots.length > 0 ? props.settings.daemon.media_roots.join(", ") : "unrestricted") : String(props.settings.daemon[entry().key])}</dd>
+              <dd class="av-mono">{entry().key === "media_roots" ? (daemon().media_roots.length > 0 ? daemon().media_roots.join(", ") : "unrestricted") : daemon()[entry().key]}</dd>
             </>
           )}
         </For>

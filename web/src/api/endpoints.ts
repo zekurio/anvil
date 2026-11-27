@@ -6,6 +6,7 @@ import type {
   Arr,
   ArrList,
   ArrWrite,
+  DaemonSettingsWrite,
   Directory,
   FileList,
   FileQuery,
@@ -41,6 +42,8 @@ export const api = {
 
   status: () => request<Status>("GET", "/status"),
   settings: () => request<Settings>("GET", "/settings"),
+  /** Replaces the daemon settings saved in the web UI; a null or absent key goes back to its default. */
+  updateDaemonSettings: (write: DaemonSettingsWrite) => request<Settings>("PUT", "/settings/daemon", { body: write }),
   /** Lists one directory; `files` also lists media files. An empty path asks for the default root. */
   fs: (path: string, files = false) => request<Directory>("GET", "/fs", { query: { path, files: files ? 1 : undefined } }),
 

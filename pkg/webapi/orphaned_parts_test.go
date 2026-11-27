@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/zekurio/anvil/pkg/config"
 	"github.com/zekurio/anvil/pkg/controlapi"
 	"github.com/zekurio/anvil/pkg/domain"
 	replacepkg "github.com/zekurio/anvil/pkg/replace"
@@ -16,9 +17,7 @@ import (
 // expireLease lets stale-lease recovery see the staged job as abandoned, with
 // no attempt left to give it.
 func (f *fixture) expireLease() {
-	f.mu.Lock()
-	f.cfg.Daemon.MaxAttempts = 1
-	f.mu.Unlock()
+	f.configure(func(cfg *config.Config) { cfg.Daemon.MaxAttempts = 1 })
 	f.advance(2 * time.Hour)
 }
 
