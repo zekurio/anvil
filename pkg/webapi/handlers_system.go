@@ -208,8 +208,11 @@ func (s *Server) listDirectory(_ http.ResponseWriter, r *http.Request) (int, any
 	if parent := filepath.Dir(directory); parent != directory {
 		if len(mediaRoots) == 0 {
 			listing.Parent = parent
-		} else if allowed, _ := pathWithinMediaRoots(parent, mediaRoots); allowed {
-			listing.Parent = parent
+		} else {
+			allowed, err := pathWithinMediaRoots(parent, mediaRoots)
+			if err == nil && allowed {
+				listing.Parent = parent
+			}
 		}
 	}
 	for _, entry := range entries {

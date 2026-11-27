@@ -14,7 +14,11 @@ func TestOpenSecuresNewStoreFiles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer state.Close()
+	t.Cleanup(func() {
+		if err := state.Close(); err != nil {
+			t.Error(err)
+		}
+	})
 
 	for _, candidate := range []string{parent, path, path + "-wal", path + "-shm"} {
 		info, err := os.Stat(candidate)
@@ -40,7 +44,11 @@ func TestOpenLeavesExistingStoreDirectoryMode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer state.Close()
+	t.Cleanup(func() {
+		if err := state.Close(); err != nil {
+			t.Error(err)
+		}
+	})
 	info, err := os.Stat(parent)
 	if err != nil {
 		t.Fatal(err)
