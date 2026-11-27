@@ -552,13 +552,22 @@ func unknownAsOriginalField() Field {
 }
 
 // keepSummary is the summary of the two keep nodes. The fallback only
-// matters once languages are listed, so it is left out otherwise.
+// matters once languages are listed, so it is left out otherwise. It is said
+// in words, like the choices of the form: the canvas never shows an option
+// value such as keep_all.
 func keepSummary(o options) string {
 	languages := cleanList(o.list("languages"))
 	if len(languages) == 0 {
 		return "every language"
 	}
-	return strings.Join(languages, ", ") + dot + o.text("fallback") + " fallback"
+	fallback := "else every track"
+	switch domain.StreamFallback(o.text("fallback")) {
+	case domain.StreamFallbackKeepFirst:
+		fallback = "else the first track"
+	case domain.StreamFallbackFailJob:
+		fallback = "else fail the job"
+	}
+	return strings.Join(languages, ", ") + dot + fallback
 }
 
 func audioKeepNode() nodeDef {

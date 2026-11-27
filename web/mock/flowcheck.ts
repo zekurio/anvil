@@ -206,9 +206,11 @@ const encoderOf = (o: Options) => ENCODERS[o.text("accelerator")]?.[o.text("code
 const layoutName = (channels: string) => (channels === "2" ? "stereo" : "5.1");
 const audioBitrate = (o: Options) => (o.text("codec") === "flac" ? 0 : o.number("bitrate_kbps_per_channel"));
 
+const FALLBACK_WORDS: Record<string, string> = { keep_first: "else the first track", fail_job: "else fail the job" };
+
 function keepSummary(o: Options): string {
   const languages = cleanList(o.list("languages"));
-  return languages.length === 0 ? "every language" : `${languages.join(", ")}${DOT}${o.text("fallback")} fallback`;
+  return languages.length === 0 ? "every language" : `${languages.join(", ")}${DOT}${FALLBACK_WORDS[o.text("fallback")] ?? "else every track"}`;
 }
 
 const SUMMARIES: Record<string, (o: Options) => string> = {
@@ -244,7 +246,7 @@ const SUMMARIES: Record<string, (o: Options) => string> = {
     for (const key of ["attachments", "chapters"]) if (o.text(key) === "strip") parts.push(`no ${key}`);
     return parts.join(DOT);
   },
-  "output.publish": () => "replace or hand off, as the library says",
+  "output.publish": () => "replace in place, or hand off",
   "output.skip": () => "leave the file untouched",
 };
 

@@ -142,7 +142,9 @@ func outputPublishNode() nodeDef {
 			Outputs:  []string{},
 			Sections: []Section{},
 		},
-		summary: fixedSummary("replace or hand off, as the library says"),
+		// Short enough to fit a node at full size: the description above has
+		// the rest.
+		summary: fixedSummary("replace in place, or hand off"),
 		outcome: OutcomeProcess,
 	}
 }
