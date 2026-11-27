@@ -447,6 +447,23 @@ func TestStaticUI(t *testing.T) {
 	if !strings.Contains(policy, "style-src 'self';") || !strings.Contains(policy, "style-src-attr 'unsafe-inline'") {
 		t.Fatalf("Content-Security-Policy = %q, want inline style attributes and no inline style elements", policy)
 	}
+
+	// That policy blocks the <style> elements the UI kit writes by default.
+	// The page tells it to construct its sheets instead, once, and a page
+	// that already says how its styles are written is left alone.
+	page := f.get("/")
+	if body := page.Body.String(); strings.Count(body, constructedStylesMeta) != 1 || !strings.Contains(body, "<head>"+constructedStylesMeta) {
+		t.Fatalf("index.html = %s, want the csp-nonce meta tag first in its head", body)
+	}
+	revalidated := f.do(call{method: http.MethodGet, path: "/flows/3", header: map[string]string{"If-None-Match": page.Header().Get("ETag")}})
+	if page.Header().Get("ETag") == "" || revalidated.Code != http.StatusNotModified || revalidated.Body.Len() != 0 {
+		t.Fatalf("revalidating the page = %d with %d bytes, want 304 and none", revalidated.Code, revalidated.Body.Len())
+	}
+	declared := `<!doctype html><html><head><meta property="csp-nonce" nonce="n0nce"></head><body><div id="root"></div></body></html>`
+	own := newFixture(t, "", fstest.MapFS{"index.html": {Data: []byte(declared)}})
+	if body := own.get("/").Body.String(); body != declared {
+		t.Fatalf("index.html = %s, want it served as built", body)
+	}
 }
 
 func TestWithoutABuildThePageSaysSo(t *testing.T) {

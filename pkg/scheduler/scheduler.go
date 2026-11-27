@@ -47,6 +47,10 @@ type Scheduler struct {
 	Interval       time.Duration
 	WorkerIDPrefix string
 	Now            func() time.Time
+	// Reconfigured fires after the libraries changed. A library that was just
+	// resumed, or given more room to run, may have work waiting that no new
+	// job will announce.
+	Reconfigured <-chan struct{}
 
 	mu         sync.Mutex
 	active     map[string]activeAssignment
@@ -98,6 +102,8 @@ func (s *Scheduler) Run(ctx context.Context) error {
 		case <-wake:
 			timer.Stop()
 		case <-workAvailable:
+			timer.Stop()
+		case <-s.Reconfigured:
 			timer.Stop()
 		}
 	}

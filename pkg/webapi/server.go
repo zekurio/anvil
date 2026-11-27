@@ -208,7 +208,8 @@ func (s *Server) Handler() http.Handler {
 	})
 	api.Handle("/api/", missing)
 
-	ui := s.uiHandler()
+	index := s.indexPage()
+	ui := s.uiHandler(index)
 	guarded, guardedMissing := s.guardAPI(api), s.guardAPI(missing)
 	root := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
@@ -222,7 +223,7 @@ func (s *Server) Handler() http.Handler {
 			ui.ServeHTTP(w, r)
 		}
 	})
-	return s.recoverPanics(s.securityHeaders(s.logRequests(s.guardHost(root))))
+	return s.recoverPanics(securityHeaders(contentSecurityPolicy(index), s.logRequests(s.guardHost(root))))
 }
 
 // recoverPanics turns a panic in a handler into a 500 and one error log. The
@@ -254,21 +255,17 @@ var inlineScript = regexp.MustCompile(`(?is)<script(\s[^>]*)?>(.*?)</script>`)
 // scripts, styles, fonts, and images from this origin, and requests back to
 // it. Inline style attributes are allowed because the UI positions things
 // with them; inline style elements and inline scripts are not. The one
-// exception is a script the built index.html itself carries, such as the
+// exception is a script the served index page itself carries, such as the
 // theme switch that has to run before first paint: it is allowed by the hash
 // of its exact text, so anything injected next to it still is not.
-func (s *Server) contentSecurityPolicy() string {
+func contentSecurityPolicy(index []byte) string {
 	scripts := "'self'"
-	if s.UIBuilt && s.UI != nil {
-		if index, err := fs.ReadFile(s.UI, "index.html"); err == nil {
-			for _, match := range inlineScript.FindAllSubmatch(index, -1) {
-				if strings.Contains(strings.ToLower(string(match[1])), "src=") || len(match[2]) == 0 {
-					continue
-				}
-				sum := sha256.Sum256(match[2])
-				scripts += " 'sha256-" + base64.StdEncoding.EncodeToString(sum[:]) + "'"
-			}
+	for _, match := range inlineScript.FindAllSubmatch(index, -1) {
+		if strings.Contains(strings.ToLower(string(match[1])), "src=") || len(match[2]) == 0 {
+			continue
 		}
+		sum := sha256.Sum256(match[2])
+		scripts += " 'sha256-" + base64.StdEncoding.EncodeToString(sum[:]) + "'"
 	}
 	return strings.Join([]string{
 		"default-src 'self'",
@@ -285,8 +282,7 @@ func (s *Server) contentSecurityPolicy() string {
 	}, "; ")
 }
 
-func (s *Server) securityHeaders(next http.Handler) http.Handler {
-	policy := s.contentSecurityPolicy()
+func securityHeaders(policy string, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		header := w.Header()
 		header.Set("X-Content-Type-Options", "nosniff")

@@ -156,8 +156,6 @@ WHERE name = ?
 	if err := tx.Commit(); err != nil {
 		return Library{}, fmt.Errorf("commit library update: %w", err)
 	}
-	// A library that was just resumed may have pending work waiting.
-	s.notifyWork()
 	return updated, nil
 }
 

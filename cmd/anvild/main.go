@@ -281,7 +281,7 @@ func runDaemon(ctx context.Context, cfg config.Config, opts options) error {
 		return err
 	}
 	runtimeCfg := newRuntimeConfig(cfg, state)
-	monitorReconfigured, watcherReconfigured := runtimeCfg.Reconfigured(), runtimeCfg.Reconfigured()
+	monitorReconfigured, watcherReconfigured, schedulerReconfigured := runtimeCfg.Reconfigured(), runtimeCfg.Reconfigured(), runtimeCfg.Reconfigured()
 
 	slog.Info("starting anvild", "mode", mode, "config", configPathLabel(opts.configPath), "temp_dir", cfg.Daemon.TempDir, "store", cfg.Daemon.StorePath, "control_socket", cfg.Daemon.ControlSocket, "workers", cfg.Daemon.WorkerCount, "threads", cfg.Daemon.TotalThreads, "filesystem_event_debounce", cfg.FilesystemEventDebounce(), "shutdown_policy", cfg.Daemon.ShutdownPolicy, "shutdown_timeout", cfg.Daemon.ShutdownTimeout, "log_level", cfg.Daemon.LogLevel, "recovered_jobs", recovered)
 	logConfiguredWork(cfg)
@@ -335,7 +335,7 @@ func runDaemon(ctx context.Context, cfg config.Config, opts options) error {
 	startReloadLoop(serviceCtx, &wg, opts, runtimeCfg, webServer, reloadSignals)
 	runInitialScan(serviceCtx, runtimeCfg.Get(), state, completion)
 	startRecoveryLoop(serviceCtx, &wg, runtimeCfg.Get, state)
-	planner := startSchedulerLoop(serviceCtx, workerCtx, &wg, runtimeCfg.Get, state, progress)
+	planner := startSchedulerLoop(serviceCtx, workerCtx, &wg, runtimeCfg.Get, state, progress, schedulerReconfigured)
 	plannerRef.Store(planner)
 	startScannerLoop(serviceCtx, &wg, runtimeCfg.Get, state, completion, planner.ActiveCount, monitorReconfigured, watcherReconfigured)
 
@@ -631,7 +631,7 @@ func startRecoveryLoop(ctx context.Context, wg *sync.WaitGroup, cfgProvider func
 	})
 }
 
-func startSchedulerLoop(ctx context.Context, workerCtx context.Context, wg *sync.WaitGroup, cfgProvider func() config.Config, state *store.SQLiteStore, progress *worker.ProgressTracker) *scheduler.Scheduler {
+func startSchedulerLoop(ctx context.Context, workerCtx context.Context, wg *sync.WaitGroup, cfgProvider func() config.Config, state *store.SQLiteStore, progress *worker.ProgressTracker, reconfigured <-chan struct{}) *scheduler.Scheduler {
 	runner := worker.Runner{
 		Store:            state,
 		ConfigProvider:   cfgProvider,
@@ -645,6 +645,7 @@ func startSchedulerLoop(ctx context.Context, workerCtx context.Context, wg *sync
 		Worker:         runner,
 		ConfigProvider: cfgProvider,
 		WorkerContext:  workerCtx,
+		Reconfigured:   reconfigured,
 	}
 
 	wg.Go(func() {

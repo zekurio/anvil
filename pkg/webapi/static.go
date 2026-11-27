@@ -1,10 +1,17 @@
 package webapi
 
 import (
+	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"io/fs"
+	"log/slog"
 	"net/http"
 	"path"
+	"regexp"
+	"slices"
 	"strings"
+	"time"
 )
 
 // notBuiltPage is what the daemon serves in place of the UI when it was
@@ -13,18 +20,49 @@ const notBuiltPage = `anvil is running, but this binary was built without the we
 
 Build the UI and the daemon again:
 
-    make web          (or: npm --prefix web ci && npm --prefix web run build)
+    npm --prefix web ci && npm --prefix web run build
     make build
 
 The JSON API is available under /api/v1, and anvilctl works as usual.
 `
 
+// constructedStylesMeta tells the UI kit how to add its component styles.
+// By default it writes <style> elements, which the Content Security Policy
+// blocks along with every other inline style element. A csp-nonce meta tag
+// that carries no nonce makes it build its sheets through the CSSOM instead
+// (document.adoptedStyleSheets), which needs nothing inline at all.
+const constructedStylesMeta = `<meta property="csp-nonce">`
+
+var headTag = regexp.MustCompile(`(?i)<head(\s[^>]*)?>`)
+
+// indexPage returns the page every UI route is answered with, or nil when the
+// binary carries no build. The meta tag above is added unless the build
+// already says how its styles are to be written.
+func (s *Server) indexPage() []byte {
+	if !s.UIBuilt || s.UI == nil {
+		return nil
+	}
+	page, err := fs.ReadFile(s.UI, "index.html")
+	if err != nil {
+		slog.Error("the embedded web UI has no readable index.html", "error", err)
+		return nil
+	}
+	if bytes.Contains(page, []byte(`property="csp-nonce"`)) {
+		return page
+	}
+	head := headTag.FindIndex(page)
+	if head == nil {
+		return page
+	}
+	return slices.Concat(page[:head[1]], []byte(constructedStylesMeta), page[head[1]:])
+}
+
 // uiHandler serves the built frontend. Hashed files under /assets/ never
 // change, so browsers may keep them forever; index.html names those files, so
 // it is revalidated on every load. Any other path is a client-side route and
 // gets index.html, which is what lets a deep link or a reload work.
-func (s *Server) uiHandler() http.Handler {
-	if !s.UIBuilt || s.UI == nil {
+func (s *Server) uiHandler(index []byte) http.Handler {
+	if index == nil {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 			w.Header().Set("Cache-Control", "no-store")
@@ -37,6 +75,10 @@ func (s *Server) uiHandler() http.Handler {
 			}
 		})
 	}
+	// The tag lets a browser revalidate the page with one cheap request: it
+	// changes exactly when the build does.
+	sum := sha256.Sum256(index)
+	indexTag := `"` + hex.EncodeToString(sum[:8]) + `"`
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet && r.Method != http.MethodHead {
 			w.Header().Set("Allow", "GET, HEAD")
@@ -44,11 +86,10 @@ func (s *Server) uiHandler() http.Handler {
 			return
 		}
 		name := strings.TrimPrefix(path.Clean("/"+r.URL.Path), "/")
-		if name == "" {
-			name = "index.html"
-		}
 		info, err := fs.Stat(s.UI, name)
 		switch {
+		case name == "" || name == "index.html":
+			name = ""
 		case err == nil && !info.IsDir():
 		case strings.HasPrefix(name, "assets/"):
 			// A missing build file must not come back as a page of HTML: the
@@ -56,14 +97,20 @@ func (s *Server) uiHandler() http.Handler {
 			http.NotFound(w, r)
 			return
 		default:
-			name = "index.html"
+			name = ""
 		}
 		switch {
+		case name == "":
+			w.Header().Set("Cache-Control", "no-cache")
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.Header().Set("ETag", indexTag)
+			http.ServeContent(w, r, "index.html", time.Time{}, bytes.NewReader(index))
 		case strings.HasPrefix(name, "assets/"):
 			w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+			http.ServeFileFS(w, r, s.UI, name)
 		default:
 			w.Header().Set("Cache-Control", "no-cache")
+			http.ServeFileFS(w, r, s.UI, name)
 		}
-		http.ServeFileFS(w, r, s.UI, name)
 	})
 }
