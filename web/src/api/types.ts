@@ -701,6 +701,11 @@ export interface LibraryFile {
   /** Relative to the library root. */
   path: string;
   absolute_path: string;
+  /**
+   * The file as the last scan found it. Once a job replaced the file in
+   * place that is the job's output, and input_size_bytes has what the file
+   * was before.
+   */
   size_bytes: number;
   status: FileStatus;
   job_id?: number;
@@ -714,7 +719,8 @@ export interface LibraryFile {
   resolution: string;
   /** The first track, e.g. "eac3 5.1". */
   audio: string;
-  /** Set once the job completed. */
+  /** What the job read and what it wrote. Both are set once the job completed. */
+  input_size_bytes?: number;
   output_size_bytes?: number;
   progress?: Progress;
   updated_at: string;

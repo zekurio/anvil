@@ -467,7 +467,10 @@ type File struct {
 	// Path is relative to the library root.
 	Path         string `json:"path"`
 	AbsolutePath string `json:"absolute_path"`
-	SizeBytes    int64  `json:"size_bytes"`
+	// SizeBytes is the file as the last scan found it. Once a job replaced
+	// the file in place that is the job's output, and InputSizeBytes has
+	// what the file was before.
+	SizeBytes int64 `json:"size_bytes"`
 	// Status is one of the FileStatus constants.
 	Status string `json:"status"`
 	JobID  int64  `json:"job_id,omitempty"`
@@ -481,7 +484,9 @@ type File struct {
 	VideoCodec string `json:"video_codec"`
 	Resolution string `json:"resolution"`
 	Audio      string `json:"audio"`
-	// OutputSizeBytes is set once the job completed.
+	// InputSizeBytes and OutputSizeBytes are what the job read and what it
+	// wrote. Both are set once the job completed.
+	InputSizeBytes  int64     `json:"input_size_bytes,omitempty"`
 	OutputSizeBytes int64     `json:"output_size_bytes,omitempty"`
 	Progress        *Progress `json:"progress,omitempty"`
 	UpdatedAt       time.Time `json:"updated_at"`

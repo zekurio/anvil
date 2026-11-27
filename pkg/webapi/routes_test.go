@@ -386,6 +386,12 @@ func TestJobDetailShowsTheFlowTheAttemptRan(t *testing.T) {
 	if detail.InputSizeBytes != 5000 || detail.OutputSizeBytes != 2000 || detail.Progress != nil {
 		t.Fatalf("finished job detail = sizes %d and %d, progress %+v", detail.InputSizeBytes, detail.OutputSizeBytes, detail.Progress)
 	}
+	// The file row carries both sizes of the job: after a replacement in
+	// place, the file's own size is the output's and says nothing of the input.
+	done := want[FileList](t, f.get("/api/v1/libraries/movies/files?status=done"), http.StatusOK)
+	if len(done.Files) != 1 || done.Files[0].InputSizeBytes != 5000 || done.Files[0].OutputSizeBytes != 2000 {
+		t.Fatalf("finished file rows = %+v, want the job's 5000 and 2000 bytes", done.Files)
+	}
 }
 
 // reports is a progress tracker holding fixed reports.

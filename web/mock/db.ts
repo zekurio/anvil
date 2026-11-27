@@ -226,12 +226,14 @@ const LAYOUT: Record<number, string> = { 1: "1.0", 2: "2.0", 6: "5.1", 8: "7.1" 
 export function fileView(file: MockFile): LibraryFile {
   const probed = file.status !== "none" && file.job_state !== "pending";
   const first = file.audio[0];
+  // A media library replaces the file in place: what a scan finds afterwards is the output.
+  const replaced = file.output_size_bytes !== undefined && file.output_size_bytes > 0 && findLibrary(file.library)?.kind === "media";
   return {
     source_id: file.source_id,
     asset_id: file.source_id,
     path: file.path,
     absolute_path: absolutePath(file),
-    size_bytes: file.size_bytes,
+    size_bytes: replaced ? (file.output_size_bytes ?? file.size_bytes) : file.size_bytes,
     status: file.status,
     ...(file.job_id !== undefined ? { job_id: file.job_id, job_state: file.job_state } : {}),
     ...(file.last_error ? { last_error: file.last_error } : {}),
@@ -239,7 +241,7 @@ export function fileView(file: MockFile): LibraryFile {
     video_codec: probed ? file.video_codec : "",
     resolution: probed ? (RESOLUTION_LABEL[file.height] ?? `${file.height}p`) : "",
     audio: probed && first ? `${first.codec} ${LAYOUT[first.channels ?? 2] ?? ""}`.trim() : "",
-    ...(file.output_size_bytes ? { output_size_bytes: file.output_size_bytes } : {}),
+    ...(file.output_size_bytes ? { input_size_bytes: file.size_bytes, output_size_bytes: file.output_size_bytes } : {}),
     ...(file.status === "running" ? { progress: progressOf(file) } : {}),
     updated_at: new Date(file.updated_at).toISOString(),
   };

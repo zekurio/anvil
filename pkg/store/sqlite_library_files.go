@@ -121,9 +121,13 @@ type LibraryFile struct {
 	SizeBytes int64
 	Status    FileStatus
 	// JobID is zero and the remaining job fields are empty without a job.
-	JobID           domain.JobID
-	JobState        domain.JobState
-	LastError       string
+	JobID     domain.JobID
+	JobState  domain.JobState
+	LastError string
+	// InputSizeBytes and OutputSizeBytes are what the job read and wrote,
+	// recorded when it completed. SizeBytes is the file as it is now, which
+	// after a replacement in place is the output.
+	InputSizeBytes  int64
 	OutputSizeBytes int64
 	// Probe is the job's checkpointed probe, when a probe has run.
 	Probe     *domain.ProbeResult
@@ -174,7 +178,7 @@ WHERE s.library_name = ? AND s.is_current = 1 AND s.status != 'missing'
 	}
 	query := `
 SELECT s.id, a.id, ` + filePathSQL + ` AS path, a.size_bytes,
-	j.id, j.state, j.last_error, j.output_size_bytes, j.pipeline_context_json,
+	j.id, j.state, j.last_error, j.input_size_bytes, j.output_size_bytes, j.pipeline_context_json,
 	COALESCE(j.updated_at, a.updated_at) AS updated` + from + "ORDER BY " + order + ", a.id ASC\n"
 	if filter.Limit > 0 {
 		query += "LIMIT ? OFFSET ?\n"
@@ -185,16 +189,17 @@ SELECT s.id, a.id, ` + filePathSQL + ` AS path, a.size_bytes,
 		var file LibraryFile
 		var jobID sql.NullInt64
 		var state, lastError, updated sql.NullString
-		var outputSize sql.NullInt64
+		var inputSize, outputSize sql.NullInt64
 		var pipelineContext []byte
 		if err := rows.Scan(&file.SourceID, &file.AssetID, &file.Path, &file.SizeBytes,
-			&jobID, &state, &lastError, &outputSize, &pipelineContext, &updated); err != nil {
+			&jobID, &state, &lastError, &inputSize, &outputSize, &pipelineContext, &updated); err != nil {
 			return err
 		}
 		file.JobID = domain.JobID(jobID.Int64)
 		file.JobState = domain.JobState(state.String)
 		file.Status = FileStatusOf(file.JobState)
 		file.LastError = lastError.String
+		file.InputSizeBytes = inputSize.Int64
 		file.OutputSizeBytes = outputSize.Int64
 		file.UpdatedAt = parseNullTime(updated)
 		file.Probe = checkpointedProbe(pipelineContext)

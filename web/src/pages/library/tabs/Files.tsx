@@ -108,7 +108,7 @@ export function FilesTab(props: { name: string; library: Library | undefined }) 
     { key: "video_codec", label: "Video", mono: true, width: 76, sortable: false, render: (file) => probed(file.video_codec) },
     { key: "resolution", label: "Resolution", mono: true, width: 96, sortable: false, render: (file) => probed(file.resolution) },
     { key: "audio", label: "Audio", mono: true, width: 100, sortable: false, render: (file) => probed(file.audio) },
-    { key: "size", label: "Size", mono: true, width: 160, render: (file) => <SizeCell input={file.size_bytes} output={file.output_size_bytes} /> },
+    { key: "size", label: "Size", mono: true, width: 160, render: (file) => <SizeCell input={file.input_size_bytes || file.size_bytes} output={file.output_size_bytes} /> },
     { key: "status", label: "Status", width: 148, render: (file) => <JobBadge status={file.status} state={file.job_state} progress={progressOf(file)} message={file.last_error} /> },
     { key: "updated_at", label: "Updated", width: 108, render: (file) => <TimeCell iso={file.updated_at} now={now()} /> },
   ];

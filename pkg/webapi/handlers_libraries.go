@@ -343,6 +343,7 @@ func (s *Server) listFiles(_ http.ResponseWriter, r *http.Request) (int, any, er
 			JobID:           int64(file.JobID),
 			JobState:        string(file.JobState),
 			LastError:       file.LastError,
+			InputSizeBytes:  file.InputSizeBytes,
 			OutputSizeBytes: file.OutputSizeBytes,
 			UpdatedAt:       file.UpdatedAt,
 		}
