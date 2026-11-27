@@ -9,8 +9,9 @@ rendered. Nothing generates them at build time.
 - `icon-maskable.svg` is full bleed with the mark inside the central 80%
   circle that Android may crop to.
 
-The mark is the path `MARK` in `web/src/ui/icon.tsx`. After changing a source,
-render the files again from `web/`:
+The anvil is the path `MARK` in `web/src/ui/icon.tsx`, the same one the
+sidebar logo draws. The icons add a lighter band for the steel face. After
+changing a source, render the files again from `web/`:
 
 ```sh
 nix shell nixpkgs#librsvg nixpkgs#imagemagick nixpkgs#oxipng -c sh -c '
