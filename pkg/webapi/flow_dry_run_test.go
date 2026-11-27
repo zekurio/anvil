@@ -96,6 +96,15 @@ func TestFlowDryRunOnlyReadsLibraryFiles(t *testing.T) {
 			t.Errorf("%s: %+v, want the path field named", name, refused)
 		}
 	}
+
+	// What lies outside the libraries gets one answer, whether it exists or not.
+	message := func(path string) string {
+		refused := wantError(t, f.send(http.MethodPost, "/api/v1/flows/test", FlowTestRequest{Graph: skipHEVC(), Path: path}), http.StatusBadRequest, CodeInvalid)
+		return strings.ReplaceAll(refused.Message, path, "PATH")
+	}
+	if there, missing := message(outside), message(outside+".gone"); there != missing || !strings.Contains(there, "not inside a library") {
+		t.Errorf("an existing file outside answers %q, a missing one %q", there, missing)
+	}
 }
 
 // after returns the argument that follows a flag, or "" without the flag.

@@ -121,6 +121,18 @@ func (s *Server) dryRunInput(requested string) (input, resolved string, err erro
 		return "", "", invalidf("path", "The path must be absolute, such as /srv/media/film.mkv.")
 	}
 	input = filepath.Clean(requested)
+	outside := invalidf("path", "%s is not inside a library. A flow can only be tested against a file of a configured library.", input)
+	libraries := s.Config().Libraries
+	// Asked before the filesystem is asked about the path: one outside every
+	// library gets one answer whether it exists or not, so the route does not
+	// tell what else is on the machine. A root may be spelled either way.
+	named := insideLibrary(libraries, input)
+	for _, library := range libraries {
+		named = named || below(filepath.Clean(library.Path), input)
+	}
+	if !named {
+		return "", "", outside
+	}
 	resolved, err = filepath.EvalSymlinks(input)
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
@@ -130,8 +142,8 @@ func (s *Server) dryRunInput(requested string) (input, resolved string, err erro
 	case err != nil:
 		return "", "", invalidf("path", "%s", sentence(fmt.Sprintf("%s cannot be read: %v", input, err)))
 	}
-	if !insideLibrary(s.Config().Libraries, resolved) {
-		return "", "", invalidf("path", "%s is not inside a library. A flow can only be tested against a file of a configured library.", input)
+	if !insideLibrary(libraries, resolved) {
+		return "", "", outside
 	}
 	info, err := os.Stat(resolved)
 	switch {
@@ -143,21 +155,25 @@ func (s *Server) dryRunInput(requested string) (input, resolved string, err erro
 	return input, resolved, nil
 }
 
-// insideLibrary reports whether a resolved path lies below the resolved root
-// of any library.
+// insideLibrary reports whether a path lies below the resolved root of any
+// library.
 func insideLibrary(libraries map[string]config.LibraryConfig, resolved string) bool {
 	for _, library := range libraries {
 		root, err := filepath.EvalSymlinks(library.Path)
 		if err != nil {
 			continue
 		}
-		relative, err := filepath.Rel(root, resolved)
-		if err != nil || relative == "." || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
-			continue
+		if below(root, resolved) {
+			return true
 		}
-		return true
 	}
 	return false
+}
+
+// below reports whether path lies strictly below root. Both are clean.
+func below(root, path string) bool {
+	relative, err := filepath.Rel(root, path)
+	return err == nil && relative != "." && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator))
 }
 
 // dryRunCommand builds the ffmpeg argument list the encode step would run for
