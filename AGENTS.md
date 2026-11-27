@@ -493,9 +493,13 @@ createEffect(() => {
   Colors exist only in the token file: no raw color anywhere else, and no new
   ones. Spacing, radii, and type come from the tokens. Both themes must work.
 - Copy: the product is `anvil`, lowercase, in the UI. Labels are sentence
-  case, never all caps. Messages are full sentences that say what happened and
-  what the operator can do next. No exclamation marks. A destructive action
-  says what happens to the media files.
+  case, never all caps. Say a thing once, in as few words as do the job: no
+  hint that restates its label, no section description that restates its
+  heading, no empty state that repeats the section description, and no hint
+  at all when the field is obvious. Errors and confirmations are short full
+  sentences that say what happened and what the operator can do next. No
+  exclamation marks. A destructive action says what happens to the media
+  files.
 - Pages live in `web/src/pages/<name>/index.tsx` with one entry in
   `web/src/routes.tsx`. What several pages share lives in `web/src/features`.
   `web/src/shell` is the app frame.

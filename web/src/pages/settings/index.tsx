@@ -2,7 +2,7 @@ import { createSignal, Errored, For, Loading, Show } from "solid-js";
 
 import { api, createQuery, keys, type Arr, type DaemonSettings, type Settings } from "../../api";
 import { FormSection } from "../../features/layout/Form";
-import { formatCount, plural } from "../../lib/format";
+import { formatCount } from "../../lib/format";
 import { run } from "../../lib/mutate";
 import { setTheme, theme, type Theme } from "../../lib/theme";
 import { useTitle } from "../../lib/title";
@@ -13,21 +13,22 @@ import { ArrDialog } from "./ArrDialog";
 
 import "./settings.css";
 
-// The [daemon] table in the order of pkg/config, each key with what it means.
-const DAEMON_KEYS: { key: keyof DaemonSettings; meaning: string }[] = [
-  { key: "media_roots", meaning: "Filesystem roots the web UI may browse and assign to libraries. An empty list means unrestricted access." },
-  { key: "temp_dir", meaning: "Scratch folder for quality-search samples and process logs. Encodes are written next to their destination, not here." },
-  { key: "store_path", meaning: "The SQLite file that holds libraries, flows and the job history." },
-  { key: "control_socket", meaning: "The Unix socket anvilctl talks to." },
-  { key: "worker_count", meaning: "How many jobs run at the same time." },
-  { key: "total_threads", meaning: "The encode-thread budget all running jobs share." },
-  { key: "max_threads_per_job", meaning: "The most threads one job may use. 0 shares the budget across the workers." },
-  { key: "max_attempts", meaning: "How many attempts a job gets before it stays failed." },
-  { key: "scan_interval", meaning: "How often every library is scanned in full, unless a library sets its own interval." },
-  { key: "lease_duration", meaning: "How long a job may go without a sign of life before it counts as abandoned and can be recovered." },
-  { key: "shutdown_policy", meaning: "What happens to running jobs when the daemon stops: drain lets them finish, cancel stops them." },
-  { key: "staging_cleanup_age", meaning: "Abandoned scratch files older than this are removed. 0s turns the cleanup off." },
-  { key: "log_level", meaning: "How much the daemon logs: debug, info, warn or error." },
+// The [daemon] table in the order of pkg/config. The hint shows on hover only:
+// the key names are anvil.toml's own, and the reference file explains each.
+const DAEMON_KEYS: { key: keyof DaemonSettings; hint: string }[] = [
+  { key: "media_roots", hint: "Folders the web UI may browse and use for libraries." },
+  { key: "temp_dir", hint: "Search samples and process logs." },
+  { key: "store_path", hint: "Libraries, flows and job history." },
+  { key: "control_socket", hint: "Where anvilctl connects." },
+  { key: "worker_count", hint: "Jobs that run at once." },
+  { key: "total_threads", hint: "Encode threads shared by all jobs." },
+  { key: "max_threads_per_job", hint: "0 splits total_threads across the workers." },
+  { key: "max_attempts", hint: "Attempts before a job stays failed." },
+  { key: "scan_interval", hint: "Full rescan, unless a library sets its own." },
+  { key: "lease_duration", hint: "Silence before a job counts as abandoned." },
+  { key: "shutdown_policy", hint: "drain finishes running jobs, cancel stops them." },
+  { key: "staging_cleanup_age", hint: "Age at which leftover scratch is removed. 0s keeps it." },
+  { key: "log_level", hint: "debug, info, warn or error." },
 ];
 
 /** True when only this machine can reach the listen address. An empty host (":8484") listens on every interface. */
@@ -75,21 +76,15 @@ export default function SettingsPage() {
 
 function DaemonSection(props: { settings: Settings }) {
   return (
-    <FormSection title="Daemon" description={`Read-only. These values are set in the [daemon] table of ${props.settings.config_path}; a change there takes effect after a reload or a restart of the daemon.`}>
+    <FormSection title="Daemon" description="Read-only. Edit anvil.toml and reload the daemon to change these.">
       <dl class="av-dl av-dl-keys">
         <dt>config file</dt>
-        <dd>
-          <span class="av-mono">{props.settings.config_path}</span>
-          <span class="av-dl-note">The file the daemon was started with.</span>
-        </dd>
+        <dd class="av-mono">{props.settings.config_path}</dd>
         <For each={DAEMON_KEYS} keyed={(entry) => entry.key}>
           {(entry) => (
             <>
-              <dt>{entry().key}</dt>
-              <dd>
-                <span class="av-mono">{Array.isArray(props.settings.daemon[entry().key]) ? (props.settings.daemon.media_roots.length > 0 ? props.settings.daemon.media_roots.join(", ") : "[] (unrestricted)") : String(props.settings.daemon[entry().key])}</span>
-                <span class="av-dl-note">{entry().meaning}</span>
-              </dd>
+              <dt title={entry().hint}>{entry().key}</dt>
+              <dd class="av-mono">{Array.isArray(props.settings.daemon[entry().key]) ? (props.settings.daemon.media_roots.length > 0 ? props.settings.daemon.media_roots.join(", ") : "unrestricted") : String(props.settings.daemon[entry().key])}</dd>
             </>
           )}
         </For>
@@ -113,23 +108,17 @@ function WebSection(props: { settings: Settings }) {
   };
 
   return (
-    <FormSection title="Web access" description={`Who can reach this page. Set in the [web] table of ${props.settings.config_path}.`}>
+    <FormSection title="Web access">
       <Show when={open()}>
-        <Banner tone="warning">
-          No password is required, and {web().listen} is reachable from other machines. Anyone who can reach it can change flows and start jobs that replace files. Set a password for the web UI, or listen on 127.0.0.1.
-        </Banner>
+        <Banner tone="warning">Anyone on your network can reach {web().listen} without a password and replace files. Set a password or listen on 127.0.0.1.</Banner>
       </Show>
       <dl class="av-dl av-dl-keys">
         <dt>listen</dt>
         <dd>
-          <span class="av-mono">{web().listen}</span>
-          <span class="av-dl-note">{isLoopback(web().listen) ? "Only this machine can reach the web UI directly." : "Other machines on the network can reach the web UI."}</span>
+          <span class="av-mono">{web().listen}</span> <span class="av-cell-muted">{isLoopback(web().listen) ? "this machine only" : "reachable from the network"}</span>
         </dd>
         <dt>password</dt>
-        <dd>
-          {web().auth_required ? "Required" : "Not required"}
-          <span class="av-dl-note">{web().auth_required ? "The browser signs in with the daemon's password." : "Everyone who can reach the listen address has full access."}</span>
-        </dd>
+        <dd>{web().auth_required ? "On" : "Off"}</dd>
       </dl>
       <Show when={session().auth_required && session().authenticated}>
         <div>
@@ -155,8 +144,8 @@ function ArrSection() {
   const [removing, setRemoving] = createSignal<string | null>(null);
 
   const remove = async (arr: Arr) => {
-    const used = arr.libraries.length > 0 ? ` It is used by ${arr.libraries.join(", ")}; the daemon only deletes a connection no library uses.` : " No library uses it.";
-    if (!(await confirm({ title: `Delete the connection ${arr.name}?`, description: `anvil forgets how to reach ${arr.base_url}.${used}`, confirmLabel: "Delete connection", danger: true }))) return;
+    const description = arr.libraries.length > 0 ? `${arr.libraries.join(", ")} still use it. Assign them another connection first.` : "No library uses it.";
+    if (!(await confirm({ title: `Delete ${arr.name}?`, description, confirmLabel: "Delete connection", danger: true }))) return;
     setRemoving(arr.name);
     // 409 when a library still uses it: the daemon's message names the libraries.
     await run(() => api.arrs.remove(arr.name), { invalidate: [keys.arrs], success: `Deleted the connection ${arr.name}.`, failure: `The connection ${arr.name} was not deleted.` });
@@ -192,7 +181,7 @@ function ArrSection() {
   ];
 
   return (
-    <FormSection wide title="Arr connections" description="Radarr and Sonarr instances anvil may ask for the original language of a film or series. A flow's orig language token needs one.">
+    <FormSection wide title="Arr connections" description="Radarr and Sonarr, for looking up a title's original language.">
       <Errored fallback={(error, reset) => <ErrorState title="The Arr connections could not be loaded" error={error()} onRetry={reset} />}>
         <Loading fallback={<LoadingRows rows={2} label="Loading Arr connections" />}>
           <div class="av-boxed">
@@ -202,7 +191,7 @@ function ArrSection() {
               rows={arrs()}
               rowId={(arr) => arr.name}
               onRowClick={(arr) => setDialog({ arr })}
-              empty={<EmptyState title="No Arr connection yet" description="Add Radarr or Sonarr to let flows keep the original language of a film or series." />}
+              empty={<EmptyState title="No connections" />}
             />
           </div>
         </Loading>
@@ -232,7 +221,7 @@ function KeyCell(props: { arr: Arr }) {
 
 function AppearanceSection() {
   return (
-    <FormSection title="Appearance" description="Kept in this browser.">
+    <FormSection title="Appearance" description="Saved in this browser.">
       <div>
         <Segmented
           label="Theme"
@@ -264,10 +253,6 @@ function AboutSection() {
         <dd class="av-mono">
           {formatCount(status().workers.active)} of {formatCount(status().workers.configured)} busy
         </dd>
-        <dt>libraries</dt>
-        <dd class="av-mono">{plural(status().libraries, "library", "libraries")}</dd>
-        <dt>flows</dt>
-        <dd class="av-mono">{plural(status().flows, "flow")}</dd>
       </dl>
     </FormSection>
   );

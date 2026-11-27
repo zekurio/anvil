@@ -70,8 +70,7 @@ export function ArrDialog(props: { arr?: Arr; onClose: () => void }) {
       open
       dismissible={!saving()}
       onClose={props.onClose}
-      title={editing ? `Edit the connection ${editing.name}` : "Add Arr connection"}
-      description="anvil asks Radarr or Sonarr for the original language of a film or series. A library uses the connection chosen on its Settings tab."
+      title={editing ? `Edit ${editing.name}` : "Add Arr connection"}
       footer={
         <>
           <Button disabled={saving()} onClick={props.onClose}>
@@ -85,7 +84,7 @@ export function ArrDialog(props: { arr?: Arr; onClose: () => void }) {
     >
       <form id="arr-form" class="av-stack" novalidate onSubmit={submit}>
         <Show when={general()}>{(message) => <Banner tone="danger">{message()}</Banner>}</Show>
-        <Field label="Name" htmlFor="arr-name" hint={editing ? "The name cannot change. Libraries refer to the connection by it." : "Lowercase letters, digits, - and _. It cannot change later."} error={errors.name}>
+        <Field label="Name" htmlFor="arr-name" hint={editing ? undefined : "a-z, 0-9, - and _. Cannot be changed later."} error={errors.name}>
           <Show when={!editing} fallback={<p class="av-readonly">{draft.name}</p>}>
             <Input id="arr-name" mono autocomplete="off" spellcheck={false} placeholder="radarr" invalid={!!errors.name} value={draft.name} onInput={(event) => edit("name", (d) => void (d.name = event.currentTarget.value))} />
           </Show>
@@ -103,21 +102,13 @@ export function ArrDialog(props: { arr?: Arr; onClose: () => void }) {
             />
           </div>
         </Field>
-        <Field label="Base URL" htmlFor="arr-url" hint="Where the daemon reaches it, including the port." error={errors.base_url}>
+        <Field label="Base URL" htmlFor="arr-url" error={errors.base_url}>
           <Input id="arr-url" mono type="url" autocomplete="off" spellcheck={false} placeholder={draft.type === "sonarr" ? "http://sonarr.lan:8989" : "http://radarr.lan:7878"} invalid={!!errors.base_url} value={draft.base_url} onInput={(event) => edit("base_url", (d) => void (d.base_url = event.currentTarget.value))} />
         </Field>
         <Field
           label="API key"
           htmlFor="arr-key"
-          hint={
-            draft.remove_key
-              ? "The stored key is removed when you save."
-              : editing?.api_key_set
-                ? "A key is stored. Leave this empty to keep it; the key is never shown."
-                : editing?.api_key_file
-                  ? "The key is read from the file below. A key entered here is stored and used instead of the file."
-                  : "Stored by the daemon and never shown again."
-          }
+          hint={draft.remove_key ? "Removed on save." : editing?.api_key_set ? "Leave empty to keep the stored key." : editing?.api_key_file ? "Replaces the key file below." : undefined}
           error={errors.api_key}
         >
           <Input id="arr-key" mono type="password" autocomplete="new-password" spellcheck={false} disabled={draft.remove_key} invalid={!!errors.api_key} value={draft.api_key} onInput={(event) => edit("api_key", (d) => void (d.api_key = event.currentTarget.value))} />
@@ -138,7 +129,7 @@ export function ArrDialog(props: { arr?: Arr; onClose: () => void }) {
         </Show>
         <Show when={editing?.api_key_file}>
           {(path) => (
-            <Field label="API key file" hint="Imported from the configuration file. The daemon reads the key from it; the path cannot be changed here.">
+            <Field label="API key file" hint="Imported from anvil.toml.">
               <p class="av-readonly">{path()}</p>
             </Field>
           )}
