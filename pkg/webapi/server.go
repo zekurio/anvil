@@ -55,6 +55,7 @@ type Store interface {
 	ListJobs(context.Context, store.JobListFilter) ([]store.JobSummary, error)
 	GetJob(context.Context, domain.JobID) (domain.Job, error)
 	ListAttemptsForJob(context.Context, domain.JobID) ([]domain.Attempt, error)
+	LatestAttempts(context.Context, []domain.JobID) (map[domain.JobID]store.LatestAttempt, error)
 	GetJobPipelineContext(context.Context, domain.JobID) (domain.JobPipelineContext, bool, error)
 }
 
@@ -64,6 +65,7 @@ type Store interface {
 type Jobs interface {
 	Status(context.Context) (control.StatusResponse, error)
 	JobPage(context.Context, controlapi.JobPageQuery) ([]controlapi.JobPageItem, int64, error)
+	JobItem(context.Context, domain.JobID) (controlapi.JobPageItem, error)
 	ShowJob(context.Context, control.JobShowRequest) (control.JobShowResponse, error)
 	CancelJobs(context.Context, control.JobCancelRequest) (control.JobCancelResponse, error)
 	RetryJobs(context.Context, control.JobRetryRequest) (control.JobRetryResponse, error)

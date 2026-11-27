@@ -96,8 +96,8 @@ type LoginRequest struct {
 	Password string `json:"password"`
 }
 
-// Status is the dashboard poll: daemon state, queue counts, and the live
-// progress of every running job.
+// Status is the dashboard poll: daemon state, queue counts, and every running
+// job with its live progress.
 type Status struct {
 	Version    string    `json:"version"`
 	ServerTime time.Time `json:"server_time"`
@@ -105,10 +105,13 @@ type Status struct {
 	Workers    Workers   `json:"workers"`
 	// Queue counts jobs by state, keyed by domain.JobState. Absent states
 	// are zero.
-	Queue     map[string]int64 `json:"queue"`
-	Running   []Progress       `json:"running"`
-	Libraries int              `json:"libraries"`
-	Flows     int              `json:"flows"`
+	Queue map[string]int64 `json:"queue"`
+	// Running lists every job whose Status is FileStatusRunning, oldest job
+	// first. It is read from the store, so a job is listed from the moment
+	// it starts, before its first progress report.
+	Running   []Progress `json:"running"`
+	Libraries int        `json:"libraries"`
+	Flows     int        `json:"flows"`
 }
 
 // Workers reports worker slots.
@@ -117,10 +120,19 @@ type Workers struct {
 	Active     int `json:"active"`
 }
 
-// Progress is the live state of one running job.
+// Progress is the live state of one running job. JobID through FlowName say
+// which job it is, so a list of running jobs needs no second request; the
+// rest is the latest progress report.
 type Progress struct {
-	JobID int64 `json:"job_id"`
+	JobID   int64  `json:"job_id"`
+	Library string `json:"library"`
+	// Path is the media file relative to the library root, as File.Path.
+	Path string `json:"path"`
+	// FlowName is the flow the running attempt took its snapshot of; empty
+	// until the attempt has started.
+	FlowName string `json:"flow_name"`
 	// Step is the pipeline step now running, e.g. "crf-search" or "encode".
+	// It is empty until the job's first report.
 	Step string `json:"step"`
 	// Percent is 0-100 of the current step, or -1 when unknown.
 	Percent float64 `json:"percent"`
@@ -498,17 +510,37 @@ type JobList struct {
 type Job struct {
 	control.JobResponse
 	// Status is one of the FileStatus constants.
-	Status          string    `json:"status"`
-	InputSizeBytes  int64     `json:"input_size_bytes"`
-	OutputSizeBytes int64     `json:"output_size_bytes"`
-	Progress        *Progress `json:"progress,omitempty"`
+	Status string `json:"status"`
+	// Path is the media file relative to the library root, as File.Path. For
+	// a file inside a download package it joins the package directory
+	// (Source.Path) and the file below it (Asset.Path).
+	Path            string `json:"path"`
+	InputSizeBytes  int64  `json:"input_size_bytes"`
+	OutputSizeBytes int64  `json:"output_size_bytes"`
+	// StartedAt and FinishedAt are those of the latest attempt: when the job
+	// last started work, and when that work ended. Both are absent for a job
+	// that never started, and FinishedAt is absent while the attempt runs.
+	StartedAt  *time.Time `json:"started_at,omitempty"`
+	FinishedAt *time.Time `json:"finished_at,omitempty"`
+	Progress   *Progress  `json:"progress,omitempty"`
 }
 
 // JobDetail is everything known about one job.
 type JobDetail struct {
 	control.JobShowResponse
-	Status   string    `json:"status"`
-	Progress *Progress `json:"progress,omitempty"`
+	Status string `json:"status"`
+	// InputPath is the absolute path of the media file the job reads. Empty
+	// when the job's library is gone.
+	InputPath string `json:"input_path"`
+	// InputSizeBytes and OutputSizeBytes are zero until recorded: the input
+	// once the job has looked at its file, the output once it is published.
+	InputSizeBytes  int64 `json:"input_size_bytes"`
+	OutputSizeBytes int64 `json:"output_size_bytes"`
+	// DestinationPath is where the result is or would be published: the path
+	// the publish journal recorded, or the planned one before a publish.
+	// Empty when it cannot be planned.
+	DestinationPath string    `json:"destination_path"`
+	Progress        *Progress `json:"progress,omitempty"`
 	// Flow is how the flow resolved on the latest attempt that got far
 	// enough to evaluate it.
 	Flow *JobFlow `json:"flow,omitempty"`

@@ -14,6 +14,7 @@ import (
 	"github.com/zekurio/anvil/pkg/domain"
 	"github.com/zekurio/anvil/pkg/flow"
 	"github.com/zekurio/anvil/pkg/flowstep"
+	"github.com/zekurio/anvil/pkg/store"
 )
 
 // TestEveryRoute walks the whole API the way an operator would: look around,
@@ -294,6 +295,80 @@ func TestJobDetailShowsTheFlowTheAttemptRan(t *testing.T) {
 		len(got.Graph.Nodes) != 6 || !slices.Equal(got.Path, []string{"in", "is-hevc", "skip"}) || len(got.Decisions) != 1 || len(got.Plan) != 1 {
 		t.Fatalf("job flow = %+v", got)
 	}
+
+	// A running job says which job it is everywhere it is listed, before its
+	// first progress report and with one: the Queue needs no second request
+	// to name the file, and the job sheet none to know where the result goes.
+	wantRunning := func(progress *Progress, step string, percent float64) {
+		t.Helper()
+		if progress == nil || progress.JobID != int64(job.ID) || progress.Library != "movies" || progress.Path != "film.mkv" ||
+			progress.FlowName != "Skip HEVC" || progress.Step != step || progress.Percent != percent {
+			t.Fatalf("progress = %+v, want job %d of movies at film.mkv on Skip HEVC, step %q at %v", progress, job.ID, step, percent)
+		}
+	}
+	status := want[Status](t, f.get("/api/v1/status"), http.StatusOK)
+	if len(status.Running) != 1 {
+		t.Fatalf("status.running = %+v, want the one running job", status.Running)
+	}
+	wantRunning(&status.Running[0], "", -1)
+	wantRunning(detail.Progress, "", -1)
+	if detail.InputPath != f.media+"/film.mkv" || detail.DestinationPath != f.media+"/film.mkv" || detail.InputSizeBytes != 0 || detail.OutputSizeBytes != 0 {
+		t.Fatalf("job detail = input %q, destination %q, sizes %d and %d", detail.InputPath, detail.DestinationPath, detail.InputSizeBytes, detail.OutputSizeBytes)
+	}
+
+	f.server.Progress = reports{job.ID: {JobID: job.ID, Step: "encode", Percent: 41.5, FPS: 88, Speed: 3.6, ETASeconds: 12, UpdatedAt: now}}
+	status = want[Status](t, f.get("/api/v1/status"), http.StatusOK)
+	wantRunning(&status.Running[0], "encode", 41.5)
+	rows := want[JobList](t, f.get("/api/v1/jobs?status=running"), http.StatusOK)
+	if len(rows.Jobs) != 1 || rows.Jobs[0].Path != "film.mkv" || rows.Jobs[0].StartedAt == nil || rows.Jobs[0].FinishedAt != nil {
+		t.Fatalf("running rows = %+v, want film.mkv with a start and no end", rows.Jobs)
+	}
+	wantRunning(rows.Jobs[0].Progress, "encode", 41.5)
+	files := want[FileList](t, f.get("/api/v1/libraries/movies/files"), http.StatusOK)
+	wantRunning(files.Files[0].Progress, "encode", 41.5)
+
+	// Once the job is done it is no longer listed as running, whatever the
+	// tracker still holds, and the rows carry what the encode took and gave.
+	for _, state := range []domain.JobState{domain.JobStateValidating, domain.JobStateReplacing} {
+		if _, err := f.state.TransitionJob(ctx, job.ID, state, now, ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if status = want[Status](t, f.get("/api/v1/status"), http.StatusOK); len(status.Running) != 1 {
+		t.Fatalf("status.running while publishing = %+v, want the job still listed", status.Running)
+	}
+	if _, err := f.state.CompleteJobOccurrence(ctx, store.CompleteJobOccurrenceInput{
+		JobID: job.ID, AttemptID: attempt.ID, InputSizeBytes: 5000, OutputSizeBytes: 2000, CompletedAt: now.Add(90 * time.Second),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if status = want[Status](t, f.get("/api/v1/status"), http.StatusOK); len(status.Running) != 0 {
+		t.Fatalf("status.running after completion = %+v", status.Running)
+	}
+	rows = want[JobList](t, f.get("/api/v1/jobs?status=done"), http.StatusOK)
+	if len(rows.Jobs) != 1 || rows.Jobs[0].Progress != nil || rows.Jobs[0].FinishedAt == nil || rows.Jobs[0].FinishedAt.Sub(*rows.Jobs[0].StartedAt) != 90*time.Second {
+		t.Fatalf("finished rows = %+v, want a 90 s attempt", rows.Jobs)
+	}
+	detail = want[JobDetail](t, f.get(fmt.Sprintf("/api/v1/jobs/%d", job.ID)), http.StatusOK)
+	if detail.InputSizeBytes != 5000 || detail.OutputSizeBytes != 2000 || detail.Progress != nil {
+		t.Fatalf("finished job detail = sizes %d and %d, progress %+v", detail.InputSizeBytes, detail.OutputSizeBytes, detail.Progress)
+	}
+}
+
+// reports is a progress tracker holding fixed reports.
+type reports map[domain.JobID]domain.JobProgress
+
+func (r reports) Snapshot(id domain.JobID) (domain.JobProgress, bool) {
+	progress, found := r[id]
+	return progress, found
+}
+
+func (r reports) All() []domain.JobProgress {
+	all := make([]domain.JobProgress, 0, len(r))
+	for _, progress := range r {
+		all = append(all, progress)
+	}
+	return all
 }
 
 // TestListsFilterSortAndPage pins the query vocabulary the tables of the UI

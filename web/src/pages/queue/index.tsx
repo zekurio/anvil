@@ -1,7 +1,7 @@
 import { useNavigate, useParams } from "@solidjs/router";
-import { createEffect, createMemo, createSignal, Errored, For, isPending, Loading, Show } from "solid-js";
+import { createMemo, createSignal, Errored, For, isPending, Loading, Show } from "solid-js";
 
-import { api, createQuery, invalidate, keys, POLL_LIST, type Job, type JobQuery, type JobState } from "../../api";
+import { api, createQuery, keys, POLL_LIST, type Job, type JobQuery, type JobState } from "../../api";
 import { jobAction } from "../../features/jobs/actions";
 import { ErrorCell, SizeCell, TimeCell } from "../../features/jobs/cells";
 import { JobBulkBar } from "../../features/jobs/JobBulkBar";
@@ -39,9 +39,6 @@ const EMPTY: Record<Filter, { title: string; description: string }> = {
   skipped: { title: "No skipped or canceled jobs", description: "A flow skips files it has nothing to do for." },
 };
 
-const RUNNING_KEY = ["jobs", "running"];
-
-const pathOf = (job: Job) => job.asset?.path ?? job.source.path;
 const fileName = (path: string) => path.slice(path.lastIndexOf("/") + 1);
 
 /** The queue: running jobs with live progress, then every job, filtered and paged. /queue/:jobId opens that job in the side sheet. */
@@ -113,22 +110,9 @@ export default function QueuePage() {
 
 /* ---------- running ---------- */
 
+/** The running jobs, straight from the status poll: it names each job's library, file and flow next to its progress. */
 function RunningJobs(props: { queued: number; activeId?: number; onOpen: (id: number) => void }) {
   const { status } = useAppData();
-  // GET /status names running jobs by id only. Their files come from GET /jobs,
-  // asked again as soon as the set of running ids changes.
-  const ids = createMemo(() => status().running.map((progress) => progress.job_id).sort((a, b) => a - b).join(","));
-  const jobs = createQuery(
-    () => RUNNING_KEY,
-    async () => (await api.jobs.list({ state: STATES_OF_STATUS.running, limit: 50 })).jobs,
-    { poll: POLL_LIST },
-  );
-  // The first set of ids is what the query above already answers for.
-  let known: string | undefined;
-  createEffect(ids, (current) => {
-    if (known !== undefined && known !== current) void invalidate(RUNNING_KEY);
-    known = current;
-  });
   const workers = () => status().workers;
 
   return (
@@ -139,49 +123,43 @@ function RunningJobs(props: { queued: number; activeId?: number; onOpen: (id: nu
           {formatCount(workers().active)} of {plural(workers().configured, "worker")} busy
         </span>
       </header>
-      <Errored fallback={(error, reset) => <ErrorState title="The running jobs could not be loaded" error={error()} onRetry={reset} />}>
-        <Loading fallback={<LoadingRows rows={2} label="Loading running jobs" />}>
-          <ul class="av-running-list">
-            <For
-              each={jobs()}
-              keyed={(job) => job.id}
-              fallback={
-                <li class="av-running-empty">
-                  {props.queued > 0 ? `Nothing is running. ${plural(props.queued, "job")} ${props.queued === 1 ? "waits" : "wait"}: a job starts when a worker is free and its library is not paused.` : "Nothing is running. Files are queued when a scan finds them."}
-                </li>
-              }
-            >
-              {(job) => {
-                // The status poll (2 s) is fresher than the job list (5 s).
-                const progress = () => status().running.find((live) => live.job_id === job().id) ?? job().progress;
-                return (
-                  <li>
-                    <div
-                      class={["av-running-row", { "av-running-active": props.activeId === job().id }]}
-                      role="button"
-                      tabindex="0"
-                      aria-label={`Open the job for ${fileName(pathOf(job()))}`}
-                      onClick={() => props.onOpen(job().id)}
-                      onKeyDown={(event) => {
-                        if (event.key !== "Enter" && event.key !== " ") return;
-                        event.preventDefault();
-                        props.onOpen(job().id);
-                      }}
-                    >
-                      <PathCell path={pathOf(job())} />
-                      <span class="av-running-library">{job().library}</span>
-                      <span class="av-running-step">{progress() ? stepLabel(progress()?.step ?? "") : "Starting"}</span>
-                      <Show when={progress()} fallback={<span class="av-step-open">Waiting for the first progress report</span>}>
-                        {(live) => <StepProgress progress={live()} label={fileName(pathOf(job()))} />}
-                      </Show>
-                    </div>
-                  </li>
-                );
-              }}
-            </For>
-          </ul>
-        </Loading>
-      </Errored>
+      <ul class="av-running-list">
+        <For
+          each={status().running}
+          keyed={(job) => job.job_id}
+          fallback={
+            <li class="av-running-empty">
+              {props.queued > 0 ? `Nothing is running. ${plural(props.queued, "job")} ${props.queued === 1 ? "waits" : "wait"}: a job starts when a worker is free and its library is not paused.` : "Nothing is running. Files are queued when a scan finds them."}
+            </li>
+          }
+        >
+          {(job) => (
+            <li>
+              <div
+                class={["av-running-row", { "av-running-active": props.activeId === job().job_id }]}
+                role="button"
+                tabindex="0"
+                aria-label={`Open the job for ${fileName(job().path)}`}
+                onClick={() => props.onOpen(job().job_id)}
+                onKeyDown={(event) => {
+                  if (event.key !== "Enter" && event.key !== " ") return;
+                  event.preventDefault();
+                  props.onOpen(job().job_id);
+                }}
+              >
+                <PathCell path={job().path} />
+                <span class="av-running-library" title={job().flow_name ? `Flow: ${job().flow_name}` : undefined}>
+                  {job().library}
+                </span>
+                <span class="av-running-step">{job().step ? stepLabel(job().step) : "Starting"}</span>
+                <Show when={job().step !== ""} fallback={<span class="av-step-open">Waiting for the first progress report</span>}>
+                  <StepProgress progress={job()} label={fileName(job().path)} />
+                </Show>
+              </div>
+            </li>
+          )}
+        </For>
+      </ul>
     </section>
   );
 }
@@ -228,9 +206,9 @@ function JobsTable(props: { activeId?: number; onOpen: (id: number) => void }) {
     });
 
   const columns: DataTableColumn<Job>[] = [
-    { key: "path", label: "File", sortable: false, render: (job) => <PathCell path={pathOf(job)} /> },
+    { key: "path", label: "File", sortable: false, render: (job) => <PathCell path={job.path} /> },
     { key: "library", label: "Library", width: 104, sortable: false },
-    { key: "status", label: "Status", width: 136, sortable: false, render: (job) => <JobBadge status={job.status} state={job.state} progress={job.progress} /> },
+    { key: "status", label: "Status", width: 136, sortable: false, render: (job) => <JobBadge status={job.status} state={job.state} progress={status().running.find((live) => live.job_id === job.id) ?? job.progress} /> },
     { key: "attempt_count", label: "Attempts", width: 76, align: "right", sortable: false },
     { key: "size", label: "Size", width: 160, mono: true, sortable: false, render: (job) => <SizeCell input={job.input_size_bytes} output={job.output_size_bytes} /> },
     { key: "updated_at", label: "Updated", width: 108, sortable: false, render: (job) => <TimeCell iso={job.updated_at} now={now()} /> },

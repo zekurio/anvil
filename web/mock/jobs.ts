@@ -33,10 +33,21 @@ export function jobView(file: MockFile): Job {
     ...(file.last_error ? { last_error: file.last_error } : {}),
     ...(file.status === "done" ? { destination_path: destinationOf(file), publish_stage: "committed" } : {}),
     status: file.status,
+    path: file.path,
     input_size_bytes: file.size_bytes,
     output_size_bytes: file.output_size_bytes ?? 0,
+    ...attemptTimes(file),
     ...(file.status === "running" ? { progress: progressOf(file) } : {}),
   };
+}
+
+/** When the latest attempt started and ended. A job that never ran has neither. */
+function attemptTimes(file: MockFile): { started_at?: string; finished_at?: string } {
+  if (file.status === "running" && file.started_at !== undefined) return { started_at: iso(file.started_at) };
+  if (file.attempt_count === 0 || file.completed_at === undefined) return {};
+  // Derived from the file, so the same job always took the same time.
+  const seconds = file.status === "done" ? 240 + (file.source_id % 13) * 47 : 4 + (file.source_id % 7) * 3;
+  return { started_at: iso(file.completed_at - seconds * 1000), finished_at: iso(file.completed_at) };
 }
 
 /** Where the encode was published: the handoff folder, beside the source in copy mode, or over the source. */
@@ -252,7 +263,7 @@ export function jobDetail(file: MockFile): JobDetail {
       source_path: file.path,
       asset_path: file.path,
       asset_role: "primary",
-      path: absolutePath(file),
+      path: file.path,
       last_error: file.last_error ?? "",
     },
     ...(done || file.status === "running"
@@ -264,6 +275,10 @@ export function jobDetail(file: MockFile): JobDetail {
     ...(history.selections.length > 0 ? { stream_selection: history.selections } : {}),
     attempts: history.attempts,
     status: file.status,
+    input_path: absolutePath(file),
+    input_size_bytes: file.size_bytes,
+    output_size_bytes: file.output_size_bytes ?? 0,
+    destination_path: destinationOf(file),
     ...(file.status === "running" ? { progress: progressOf(file) } : {}),
     ...(flow ? { flow } : {}),
     ...(probed ? { file: factsOf(file) } : {}),

@@ -166,10 +166,12 @@ function Time(props: { iso: string; now: number }) {
 function Summary(props: { detail: JobDetail }) {
   const job = () => props.detail.job;
   const now = () => Date.parse(props.detail.server_time);
-  // JobDetail carries no sizes of its own: the input is the probed file, the output is the published artifact.
-  const input = () => props.detail.file?.size_bytes ?? 0;
-  const output = () => props.detail.publish_operation?.artifact_size_bytes ?? 0;
+  // The job records its input size when it finishes; until then the probe knows it.
+  const input = () => props.detail.input_size_bytes || (props.detail.file?.size_bytes ?? 0);
+  const output = () => props.detail.output_size_bytes;
   const publish = () => props.detail.publish_operation;
+  // Before a publish the destination is only planned. It is worth showing while the job can still get there.
+  const planned = () => (!publish() && props.detail.destination_path && (cancelable(props.detail.status) || props.detail.status === "failed") ? props.detail.destination_path : undefined);
   return (
     <>
       <dl class="av-dl av-dl-sheet">
@@ -201,14 +203,25 @@ function Summary(props: { detail: JobDetail }) {
         </Show>
         <dt>Source</dt>
         <dd>
-          <Copyable text={job().path} label="source path" />
+          <Copyable text={props.detail.input_path || job().path} label="source path" />
         </dd>
+        <Show when={planned()}>
+          {(destination) => (
+            <>
+              <dt>Destination</dt>
+              <dd>
+                <Copyable text={destination()} label="destination path" />
+                <span class="av-dl-note">Planned. Nothing is written there until the job publishes.</span>
+              </dd>
+            </>
+          )}
+        </Show>
         <Show when={publish()}>
           {(operation) => (
             <>
               <dt>Destination</dt>
               <dd>
-                <Copyable text={operation().destination_path} label="destination path" />
+                <Copyable text={props.detail.destination_path || operation().destination_path} label="destination path" />
                 <span class="av-dl-note">{joinDot(operation().kind, `mode ${operation().mode}`, `stage ${operation().stage}`)}</span>
                 <Show when={operation().conflict_description}>
                   <span class="av-dl-note av-danger">{operation().conflict_description}</span>

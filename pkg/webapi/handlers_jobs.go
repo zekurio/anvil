@@ -61,16 +61,29 @@ func (s *Server) listJobs(_ http.ResponseWriter, r *http.Request) (int, any, err
 	if err != nil {
 		return fail(err)
 	}
+	ids := make([]domain.JobID, 0, len(items))
+	for _, item := range items {
+		ids = append(ids, domain.JobID(item.Job.ID))
+	}
+	attempts, err := s.Store.LatestAttempts(r.Context(), ids)
+	if err != nil {
+		return fail(err)
+	}
 	list := JobList{Total: total, Jobs: make([]Job, 0, len(items))}
 	for _, item := range items {
 		job := Job{
 			JobResponse:     item.Job,
 			Status:          string(store.FileStatusOf(domain.JobState(item.Job.State))),
+			Path:            item.Path,
 			InputSizeBytes:  item.InputSizeBytes,
 			OutputSizeBytes: item.OutputSizeBytes,
 		}
+		if attempt, started := attempts[domain.JobID(item.Job.ID)]; started {
+			job.StartedAt, job.FinishedAt = &attempt.StartedAt, attempt.FinishedAt
+		}
 		if job.Status == FileStatusRunning {
-			job.Progress = s.jobProgress(item.Job.ID)
+			progress := s.progressOf(item.Job.ID, item.Job.Library, item.Path, attempts[domain.JobID(item.Job.ID)].FlowName, item.Job.UpdatedAt)
+			job.Progress = &progress
 		}
 		list.Jobs = append(list.Jobs, job)
 	}
@@ -86,12 +99,30 @@ func (s *Server) getJob(_ http.ResponseWriter, r *http.Request) (int, any, error
 	if err != nil {
 		return fail(err)
 	}
+	// The row the queue lists carries what the detail report leaves out:
+	// the sizes and where the result goes.
+	item, err := s.Jobs.JobItem(r.Context(), domain.JobID(id))
+	if err != nil {
+		return fail(err)
+	}
 	detail := JobDetail{
 		JobShowResponse: shown,
 		Status:          string(store.FileStatusOf(domain.JobState(shown.Job.State))),
+		InputPath:       item.Job.Source.AbsolutePath,
+		InputSizeBytes:  item.InputSizeBytes,
+		OutputSizeBytes: item.OutputSizeBytes,
+		DestinationPath: item.Job.DestinationPath,
+	}
+	if item.Job.Asset != nil {
+		detail.InputPath = item.Job.Asset.AbsolutePath
 	}
 	if detail.Status == FileStatusRunning {
-		detail.Progress = s.jobProgress(id)
+		attempts, err := s.Store.LatestAttempts(r.Context(), []domain.JobID{domain.JobID(id)})
+		if err != nil {
+			return fail(err)
+		}
+		progress := s.progressOf(id, item.Job.Library, item.Path, attempts[domain.JobID(id)].FlowName, item.Job.UpdatedAt)
+		detail.Progress = &progress
 	}
 	if detail.Flow, err = s.jobFlow(r, id, shown.Flow); err != nil {
 		return fail(err)

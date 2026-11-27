@@ -316,12 +316,37 @@ func (s *Server) listFiles(_ http.ResponseWriter, r *http.Request) (int, any, er
 				item.VideoCodec = video.Codec
 			}
 		}
-		if file.Status == store.FileStatusRunning {
-			item.Progress = s.jobProgress(int64(file.JobID))
-		}
 		list.Files = append(list.Files, item)
 	}
+	if err := s.attachProgress(r.Context(), library, list.Files); err != nil {
+		return fail(err)
+	}
 	return ok(list)
+}
+
+// attachProgress gives every running file of a page its live progress.
+func (s *Server) attachProgress(ctx context.Context, library store.Library, files []File) error {
+	var running []domain.JobID
+	for _, file := range files {
+		if file.Status == FileStatusRunning {
+			running = append(running, domain.JobID(file.JobID))
+		}
+	}
+	if len(running) == 0 {
+		return nil
+	}
+	attempts, err := s.Store.LatestAttempts(ctx, running)
+	if err != nil {
+		return err
+	}
+	for index, file := range files {
+		if file.Status != FileStatusRunning {
+			continue
+		}
+		progress := s.progressOf(file.JobID, library.Name, file.Path, attempts[domain.JobID(file.JobID)].FlowName, file.UpdatedAt)
+		files[index].Progress = &progress
+	}
+	return nil
 }
 
 // requeueFiles forces a fresh job for each named file, also for files that

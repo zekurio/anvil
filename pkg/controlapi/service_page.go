@@ -2,7 +2,11 @@ package controlapi
 
 import (
 	"context"
+	"errors"
+	"path/filepath"
 	"strings"
+
+	"github.com/zekurio/anvil/pkg/config"
 
 	"github.com/zekurio/anvil/pkg/control"
 	"github.com/zekurio/anvil/pkg/domain"
@@ -24,7 +28,11 @@ type JobPageQuery struct {
 // JobPageItem is one listed job together with the sizes the control listing
 // leaves out.
 type JobPageItem struct {
-	Job             control.JobResponse
+	Job control.JobResponse
+	// Path is the media file relative to the library root, slash-separated.
+	// A package job's asset lives below its source directory; Path joins the
+	// two, which neither Job.Source nor Job.Asset does on its own.
+	Path            string
 	InputSizeBytes  int64
 	OutputSizeBytes int64
 }
@@ -65,15 +73,39 @@ func (s Service) JobPage(ctx context.Context, query JobPageQuery) ([]JobPageItem
 	}
 	items := make([]JobPageItem, 0, len(summaries))
 	for _, summary := range summaries {
-		response, _, _, err := s.jobResponse(ctx, cfg, summary)
+		item, err := s.jobPageItem(ctx, cfg, summary)
 		if err != nil {
 			return nil, 0, err
 		}
-		items = append(items, JobPageItem{
-			Job:             response,
-			InputSizeBytes:  summary.Job.InputSizeBytes,
-			OutputSizeBytes: summary.Job.OutputSizeBytes,
-		})
+		items = append(items, item)
 	}
 	return items, total, nil
+}
+
+// JobItem describes one job the way JobPage lists it.
+func (s Service) JobItem(ctx context.Context, id domain.JobID) (JobPageItem, error) {
+	if err := s.requireStore(); err != nil {
+		return JobPageItem{}, err
+	}
+	summary, err := s.Store.GetJobSummary(ctx, id)
+	if errors.Is(err, store.ErrNotFound) {
+		return JobPageItem{}, notFoundf("no job has the id %d", id)
+	}
+	if err != nil {
+		return JobPageItem{}, err
+	}
+	return s.jobPageItem(ctx, s.runtimeConfig(), summary)
+}
+
+func (s Service) jobPageItem(ctx context.Context, cfg config.Config, summary store.JobSummary) (JobPageItem, error) {
+	response, _, _, err := s.jobResponse(ctx, cfg, summary)
+	if err != nil {
+		return JobPageItem{}, err
+	}
+	return JobPageItem{
+		Job:             response,
+		Path:            filepath.ToSlash(jobPath(summary)),
+		InputSizeBytes:  summary.Job.InputSizeBytes,
+		OutputSizeBytes: summary.Job.OutputSizeBytes,
+	}, nil
 }

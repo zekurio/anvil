@@ -175,7 +175,9 @@ func jobDetailFromSummary(summary store.JobSummary) control.JobDetail {
 // recognizes. A package job's asset lives under its source, so reporting only
 // one of them would name a directory or a file with no context.
 func jobPath(summary store.JobSummary) string {
-	if summary.AssetPath == "" || summary.AssetPath == summary.SourcePath {
+	// Only a package has its asset below the source; a file source is its own
+	// asset, whatever the two paths look like.
+	if summary.SourceKind != domain.SourceKindPackage || summary.AssetPath == "" {
 		return summary.SourcePath
 	}
 	source := strings.Trim(summary.SourcePath, "/")

@@ -177,6 +177,9 @@ export function progressOf(file: MockFile, at = Date.now()): Progress | undefine
     const speed = timed ? Number(((1.3 + (file.source_id % 9) * 0.15) * (step === "encode" ? 1 : 3)).toFixed(2)) : 0;
     return {
       job_id: file.job_id,
+      library: file.library,
+      path: file.path,
+      flow_name: db.flows.find((f) => f.id === findLibrary(file.library)?.flow_id)?.name ?? "",
       step,
       percent: timed ? Number(((elapsed / seconds) * 100).toFixed(1)) : -1,
       fps: timed ? Number((speed * 23.976).toFixed(1)) : 0,

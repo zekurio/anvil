@@ -388,6 +388,7 @@ export interface Status {
   workers: Workers;
   /** Jobs by state. Absent states are zero. */
   queue: Partial<Record<JobState, number>>;
+  /** Every job whose status is "running", oldest job first, from the moment it starts. */
   running: Progress[];
   libraries: number;
   flows: number;
@@ -401,7 +402,12 @@ export interface Workers {
 /** The live state of one running job. */
 export interface Progress {
   job_id: number;
-  /** The pipeline step now running, e.g. "crf-search" or "encode". */
+  library: string;
+  /** The media file relative to the library root, as LibraryFile.path. */
+  path: string;
+  /** The flow the running attempt took its snapshot of; empty until the attempt has started. */
+  flow_name: string;
+  /** The pipeline step now running, e.g. "crf-search" or "encode". Empty until the job's first report. */
   step: string;
   /** 0-100 of the current step, or -1 when unknown. */
   percent: number;
@@ -707,14 +713,32 @@ export interface JobList {
 /** One queue row: control.JobResponse flattened with the web fields. */
 export interface Job extends JobResponse {
   status: FileStatus;
+  /**
+   * The media file relative to the library root, as LibraryFile.path. For a
+   * file inside a download package it joins the package directory
+   * (source.path) and the file below it (asset.path).
+   */
+  path: string;
   input_size_bytes: number;
   output_size_bytes: number;
+  /** When the latest attempt started. Absent for a job that never started. */
+  started_at?: string;
+  /** When the latest attempt ended. Absent while it runs, and for a job that never started. */
+  finished_at?: string;
   progress?: Progress;
 }
 
 /** Everything known about one job: control.JobShowResponse flattened with the web fields. */
 export interface JobDetail extends JobShowResponse {
   status: FileStatus;
+  /** The absolute path of the media file the job reads. Empty when the job's library is gone. */
+  input_path: string;
+  /** 0 until the job has looked at its file. */
+  input_size_bytes: number;
+  /** 0 until the result is published. */
+  output_size_bytes: number;
+  /** Where the result is or would be published: the journaled path, or the planned one before a publish. Empty when it cannot be planned. */
+  destination_path: string;
   progress?: Progress;
   /** How the flow resolved on the latest attempt that evaluated it. */
   flow?: JobFlow;

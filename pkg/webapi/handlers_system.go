@@ -2,6 +2,7 @@ package webapi
 
 import (
 	"cmp"
+	"context"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -12,10 +13,12 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/zekurio/anvil/pkg/domain"
 	"github.com/zekurio/anvil/pkg/flow"
 	"github.com/zekurio/anvil/pkg/scanner"
+	"github.com/zekurio/anvil/pkg/store"
 )
 
 func (s *Server) session(r *http.Request) Session {
@@ -66,55 +69,74 @@ func (s *Server) status(_ http.ResponseWriter, r *http.Request) (int, any, error
 	if err != nil {
 		return fail(err)
 	}
+	running, err := s.running(r.Context())
+	if err != nil {
+		return fail(err)
+	}
 	return ok(Status{
 		Version:    status.Daemon.Version,
 		ServerTime: status.ServerTime,
 		StartedAt:  status.Daemon.StartedAt,
 		Workers:    Workers{Configured: status.Workers.Configured, Active: status.Workers.Active},
 		Queue:      status.Queue,
-		Running:    s.running(),
+		Running:    running,
 		Libraries:  len(s.Config().Libraries),
 		Flows:      len(flows),
 	})
 }
 
-// running lists the live progress of every running job, by job ID.
-func (s *Server) running() []Progress {
-	running := []Progress{}
-	if s.Progress == nil {
-		return running
+// running lists every running job with its live progress, oldest job first.
+// The store decides which jobs run: the progress tracker only knows a job
+// once it has reported, and keeps one a moment after it stopped.
+func (s *Server) running(ctx context.Context) ([]Progress, error) {
+	jobs, err := s.Store.ListJobs(ctx, store.JobListFilter{States: store.JobStatesOf(store.FileStatusRunning)})
+	if err != nil {
+		return nil, err
 	}
-	for _, progress := range s.Progress.All() {
-		running = append(running, progressOf(progress))
+	ids := make([]domain.JobID, 0, len(jobs))
+	for _, job := range jobs {
+		ids = append(ids, job.Job.ID)
+	}
+	attempts, err := s.Store.LatestAttempts(ctx, ids)
+	if err != nil {
+		return nil, err
+	}
+	running := make([]Progress, 0, len(jobs))
+	for _, job := range jobs {
+		running = append(running, s.progressOf(int64(job.Job.ID), string(job.Job.LibraryName), jobPath(job), attempts[job.Job.ID].FlowName, job.Job.UpdatedAt))
 	}
 	slices.SortFunc(running, func(left, right Progress) int { return cmp.Compare(left.JobID, right.JobID) })
-	return running
+	return running, nil
 }
 
-// jobProgress returns the live progress of one job, or nil when it reports
-// none.
-func (s *Server) jobProgress(id int64) *Progress {
+// jobPath is the library-relative path of a job's media file, as File.Path:
+// a package's asset lives below its source directory.
+func jobPath(job store.JobSummary) string {
+	if job.SourceKind == domain.SourceKindPackage && job.AssetPath != "" {
+		return job.SourcePath + "/" + job.AssetPath
+	}
+	return job.SourcePath
+}
+
+// progressOf describes one running job: which job it is, and its latest
+// progress report. Without a report the step is empty and nothing is known
+// yet; updatedAt, the job's own, then says since when.
+func (s *Server) progressOf(id int64, library, path, flowName string, updatedAt time.Time) Progress {
+	progress := Progress{
+		JobID: id, Library: library, Path: path, FlowName: flowName,
+		Percent: -1, ETASeconds: -1, UpdatedAt: updatedAt.UTC(),
+	}
 	if s.Progress == nil {
-		return nil
+		return progress
 	}
-	progress, found := s.Progress.Snapshot(domain.JobID(id))
+	reported, found := s.Progress.Snapshot(domain.JobID(id))
 	if !found {
-		return nil
+		return progress
 	}
-	converted := progressOf(progress)
-	return &converted
-}
-
-func progressOf(progress domain.JobProgress) Progress {
-	return Progress{
-		JobID:      int64(progress.JobID),
-		Step:       progress.Step,
-		Percent:    progress.Percent,
-		FPS:        progress.FPS,
-		Speed:      progress.Speed,
-		ETASeconds: progress.ETASeconds,
-		UpdatedAt:  progress.UpdatedAt.UTC(),
-	}
+	progress.Step = reported.Step
+	progress.Percent, progress.FPS, progress.Speed, progress.ETASeconds = reported.Percent, reported.FPS, reported.Speed, reported.ETASeconds
+	progress.UpdatedAt = reported.UpdatedAt.UTC()
+	return progress
 }
 
 func (s *Server) settings(http.ResponseWriter, *http.Request) (int, any, error) {
