@@ -778,21 +778,40 @@ export interface ArrWrite {
 
 /* ---------- query parameters (route table in pkg/webapi/types.go) ---------- */
 
-/** GET /libraries/{name}/files */
+/**
+ * The keys GET /libraries/{name}/files sorts by. "status" orders by how much
+ * attention a status needs: running, queued, failed, done, skipped, none.
+ * The probe columns (container, video codec, resolution, audio) do not sort.
+ */
+export type FileSort = "path" | "size" | "status" | "updated_at";
+
+/** GET /libraries/{name}/files. An offset at or past total answers an empty page with the real total. */
 export interface FileQuery {
   status?: FileStatus;
+  /** Keeps files whose library-relative path contains it, ignoring case. */
   q?: string;
-  sort?: string;
+  sort?: FileSort;
   dir?: "asc" | "desc";
+  /** 100 by default, 500 at most. */
   limit?: number;
   offset?: number;
 }
 
-/** GET /jobs */
+/** The status groups GET /jobs filters by: every FileStatus but "none". */
+export type JobStatusFilter = Exclude<FileStatus, "none">;
+
+/**
+ * GET /jobs. A job is listed when it matches any status or state named; with
+ * neither, every job is. An offset at or past total answers an empty page with
+ * the real total.
+ */
 export interface JobQuery {
+  /** An unknown library answers "not_found". */
   library?: string;
+  status?: JobStatusFilter | JobStatusFilter[];
   state?: JobState | JobState[];
   q?: string;
+  /** 100 by default, 500 at most. */
   limit?: number;
   offset?: number;
 }

@@ -1,6 +1,6 @@
 import { createMemo, createSignal, Errored, isPending, Loading, Match, Show, Switch } from "solid-js";
 
-import { api, createQuery, keys, POLL_LIST, type FileQuery, type FileStatus, type Library, type LibraryFile } from "../../../api";
+import { api, createQuery, keys, POLL_LIST, type FileQuery, type FileSort, type FileStatus, type Library, type LibraryFile } from "../../../api";
 import { requeueFiles } from "../../../features/jobs/actions";
 import { SizeCell, TimeCell } from "../../../features/jobs/cells";
 import { JobBulkBar } from "../../../features/jobs/JobBulkBar";
@@ -49,7 +49,7 @@ const probed = (value: string) => value || <span class="av-cell-muted">—</span
 export function FilesTab(props: { library: Library }) {
   const { status } = useAppData();
   const [filter, setFilter] = createSignal<Filter>("all");
-  const [sort, setSort] = createSignal<{ key: string; dir: "asc" | "desc" }>({ key: "path", dir: "asc" });
+  const [sort, setSort] = createSignal<{ key: FileSort; dir: "asc" | "desc" }>({ key: "path", dir: "asc" });
   const [page, setPage] = createSignal(0);
   const [opened, setOpened] = createSignal<LibraryFile | null>(null);
   const search = createDebounced();
@@ -89,7 +89,8 @@ export function FilesTab(props: { library: Library }) {
     change();
     setPage(0);
   };
-  const onSort = (key: string) => refine(() => setSort((current) => ({ key, dir: current.key === key && current.dir === "asc" ? "desc" : "asc" })));
+  // Column keys of the sortable columns are the daemon's sort keys (FileSort).
+  const onSort = (key: string) => refine(() => setSort((current) => ({ key: key as FileSort, dir: current.key === key && current.dir === "asc" ? "desc" : "asc" })));
 
   const selected = () => selection.rows();
   const bulkJobs = () => selected().flatMap((file) => (file.job_id !== undefined ? [{ id: file.job_id, status: file.status, state: file.job_state }] : []));
@@ -98,9 +99,10 @@ export function FilesTab(props: { library: Library }) {
 
   const columns: DataTableColumn<LibraryFile>[] = [
     { key: "path", label: "File", path: true },
-    { key: "container", label: "Container", mono: true, width: 92, render: (file) => probed(file.container) },
-    { key: "video_codec", label: "Video", mono: true, width: 76, render: (file) => probed(file.video_codec) },
-    { key: "resolution", label: "Resolution", mono: true, width: 96, render: (file) => probed(file.resolution) },
+    // The probe columns come from each job's checkpoint; the daemon cannot order by them.
+    { key: "container", label: "Container", mono: true, width: 92, sortable: false, render: (file) => probed(file.container) },
+    { key: "video_codec", label: "Video", mono: true, width: 76, sortable: false, render: (file) => probed(file.video_codec) },
+    { key: "resolution", label: "Resolution", mono: true, width: 96, sortable: false, render: (file) => probed(file.resolution) },
     { key: "audio", label: "Audio", mono: true, width: 100, sortable: false, render: (file) => probed(file.audio) },
     { key: "size", label: "Size", mono: true, width: 160, render: (file) => <SizeCell input={file.size_bytes} output={file.output_size_bytes} /> },
     { key: "status", label: "Status", width: 132, render: (file) => <JobBadge status={file.status} state={file.job_state} progress={progressOf(file)} /> },

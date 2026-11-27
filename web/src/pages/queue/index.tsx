@@ -197,7 +197,7 @@ function JobsTable(props: { activeId?: number; onOpen: (id: number) => void }) {
 
   const query = createMemo(
     (): JobQuery => ({
-      state: filter() === "all" ? undefined : STATES_OF_STATUS[filter() as Exclude<Filter, "all">],
+      status: filter() === "all" ? undefined : (filter() as Exclude<Filter, "all">),
       library: library() || undefined,
       q: search.settled() || undefined,
       limit: PAGE_SIZE,

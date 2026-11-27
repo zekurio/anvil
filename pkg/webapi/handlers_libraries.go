@@ -276,7 +276,7 @@ func (s *Server) listFiles(_ http.ResponseWriter, r *http.Request) (int, any, er
 		filter.Sort = store.LibraryFileSortPath
 	case store.LibraryFileSortPath, store.LibraryFileSortSize, store.LibraryFileSortStatus, store.LibraryFileSortUpdated:
 	default:
-		return fail(invalidf("sort", "sort must be one of path, size, status, or updated."))
+		return fail(invalidf("sort", "sort must be one of path, size, status, or updated_at."))
 	}
 	switch strings.TrimSpace(query.Get("dir")) {
 	case "", "asc":

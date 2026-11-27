@@ -1,6 +1,6 @@
 // Queue routes: list, detail, cancel and retry.
 
-import type { JobActionRequest, JobActionResult, JobList, JobState } from "../../src/api/types.ts";
+import type { JobActionRequest, JobActionResult, JobList, JobState, JobStatusFilter } from "../../src/api/types.ts";
 import { advance, db, findLibrary } from "../db.ts";
 import type { MockFile } from "../fixtures/files.ts";
 import { intParam, invalid, notFound, objectBody, type Context, type Router } from "../http.ts";
@@ -15,6 +15,23 @@ function states(values: string[]): JobState[] {
   const unknown = list.find((v) => !STATES.includes(v as JobState));
   if (unknown) throw invalid(`"${unknown}" is not a job state. Use one of: ${STATES.join(", ")}.`, "state");
   return list as JobState[];
+}
+
+// How pkg/store groups job states into the statuses GET /jobs filters by.
+const STATES_OF_STATUS: Record<JobStatusFilter, JobState[]> = {
+  queued: ["pending", "leased", "retrying"],
+  running: ["running", "validating", "replacing"],
+  done: ["complete"],
+  failed: ["failed"],
+  skipped: ["skipped", "canceled"],
+};
+
+/** The states the status parameter names, by group. */
+function statusStates(values: string[]): JobState[] {
+  const list = values.flatMap((v) => v.split(",")).map((v) => v.trim()).filter(Boolean);
+  const unknown = list.find((v) => !(v in STATES_OF_STATUS));
+  if (unknown) throw invalid(`status must be one of queued, running, done, failed, or skipped, not "${unknown}".`, "status");
+  return list.flatMap((v) => STATES_OF_STATUS[v as JobStatusFilter]);
 }
 
 const jobs = () => db.files.filter((f) => f.job_id !== undefined);
@@ -42,7 +59,8 @@ function select(ctx: Context): MockFile[] {
 export function jobRoutes(router: Router): void {
   router.on("GET", "/jobs", (ctx): JobList => {
     const library = ctx.query.get("library");
-    const wanted = states(ctx.query.getAll("state"));
+    // A job is listed when it matches any status or state named.
+    const wanted = [...states(ctx.query.getAll("state")), ...statusStates(ctx.query.getAll("status"))];
     const q = (ctx.query.get("q") ?? "").trim().toLowerCase();
     const limit = Math.min(intParam(ctx.query.get("limit"), 100), 500);
     const offset = intParam(ctx.query.get("offset"), 0);

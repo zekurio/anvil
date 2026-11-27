@@ -28,6 +28,25 @@ func (s *Server) listJobs(_ http.ResponseWriter, r *http.Request) (int, any, err
 	if err != nil {
 		return fail(invalidf("state", "%s", sentence(err.Error())))
 	}
+	// status selects by the groups the UI shows. A job is listed when it
+	// matches either selector, so both narrow the same thing: the state.
+	for _, value := range query["status"] {
+		for _, part := range strings.Split(value, ",") {
+			status := store.FileStatus(strings.TrimSpace(part))
+			if status == "" {
+				continue
+			}
+			grouped := store.JobStatesOf(status)
+			if len(grouped) == 0 {
+				return fail(invalidf("status", "status must be one of queued, running, done, failed, or skipped, not %q.", status))
+			}
+			for _, state := range grouped {
+				if !slices.Contains(states, state) {
+					states = append(states, state)
+				}
+			}
+		}
+	}
 	limit, offset, err := pageParams(r)
 	if err != nil {
 		return fail(err)

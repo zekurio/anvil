@@ -41,6 +41,18 @@ func FileStatusOf(state domain.JobState) FileStatus {
 	}
 }
 
+// JobStatesOf lists the job states a status groups, the inverse of
+// FileStatusOf. FileStatusNone and an unknown status have none.
+func JobStatesOf(status FileStatus) []domain.JobState {
+	var states []domain.JobState
+	for _, state := range domain.JobStates() {
+		if FileStatusOf(state) == status {
+			states = append(states, state)
+		}
+	}
+	return states
+}
+
 // ValidFileStatus reports whether a status names one of the groups.
 func ValidFileStatus(status FileStatus) bool {
 	switch status {
@@ -80,7 +92,7 @@ const (
 	LibraryFileSortPath    LibraryFileSort = "path"
 	LibraryFileSortSize    LibraryFileSort = "size"
 	LibraryFileSortStatus  LibraryFileSort = "status"
-	LibraryFileSortUpdated LibraryFileSort = "updated"
+	LibraryFileSortUpdated LibraryFileSort = "updated_at"
 )
 
 // LibraryFileFilter selects one page of a library's files.

@@ -38,10 +38,10 @@ import (
 //	PUT    /api/v1/libraries/{name}           LibraryWrite -> Library
 //	DELETE /api/v1/libraries/{name}           -> 204
 //	POST   /api/v1/libraries/{name}/scan      -> ScanResult
-//	GET    /api/v1/libraries/{name}/files     ?status=&q=&sort=&dir=&limit=&offset= -> FileList
+//	GET    /api/v1/libraries/{name}/files     ?status=&q=&sort=&dir=&limit=&offset= -> FileList (see FileList)
 //	POST   /api/v1/libraries/{name}/requeue   RequeueRequest -> JobActionResult
 //
-//	GET    /api/v1/jobs                       ?library=&state=&q=&limit=&offset= -> JobList
+//	GET    /api/v1/jobs                       ?library=&status=&state=&q=&limit=&offset= -> JobList (see JobList)
 //	GET    /api/v1/jobs/{id}                  JobDetail
 //	POST   /api/v1/jobs/cancel                JobActionRequest -> JobActionResult
 //	POST   /api/v1/jobs/retry                 JobActionRequest -> JobActionResult
@@ -421,7 +421,19 @@ const (
 	FileStatusSkipped = "skipped" // skipped or canceled
 )
 
-// FileList is one page of a library's files.
+// FileList is one page of a library's files. The query parameters:
+//
+//	status  one FileStatus; empty lists every file
+//	q       keeps files whose library-relative path contains it, ignoring case
+//	sort    "path" (the default), "size", "status" (by how much attention the
+//	        status needs: running, queued, failed, done, skipped, none), or
+//	        "updated_at". Nothing else sorts: the probe columns (container,
+//	        video codec, resolution, audio) are read from each job's
+//	        checkpoint and have no order in the store.
+//	dir     "asc" (the default) or "desc"
+//	limit   page size, 100 by default and 500 at most
+//	offset  rows to skip. An offset at or past Total answers an empty page
+//	        with the real Total, so a client can step back to the last page.
 type FileList struct {
 	// Total counts every file matching the filter, across all pages.
 	Total int64  `json:"total"`
@@ -462,7 +474,21 @@ type RequeueRequest struct {
 	Paths []string `json:"paths"`
 }
 
-// JobList is one page of the queue, newest activity first.
+// JobList is one page of the queue, newest activity first. The query
+// parameters:
+//
+//	library  one library name; an unknown one answers CodeNotFound
+//	status   FileStatus groups other than "none": queued, running, done,
+//	         failed, skipped
+//	state    exact domain.JobState values
+//	q        keeps jobs whose path contains it, ignoring case
+//	limit    page size, 100 by default and 500 at most
+//	offset   rows to skip. An offset at or past Total answers an empty page
+//	         with the real Total, so a client can step back to the last page.
+//
+// status and state may each be repeated or hold a comma-separated list. A job
+// is listed when it matches any status or state named; with neither, every
+// job is.
 type JobList struct {
 	Total int64 `json:"total"`
 	Jobs  []Job `json:"jobs"`

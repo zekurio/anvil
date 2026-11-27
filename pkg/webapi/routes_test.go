@@ -295,3 +295,73 @@ func TestJobDetailShowsTheFlowTheAttemptRan(t *testing.T) {
 		t.Fatalf("job flow = %+v", got)
 	}
 }
+
+// TestListsFilterSortAndPage pins the query vocabulary the tables of the UI
+// are built on: which keys sort, how job states are selected, and what a page
+// past the end answers.
+func TestListsFilterSortAndPage(t *testing.T) {
+	f := newFixture(t, "", nil)
+	for _, name := range []string{"a.mkv", "b.mkv", "c.mkv"} {
+		f.writeMedia(name)
+	}
+	f.mediaLibrary("movies", f.defaultFlow().ID)
+	want[ScanResult](t, f.send(http.MethodPost, "/api/v1/libraries/movies/scan", nil), http.StatusOK)
+	all := want[JobList](t, f.get("/api/v1/jobs"), http.StatusOK)
+	if all.Total != 3 {
+		t.Fatalf("jobs = %+v, want three", all)
+	}
+	want[JobActionResult](t, f.send(http.MethodPost, "/api/v1/jobs/cancel", JobActionRequest{IDs: []int64{all.Jobs[0].ID}}), http.StatusOK)
+
+	// Files: exactly four keys sort.
+	for _, key := range []string{"path", "size", "status", "updated_at"} {
+		for _, dir := range []string{"asc", "desc"} {
+			if files := want[FileList](t, f.get("/api/v1/libraries/movies/files?sort="+key+"&dir="+dir), http.StatusOK); len(files.Files) != 3 {
+				t.Errorf("files sorted by %s %s = %+v", key, dir, files)
+			}
+		}
+	}
+	for _, key := range []string{"container", "video_codec", "resolution", "audio", "updated"} {
+		if refused := wantError(t, f.get("/api/v1/libraries/movies/files?sort="+key), http.StatusBadRequest, CodeInvalid); refused.Field != "sort" {
+			t.Errorf("files sorted by %s = %+v, want the sort parameter refused", key, refused)
+		}
+	}
+	byStatus := want[FileList](t, f.get("/api/v1/libraries/movies/files?sort=status"), http.StatusOK)
+	if byStatus.Files[0].Status != FileStatusQueued || byStatus.Files[2].Status != FileStatusSkipped {
+		t.Errorf("files by status = %+v, want the queued ones before the canceled one", byStatus.Files)
+	}
+
+	// Jobs: by status group, by exact state, repeated or comma-separated,
+	// and both together.
+	for query, total := range map[string]int64{
+		"status=queued":                   2,
+		"status=skipped":                  1,
+		"status=queued,skipped":           3,
+		"status=queued&status=skipped":    3,
+		"status=done&status=failed":       0,
+		"state=pending":                   2,
+		"state=canceled&state=pending":    3,
+		"state=canceled,complete":         1,
+		"status=queued&state=canceled":    3,
+		"status=running&state=validating": 0,
+	} {
+		if jobs := want[JobList](t, f.get("/api/v1/jobs?"+query), http.StatusOK); jobs.Total != total || int64(len(jobs.Jobs)) != total {
+			t.Errorf("jobs?%s: total %d with %d rows, want %d", query, jobs.Total, len(jobs.Jobs), total)
+		}
+	}
+	for _, query := range []string{"status=none", "status=pending", "status=odd"} {
+		if refused := wantError(t, f.get("/api/v1/jobs?"+query), http.StatusBadRequest, CodeInvalid); refused.Field != "status" {
+			t.Errorf("jobs?%s = %+v, want the status parameter refused", query, refused)
+		}
+	}
+
+	// A page past the end is empty and still says how many rows there are.
+	if files := want[FileList](t, f.get("/api/v1/libraries/movies/files?limit=2&offset=10"), http.StatusOK); files.Total != 3 || files.Files == nil || len(files.Files) != 0 {
+		t.Errorf("files past the end = %+v, want total 3 and an empty page", files)
+	}
+	if jobs := want[JobList](t, f.get("/api/v1/jobs?limit=2&offset=10"), http.StatusOK); jobs.Total != 3 || jobs.Jobs == nil || len(jobs.Jobs) != 0 {
+		t.Errorf("jobs past the end = %+v, want total 3 and an empty page", jobs)
+	}
+	if last := want[JobList](t, f.get("/api/v1/jobs?limit=2&offset=2"), http.StatusOK); last.Total != 3 || len(last.Jobs) != 1 {
+		t.Errorf("last page of jobs = %+v, want one row", last)
+	}
+}

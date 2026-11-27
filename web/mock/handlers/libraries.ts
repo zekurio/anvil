@@ -99,13 +99,14 @@ function parse(write: Partial<LibraryWrite>, existing?: StoredLibrary): LibraryW
   };
 }
 
+// How much attention a status needs, as pkg/store orders them.
+const STATUS_RANK: FileStatus[] = ["running", "queued", "failed", "done", "skipped", "none"];
+
+// The keys of webapi.FileList's sort parameter (FileSort).
 const SORTERS: Record<string, (a: MockFile, b: MockFile) => number> = {
   path: (a, b) => a.path.localeCompare(b.path),
   size: (a, b) => a.size_bytes - b.size_bytes,
-  status: (a, b) => STATUSES.indexOf(a.status) - STATUSES.indexOf(b.status),
-  container: (a, b) => a.container.localeCompare(b.container),
-  video_codec: (a, b) => a.video_codec.localeCompare(b.video_codec),
-  resolution: (a, b) => a.height - b.height,
+  status: (a, b) => STATUS_RANK.indexOf(a.status) - STATUS_RANK.indexOf(b.status),
   updated_at: (a, b) => a.updated_at - b.updated_at,
 };
 
@@ -172,7 +173,7 @@ export function libraryRoutes(router: Router): void {
     const q = (ctx.query.get("q") ?? "").trim().toLowerCase();
     const sort = ctx.query.get("sort") || "path";
     const sorter = SORTERS[sort];
-    if (!sorter) throw invalid(`Must be one of: ${Object.keys(SORTERS).join(", ")}.`, "sort");
+    if (!sorter) throw invalid("sort must be one of path, size, status, or updated_at.", "sort");
     const direction = ctx.query.get("dir") === "desc" ? -1 : 1;
     const limit = Math.min(intParam(ctx.query.get("limit"), 100), 500);
     const offset = intParam(ctx.query.get("offset"), 0);

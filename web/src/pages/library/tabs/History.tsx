@@ -1,16 +1,16 @@
 import { createMemo, createSignal, Errored, isPending, Loading, Show } from "solid-js";
 
-import { api, createQuery, keys, POLL_LIST, type Job, type JobQuery, type Library } from "../../../api";
+import { api, createQuery, keys, POLL_LIST, type Job, type JobQuery, type JobStatusFilter, type Library } from "../../../api";
 import { ErrorCell, SizeCell, TimeCell } from "../../../features/jobs/cells";
 import { JobSheet } from "../../../features/jobs/JobSheet";
-import { savedLabel, STATES_OF_STATUS } from "../../../features/jobs/labels";
+import { savedLabel } from "../../../features/jobs/labels";
 import { JobBadge } from "../../../features/jobs/parts";
 import { Pager } from "../../../features/layout/Pager";
 import { useAppData } from "../../../shell/data";
 import { DataTable, EmptyState, ErrorState, LoadingRows, PathCell, type DataTableColumn } from "../../../ui";
 
 const PAGE_SIZE = 100;
-const FINISHED = [...STATES_OF_STATUS.done, ...STATES_OF_STATUS.failed, ...STATES_OF_STATUS.skipped];
+const FINISHED: JobStatusFilter[] = ["done", "failed", "skipped"];
 
 const pathOf = (job: Job) => job.asset?.path ?? job.source.path;
 const fileName = (path: string) => path.slice(path.lastIndexOf("/") + 1);
@@ -20,7 +20,7 @@ export function HistoryTab(props: { library: Library }) {
   const { status } = useAppData();
   const [page, setPage] = createSignal(0);
   const [opened, setOpened] = createSignal<Job | null>(null);
-  const query = createMemo((): JobQuery => ({ library: props.library.name, state: FINISHED, limit: PAGE_SIZE, offset: page() * PAGE_SIZE }));
+  const query = createMemo((): JobQuery => ({ library: props.library.name, status: FINISHED, limit: PAGE_SIZE, offset: page() * PAGE_SIZE }));
   const list = createQuery(
     () => keys.jobList(query()),
     () => api.jobs.list(query()),
