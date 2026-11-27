@@ -81,8 +81,20 @@ export interface Field {
   choices?: Choice[];
   /** Renders an enum as a segmented control instead of a select. */
   segmented?: boolean;
+  /** min and max bound a number, both ends included unless min_exclusive says otherwise. */
   min?: number;
   max?: number;
+  /** Makes min itself invalid: the value must be greater. */
+  min_exclusive?: boolean;
+  /**
+   * Marks a string_list of simple tokens (language tags, codec names): no
+   * entry holds a comma or a space, order does not matter, repeats mean
+   * nothing. The editor may end an entry at a comma, split pasted text on
+   * commas and spaces, and drop repeats. Without it entries are free-form and
+   * kept as typed: an entry ends at Enter only, pasted text splits on line
+   * breaks only, and repeats stay.
+   */
+  tokens?: boolean;
   /** Unit shown inside the input, e.g. "kb/s". */
   suffix?: string;
   mono?: boolean;

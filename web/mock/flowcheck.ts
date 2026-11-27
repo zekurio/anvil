@@ -60,15 +60,18 @@ export function parseDuration(text: string): number | undefined {
 const formatNumber = (value: number) => String(value);
 
 function rangeMessage(field: Field, value: number): string {
-  const below = field.min !== undefined && value < field.min;
+  const below = field.min !== undefined && (value < field.min || (field.min_exclusive === true && value === field.min));
   const above = field.max !== undefined && value > field.max;
   if (!below && !above) return "";
+  if (field.min_exclusive && field.max !== undefined) return `Must be greater than ${formatNumber(field.min ?? 0)} and at most ${formatNumber(field.max)}.`;
+  if (field.min_exclusive) return `Must be greater than ${formatNumber(field.min ?? 0)}.`;
   if (field.min !== undefined && field.max !== undefined) return `Must be between ${formatNumber(field.min)} and ${formatNumber(field.max)}.`;
   if (field.min !== undefined) return `Must be at least ${formatNumber(field.min)}.`;
   return `Must be at most ${formatNumber(field.max ?? 0)}.`;
 }
 
-const choiceValues = (field: Field) => (field.choices ?? []).map((c) => c.value).join(", ");
+// An enum's message lists what its control shows: the labels.
+const choiceLabels = (field: Field) => (field.choices ?? []).map((c) => c.label).join(", ");
 const hasChoice = (field: Field, value: string) => (field.choices ?? []).some((c) => c.value === value);
 const isStringList = (value: unknown): value is string[] => Array.isArray(value) && value.every((entry) => typeof entry === "string");
 
@@ -93,9 +96,9 @@ function decodeValue(field: Field, value: unknown): { value?: OptionValue; messa
       return seconds === undefined ? { message: 'Must be a duration such as "20s".' } : { value: seconds };
     }
     case "enum":
-      return typeof value === "string" && hasChoice(field, value) ? { value } : { message: `Must be one of: ${choiceValues(field)}.` };
+      return typeof value === "string" && hasChoice(field, value) ? { value } : { message: `Must be one of: ${choiceLabels(field)}.` };
     case "enum_list": {
-      if (!isStringList(value) || value.some((entry) => !hasChoice(field, entry))) return { message: `Must be a list of: ${choiceValues(field)}.` };
+      if (!isStringList(value) || value.some((entry) => !hasChoice(field, entry))) return { message: `Must be a list of: ${choiceLabels(field)}.` };
       // A set: catalog order and no repeats.
       return { value: (field.choices ?? []).map((c) => c.value).filter((v) => value.includes(v)) };
     }
@@ -172,7 +175,7 @@ const CHECKS: Record<string, (o: Options) => Problem[]> = {
   },
   "video.encode": (o) => {
     const problems: Problem[] = [];
-    if (o.number("crf_min") > o.number("crf_max")) problems.push({ field: "crf_min", message: "Must be less than or equal to crf_max." });
+    if (o.number("crf_min") > o.number("crf_max")) problems.push({ field: "crf_min", message: "Must be less than or equal to Highest CRF." });
     if (o.number("sample_duration") <= 0) problems.push({ field: "sample_duration", message: "Must be positive." });
     const args = encoderArgsRule(o.list("ffmpeg_args"));
     if (args) problems.push({ field: "ffmpeg_args", message: args });
@@ -186,7 +189,6 @@ const CHECKS: Record<string, (o: Options) => Problem[]> = {
     if (bad) problems.push({ field: "seek_offsets", message: `Entries must be durations such as 5m or 1h10m. "${bad.entry}" is not one.` });
     if (o.number("samples") === 1) problems.push({ field: "samples", message: "Must be 0 (automatic) or at least 2." });
     if (offsets.some((offset) => (offset.seconds ?? 0) < 0)) problems.push({ field: "seek_offsets", message: "Must not contain negative durations." });
-    if (o.number("min_retained_area_percent") <= 0) problems.push({ field: "min_retained_area_percent", message: "Must be finite, greater than 0, and at most 100." });
     return problems;
   },
   "audio.keep": (o) => blankEntries(o, "languages"),
@@ -237,8 +239,9 @@ const SUMMARIES: Record<string, (o: Options) => string> = {
   "subtitles.drop_bitmap": () => "hdmv_pgs_subtitle, dvd_subtitle, dvb_subtitle",
   "subtitles.remove_all": () => "every subtitle track",
   "container.metadata": (o) => {
-    const parts = [`metadata ${o.text("metadata")}`, `track_titles ${o.text("track_titles")}`];
-    for (const key of ["attachments", "chapters"]) if (o.text(key) === "strip") parts.push(`${key} strip`);
+    const titles: Record<string, string> = { preserve: "keep titles", strip: "strip titles", standardize: "standardize titles" };
+    const parts = [o.text("metadata") === "strip" ? "strip metadata" : "keep metadata", titles[o.text("track_titles")] ?? ""];
+    for (const key of ["attachments", "chapters"]) if (o.text(key) === "strip") parts.push(`no ${key}`);
     return parts.join(DOT);
   },
   "output.publish": () => "replace or hand off, as the library says",

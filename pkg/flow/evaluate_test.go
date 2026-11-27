@@ -527,8 +527,8 @@ func TestSummaries(t *testing.T) {
 		{typeSubtitlesKeep, map[string]any{"languages": []string{"eng"}, "fallback": "keep_first"}, "eng · keep_first fallback"},
 		{typeSubtitlesDropImage, nil, "hdmv_pgs_subtitle, dvd_subtitle, dvb_subtitle"},
 		{typeSubtitlesRemoveAll, nil, "every subtitle track"},
-		{typeContainerMetadata, nil, "metadata preserve · track_titles strip"},
-		{typeContainerMetadata, map[string]any{"metadata": "strip", "track_titles": "standardize", "attachments": "strip", "chapters": "strip"}, "metadata strip · track_titles standardize · attachments strip · chapters strip"},
+		{typeContainerMetadata, nil, "keep metadata · strip titles"},
+		{typeContainerMetadata, map[string]any{"metadata": "strip", "track_titles": "standardize", "attachments": "strip", "chapters": "strip"}, "strip metadata · standardize titles · no attachments · no chapters"},
 		{typeOutputPublish, nil, "replace or hand off, as the library says"},
 		{typeOutputSkip, nil, "leave the file untouched"},
 	}

@@ -3,6 +3,7 @@ package flow
 import (
 	"fmt"
 	"math"
+	"regexp"
 	"slices"
 	"sort"
 	"strconv"
@@ -88,6 +89,7 @@ func decodeOptionsWithWarnings(def nodeDef, raw map[string]any) (options, []opti
 		// would only be judging the default that stands in for it.
 		for _, problem := range def.check(decoded) {
 			if !flagged[problem.Field] {
+				problem.Message = nameFields(def, problem.Message)
 				problems = append(problems, problem)
 			}
 		}
@@ -110,11 +112,39 @@ func decodeOptionsWithWarnings(def nodeDef, raw map[string]any) (options, []opti
 	if def.warn != nil {
 		for _, warning := range def.warn(decoded) {
 			if !slices.ContainsFunc(problems, func(problem optionProblem) bool { return problem.Field == warning.Field }) {
+				warning.Message = nameFields(def, warning.Message)
 				warnings = append(warnings, warning)
 			}
 		}
 	}
 	return decoded, problems, warnings
+}
+
+// nameFields makes a message name other fields the way the operator sees
+// them. A rule that relates two options is worded in option keys where it
+// comes from: "must be less than or equal to crf_max" is a rule of the TOML
+// profile. The form shows labels, so every option key of the node that a
+// message mentions is replaced by its label: "Must be less than or equal to
+// Highest CRF."
+//
+// Only keys with an underscore are replaced. Those are never ordinary words,
+// while "metric" or "limit" may simply be part of the sentence.
+func nameFields(def nodeDef, message string) string {
+	if !strings.Contains(message, "_") {
+		return message
+	}
+	for _, section := range def.Sections {
+		for _, field := range section.Fields {
+			if !strings.Contains(field.Key, "_") || !strings.Contains(message, field.Key) {
+				continue
+			}
+			// \b treats the underscore as part of a word, so crf_max does not
+			// match inside another key.
+			key := regexp.MustCompile(`\b` + regexp.QuoteMeta(field.Key) + `\b`)
+			message = key.ReplaceAllLiteralString(message, field.Label)
+		}
+	}
+	return message
 }
 
 func visible(field Field, decoded options) bool {
@@ -171,13 +201,13 @@ func decodeValue(field Field, value any) (any, string) {
 	case FieldEnum:
 		text, ok := value.(string)
 		if !ok || !hasChoice(field, text) {
-			return nil, "Must be one of: " + choiceValues(field) + "."
+			return nil, "Must be one of: " + choiceLabels(field) + "."
 		}
 		return text, ""
 	case FieldEnumList:
 		list, ok := stringList(value)
 		if !ok || slices.ContainsFunc(list, func(entry string) bool { return !hasChoice(field, entry) }) {
-			return nil, "Must be a list of: " + choiceValues(field) + "."
+			return nil, "Must be a list of: " + choiceLabels(field) + "."
 		}
 		// The list is a set: catalog order and no repeats, so two ways of
 		// ticking the same boxes decode alike.
@@ -241,11 +271,15 @@ func stringList(value any) ([]string, bool) {
 }
 
 func rangeMessage(field Field, number float64) string {
-	below := field.Min != nil && number < *field.Min
+	below := field.Min != nil && (number < *field.Min || field.MinExclusive && number == *field.Min)
 	above := field.Max != nil && number > *field.Max
 	switch {
 	case !below && !above:
 		return ""
+	case field.MinExclusive && field.Max != nil:
+		return fmt.Sprintf("Must be greater than %s and at most %s.", formatNumber(*field.Min), formatNumber(*field.Max))
+	case field.MinExclusive:
+		return fmt.Sprintf("Must be greater than %s.", formatNumber(*field.Min))
 	case field.Min != nil && field.Max != nil:
 		return fmt.Sprintf("Must be between %s and %s.", formatNumber(*field.Min), formatNumber(*field.Max))
 	case field.Min != nil:
@@ -259,12 +293,14 @@ func hasChoice(field Field, value string) bool {
 	return slices.ContainsFunc(field.Choices, func(choice Choice) bool { return choice.Value == value })
 }
 
-func choiceValues(field Field) string {
-	values := make([]string, 0, len(field.Choices))
+// choiceLabels lists what an enum field accepts in the words its control
+// shows, which are the ones the operator can pick.
+func choiceLabels(field Field) string {
+	labels := make([]string, 0, len(field.Choices))
 	for _, choice := range field.Choices {
-		values = append(values, choice.Value)
+		labels = append(labels, choice.Label)
 	}
-	return strings.Join(values, ", ")
+	return strings.Join(labels, ", ")
 }
 
 // formatNumber prints a number the way an operator typed it: 95, not 95.000000.

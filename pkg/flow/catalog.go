@@ -57,8 +57,9 @@ const (
 	FieldEnum FieldType = "enum"
 	// FieldEnumList is a JSON array of strings drawn from Choices.
 	FieldEnumList FieldType = "enum_list"
-	// FieldStringList is a JSON array of free-form strings, such as
-	// language tags or extra ffmpeg arguments.
+	// FieldStringList is a JSON array of strings: free-form entries such as
+	// extra ffmpeg arguments, or, with Field.Tokens, a set of simple tokens
+	// such as language tags.
 	FieldStringList FieldType = "string_list"
 	// FieldDuration is a JSON string holding a Go duration such as "20s".
 	FieldDuration FieldType = "duration"
@@ -75,9 +76,21 @@ type Field struct {
 	Default any      `json:"default"`
 	Choices []Choice `json:"choices,omitempty"`
 	// Segmented renders an enum as a segmented control instead of a select.
-	Segmented bool     `json:"segmented,omitempty"`
-	Min       *float64 `json:"min,omitempty"`
-	Max       *float64 `json:"max,omitempty"`
+	Segmented bool `json:"segmented,omitempty"`
+	// Min and Max bound a number, both ends included unless MinExclusive
+	// says otherwise.
+	Min *float64 `json:"min,omitempty"`
+	Max *float64 `json:"max,omitempty"`
+	// MinExclusive makes Min itself invalid: the value must be greater.
+	MinExclusive bool `json:"min_exclusive,omitempty"`
+	// Tokens marks a string_list whose entries are simple tokens, such as
+	// language tags or codec names: none holds a comma or a space, order
+	// does not matter, and a repeat means nothing. The editor may then end
+	// an entry at a comma, split pasted text on commas and spaces, and drop
+	// repeats. Without it entries are free-form and the list is kept as
+	// typed: an entry ends at Enter only, pasted text splits on line
+	// breaks only, and repeats stay, as ffmpeg arguments need.
+	Tokens bool `json:"tokens,omitempty"`
 	// Suffix is the unit shown inside the input, e.g. "kb/s".
 	Suffix string `json:"suffix,omitempty"`
 	// Mono renders the value in the monospace face: codec ids, globs,

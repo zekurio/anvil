@@ -225,6 +225,24 @@ func checkFieldShape(t *testing.T, name string, field Field) {
 	if field.Min != nil && field.Max != nil && *field.Min > *field.Max {
 		t.Errorf("%s has min %v above max %v", name, *field.Min, *field.Max)
 	}
+	if field.MinExclusive && field.Min == nil {
+		t.Errorf("%s excludes a minimum it does not have", name)
+	}
+	if field.Tokens && field.Type != FieldStringList {
+		t.Errorf("%s holds tokens but is not a string list", name)
+	}
+	// Half the options sheet is about 180px, which a segmented control with
+	// two short choices fills. A third choice does not fit beside another
+	// field, and the editor would have to fall back to a select.
+	if field.Segmented && field.Half {
+		width := 0
+		for _, choice := range field.Choices {
+			width += len(choice.Label)
+		}
+		if len(field.Choices) > 2 || width > 16 {
+			t.Errorf("%s is segmented and half a row wide, but its %d choices (%d characters) do not fit there", name, len(field.Choices), width)
+		}
+	}
 	if field.Type == FieldDuration {
 		if duration, ok := mustDecode(t, name, field).(time.Duration); !ok || duration <= 0 {
 			t.Errorf("%s default duration = %v", name, duration)

@@ -176,10 +176,10 @@ export function Primitives() {
       <Item title="TokenInput">
         <div class="gal-grid">
           <Field label="Languages" htmlFor={`${id}-languages`} hint="ISO 639-2 tags. Enter or a comma adds one.">
-            <TokenInput id={`${id}-languages`} mono value={languages()} onChange={setLanguages} placeholder="eng" />
+            <TokenInput id={`${id}-languages`} mono separators={[","]} value={languages()} onChange={setLanguages} placeholder="eng" />
           </Field>
           <Field label="Extra ffmpeg arguments" htmlFor={`${id}-args`} hint="Enter adds one. Commas are kept.">
-            <TokenInput id={`${id}-args`} mono separators={[]} value={args()} onChange={setArgs} placeholder="-g 240" />
+            <TokenInput id={`${id}-args`} mono repeats value={args()} onChange={setArgs} placeholder="-g" />
           </Field>
           <Field label="Empty and invalid" htmlFor={`${id}-empty`} error="List at least one extension.">
             <TokenInput id={`${id}-empty`} invalid value={[]} onChange={() => {}} placeholder="mkv" />

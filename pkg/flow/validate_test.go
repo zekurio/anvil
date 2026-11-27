@@ -334,25 +334,25 @@ func TestValidateOptions(t *testing.T) {
 			name:     "enum field",
 			nodeType: typeVideoEncode,
 			options:  `{"codec": "vp9"}`,
-			want:     []Issue{problem("n", "codec", "Must be one of: av1, hevc, h264.")},
+			want:     []Issue{problem("n", "codec", "Must be one of: AV1, HEVC (H.265), H.264.")},
 		},
 		{
 			name:     "enum field given a number",
 			nodeType: typeVideoEncode,
 			options:  `{"bit_depth": 10}`,
-			want:     []Issue{problem("n", "bit_depth", "Must be one of: 10, 8.")},
+			want:     []Issue{problem("n", "bit_depth", "Must be one of: 10-bit, 8-bit.")},
 		},
 		{
 			name:     "enum list field given one value",
 			nodeType: typeCheckHDR,
 			options:  `{"kinds": "hdr10"}`,
-			want:     []Issue{problem("n", "kinds", "Must be a list of: hdr10, hlg, dolby_vision.")},
+			want:     []Issue{problem("n", "kinds", "Must be a list of: HDR10, HLG, Dolby Vision.")},
 		},
 		{
 			name:     "enum list field with an unknown entry",
 			nodeType: typeCheckHDR,
 			options:  `{"kinds": ["hdr10", "hdr10+"]}`,
-			want:     []Issue{problem("n", "kinds", "Must be a list of: hdr10, hlg, dolby_vision.")},
+			want:     []Issue{problem("n", "kinds", "Must be a list of: HDR10, HLG, Dolby Vision.")},
 		},
 		{
 			name:     "string list field",
@@ -412,7 +412,9 @@ func TestValidateOptions(t *testing.T) {
 			name:     "config rule: CRF range is ordered",
 			nodeType: typeVideoEncode,
 			options:  `{"crf_min": 41}`,
-			want:     []Issue{problem("n", "crf_min", "Must be less than or equal to crf_max.")},
+			// The rule comes from the TOML profile and names the other option
+			// by its key; the form shows labels, so the message does too.
+			want: []Issue{problem("n", "crf_min", "Must be less than or equal to Highest CRF.")},
 		},
 		{
 			name:     "config rule: managed ffmpeg option",
@@ -491,10 +493,23 @@ func TestValidateOptions(t *testing.T) {
 			want:     []Issue{problem("n", "samples", "Must be 0 (automatic) or at least 2.")},
 		},
 		{
-			name:     "config rule: retained area is above zero",
+			// The field's own range says so before the rule gets a say: the
+			// catalog must not advertise a minimum the rule then refuses.
+			name:     "retained area is above zero",
 			nodeType: typeVideoCrop,
 			options:  `{"min_retained_area_percent": 0}`,
-			want:     []Issue{problem("n", "min_retained_area_percent", "Must be finite, greater than 0, and at most 100.")},
+			want:     []Issue{problem("n", "min_retained_area_percent", "Must be greater than 0 and at most 100.")},
+		},
+		{
+			name:     "retained area just above zero",
+			nodeType: typeVideoCrop,
+			options:  `{"min_retained_area_percent": 0.5}`,
+		},
+		{
+			name:     "retained area above the whole picture",
+			nodeType: typeVideoCrop,
+			options:  `{"min_retained_area_percent": 101}`,
+			want:     []Issue{problem("n", "min_retained_area_percent", "Must be greater than 0 and at most 100.")},
 		},
 		{
 			name:     "config rule: seek offsets are not negative",
@@ -536,7 +551,7 @@ func TestValidateOptions(t *testing.T) {
 			nodeType: typeVideoEncode,
 			options:  `{"zzz": 1, "aaa": 1, "ffmpeg_args": ["-map", "0"], "codec": "theora"}`,
 			want: []Issue{
-				problem("n", "codec", "Must be one of: av1, hevc, h264."),
+				problem("n", "codec", "Must be one of: AV1, HEVC (H.265), H.264."),
 				problem("n", "ffmpeg_args", `Option "-map" is managed by Anvil and cannot be used during CRF search.`),
 				problem("n", "aaa", `"aaa" is not an option of this node. Remove it.`),
 				problem("n", "zzz", `"zzz" is not an option of this node. Remove it.`),
@@ -635,4 +650,23 @@ func printIssues(issues []Issue) string {
 		lines = append(lines, "  "+string(issue.Severity)+" node="+issue.NodeID+" field="+issue.Field+": "+issue.Message)
 	}
 	return strings.Join(lines, "\n")
+}
+
+// A message about one option that mentions another must use the words the
+// form shows. No option key of any node type may survive in one.
+func TestMessagesNameFieldsByLabel(t *testing.T) {
+	for _, def := range nodeDefs() {
+		for _, section := range def.Sections {
+			for _, field := range section.Fields {
+				if !strings.Contains(field.Key, "_") {
+					continue
+				}
+				got := nameFields(def, "must be less than or equal to "+field.Key+", and "+field.Key+"_other stays")
+				want := "must be less than or equal to " + field.Label + ", and " + field.Key + "_other stays"
+				if got != want {
+					t.Errorf("%s.%s: nameFields = %q, want %q", def.ID, field.Key, got, want)
+				}
+			}
+		}
+	}
 }

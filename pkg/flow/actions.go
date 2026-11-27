@@ -349,10 +349,12 @@ func videoCropNode() nodeDef {
 					Type:    FieldFloat,
 					Hint:    "A detected crop that keeps less of the frame is discarded and the file is encoded uncropped.",
 					Default: float64(config.DefaultCropMinRetainedAreaPct),
-					Min:     bound(0),
-					Max:     bound(100),
-					Suffix:  "%",
-					Mono:    true,
+					// Keeping none of the picture is not a crop: 0 is out.
+					Min:          bound(0),
+					MinExclusive: true,
+					Max:          bound(100),
+					Suffix:       "%",
+					Mono:         true,
 				}}},
 				{Title: "Advanced", Collapsible: true, Collapsed: true, Fields: []Field{
 					{
@@ -378,6 +380,7 @@ func videoCropNode() nodeDef {
 						Key:         "seek_offsets",
 						Label:       "Sample at these offsets",
 						Type:        FieldStringList,
+						Tokens:      true,
 						Hint:        "Durations such as 5m or 1h10m. Leave empty to spread the windows across the file.",
 						Default:     []string{},
 						Mono:        true,
@@ -515,6 +518,7 @@ func languagesField() Field {
 		Key:         "languages",
 		Label:       "Languages to keep",
 		Type:        FieldStringList,
+		Tokens:      true,
 		Hint:        "Language tags such as eng or jpn, or orig for the original language. Leave empty to keep every track.",
 		Default:     []string{},
 		Mono:        true,
@@ -655,6 +659,7 @@ func audioEncodeNode() nodeDef {
 					Key:         "source_codecs",
 					Label:       "Only these source codecs",
 					Type:        FieldStringList,
+					Tokens:      true,
 					Hint:        "Codec names as ffprobe prints them, such as truehd, dts, flac, or pcm_s24le. Leave empty to encode every kept track.",
 					Default:     []string{"truehd", "dts"},
 					Mono:        true,
@@ -816,6 +821,7 @@ func subtitlesRemoveAllNode() nodeDef {
 	}
 }
 
+// preserveOrStripField is a two-way choice short enough to share a row.
 func preserveOrStripField(key, label string) Field {
 	return Field{
 		Key:     key,
@@ -831,6 +837,12 @@ func preserveOrStripField(key, label string) Field {
 	}
 }
 
+// fullRow gives a field a row of its own.
+func fullRow(field Field) Field {
+	field.Half = false
+	return field
+}
+
 func containerMetadataNode() nodeDef {
 	return nodeDef{
 		NodeType: NodeType{
@@ -841,7 +853,9 @@ func containerMetadataNode() nodeDef {
 			Description: "Decides what happens to container metadata, track titles, attachments, and chapters.",
 			Outputs:     []string{""},
 			Sections: []Section{{Title: "Metadata", Fields: []Field{
-				preserveOrStripField("metadata", "Container metadata"),
+				// Three choices need the full row of the sheet, so the two
+				// fields above the pair each get one.
+				fullRow(preserveOrStripField("metadata", "Container metadata")),
 				{
 					Key:     "track_titles",
 					Label:   "Track titles",
@@ -854,17 +868,26 @@ func containerMetadataNode() nodeDef {
 						{Value: string(domain.TrackTitleModeStandardize), Label: "Standardize"},
 					},
 					Segmented: true,
-					Half:      true,
 				},
 				preserveOrStripField("attachments", "Attachments"),
 				preserveOrStripField("chapters", "Chapters"),
 			}}},
 		},
 		summary: func(o options) string {
-			parts := []string{"metadata " + o.text("metadata"), "track_titles " + o.text("track_titles")}
+			// In the words of the form, not its option keys: the summary is
+			// what the canvas shows of the node.
+			titles := map[string]string{
+				string(domain.TrackTitleModePreserve):    "keep titles",
+				string(domain.TrackTitleModeStrip):       "strip titles",
+				string(domain.TrackTitleModeStandardize): "standardize titles",
+			}
+			parts := []string{"keep metadata", titles[o.text("track_titles")]}
+			if o.text("metadata") == string(domain.MetadataModeStrip) {
+				parts[0] = "strip metadata"
+			}
 			for _, key := range []string{"attachments", "chapters"} {
 				if o.text(key) == string(domain.MetadataModeStrip) {
-					parts = append(parts, key+" strip")
+					parts = append(parts, "no "+key)
 				}
 			}
 			return strings.Join(parts, dot)

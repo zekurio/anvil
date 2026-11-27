@@ -102,7 +102,19 @@ function EnumListControl(props: ControlProps) {
 }
 
 function StringListControl(props: ControlProps) {
-  return <TokenInput id={props.id} mono={props.field.mono} placeholder={props.field.placeholder} invalid={props.invalid} value={list(props.value)} onChange={(next) => props.onChange(next)} />;
+  // Field.tokens: simple tokens end at a comma and form a set. Anything else is free-form (an ffmpeg argument may hold a comma) and is kept as typed.
+  return (
+    <TokenInput
+      id={props.id}
+      mono={props.field.mono}
+      placeholder={props.field.placeholder}
+      invalid={props.invalid}
+      separators={props.field.tokens ? [","] : []}
+      repeats={!props.field.tokens}
+      value={list(props.value)}
+      onChange={(next) => props.onChange(next)}
+    />
+  );
 }
 
 export const CONTROLS: Record<FieldType, Component<ControlProps>> = {

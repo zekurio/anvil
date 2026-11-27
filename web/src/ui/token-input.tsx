@@ -1,4 +1,4 @@
-import { createSignal, For } from "solid-js";
+import { createSignal, For, Show } from "solid-js";
 
 import { Icon } from "./icon";
 
@@ -6,8 +6,17 @@ export interface TokenInputProps {
   /** The list being edited: language tags, globs, codec ids, ffmpeg arguments. */
   value: string[];
   onChange: (next: string[]) => void;
-  /** Characters that end a token while typing or pasting. Default: comma. Pass [] when values may contain commas. */
+  /**
+   * Characters that end an entry while typing, next to Enter. Default: none,
+   * so an entry may hold any character (an ffmpeg argument, a glob with
+   * braces). Pass [","] for lists of simple tokens such as language tags.
+   */
   separators?: string[];
+  /**
+   * Keeps an entry that is already listed. Off by default: most lists are
+   * sets. ffmpeg arguments are not, and "-g 240 -keyint_min 240" needs both.
+   */
+  repeats?: boolean;
   mono?: boolean;
   invalid?: boolean;
   disabled?: boolean;
@@ -21,25 +30,29 @@ export interface TokenInputProps {
 /**
  * Edits a list of short strings. Enter or a separator adds what was typed,
  * Backspace in the empty input removes the last item, and each item has its
- * own Remove button in the tab order. Built by hand: ui-sdk's Token Input is
- * a rich-text editor, which a plain string list does not need.
+ * own Remove button in the tab order. Pasted text is split at line breaks,
+ * and at the separators when there are any (a list of tokens also splits at
+ * spaces). Built by hand: ui-sdk's Token Input is a rich-text editor, which a
+ * plain string list does not need.
  */
 export function TokenInput(props: TokenInputProps) {
   const [draft, setDraft] = createSignal("");
   let input: HTMLInputElement | undefined;
 
-  const separators = () => props.separators ?? [","];
+  const separators = () => props.separators ?? [];
 
-  const split = (text: string): string[] => {
-    let parts = [text];
+  /** Splits typed text at the separators; pasted text also at line breaks, and at spaces in a list of tokens. */
+  const split = (text: string, pasted = false): string[] => {
+    let parts = pasted ? text.split(/\r?\n/) : [text];
     for (const separator of separators()) parts = parts.flatMap((part) => part.split(separator));
+    if (pasted && separators().length > 0) parts = parts.flatMap((part) => part.split(/\s+/));
     return parts.map((part) => part.trim()).filter(Boolean);
   };
 
-  /** Adds the tokens in `text`, skipping ones already listed. */
-  const add = (text: string) => {
+  /** Adds the entries in `text`. Ones already listed are skipped unless the list keeps repeats. */
+  const add = (text: string, pasted = false) => {
     const next = [...props.value];
-    for (const token of split(text)) if (!next.includes(token)) next.push(token);
+    for (const token of split(text, pasted)) if (props.repeats || !next.includes(token)) next.push(token);
     if (next.length !== props.value.length) props.onChange(next);
     setDraft("");
     if (input) input.value = "";
@@ -88,6 +101,14 @@ export function TokenInput(props: TokenInputProps) {
           if (separators().some((separator) => text.includes(separator))) add(text);
           else setDraft(text);
         }}
+        onPaste={(event) => {
+          // A single pasted line goes into the input like typed text; several lines are several entries.
+          const text = event.clipboardData?.getData("text") ?? "";
+          const whole = draft() + text;
+          if (!/\r?\n/.test(text) && !separators().some((separator) => text.includes(separator))) return;
+          event.preventDefault();
+          add(whole, true);
+        }}
         onKeyDown={(event) => {
           if (event.key === "Enter" && draft().trim() !== "") {
             event.preventDefault();
@@ -101,6 +122,12 @@ export function TokenInput(props: TokenInputProps) {
           if (draft().trim() !== "") add(draft());
         }}
       />
+      {/* Says how what is being typed becomes an entry; leaving the field adds it too. */}
+      <Show when={draft().trim() !== ""}>
+        <span class="av-tokens-hint" aria-hidden="true">
+          {separators().length > 0 ? "Enter or comma adds it" : "Enter adds it"}
+        </span>
+      </Show>
     </div>
   );
 }

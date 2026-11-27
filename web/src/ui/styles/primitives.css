@@ -49,6 +49,7 @@ a.av-btn { box-sizing: border-box; text-decoration: none; }
 .av-token-x:hover { background: var(--surface-hover); color: var(--text); }
 .av-tokens-input { flex: 1; min-width: 48px; height: 22px; padding: 0 var(--space-1); border: 0; outline: none; background: none; color: var(--text); font: 400 14px/20px var(--font-sans); }
 .av-tokens-input::placeholder { color: var(--text-muted); }
+.av-tokens-hint { flex: none; padding: 0 var(--space-1); font: var(--text-caption); color: var(--text-muted); white-space: nowrap; user-select: none; }
 .av-tokens.av-mono .av-token, .av-tokens.av-mono .av-tokens-input { font-family: var(--font-mono); font-size: 13px; }
 
 /* field */
