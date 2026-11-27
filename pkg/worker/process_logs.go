@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -64,6 +65,7 @@ type processLogSession struct {
 }
 
 func (r *processLogRecorder) StartProcess(ctx context.Context, command process.Command) (process.Logger, error) {
+	r.enterStep(ctx)
 	switch filepath.Base(command.Name) {
 	case "ffmpeg":
 	default:
@@ -91,6 +93,24 @@ func (r *processLogRecorder) StartProcess(ctx context.Context, command process.C
 		return nil, errors.Join(fmt.Errorf("open process stderr log: %w", err), stdout.Close())
 	}
 	return &processLogSession{recorder: r, stdout: stdout, stderr: stderr, progress: processProgress{values: make(map[string]string)}}, nil
+}
+
+// enterStep moves the job's live progress to the step that is starting a
+// process, so the last figures of a finished step are not shown for the next
+// one until its first progress report arrives.
+func (r *processLogRecorder) enterStep(ctx context.Context) {
+	step := process.Step(ctx)
+	if step == "" {
+		return
+	}
+	if current, ok := r.tracker.Snapshot(r.jobID); ok && current.Step == step {
+		return
+	}
+	percent := float64(-1)
+	if process.MediaDuration(ctx) > 0 {
+		percent = 0
+	}
+	r.tracker.Update(domain.JobProgress{JobID: r.jobID, Step: step, Percent: percent, ETASeconds: -1, UpdatedAt: r.timestamp()})
 }
 
 // LogProcess keeps the context logger contract. OSRunner uses a per-run session.
@@ -212,7 +232,7 @@ func (r *processLogRecorder) consumeProgress(ctx context.Context, progress *proc
 		}
 		if key, value, ok := strings.Cut(line, "="); ok && !strings.Contains(key, " ") {
 			switch key {
-			case "frame", "fps", "out_time", "out_time_us", "speed":
+			case "frame", "fps", "out_time", "out_time_us", "out_time_ms", "speed":
 				progress.values[key] = value
 			}
 			if key == "progress" {
@@ -222,7 +242,8 @@ func (r *processLogRecorder) consumeProgress(ctx context.Context, progress *proc
 		}
 		matches := ffmpegStatsPattern.FindStringSubmatch(line)
 		if len(matches) == 5 {
-			r.logProgress(ctx, matches[1], matches[2], matches[3], matches[4])
+			position, known := parseMediaClock(matches[3])
+			r.logProgress(ctx, matches[1], matches[2], matches[3], matches[4], position, known)
 		}
 	}
 }
@@ -232,10 +253,22 @@ func (r *processLogRecorder) logFFmpegProgress(ctx context.Context, values map[s
 	if outTime == "" {
 		outTime = values["out_time_us"]
 	}
-	r.logProgress(ctx, values["frame"], values["fps"], outTime, values["speed"])
+	// out_time_us is exact; out_time_ms is the same microsecond count under
+	// an older, misleading name; the clock is the fallback.
+	position, known := parseMediaMicroseconds(values["out_time_us"])
+	if !known {
+		position, known = parseMediaMicroseconds(values["out_time_ms"])
+	}
+	if !known {
+		position, known = parseMediaClock(values["out_time"])
+	}
+	r.logProgress(ctx, values["frame"], values["fps"], outTime, values["speed"], position, known)
 }
 
-func (r *processLogRecorder) logProgress(ctx context.Context, frame, fps, outTime, speed string) {
+// logProgress logs one ffmpeg progress report and stores it as the job's
+// latest progress. position is how much media has been written; it is unknown
+// until ffmpeg has written a first packet.
+func (r *processLogRecorder) logProgress(ctx context.Context, frame, fps, outTime, speed string, position time.Duration, positionKnown bool) {
 	slog.Info("ffmpeg progress",
 		"job", r.jobLabel(),
 		"attempt", r.attempt,
@@ -245,22 +278,83 @@ func (r *processLogRecorder) logProgress(ctx context.Context, frame, fps, outTim
 		"media_time", outTime,
 		"speed", speed,
 	)
-	r.tracker.Update(domain.JobProgress{
+	progress := domain.JobProgress{
 		JobID:      r.jobID,
 		Step:       process.Step(ctx),
 		Percent:    -1,
 		FPS:        parseProgressNumber(fps),
-		Speed:      parseProgressNumber(strings.TrimSuffix(speed, "x")),
+		Speed:      parseProgressNumber(strings.TrimSuffix(strings.TrimSpace(speed), "x")),
 		ETASeconds: -1,
 		UpdatedAt:  r.timestamp(),
-	})
+	}
+	// Only a step that declared the media it works through gets a percentage:
+	// a search sample's own position says nothing about the whole search.
+	if positionKnown {
+		progress.Percent, progress.ETASeconds = progressEstimate(position, process.MediaDuration(ctx), progress.Speed)
+	}
+	r.tracker.Update(progress)
+}
+
+// progressEstimate turns the media written so far into a percentage of
+// duration and the seconds left at speed times realtime. Either value is -1
+// when it cannot be known.
+func progressEstimate(position, duration time.Duration, speed float64) (float64, float64) {
+	if duration <= 0 {
+		return -1, -1
+	}
+	// ffmpeg reports a negative position while a start offset is pending and
+	// can run past a probed duration that was a little short.
+	position = min(max(position, 0), duration)
+	percent := 100 * float64(position) / float64(duration)
+	if speed <= 0 {
+		return percent, -1
+	}
+	return percent, (duration - position).Seconds() / speed
+}
+
+// parseMediaMicroseconds reads ffmpeg's out_time_us; "N/A" is not known.
+func parseMediaMicroseconds(value string) (time.Duration, bool) {
+	microseconds, err := strconv.ParseInt(strings.TrimSpace(value), 10, 64)
+	if err != nil || microseconds > math.MaxInt64/1000 || microseconds < math.MinInt64/1000 {
+		return 0, false
+	}
+	return time.Duration(microseconds) * time.Microsecond, true
+}
+
+// parseMediaClock reads ffmpeg's [-]HH:MM:SS.ffffff timestamps, whose hours
+// field grows past two digits; "N/A" is not known.
+func parseMediaClock(value string) (time.Duration, bool) {
+	value = strings.TrimSpace(value)
+	negative := strings.HasPrefix(value, "-")
+	parts := strings.Split(strings.TrimPrefix(value, "-"), ":")
+	if len(parts) != 3 {
+		return 0, false
+	}
+	// The bit sizes keep the sum far inside a time.Duration.
+	hours, err := strconv.ParseUint(parts[0], 10, 16)
+	if err != nil {
+		return 0, false
+	}
+	minutes, err := strconv.ParseUint(parts[1], 10, 8)
+	if err != nil {
+		return 0, false
+	}
+	seconds, err := strconv.ParseFloat(parts[2], 64)
+	if err != nil || math.IsNaN(seconds) || seconds < 0 || seconds >= 61 {
+		return 0, false
+	}
+	position := time.Duration(hours)*time.Hour + time.Duration(minutes)*time.Minute + time.Duration(seconds*float64(time.Second))
+	if negative {
+		position = -position
+	}
+	return position, true
 }
 
 // parseProgressNumber reads an ffmpeg progress figure; "N/A" and other
-// non-numeric values report 0.
+// values that are not a finite, non-negative number report 0.
 func parseProgressNumber(value string) float64 {
 	number, err := strconv.ParseFloat(strings.TrimSpace(value), 64)
-	if err != nil {
+	if err != nil || math.IsNaN(number) || math.IsInf(number, 0) || number < 0 {
 		return 0
 	}
 	return number
