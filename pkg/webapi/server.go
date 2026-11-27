@@ -465,7 +465,11 @@ func (s *Server) refresh(ctx context.Context) error {
 	if s.Refresh == nil {
 		return nil
 	}
-	if err := s.Refresh(ctx); err != nil {
+	// The change is already committed, so the refresh must not end with the
+	// request: a client that disconnects between the two would leave the
+	// scheduler on the old settings (a library still running that was just
+	// paused, or one that no longer exists) until the next change or SIGHUP.
+	if err := s.Refresh(context.WithoutCancel(ctx)); err != nil {
 		return fmt.Errorf("the change was saved, but the running daemon could not load it: %w", err)
 	}
 	return nil
