@@ -49,11 +49,12 @@ export function systemRoutes(router: Router, auth: boolean): void {
       max_attempts: 3,
       scan_interval: "30m",
       lease_duration: "2m",
-      shutdown_policy: "finish_block",
+      shutdown_policy: "drain",
       staging_cleanup_age: "24h",
       log_level: "info",
     },
-    web: { listen: "127.0.0.1:8484", auth_required: auth },
+    // VITE_MOCK_LISTEN=0.0.0.0:8484 shows the Settings page's warning about an open listen address.
+    web: { listen: process.env.VITE_MOCK_LISTEN ?? "127.0.0.1:8484", auth_required: auth },
   }));
 
   router.on("GET", "/fs", (ctx) => {

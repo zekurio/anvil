@@ -74,6 +74,16 @@ const MOVIES = [
   "The Zone of Interest (2023)", "Anatomy of a Fall (2023)",
 ];
 
+// The big library: enough episodes to test paging over thousands of rows.
+const SERIES = [
+  "Babylon 5", "Battlestar Galactica", "Better Call Saul", "Breaking Bad", "Chernobyl", "Columbo", "Community", "Dark", "Deadwood", "Deep Space Nine",
+  "Fargo", "Firefly", "For All Mankind", "Fringe", "Halt and Catch Fire", "Hannibal", "Justified", "Mad Men", "Mr Robot", "Parks and Recreation",
+  "Patriot", "Rome", "Scrubs", "Six Feet Under", "Station Eleven", "Succession", "The Americans", "The Expanse", "The Leftovers", "The Sopranos",
+  "The Wire", "Twin Peaks", "Veep", "Watchmen", "Westworld",
+];
+
+const ANIME = ["Cowboy Bebop", "Frieren", "Fullmetal Alchemist Brotherhood", "Mushishi", "Planetes", "Samurai Champloo", "Steins Gate", "Vinland Saga"];
+
 const SHOWS: readonly (readonly [string, number, number])[] = [
   ["Severance", 2, 9],
   ["Slow.Horses", 3, 6],
@@ -100,8 +110,23 @@ const AUDIO: readonly (readonly [readonly [string, number], number])[] = [
   [["opus", 6], 6],
 ];
 
-const FAILURES = [
+/** What ffmpeg leaves on stderr when a source is damaged: long, multi-line, and worth reading in full. */
+export const LONG_FFMPEG_ERROR = [
   "encode: ffmpeg exited with code 187: Error while decoding stream #0:0: Invalid data found when processing input",
+  "[matroska,webm @ 0x55d0c8a2b440] Read error at pos. 7718342656 (0x1cc0c8000)",
+  "[hevc @ 0x55d0c8a4e9c0] Could not find ref with POC 37",
+  "[hevc @ 0x55d0c8a4e9c0] Error constructing the frame RPS.",
+  "[hevc @ 0x55d0c8a4e9c0] Skipping invalid undecodable NALU: 1",
+  "[vist#0:0/hevc @ 0x55d0c8a31d80] [dec:hevc @ 0x55d0c8a33300] Error submitting packet to decoder: Invalid data found when processing input",
+  "[libsvtav1 @ 0x55d0c8a7f100] Error while filtering: Input/output error",
+  "[vf#0:0 @ 0x55d0c8a35b00] Task finished with error code: -5 (Input/output error)",
+  "[out#0/matroska @ 0x55d0c8a2e2c0] video:3982817KiB audio:402113KiB subtitle:71KiB other streams:0KiB global headers:0KiB muxing overhead: 0.071812%",
+  "frame=128841 fps= 61 q=31.0 Lsize= 4388290KiB time=01:29:33.41 bitrate=6690.2kbits/s speed=2.54x",
+  "Conversion failed!",
+].join("\n");
+
+const FAILURES = [
+  LONG_FFMPEG_ERROR,
   "crf-search: no CRF between 18 and 45 reaches VMAF 95 below 80% of the source size",
   "probe: ffprobe exited with code 1: moov atom not found",
   "stage: destination filesystem has 3.1 GB free, the artifact needs at least 9.4 GB",
@@ -161,6 +186,16 @@ function settle(file: MockFile, rand: () => number, now: number, weights: readon
   }
 }
 
+/** What the first scan of a library added in the UI finds: a dozen files without jobs. */
+export function discoverFiles(library: string, firstId: number, now: number): MockFile[] {
+  const rand = prng(firstId);
+  return Array.from({ length: 12 }, (_, i): MockFile => {
+    const found = attributes(rand);
+    const title = MOVIES[(firstId + i * 7) % MOVIES.length] as string;
+    return { source_id: firstId + i, library, path: `${title}/${title}.${found.container}`, ...found, status: "none", attempt_count: 0, created_at: now, updated_at: now };
+  });
+}
+
 export function generateFiles(now: number): MockFile[] {
   const rand = prng(0x0a17b11);
   const files: MockFile[] = [];
@@ -178,7 +213,7 @@ export function generateFiles(now: number): MockFile[] {
 
   for (const [show, seasons, episodes] of SHOWS) {
     for (let s = 1; s <= seasons; s++) {
-      for (let e = 1; e <= episodes && files.length < 200; e++) {
+      for (let e = 1; e <= episodes; e++) {
         const tag = `S${String(s).padStart(2, "0")}E${String(e).padStart(2, "0")}`;
         const file = add("downloads", "", [["done", 55], ["queued", 30], ["failed", 3], ["none", 12]]);
         file.duration_seconds = Math.round(file.duration_seconds / 2.4);
@@ -187,6 +222,34 @@ export function generateFiles(now: number): MockFile[] {
         const release = `${show}.${tag}.${file.height}p.WEB-DL.${file.video_codec === "hevc" ? "x265" : file.video_codec === "av1" ? "AV1" : "x264"}`;
         file.path = `${release}/${release}.${file.container}`;
       }
+    }
+  }
+
+  // tv: a large, mostly finished library. Its jobs are old, so the queue stays readable.
+  for (const [index, show] of SERIES.entries()) {
+    const seasons = 5 + (index % 4);
+    for (let s = 1; s <= seasons; s++) {
+      const episodes = s % 3 === 0 ? 22 : 26;
+      for (let e = 1; e <= episodes; e++) {
+        const file = add("tv", "", [["done", 86], ["queued", 3], ["skipped", 4], ["failed", 1], ["none", 6]]);
+        file.duration_seconds = Math.round(file.duration_seconds / 2.4);
+        file.size_bytes = Math.round(file.size_bytes / 2.4);
+        if (file.output_size_bytes) file.output_size_bytes = Math.round(file.output_size_bytes / 2.4);
+        const tag = `S${String(s).padStart(2, "0")}E${String(e).padStart(2, "0")}`;
+        file.path = `${show}/Season ${String(s).padStart(2, "0")}/${show} - ${tag}.${file.container}`;
+      }
+    }
+  }
+
+  // anime: paused, so its queue only grows.
+  for (const show of ANIME) {
+    for (let e = 1; e <= 26; e++) {
+      const file = add("anime", "", [["queued", 78], ["done", 12], ["none", 10]]);
+      file.duration_seconds = 1440;
+      file.size_bytes = Math.round(file.size_bytes / 4.5);
+      if (file.output_size_bytes) file.output_size_bytes = Math.round(file.output_size_bytes / 4.5);
+      if (file.audio[0]) file.audio[0].language = "jpn";
+      file.path = `${show}/${show} - ${String(e).padStart(2, "0")}.${file.container}`;
     }
   }
   return files;

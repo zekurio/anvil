@@ -38,9 +38,11 @@ function initialLibraries(now: number): StoredLibrary[] {
       path: "/media/anime",
       flow_id: 1,
       arr: "sonarr",
+      paused: true,
       rules: [],
       media: { replacement_mode: "replace" },
       download: DEFAULT_DOWNLOAD,
+      last_scan_at: at(18),
       created_at: at(60 * 24 * 2),
       updated_at: at(60 * 24 * 2),
     },
@@ -84,6 +86,7 @@ function initialLibraries(now: number): StoredLibrary[] {
       created_at: at(60 * 24 * 41),
       updated_at: at(60 * 24 * 9),
     },
+    { ...base, name: "tv", kind: "media", path: "/media/tv", flow_id: 1, arr: "sonarr", rules: [], media: { replacement_mode: "copy" }, download: DEFAULT_DOWNLOAD, last_scan_at: at(26), created_at: at(60 * 24 * 38), updated_at: at(60 * 24 * 12) },
   ];
 }
 

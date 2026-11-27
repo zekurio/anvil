@@ -4,10 +4,11 @@ import type { JobActionRequest, JobActionResult, JobList, JobState } from "../..
 import { advance, db, findLibrary } from "../db.ts";
 import type { MockFile } from "../fixtures/files.ts";
 import { intParam, invalid, notFound, objectBody, type Context, type Router } from "../http.ts";
-import { jobDetail, jobView } from "../jobs.ts";
+import { jobDetail, jobView, stateOf } from "../jobs.ts";
 
 const STATES: JobState[] = ["pending", "leased", "running", "validating", "replacing", "complete", "failed", "retrying", "skipped", "canceled"];
-const ACTIVE: JobState[] = ["running", "validating", "replacing", "leased"];
+// What pkg/store lets a retry start from.
+const RETRYABLE: JobState[] = ["failed", "skipped", "canceled", "retrying"];
 
 function states(values: string[]): JobState[] {
   const list = values.flatMap((v) => v.split(",")).map((v) => v.trim()).filter(Boolean);
@@ -23,7 +24,7 @@ function order(a: MockFile, b: MockFile): number {
   const rank = (f: MockFile) => (f.status === "running" ? 0 : f.status === "queued" ? 1 : 2);
   if (rank(a) !== rank(b)) return rank(a) - rank(b);
   if (rank(a) === 1) return (a.job_id ?? 0) - (b.job_id ?? 0);
-  return b.updated_at - a.updated_at;
+  return b.updated_at - a.updated_at || (b.job_id ?? 0) - (a.job_id ?? 0);
 }
 
 function select(ctx: Context): MockFile[] {
@@ -35,7 +36,7 @@ function select(ctx: Context): MockFile[] {
   const wanted = states(request.states ?? []);
   if (!request.library && wanted.length === 0) throw invalid("Select jobs by ids, by library, or by states.");
   if (request.library && !findLibrary(request.library)) throw notFound(`Library "${request.library}"`);
-  return jobs().filter((f) => (!request.library || f.library === request.library) && (wanted.length === 0 || wanted.includes(f.job_state as JobState)));
+  return jobs().filter((f) => (!request.library || f.library === request.library) && (wanted.length === 0 || wanted.includes(stateOf(f))));
 }
 
 export function jobRoutes(router: Router): void {
@@ -46,7 +47,7 @@ export function jobRoutes(router: Router): void {
     const limit = Math.min(intParam(ctx.query.get("limit"), 100), 500);
     const offset = intParam(ctx.query.get("offset"), 0);
     const matched = jobs()
-      .filter((f) => (!library || f.library === library) && (wanted.length === 0 || wanted.includes(f.job_state as JobState)) && (!q || f.path.toLowerCase().includes(q)))
+      .filter((f) => (!library || f.library === library) && (wanted.length === 0 || wanted.includes(stateOf(f))) && (!q || f.path.toLowerCase().includes(q)))
       .sort(order);
     return { total: matched.length, jobs: matched.slice(offset, offset + limit).map(jobView) };
   });
@@ -57,12 +58,18 @@ export function jobRoutes(router: Router): void {
     return jobDetail(file);
   });
 
+  // Skip reasons are the stable codes of pkg/store (CancelSkipReason).
   router.on("POST", "/jobs/cancel", (ctx): JobActionResult => {
     const result: JobActionResult = { matched: 0, changed: 0, skipped: [] };
     for (const file of select(ctx)) {
       result.matched += 1;
       if (file.status !== "queued" && file.status !== "running") {
-        result.skipped.push({ id: file.job_id ?? 0, reason: `job is already ${file.job_state}` });
+        result.skipped.push({ id: file.job_id ?? 0, reason: "already_terminal" });
+        continue;
+      }
+      // A journaled publish must finish: interrupting it could leave the destination half written.
+      if (stateOf(file) === "replacing") {
+        result.skipped.push({ id: file.job_id ?? 0, reason: "publish_in_progress" });
         continue;
       }
       file.status = "skipped";
@@ -80,8 +87,9 @@ export function jobRoutes(router: Router): void {
     const result: JobActionResult = { matched: 0, changed: 0, skipped: [] };
     for (const file of select(ctx)) {
       result.matched += 1;
-      if (file.job_state !== "failed" && file.job_state !== "canceled") {
-        result.skipped.push({ id: file.job_id ?? 0, reason: ACTIVE.includes(file.job_state as JobState) ? "job is running" : `job is ${file.job_state}, not failed or canceled` });
+      const state = stateOf(file);
+      if (!RETRYABLE.includes(state)) {
+        result.skipped.push({ id: file.job_id ?? 0, reason: state === "complete" ? "already_complete" : state === "pending" || state === "leased" ? "already_queued" : state === "replacing" ? "publish_in_progress" : "running" });
         continue;
       }
       file.status = "queued";
@@ -93,5 +101,17 @@ export function jobRoutes(router: Router): void {
     }
     advance();
     return result;
+  });
+
+  // Mock only, not part of the contract: moves a running job to the start of a
+  // step, so the short ones (validate, publish) can be looked at and tested.
+  // The offsets mirror STEPS in ../db.ts.
+  router.on("POST", "/_mock/jobs/:id/step", (ctx) => {
+    const offsets: Record<string, number> = { probe: 0, "crop-detect": 2, "crf-search": 8, encode: 58, validate: 458, publish: 464 };
+    const file = jobs().find((f) => f.job_id === Number(ctx.params.id));
+    const offset = offsets[objectBody<{ step?: string }>(ctx).step ?? ""];
+    if (!file || file.status !== "running" || offset === undefined) throw invalid("Name a running job and one of: " + Object.keys(offsets).join(", ") + ".");
+    file.started_at = Date.now() - offset * 1000;
+    return jobView(file);
   });
 }

@@ -2,7 +2,7 @@
 
 import type { FileList, FileStatus, JobActionResult, LibraryList, LibraryWrite, RequeueRequest, Rule, ScanResult } from "../../src/api/types.ts";
 import { advance, db, fileView, findLibrary, libraryView, type StoredLibrary } from "../db.ts";
-import type { MockFile } from "../fixtures/files.ts";
+import { discoverFiles, type MockFile } from "../fixtures/files.ts";
 import { conflict, created, intParam, invalid, noContent, notFound, objectBody, type Context, type Router } from "../http.ts";
 
 const STATUSES: FileStatus[] = ["none", "queued", "running", "done", "failed", "skipped"];
@@ -46,6 +46,14 @@ function rules(value: unknown): Rule[] {
     const rule: Rule = { action: oneOf(raw.action, ["allow", "deny"] as const, `rules.${i}.action`), field, op: oneOf(raw.op, (RULE_OPS[field] ?? []) as Rule["op"][], `rules.${i}.op`), value: typeof raw.value === "string" ? raw.value.trim() : "" };
     if (rule.value === "") throw invalid("A rule needs a value.", `rules.${i}.value`);
     if (field === "size" && !/^\d+(\.\d+)?\s*(B|KB|MB|GB|TB)$/i.test(rule.value)) throw invalid('Must be a size with a unit, such as "200 MB".', `rules.${i}.value`);
+    if (field === "extension" && !/^[a-z0-9]+(\s*,\s*[a-z0-9]+)*$/i.test(rule.value)) throw invalid('Must be a comma-separated list of extensions without dots, such as "mkv, mp4".', `rules.${i}.value`);
+    if (rule.op === "regex") {
+      try {
+        new RegExp(rule.value);
+      } catch {
+        throw invalid("Must be a valid regular expression.", `rules.${i}.value`);
+      }
+    }
     return rule;
   });
 }
@@ -137,7 +145,7 @@ export function libraryRoutes(router: Router): void {
   router.on("DELETE", "/libraries/:name", (ctx) => {
     const library = find(ctx);
     const running = db.files.filter((f) => f.library === library.name && f.status === "running").length;
-    if (running > 0) throw conflict(`${running} ${running === 1 ? "job is" : "jobs are"} still running in "${library.name}". Cancel ${running === 1 ? "it" : "them"} first.`);
+    if (running > 0) throw conflict(`${running} ${running === 1 ? "job is" : "jobs are"} still running in "${library.name}". Cancel ${running === 1 ? "it" : "them"} or wait until ${running === 1 ? "it finishes" : "they finish"}, then delete the library.`);
     db.libraries.splice(db.libraries.indexOf(library), 1);
     db.files = db.files.filter((f) => f.library !== library.name);
     return noContent();
@@ -146,10 +154,12 @@ export function libraryRoutes(router: Router): void {
   router.on("POST", "/libraries/:name/scan", (ctx): ScanResult => {
     const library = find(ctx);
     library.last_scan_at = new Date().toISOString();
+    // The first scan of a library added in the UI finds a dozen files.
+    if (!db.files.some((f) => f.library === library.name)) db.files.push(...discoverFiles(library.name, db.files.reduce((max, f) => Math.max(max, f.source_id), 0) + 1, Date.now()));
     const files = db.files.filter((f) => f.library === library.name);
     const fresh = files.filter((f) => f.status === "none");
-    // A scan queues what it has seen but not queued yet, a few at a time.
-    const enqueued = fresh.slice(0, 4);
+    // A scan queues what it has seen but not queued yet, a dozen at a time.
+    const enqueued = fresh.slice(0, 12);
     enqueued.forEach(queue);
     advance();
     return { sources: files.length, assets: files.length, enqueued_jobs: enqueued.length, existing_jobs: files.length - fresh.length, skipped_ignored: library.rules.length > 0 ? 3 : 0, skipped_unstable: 0 };
@@ -183,7 +193,7 @@ export function libraryRoutes(router: Router): void {
       if (!file) continue;
       result.matched += 1;
       if (file.status === "running" || file.status === "queued") {
-        result.skipped.push({ id: file.job_id ?? 0, reason: file.status === "running" ? "job is running" : "job is already queued" });
+        result.skipped.push({ id: file.job_id ?? 0, reason: file.status === "running" ? "running" : "already_queued" });
         continue;
       }
       queue(file);
