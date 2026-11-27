@@ -8,7 +8,7 @@ import { cancelJobs, retryJobs } from "./actions";
 import { JobAttemptsSection } from "./JobAttempts";
 import { JobFlowSection, type NodeCatalog } from "./JobFlow";
 import { hasQuality, hasStreams, JobQualitySection, JobStreamsSection } from "./JobStreams";
-import { cancelable, channelLayout, retryable, savedLabel, stateLabel, stepLabel } from "./labels";
+import { cancelable, channelLayout, publishSentence, retryable, savedLabel, stateLabel, stepLabel } from "./labels";
 import { Copyable, copyText, JobBadge, StepProgress } from "./parts";
 
 import "../layout/layout.css";
@@ -153,7 +153,7 @@ function LoadedSheet(props: { detail: JobDetail; catalog: NodeCatalog; onClose: 
         </SheetSection>
       </Show>
       <SheetSection title={`Attempts (${formatCount(props.detail.attempts.length)})`} collapsible>
-        <Show when={props.detail.attempts.length > 0} fallback={<p class="av-note">No attempt yet. The job starts when a worker is free{job().state === "pending" ? " and its library is not paused" : ""}.</p>}>
+        <Show when={props.detail.attempts.length > 0} fallback={<p class="av-note">{props.detail.status === "queued" ? `No attempt yet. The job starts when a worker is free${job().state === "pending" ? " and its library is not paused" : ""}.` : "No attempt: the job ended before a worker started it."}</p>}>
           <JobAttemptsSection attempts={props.detail.attempts} />
         </Show>
       </SheetSection>
@@ -228,7 +228,7 @@ function Summary(props: { detail: JobDetail }) {
               <dt>Destination</dt>
               <dd>
                 <Copyable text={props.detail.destination_path || operation().destination_path} label="destination path" />
-                <span class="av-dl-note">{joinDot(operation().kind, `mode ${operation().mode}`, `stage ${operation().stage}`)}</span>
+                <span class="av-dl-note">{publishSentence(operation().kind, operation().mode, operation().stage)}</span>
                 <Show when={operation().conflict_description}>
                   <span class="av-dl-note av-danger">{operation().conflict_description}</span>
                 </Show>

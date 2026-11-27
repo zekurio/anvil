@@ -15,6 +15,8 @@ const ATTEMPT_BADGE: Record<AttemptState, { status: JobStatus; label: string }> 
 
 const ARTIFACT_LABELS: Record<string, string> = {
   "process-output": "Process output",
+  "flow-resolution": "Flow",
+  "crop-selection": "Crop",
   "stream-selection": "Stream selection",
   "audio-output": "Audio output",
   "crf-selection": "Quality selection",

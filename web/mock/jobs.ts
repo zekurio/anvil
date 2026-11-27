@@ -270,7 +270,7 @@ export function jobDetail(file: MockFile): JobDetail {
       ? { pipeline_context: { version: 7, crop_evaluated: true, crop_no_op: file.height !== 2160, ...(file.height === 2160 ? { crop_filter: "crop=3840:1600:0:280", crop_source_width: 3840, crop_source_height: 2160, crop_output_width: 3840, crop_output_height: 1600, crop_retained_area_percent: 74.1 } : {}), ...(done ? searchContext(quality(file, flow)) : {}) } }
       : {}),
     ...(done
-      ? { publish_operation: { kind: download ? "handoff" : "replace", mode: download ? library.download.handoff_mode : (library?.media.replacement_mode ?? "replace"), stage: "committed", artifact_path: `${absolutePath(file)}.job-${file.job_id}.anvil-part`, destination_path: destinationOf(file), artifact_size_bytes: file.output_size_bytes ?? 0, digest_algorithm: "blake3", updated_at: iso(file.completed_at ?? file.updated_at) } }
+      ? { publish_operation: { kind: download ? "handoff" : "replacement", mode: download ? library.download.handoff_mode : (library?.media.replacement_mode ?? "replace"), stage: "committed", artifact_path: `${absolutePath(file)}.job-${file.job_id}.anvil-part`, destination_path: destinationOf(file), artifact_size_bytes: file.output_size_bytes ?? 0, digest_algorithm: "blake3", updated_at: iso(file.completed_at ?? file.updated_at) } }
       : {}),
     ...(history.selections.length > 0 ? { stream_selection: history.selections } : {}),
     attempts: history.attempts,

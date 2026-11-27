@@ -10,6 +10,7 @@ import type { JobStatus } from "../../ui";
 
 const STEP_LABELS: Record<string, string> = {
   probe: "Probing",
+  flow: "Resolving the flow",
   "crop-detect": "Detecting crop",
   "audio-cleanup": "Selecting audio",
   "subtitle-cleanup": "Selecting subtitles",
@@ -266,3 +267,24 @@ export function skipSummary(skipped: JobActionSkip[], noun: "job" | "file"): str
   const more = others.length - shown.length;
   return [...worded, ...shown, more > 0 ? `${plural(more, "more failure")}: see the daemon's log.` : ""].filter(Boolean).join(" ");
 }
+
+/* ---------- publication (pkg/replace: the publish journal) ---------- */
+
+const PUBLISH_STAGES: Record<string, string> = {
+  prepared: "Publishing: the result is written and about to take its place.",
+  published: "Publishing: the result is in place, the source is not cleaned up yet.",
+  source_cleaned: "Publishing: the result is in place and the source cleaned up; the record is not closed yet.",
+  conflict: "Not published: something else is at the destination.",
+};
+
+/**
+ * Where a job's publication stands, as a sentence. `kind` is "replacement" or
+ * "handoff", `mode` the library's replace/copy or move/copy, `stage` the
+ * journal stage. An unknown stage keeps its raw name.
+ */
+export function publishSentence(kind: string, mode: string, stage: string): string {
+  if (stage !== "committed") return PUBLISH_STAGES[stage] ?? `Publishing: stage ${stage}.`;
+  if (kind === "handoff") return "Handed off to the folder the importer watches.";
+  return mode === "copy" ? "Published beside the original, which was kept." : "Published. It replaced the original.";
+}
+
