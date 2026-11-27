@@ -80,6 +80,12 @@ var commands = map[control.Command]handlerFunc{
 	control.CommandLibraryStats: handle(func(ctx context.Context, s Service, request control.LibraryStatsRequest) (control.LibraryStatsResponse, error) {
 		return s.LibraryStats(ctx, request)
 	}),
+	control.CommandLibraryList: handle(func(ctx context.Context, s Service, _ emptyRequest) (control.LibraryListResponse, error) {
+		return s.ListLibraries(ctx)
+	}),
+	control.CommandFlowList: handle(func(ctx context.Context, s Service, _ emptyRequest) (control.FlowListResponse, error) {
+		return s.ListFlows(ctx)
+	}),
 	control.CommandOccurrenceForce: handle(func(ctx context.Context, s Service, request control.ForceOccurrenceRequest) (control.ForceOccurrenceResponse, error) {
 		return s.ForceOccurrence(ctx, request)
 	}),

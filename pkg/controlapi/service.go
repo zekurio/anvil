@@ -48,6 +48,11 @@ type Store interface {
 	ForceOccurrence(context.Context, store.ForceOccurrenceInput) (store.ForceOccurrenceResult, error)
 	Backup(context.Context, string) (store.BackupResult, error)
 	ProtectedJobs(context.Context) ([]store.ProtectedJob, error)
+	ListLibraries(context.Context) ([]store.Library, error)
+	LibraryOverviews(context.Context) (map[string]store.LibraryOverview, error)
+	ListFlows(context.Context) ([]store.Flow, error)
+	FlowNames(context.Context) (map[int64]string, error)
+	FlowLibraries(context.Context) (map[int64][]string, error)
 }
 
 // Scanner is the daemon's own scanner. Scans requested over the control socket

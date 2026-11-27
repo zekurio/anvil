@@ -45,6 +45,34 @@ var versionHelp = commandHelp{
 	},
 }
 
+var librariesHelp = commandHelp{
+	name:        "libraries",
+	description: "List the libraries with their flow, state, and job counts.",
+	usage:       "anvilctl libraries",
+	notes: []string{
+		"Libraries are created and edited in the web UI; this command only shows them.",
+		"A paused library is still scanned and still queues jobs, but none of them start.",
+	},
+	examples: []string{
+		"anvilctl libraries",
+		"anvilctl libraries --json",
+	},
+}
+
+var flowsHelp = commandHelp{
+	name:        "flows",
+	description: "List the flows and the libraries each one is assigned to.",
+	usage:       "anvilctl flows",
+	notes: []string{
+		"Flows are created and edited in the web UI; this command only shows them.",
+		"Check reports validation issues. A flow with errors fails every job that runs it.",
+	},
+	examples: []string{
+		"anvilctl flows",
+		"anvilctl flows --json",
+	},
+}
+
 var jobsHelp = commandHelp{
 	name:        "jobs",
 	description: "List jobs in the queue.",
@@ -79,6 +107,7 @@ var showHelp = commandHelp{
 	usage:       "anvilctl show JOB",
 	notes: []string{
 		"JOB is a numeric id or job slug.",
+		"Flow shows how the library's flow resolved on the latest attempt that evaluated it: the outcome, the nodes the file passed through, and each decision on the way.",
 	},
 	examples: []string{
 		"anvilctl show 42",
@@ -255,6 +284,8 @@ func writeUsage(out io.Writer) error {
 		w.Heading("Commands")
 		w.Println("  status                 show daemon state, worker usage, and queue counts")
 		w.Println("  version                show client, daemon, and protocol versions")
+		w.Println("  libraries              list the libraries with their flow and job counts")
+		w.Println("  flows                  list the flows and where they are assigned")
 		w.Println("  jobs                   list jobs")
 		w.Println("  show JOB               show the full recorded history of one job")
 		w.Println("  cancel [JOB...]        cancel selected jobs")
@@ -301,6 +332,10 @@ func commandHelpFor(args []string) (commandHelp, bool) {
 		return statusHelp, true
 	case "version":
 		return versionHelp, true
+	case "libraries":
+		return librariesHelp, true
+	case "flows":
+		return flowsHelp, true
 	case "jobs":
 		return jobsHelp, true
 	case "show":

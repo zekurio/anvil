@@ -70,13 +70,16 @@ func (s Service) ShowJob(ctx context.Context, request control.JobShowRequest) (c
 		detail := publishOperationDetail(operation)
 		response.PublishOperation = &detail
 	}
+	recorded := make(map[domain.AttemptID][]domain.AttemptEvent, len(attempts))
 	for _, attempt := range attempts {
 		events, err := s.Store.ListAttemptEvents(ctx, attempt.ID)
 		if err != nil {
 			return control.JobShowResponse{}, err
 		}
+		recorded[attempt.ID] = events
 		response.Attempts = append(response.Attempts, attemptDetail(attempt, events))
 	}
+	response.Flow = latestFlowResolution(attempts, recorded)
 	response.StreamSelection = latestStreamSelection(response.Attempts)
 	return response, nil
 }
@@ -291,6 +294,9 @@ func pipelineContextDetail(snapshot domain.JobPipelineContext) control.PipelineC
 		result.CropRetainedAreaPercent = snapshot.Crop.RetainedAreaPercent
 	}
 	if snapshot.Search != nil {
+		if snapshot.Search.QualityMode == domain.VideoQualityFixed {
+			result.QualityMode = string(domain.VideoQualityFixed)
+		}
 		result.SearchCRF = snapshot.Search.CRF
 		result.SearchMetric = string(snapshot.Search.Metric)
 		result.SearchVMAF = snapshot.Search.VMAF

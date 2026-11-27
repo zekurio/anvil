@@ -100,6 +100,14 @@ func (c *Client) LibraryStats(ctx context.Context, request LibraryStatsRequest) 
 	return call[LibraryStatsRequest, LibraryStatsResponse](ctx, c, CommandLibraryStats, request)
 }
 
+func (c *Client) ListLibraries(ctx context.Context) (LibraryListResponse, error) {
+	return call[emptyRequest, LibraryListResponse](ctx, c, CommandLibraryList, emptyRequest{})
+}
+
+func (c *Client) ListFlows(ctx context.Context) (FlowListResponse, error) {
+	return call[emptyRequest, FlowListResponse](ctx, c, CommandFlowList, emptyRequest{})
+}
+
 func (c *Client) ForceOccurrence(ctx context.Context, request ForceOccurrenceRequest) (ForceOccurrenceResponse, error) {
 	return call[ForceOccurrenceRequest, ForceOccurrenceResponse](ctx, c, CommandOccurrenceForce, request)
 }

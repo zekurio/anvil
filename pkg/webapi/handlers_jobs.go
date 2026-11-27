@@ -13,7 +13,6 @@ import (
 	"github.com/zekurio/anvil/pkg/controlapi"
 	"github.com/zekurio/anvil/pkg/domain"
 	"github.com/zekurio/anvil/pkg/flow"
-	"github.com/zekurio/anvil/pkg/flowstep"
 	"github.com/zekurio/anvil/pkg/store"
 )
 
@@ -75,7 +74,7 @@ func (s *Server) getJob(_ http.ResponseWriter, r *http.Request) (int, any, error
 	if detail.Status == FileStatusRunning {
 		detail.Progress = s.jobProgress(id)
 	}
-	if detail.Flow, err = s.jobFlow(r, id, shown.Attempts); err != nil {
+	if detail.Flow, err = s.jobFlow(r, id, shown.Flow); err != nil {
 		return fail(err)
 	}
 	checkpoint, found, err := s.Store.GetJobPipelineContext(r.Context(), domain.JobID(id))
@@ -92,40 +91,26 @@ func (s *Server) getJob(_ http.ResponseWriter, r *http.Request) (int, any, error
 // jobFlow reports how the flow resolved on the latest attempt that evaluated
 // it: the path and decisions that attempt recorded, on the graph it actually
 // ran, which is the snapshot the attempt took and not the flow as it is now.
-func (s *Server) jobFlow(r *http.Request, id int64, shown []control.AttemptDetail) (*JobFlow, error) {
-	var resolution domain.FlowResolution
-	attemptID := int64(0)
-	for index := len(shown) - 1; index >= 0 && attemptID == 0; index-- {
-		for _, event := range shown[index].Events {
-			if event.Name != flowstep.ArtifactName || event.Payload == nil || len(event.Payload.JSON) == 0 {
-				continue
-			}
-			decoded, err := flowstep.DecodeResolution(event.Payload.JSON)
-			if err != nil {
-				continue
-			}
-			resolution, attemptID = decoded, shown[index].ID
-		}
-	}
-	if attemptID == 0 {
+func (s *Server) jobFlow(r *http.Request, id int64, resolved *control.JobFlowDetail) (*JobFlow, error) {
+	if resolved == nil {
 		return nil, nil
 	}
 	result := &JobFlow{
-		FlowID:    resolution.FlowID,
-		FlowName:  resolution.FlowName,
-		Revision:  resolution.Revision,
+		FlowID:    resolved.FlowID,
+		FlowName:  resolved.FlowName,
+		Revision:  resolved.Revision,
 		Graph:     normalizeGraph(flow.Graph{}),
-		Outcome:   flow.Outcome(resolution.Outcome),
-		Path:      nonNil(resolution.Path),
-		Decisions: nonNil(resolution.Decisions),
-		Plan:      nonNil(resolution.Plan),
+		Outcome:   flow.Outcome(resolved.Outcome),
+		Path:      nonNil(resolved.Path),
+		Decisions: nonNil(resolved.Decisions),
+		Plan:      nonNil(resolved.Plan),
 	}
 	attempts, err := s.Store.ListAttemptsForJob(r.Context(), domain.JobID(id))
 	if err != nil {
 		return nil, err
 	}
 	for _, attempt := range attempts {
-		if int64(attempt.ID) != attemptID || len(attempt.ResolvedFlow) == 0 {
+		if int64(attempt.ID) != resolved.AttemptID || len(attempt.ResolvedFlow) == 0 {
 			continue
 		}
 		// A snapshot that cannot be read leaves the graph empty: the path and

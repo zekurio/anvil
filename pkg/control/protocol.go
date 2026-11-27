@@ -39,7 +39,9 @@ import (
 // daemon writes exactly one response frame, and the connection is closed. That
 // keeps every request independently bounded and cancellable, and removes any
 // need for stream state, request ids, or pipelining rules.
-const ProtocolVersion uint16 = 1
+//
+// Version 2 added library.list and flow.list.
+const ProtocolVersion uint16 = 2
 
 const (
 	// FrameHeaderSize is the fixed magic+version+length prefix of every frame.
@@ -83,6 +85,8 @@ const (
 	CommandJobRecover      Command = "job.recover"
 	CommandLibraryScan     Command = "library.scan"
 	CommandLibraryStats    Command = "library.stats"
+	CommandLibraryList     Command = "library.list"
+	CommandFlowList        Command = "flow.list"
 	CommandOccurrenceForce Command = "occurrence.force"
 	CommandStagingCleanup  Command = "staging.cleanup"
 	CommandStoreBackup     Command = "store.backup"

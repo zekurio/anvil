@@ -122,6 +122,10 @@ func run(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer)
 		return runStatus(ctx, environment, rest)
 	case "version":
 		return runVersion(ctx, environment, rest)
+	case "libraries":
+		return runLibraries(ctx, environment, rest)
+	case "flows":
+		return runFlows(ctx, environment, rest)
 	case "jobs":
 		return runJobs(ctx, environment, rest)
 	case "show":
