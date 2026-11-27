@@ -249,6 +249,29 @@ func TestEveryRoute(t *testing.T) {
 	}
 }
 
+func TestMediaRootsConfineBrowsingAndLibraryWrites(t *testing.T) {
+	f := newFixture(t, "", nil)
+	f.mu.Lock()
+	f.cfg.Daemon.MediaRoots = []string{f.media}
+	f.mu.Unlock()
+
+	outside := t.TempDir()
+	listing := want[Directory](t, f.get("/api/v1/fs?path="+url.QueryEscape(outside)), http.StatusOK)
+	if listing.Path != "" || listing.Parent != "" || len(listing.Entries) != 1 || listing.Entries[0].Path != f.media {
+		t.Fatalf("outside listing = %+v, want synthetic media roots", listing)
+	}
+	root := want[Directory](t, f.get("/api/v1/fs?path="+url.QueryEscape(f.media)), http.StatusOK)
+	if root.Parent != "" {
+		t.Fatalf("media root parent = %q, want none", root.Parent)
+	}
+
+	write := LibraryWrite{Name: "outside", Kind: "media", Path: outside, FlowID: f.defaultFlow().ID}
+	problem := wantError(t, f.send(http.MethodPost, "/api/v1/libraries", write), http.StatusBadRequest, CodeInvalid)
+	if problem.Field != "path" {
+		t.Fatalf("outside library error = %+v", problem)
+	}
+}
+
 // TestListsAreNeverNull checks the empty answers of an empty daemon: a UI
 // that maps over a list must never meet null.
 func TestListsAreNeverNull(t *testing.T) {

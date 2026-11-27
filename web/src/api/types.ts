@@ -440,6 +440,7 @@ export interface Settings {
 }
 
 export interface DaemonSettings {
+  media_roots: string[];
   temp_dir: string;
   store_path: string;
   control_socket: string;

@@ -15,6 +15,7 @@ import "./settings.css";
 
 // The [daemon] table in the order of pkg/config, each key with what it means.
 const DAEMON_KEYS: { key: keyof DaemonSettings; meaning: string }[] = [
+  { key: "media_roots", meaning: "Filesystem roots the web UI may browse and assign to libraries. An empty list means unrestricted access." },
   { key: "temp_dir", meaning: "Scratch folder for quality-search samples and process logs. Encodes are written next to their destination, not here." },
   { key: "store_path", meaning: "The SQLite file that holds libraries, flows and the job history." },
   { key: "control_socket", meaning: "The Unix socket anvilctl talks to." },
@@ -86,7 +87,7 @@ function DaemonSection(props: { settings: Settings }) {
             <>
               <dt>{entry().key}</dt>
               <dd>
-                <span class="av-mono">{String(props.settings.daemon[entry().key])}</span>
+                <span class="av-mono">{Array.isArray(props.settings.daemon[entry().key]) ? (props.settings.daemon.media_roots.length > 0 ? props.settings.daemon.media_roots.join(", ") : "[] (unrestricted)") : String(props.settings.daemon[entry().key])}</span>
                 <span class="av-dl-note">{entry().meaning}</span>
               </dd>
             </>

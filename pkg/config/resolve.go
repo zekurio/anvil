@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -100,6 +101,7 @@ func resolveDaemon(raw rawDaemonConfig) DaemonConfig {
 	}
 	cpus := max(runtime.NumCPU(), 1)
 	return DaemonConfig{
+		MediaRoots:        slices.Clone(raw.MediaRoots),
 		TempDir:           tempDir,
 		StorePath:         storePath,
 		ControlSocket:     controlSocket,

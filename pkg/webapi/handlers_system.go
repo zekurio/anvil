@@ -145,6 +145,7 @@ func (s *Server) settings(http.ResponseWriter, *http.Request) (int, any, error) 
 		Version:    s.Version,
 		ConfigPath: s.ConfigPath,
 		Daemon: DaemonSettings{
+			MediaRoots:        slices.Clone(cfg.Daemon.MediaRoots),
 			TempDir:           cfg.Daemon.TempDir,
 			StorePath:         cfg.Daemon.StorePath,
 			ControlSocket:     cfg.Daemon.ControlSocket,
@@ -183,6 +184,13 @@ func (s *Server) listDirectory(_ http.ResponseWriter, r *http.Request) (int, any
 		return fail(invalidf("path", "The path must be absolute, such as /srv/media."))
 	}
 	directory := filepath.Clean(requested)
+	mediaRoots := s.Config().Daemon.MediaRoots
+	if len(mediaRoots) > 0 {
+		allowed, err := pathWithinMediaRoots(directory, mediaRoots)
+		if err != nil || !allowed {
+			return ok(mediaRootListing(mediaRoots))
+		}
+	}
 	withFiles := false
 	if text := r.URL.Query().Get("files"); text != "" {
 		parsed, err := strconv.ParseBool(text)
@@ -198,7 +206,11 @@ func (s *Server) listDirectory(_ http.ResponseWriter, r *http.Request) (int, any
 	}
 	listing := Directory{Path: directory, Entries: []DirEntry{}}
 	if parent := filepath.Dir(directory); parent != directory {
-		listing.Parent = parent
+		if len(mediaRoots) == 0 {
+			listing.Parent = parent
+		} else if allowed, _ := pathWithinMediaRoots(parent, mediaRoots); allowed {
+			listing.Parent = parent
+		}
 	}
 	for _, entry := range entries {
 		name := entry.Name()
@@ -206,6 +218,12 @@ func (s *Server) listDirectory(_ http.ResponseWriter, r *http.Request) (int, any
 			continue
 		}
 		full := filepath.Join(directory, name)
+		if len(mediaRoots) > 0 {
+			allowed, err := pathWithinMediaRoots(full, mediaRoots)
+			if err != nil || !allowed {
+				continue
+			}
+		}
 		// Stat follows links: a linked media directory is a directory to the
 		// operator. An entry that cannot be read is simply not offered.
 		info, err := os.Stat(full)
@@ -226,6 +244,35 @@ func (s *Server) listDirectory(_ http.ResponseWriter, r *http.Request) (int, any
 		return cmp.Or(cmp.Compare(strings.ToLower(left.Name), strings.ToLower(right.Name)), cmp.Compare(left.Name, right.Name))
 	})
 	return ok(listing)
+}
+
+func mediaRootListing(roots []string) Directory {
+	listing := Directory{Entries: make([]DirEntry, 0, len(roots))}
+	for _, root := range roots {
+		listing.Entries = append(listing.Entries, DirEntry{Name: filepath.Base(root), Path: root, Dir: true})
+	}
+	slices.SortFunc(listing.Entries, func(left, right DirEntry) int {
+		return cmp.Or(cmp.Compare(strings.ToLower(left.Name), strings.ToLower(right.Name)), cmp.Compare(left.Name, right.Name))
+	})
+	return listing
+}
+
+func pathWithinMediaRoots(path string, roots []string) (bool, error) {
+	resolvedPath, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return false, err
+	}
+	for _, root := range roots {
+		resolvedRoot, err := filepath.EvalSymlinks(root)
+		if err != nil {
+			continue
+		}
+		relative, err := filepath.Rel(resolvedRoot, resolvedPath)
+		if err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // directoryProblem says in plain words why a directory cannot be listed.

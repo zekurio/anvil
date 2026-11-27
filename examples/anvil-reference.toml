@@ -10,6 +10,7 @@
 # and CPU counts use stable examples.
 
 [daemon]
+media_roots = [] # Absolute roots the web API may browse and assign to libraries. Empty leaves browsing and library locations unrestricted. Re-read on SIGHUP.
 temp_dir = "/var/lib/anvil/tmp" # Scratch directory for search samples and process logs. Encode artifacts are written on the destination filesystem as <name>.job-<id>.anvil-part: beside the destination for media libraries, under <handoff_path>/.anvil-work for download libraries. store_path and control_socket default to locations inside this directory.
 store_path = "/var/lib/anvil/anvil.db" # SQLite state path. Defaults to anvil.db inside temp_dir; any non-empty path.
 control_socket = "/run/anvil/anvild.sock" # Daemon Unix socket. Defaults to anvild.sock inside temp_dir; must be absolute.

@@ -106,6 +106,20 @@ func (s *Server) checkLibrary(ctx context.Context, library config.LibraryConfig,
 	if err := fieldProblem(library.Problems()); err != nil {
 		return err
 	}
+	if roots := s.Config().Daemon.MediaRoots; len(roots) > 0 {
+		for _, candidate := range []struct{ field, path string }{{"path", library.Path}, {"download.handoff_path", library.Download.HandoffPath}} {
+			if candidate.path == "" {
+				continue
+			}
+			allowed, err := pathWithinMediaRoots(candidate.path, roots)
+			if err != nil {
+				return invalidf(candidate.field, "The path cannot be resolved inside an administrator-declared media root: %v.", err)
+			}
+			if !allowed {
+				return invalidf(candidate.field, "The path must be inside one of the administrator-declared media roots.")
+			}
+		}
+	}
 	// The directories are compared against the stored libraries, not the
 	// runtime snapshot: the store is what this write is about to change. An
 	// update that leaves both directories alone is not checked again, so a

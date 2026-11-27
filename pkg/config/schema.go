@@ -107,6 +107,10 @@ type WebConfig struct {
 
 // DaemonConfig contains process-wide runtime settings.
 type DaemonConfig struct {
+	// Absolute directory roots the web API may browse and assign to libraries.
+	// Empty leaves filesystem browsing and library locations unrestricted.
+	// Re-read on SIGHUP.
+	MediaRoots []string `toml:"media_roots"`
 	// Scratch directory for search samples and process logs. Encode artifacts
 	// are written on the destination filesystem as <name>.job-<id>.anvil-part:
 	// beside the destination for media libraries, under

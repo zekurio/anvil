@@ -155,18 +155,19 @@ type Settings struct {
 
 // DaemonSettings mirrors the [daemon] table with defaults filled in.
 type DaemonSettings struct {
-	TempDir           string `json:"temp_dir"`
-	StorePath         string `json:"store_path"`
-	ControlSocket     string `json:"control_socket"`
-	WorkerCount       int    `json:"worker_count"`
-	TotalThreads      int    `json:"total_threads"`
-	MaxThreadsPerJob  int    `json:"max_threads_per_job"`
-	MaxAttempts       int    `json:"max_attempts"`
-	ScanInterval      string `json:"scan_interval"`
-	LeaseDuration     string `json:"lease_duration"`
-	ShutdownPolicy    string `json:"shutdown_policy"`
-	StagingCleanupAge string `json:"staging_cleanup_age"`
-	LogLevel          string `json:"log_level"`
+	MediaRoots        []string `json:"media_roots"`
+	TempDir           string   `json:"temp_dir"`
+	StorePath         string   `json:"store_path"`
+	ControlSocket     string   `json:"control_socket"`
+	WorkerCount       int      `json:"worker_count"`
+	TotalThreads      int      `json:"total_threads"`
+	MaxThreadsPerJob  int      `json:"max_threads_per_job"`
+	MaxAttempts       int      `json:"max_attempts"`
+	ScanInterval      string   `json:"scan_interval"`
+	LeaseDuration     string   `json:"lease_duration"`
+	ShutdownPolicy    string   `json:"shutdown_policy"`
+	StagingCleanupAge string   `json:"staging_cleanup_age"`
+	LogLevel          string   `json:"log_level"`
 }
 
 // WebSettings mirrors the [web] table.

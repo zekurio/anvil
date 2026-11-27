@@ -72,6 +72,18 @@ func TestLoadFillsDefaultsWhenOmitted(t *testing.T) {
 	}
 }
 
+func TestMediaRootsMustBeAbsoluteCleanAndUnique(t *testing.T) {
+	_, err := load(t, "[daemon]\nmedia_roots = [\"relative\", \"/srv/media/../media\", \"/srv/media\", \"/srv/media\"]\n")
+	if err == nil {
+		t.Fatal("Load succeeded with invalid media_roots")
+	}
+	for _, problem := range []string{"must be absolute", "must be cleaned", "duplicate path"} {
+		if !strings.Contains(err.Error(), problem) {
+			t.Errorf("error %q does not contain %q", err, problem)
+		}
+	}
+}
+
 func TestLoadKeepsDefaultWithPartialCustomProfile(t *testing.T) {
 	cfg, err := load(t, `
 [profiles.fast.video]

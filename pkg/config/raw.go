@@ -23,6 +23,7 @@ type rawWebConfig struct {
 }
 
 type rawDaemonConfig struct {
+	MediaRoots        []string  `toml:"media_roots"`
 	TempDir           string    `toml:"temp_dir"`
 	StorePath         string    `toml:"store_path"`
 	ControlSocket     string    `toml:"control_socket"`

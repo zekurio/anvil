@@ -91,6 +91,19 @@ func (c Config) Validate() error {
 }
 
 func (d DaemonConfig) validate(p *problems) {
+	seenRoots := make(map[string]bool, len(d.MediaRoots))
+	for i, root := range d.MediaRoots {
+		switch {
+		case !filepath.IsAbs(root):
+			p.addf("daemon.media_roots[%d] %q must be absolute", i, root)
+		case filepath.Clean(root) != root:
+			p.addf("daemon.media_roots[%d] %q must be cleaned (use %q)", i, root, filepath.Clean(root))
+		case seenRoots[root]:
+			p.addf("daemon.media_roots contains duplicate path %q", root)
+		default:
+			seenRoots[root] = true
+		}
+	}
 	if strings.TrimSpace(d.TempDir) == "" {
 		p.addf("daemon.temp_dir is required")
 	}

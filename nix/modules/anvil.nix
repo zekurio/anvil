@@ -21,7 +21,12 @@ let
     store_path = "/var/lib/anvil/anvil.db";
     control_socket = "/run/anvil/anvild.sock";
   };
-  daemon = daemonDefaults // (cfg.settings.daemon or { });
+  declaredMediaRoots = map (path: lib.removePrefix "-" path) cfg.mediaPaths;
+  daemon = daemonDefaults
+    // optionalAttrs (!((cfg.settings.daemon or { }) ? media_roots)) {
+      media_roots = declaredMediaRoots;
+    }
+    // (cfg.settings.daemon or { });
 
   # The typed web options render first; settings.web overrides them key by
   # key. Everything below reads the merged table, so the assertion and the

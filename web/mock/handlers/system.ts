@@ -40,6 +40,7 @@ export function systemRoutes(router: Router, auth: boolean): void {
     version: VERSION,
     config_path: "/etc/anvil/anvil.toml",
     daemon: {
+      media_roots: [],
       temp_dir: "/var/lib/anvil/staging",
       store_path: "/var/lib/anvil/anvil.db",
       control_socket: "/run/anvil/anvil.sock",
