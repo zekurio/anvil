@@ -41,6 +41,8 @@ type DecisionReporter interface {
 // LogStreamSelection emits the single INFO summary of a stream selection plus
 // the warnings for outcomes that surprise operators: a requested language the
 // source never had, and the paths that ignore the configured language policy.
+// A profile that asks for every track (keep_all) or for none (remove_all) got
+// what it configured and is not warned about.
 func LogStreamSelection(job *JobContext, decision domain.StreamSelectionDecision) {
 	if job == nil {
 		return
@@ -67,8 +69,11 @@ func LogStreamSelection(job *JobContext, decision domain.StreamSelectionDecision
 		)...)
 	}
 	if decision.Rule == domain.StreamSelectionRuleCleanupDisabled {
-		slog.Warn("stream cleanup disabled; keeping every stream", append(base,
+		// Only the language rules are off: a subtitle profile that drops
+		// image-based tracks still drops them.
+		slog.Warn("stream cleanup disabled; language rules not applied", append(base,
 			"cleanup_disabled_reason", decision.CleanupDisabledReason,
+			"kept_indexes", decision.KeptIndexes(),
 		)...)
 		return
 	}

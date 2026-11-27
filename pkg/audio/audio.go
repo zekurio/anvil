@@ -16,11 +16,31 @@ const OriginalLanguageToken = "orig"
 
 type Selector struct{}
 
+// Select decides which audio streams survive and how each kept stream is
+// written.
 func (Selector) Select(probe *domain.ProbeResult, profile domain.AudioProfile, metadata domain.JobMetadata) (domain.AudioSelection, error) {
 	if probe == nil {
 		return domain.AudioSelection{}, errors.New("audio selection requires probe result")
 	}
+	if err := validateOutput(profile); err != nil {
+		return domain.AudioSelection{}, err
+	}
 	audioStreams := audioStreams(probe.Streams)
+	selection, err := selectStreams(audioStreams, profile, metadata)
+	if err != nil {
+		return selection, err
+	}
+	var kept []domain.MediaStream
+	for _, stream := range audioStreams {
+		if slices.Contains(selection.StreamIndexes, stream.Index) {
+			kept = append(kept, stream)
+		}
+	}
+	selection.Tracks = planTracks(kept, profile)
+	return selection, nil
+}
+
+func selectStreams(audioStreams []domain.MediaStream, profile domain.AudioProfile, metadata domain.JobMetadata) (domain.AudioSelection, error) {
 	requested := requestedLanguages(profile, metadata)
 	selection := domain.AudioSelection{
 		OriginalLanguage: language.Normalize(metadata.OriginalLanguage),
@@ -45,6 +65,15 @@ func (Selector) Select(probe *domain.ProbeResult, profile domain.AudioProfile, m
 		decision.Rule = domain.StreamSelectionRuleCleanupDisabled
 		decision.CleanupDisabledReason = reason
 		decision.Streams = keptStreams(audioStreams, profile, selection, domain.StreamKeptCleanupDisabled)
+		selection.Decision = &decision
+		return selection, nil
+	}
+	// A profile without languages keeps every track. That is what it asks
+	// for, not a disabled cleanup, so it is recorded without a warning.
+	if len(selection.LanguagesToKeep) == 0 {
+		selection.StreamIndexes = streamIndexes(audioStreams)
+		decision.Rule = domain.StreamSelectionRuleKeepAll
+		decision.Streams = keptStreams(audioStreams, profile, selection, domain.StreamKeptKeepAll)
 		selection.Decision = &decision
 		return selection, nil
 	}
@@ -129,6 +158,36 @@ func (Block) Decision(job *pipeline.JobContext) (domain.StreamSelectionDecision,
 	return *job.Audio.Decision, true
 }
 
+// OutputArtifact is the attempt-event name for the per-track audio output
+// plan: which kept tracks are copied, re-encoded, or downmixed, and to what.
+const OutputArtifact = "audio-output"
+
+type outputPayload struct {
+	Tracks []domain.AudioTrackPlan `json:"tracks"`
+}
+
+// Artifact records how the kept tracks are written. A profile that neither
+// encodes nor downmixes copies everything and reports nothing.
+func (Block) Artifact(job *pipeline.JobContext) (pipeline.ArtifactReport, bool) {
+	if job == nil || job.Audio == nil || len(job.Audio.Tracks) == 0 {
+		return pipeline.ArtifactReport{}, false
+	}
+	if job.Profile.Audio.Encode == nil && job.Profile.Audio.Downmix == nil {
+		return pipeline.ArtifactReport{}, false
+	}
+	summaries := make([]string, 0, len(job.Audio.Tracks))
+	for _, track := range job.Audio.Tracks {
+		summaries = append(summaries, track.Summary())
+	}
+	return pipeline.ArtifactReport{
+		Name:    OutputArtifact,
+		Message: strings.Join(summaries, ", "),
+		Payload: outputPayload{Tracks: job.Audio.Tracks},
+	}, true
+}
+
+// cleanupDisabled reports why the language rules cannot be trusted for this
+// job. A profile that names no language at all is not such a case.
 func cleanupDisabled(profile domain.AudioProfile, metadata domain.JobMetadata, selection domain.AudioSelection) (string, bool) {
 	switch {
 	case metadata.StreamCleanupDisabled:
@@ -137,8 +196,6 @@ func cleanupDisabled(profile domain.AudioProfile, metadata domain.JobMetadata, s
 			reason = "stream cleanup disabled for job"
 		}
 		return reason, true
-	case len(selection.LanguagesToKeep) == 0:
-		return "no languages configured", true
 	case requiresOriginalLanguage(profile) && selection.OriginalLanguage == "":
 		return "original language is unavailable", true
 	default:
