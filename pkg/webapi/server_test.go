@@ -3,7 +3,9 @@ package webapi
 import (
 	"fmt"
 	"net/http"
+	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -383,9 +385,11 @@ func TestSecurityHeadersOnEveryAnswer(t *testing.T) {
 // themeScript is the kind of inline script a built index.html carries.
 const themeScript = `document.documentElement.dataset.theme = localStorage.getItem("theme") || "dark";`
 
+const builtIndex = `<!doctype html><html><head><meta property="csp-nonce"><script>` + themeScript + `</script><script type="module" src="/assets/app-1a2b.js"></script></head><body><div id="root"></div></body></html>`
+
 func testUI() fstest.MapFS {
 	return fstest.MapFS{
-		"index.html":         {Data: []byte(`<!doctype html><html><head><script>` + themeScript + `</script><script type="module" src="/assets/app-1a2b.js"></script></head><body><div id="root"></div></body></html>`)},
+		"index.html":         {Data: []byte(builtIndex)},
 		"assets/app-1a2b.js": {Data: []byte(`console.log("anvil")`)},
 		"favicon.svg":        {Data: []byte(`<svg xmlns="http://www.w3.org/2000/svg"/>`)},
 	}
@@ -448,21 +452,27 @@ func TestStaticUI(t *testing.T) {
 		t.Fatalf("Content-Security-Policy = %q, want inline style attributes and no inline style elements", policy)
 	}
 
-	// That policy blocks the <style> elements the UI kit writes by default.
-	// The page tells it to construct its sheets instead, once, and a page
-	// that already says how its styles are written is left alone.
+	// The page is served exactly as it was built.
 	page := f.get("/")
-	if body := page.Body.String(); strings.Count(body, constructedStylesMeta) != 1 || !strings.Contains(body, "<head>"+constructedStylesMeta) {
-		t.Fatalf("index.html = %s, want the csp-nonce meta tag first in its head", body)
+	if body := page.Body.String(); body != builtIndex {
+		t.Fatalf("index.html = %s, want it served as built", body)
 	}
 	revalidated := f.do(call{method: http.MethodGet, path: "/flows/3", header: map[string]string{"If-None-Match": page.Header().Get("ETag")}})
 	if page.Header().Get("ETag") == "" || revalidated.Code != http.StatusNotModified || revalidated.Body.Len() != 0 {
 		t.Fatalf("revalidating the page = %d with %d bytes, want 304 and none", revalidated.Code, revalidated.Body.Len())
 	}
-	declared := `<!doctype html><html><head><meta property="csp-nonce" nonce="n0nce"></head><body><div id="root"></div></body></html>`
-	own := newFixture(t, "", fstest.MapFS{"index.html": {Data: []byte(declared)}})
-	if body := own.get("/").Body.String(); body != declared {
-		t.Fatalf("index.html = %s, want it served as built", body)
+}
+
+// The policy above blocks the <style> elements the UI kit writes by default.
+// The page the frontend is built from has to tell the kit to construct its
+// sheets instead; the daemon no longer adds that tag itself.
+func TestTheFrontendPageAsksForConstructedStyles(t *testing.T) {
+	source, err := os.ReadFile(filepath.Join("..", "..", "web", "index.html"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !regexp.MustCompile(`<meta property="csp-nonce"\s*/?>`).Match(source) {
+		t.Fatal("web/index.html has no <meta property=\"csp-nonce\"> without a nonce; the UI kit would write <style> elements the Content-Security-Policy blocks")
 	}
 }
 

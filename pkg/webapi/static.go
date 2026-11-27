@@ -8,8 +8,6 @@ import (
 	"log/slog"
 	"net/http"
 	"path"
-	"regexp"
-	"slices"
 	"strings"
 	"time"
 )
@@ -26,18 +24,11 @@ Build the UI and the daemon again:
 The JSON API is available under /api/v1, and anvilctl works as usual.
 `
 
-// constructedStylesMeta tells the UI kit how to add its component styles.
-// By default it writes <style> elements, which the Content Security Policy
-// blocks along with every other inline style element. A csp-nonce meta tag
-// that carries no nonce makes it build its sheets through the CSSOM instead
-// (document.adoptedStyleSheets), which needs nothing inline at all.
-const constructedStylesMeta = `<meta property="csp-nonce">`
-
-var headTag = regexp.MustCompile(`(?i)<head(\s[^>]*)?>`)
-
 // indexPage returns the page every UI route is answered with, or nil when the
-// binary carries no build. The meta tag above is added unless the build
-// already says how its styles are to be written.
+// binary carries no build. It is served exactly as built. The Content
+// Security Policy blocks inline style elements, which the UI kit writes by
+// default; web/index.html carries a <meta property="csp-nonce"> without a
+// nonce, which makes the kit build its sheets through the CSSOM instead.
 func (s *Server) indexPage() []byte {
 	if !s.UIBuilt || s.UI == nil {
 		return nil
@@ -47,14 +38,7 @@ func (s *Server) indexPage() []byte {
 		slog.Error("the embedded web UI has no readable index.html", "error", err)
 		return nil
 	}
-	if bytes.Contains(page, []byte(`property="csp-nonce"`)) {
-		return page
-	}
-	head := headTag.FindIndex(page)
-	if head == nil {
-		return page
-	}
-	return slices.Concat(page[:head[1]], []byte(constructedStylesMeta), page[head[1]:])
+	return page
 }
 
 // uiHandler serves the built frontend. Hashed files under /assets/ never
