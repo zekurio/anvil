@@ -155,82 +155,121 @@ func (profile ProfileConfig) validate(p *problems, name string) {
 	}
 }
 
+// Problem is one rule a profile section breaks. Validate reports it in
+// check-config wording; other front ends, such as the flow editor, attribute
+// it to Field and phrase Rule their own way.
+type Problem struct {
+	// Field is the TOML key at fault within its section, e.g. "crf_min".
+	Field string
+	// Rule says what a valid value looks like, e.g. "must be 8 or 10".
+	Rule string
+	// text is the check-config message without its `profile "name" ` prefix.
+	text string
+}
+
+func problemf(field, rule, format string, args ...any) Problem {
+	return Problem{Field: field, Rule: rule, text: fmt.Sprintf(format, args...)}
+}
+
 func (crop CropConfig) validate(p *problems, profile string) {
+	for _, problem := range crop.Problems() {
+		p.addf("profile %q %s", profile, problem.text)
+	}
+}
+
+// Problems reports every rule the crop settings break, in the order Validate
+// lists them.
+func (crop CropConfig) Problems() []Problem {
+	var found []Problem
 	if crop.Samples < 0 || crop.Samples == 1 {
-		p.addf("profile %q crop.samples must be 0 (automatic) or at least 2", profile)
+		found = append(found, problemf("samples", "must be 0 (automatic) or at least 2", "crop.samples must be 0 (automatic) or at least 2"))
 	}
 	if crop.FrameCount < 1 {
-		p.addf("profile %q crop.frame_count must be at least 1", profile)
+		found = append(found, problemf("frame_count", "must be at least 1", "crop.frame_count must be at least 1"))
 	}
 	// An empty list selects spread sampling, so only explicit offsets are checked.
 	for i, offset := range crop.SeekOffsets {
 		if offset.Duration < 0 {
-			p.addf("profile %q crop.seek_offsets[%d] must be non-negative", profile, i)
+			found = append(found, problemf("seek_offsets", "must not contain negative durations", "crop.seek_offsets[%d] must be non-negative", i))
 		}
 	}
 	if crop.Limit < 1 || crop.Limit > 255 {
-		p.addf("profile %q crop.limit must be between 1 and 255", profile)
+		found = append(found, problemf("limit", "must be between 1 and 255", "crop.limit must be between 1 and 255"))
 	}
 	if crop.Round < 1 {
-		p.addf("profile %q crop.round must be at least 1", profile)
+		found = append(found, problemf("round", "must be at least 1", "crop.round must be at least 1"))
 	}
 	if crop.ResetCount < 0 {
-		p.addf("profile %q crop.reset_count must be non-negative", profile)
+		found = append(found, problemf("reset_count", "must be non-negative", "crop.reset_count must be non-negative"))
 	}
 	if !finite(crop.MinRetainedAreaPct) || crop.MinRetainedAreaPct <= 0 || crop.MinRetainedAreaPct > 100 {
-		p.addf("profile %q crop.min_retained_area_percent must be finite, greater than 0, and at most 100", profile)
+		found = append(found, problemf("min_retained_area_percent", "must be finite, greater than 0, and at most 100", "crop.min_retained_area_percent must be finite, greater than 0, and at most 100"))
 	}
 	if crop.MinWidth < 1 {
-		p.addf("profile %q crop.min_width must be at least 1", profile)
+		found = append(found, problemf("min_width", "must be at least 1", "crop.min_width must be at least 1"))
 	}
 	if crop.MinHeight < 1 {
-		p.addf("profile %q crop.min_height must be at least 1", profile)
+		found = append(found, problemf("min_height", "must be at least 1", "crop.min_height must be at least 1"))
 	}
 	if crop.RequiredAlignment < 1 {
-		p.addf("profile %q crop.required_alignment must be at least 1", profile)
+		found = append(found, problemf("required_alignment", "must be at least 1", "crop.required_alignment must be at least 1"))
 	}
+	return found
 }
 
 func (v VideoConfig) validate(p *problems, profile string) {
-	if !validVideoCodec(v.Codec) {
-		p.addf("profile %q video.codec %q is invalid (%s)", profile, v.Codec, codecChoices)
-	}
-	if !validAccelerator(v.Accelerator) {
-		p.addf("profile %q video.accelerator %q is invalid (%s)", profile, v.Accelerator, acceleratorChoices)
-	}
-	if !video.ValidBitDepth(v.BitDepth) {
-		p.addf("profile %q video.bit_depth %d is invalid (must be 8 or 10)", profile, v.BitDepth)
-	}
-	if v.CRFMin < 0 || v.CRFMax < 0 {
-		p.addf("profile %q CRF values must be non-negative", profile)
-	}
-	if v.CRFMin > v.CRFMax {
-		p.addf("profile %q crf_min must be less than or equal to crf_max", profile)
-	}
-	if v.SampleDuration.Duration <= 0 {
-		p.addf("profile %q video.sample_duration must be positive", profile)
-	}
-	if err := ffmpeg.ValidateEncoderArgs(v.FFmpegArgs); err != nil {
-		p.addf("profile %q video.%s", profile, err)
-	}
-	if v.Samples < 0 {
-		p.addf("profile %q video.samples must be non-negative", profile)
-	}
-	switch {
-	case !slices.Contains(qualityMetrics, v.Metric):
-		p.addf("profile %q video.metric %q is invalid (must be vmaf or xpsnr)", profile, v.Metric)
-	case !validQualityTarget(v.Target):
-		p.addf("profile %q video.target must be between 0 and 100 for metric %q", profile, v.Metric)
-	case v.Metric == "xpsnr" && v.Target == 0:
-		p.addf("profile %q video.target must be set when metric is \"xpsnr\" (typical targets are 35-50)", profile)
-	}
-	if !validPercent(v.MinSavingsPercent) {
-		p.addf("profile %q min_savings_percent must be between 0 and 100", profile)
+	for _, problem := range v.Problems() {
+		p.addf("profile %q %s", profile, problem.text)
 	}
 	*p = append(*p, videoOverrideKeyProblems(profile, v.Overrides)...)
 	for _, key := range sortedKeys(v.Overrides) {
 		v.Overrides[key].validate(p, fmt.Sprintf("profile %q video.overrides.%s", profile, key), v)
 	}
+}
+
+// Problems reports every rule the base video settings break, in the order
+// Validate lists them. Overrides are checked separately, against this base.
+func (v VideoConfig) Problems() []Problem {
+	var found []Problem
+	if !validVideoCodec(v.Codec) {
+		found = append(found, problemf("codec", codecChoices, "video.codec %q is invalid (%s)", v.Codec, codecChoices))
+	}
+	if !validAccelerator(v.Accelerator) {
+		found = append(found, problemf("accelerator", acceleratorChoices, "video.accelerator %q is invalid (%s)", v.Accelerator, acceleratorChoices))
+	}
+	if !video.ValidBitDepth(v.BitDepth) {
+		found = append(found, problemf("bit_depth", "must be 8 or 10", "video.bit_depth %d is invalid (must be 8 or 10)", v.BitDepth))
+	}
+	switch {
+	case v.CRFMin < 0:
+		found = append(found, problemf("crf_min", "must be non-negative", "CRF values must be non-negative"))
+	case v.CRFMax < 0:
+		found = append(found, problemf("crf_max", "must be non-negative", "CRF values must be non-negative"))
+	}
+	if v.CRFMin > v.CRFMax {
+		found = append(found, problemf("crf_min", "must be less than or equal to crf_max", "crf_min must be less than or equal to crf_max"))
+	}
+	if v.SampleDuration.Duration <= 0 {
+		found = append(found, problemf("sample_duration", "must be positive", "video.sample_duration must be positive"))
+	}
+	if err := ffmpeg.ValidateEncoderArgs(v.FFmpegArgs); err != nil {
+		found = append(found, problemf("ffmpeg_args", strings.TrimPrefix(err.Error(), "ffmpeg_args "), "video.%s", err))
+	}
+	if v.Samples < 0 {
+		found = append(found, problemf("samples", "must be non-negative", "video.samples must be non-negative"))
+	}
+	switch {
+	case !slices.Contains(qualityMetrics, v.Metric):
+		found = append(found, problemf("metric", "must be vmaf or xpsnr", "video.metric %q is invalid (must be vmaf or xpsnr)", v.Metric))
+	case !validQualityTarget(v.Target):
+		found = append(found, problemf("target", "must be between 0 and 100", "video.target must be between 0 and 100 for metric %q", v.Metric))
+	case v.Metric == "xpsnr" && v.Target == 0:
+		found = append(found, problemf("target", "must be set when metric is \"xpsnr\" (typical targets are 35-50)", "video.target must be set when metric is \"xpsnr\" (typical targets are 35-50)"))
+	}
+	if !validPercent(v.MinSavingsPercent) {
+		found = append(found, problemf("min_savings_percent", "must be between 0 and 100", "min_savings_percent must be between 0 and 100"))
+	}
+	return found
 }
 
 // validate checks one override against the base video settings it inherits
