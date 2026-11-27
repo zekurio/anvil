@@ -132,7 +132,7 @@ export function libraryRoutes(router: Router): void {
 
   router.on("POST", "/libraries", (ctx) => {
     const write = parse(objectBody<Partial<LibraryWrite>>(ctx));
-    if (findLibrary(write.name)) throw conflict(`A library named "${write.name}" already exists. Library names are unique: choose a different one.`, "name");
+    if (findLibrary(write.name)) throw conflict(`A library named "${write.name}" already exists. Choose another name.`, "name");
     const at = new Date().toISOString();
     const library: StoredLibrary = { ...write, created_at: at, updated_at: at };
     db.libraries.push(library);
@@ -153,7 +153,7 @@ export function libraryRoutes(router: Router): void {
     const running = db.files.filter((f) => f.library === library.name && f.status === "running").length;
     // As pkg/webapi: only a running job (or an unfinished publish) refuses; waiting jobs go with the library.
     if (running > 0) {
-      throw conflict(`The library "${library.name}" cannot be deleted yet: ${running === 1 ? "1 job is running. Cancel it or wait until it has finished." : `${running} jobs are running. Cancel them or wait until they have finished.`} Jobs that only wait in the queue are deleted with the library.`);
+      throw conflict(`The library "${library.name}" cannot be deleted yet. ${running === 1 ? "1 job is running. Cancel it or wait for it." : `${running} jobs are running. Cancel them or wait for them.`}`);
     }
     db.libraries.splice(db.libraries.indexOf(library), 1);
     db.files = db.files.filter((f) => f.library !== library.name);

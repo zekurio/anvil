@@ -213,7 +213,7 @@ func cancelSkip(id int64, reason, state string) JobActionSkip {
 	case store.CancelSkipAlreadyTerminal:
 		skip.Reason, skip.Detail = SkipFinished, fmt.Sprintf("The job is already %s.", state)
 	case store.CancelSkipPublishInFlight:
-		skip.Reason, skip.Detail = SkipPublishing, "The job is publishing its result. Canceling now could leave the file half replaced, so it finishes first."
+		skip.Reason, skip.Detail = SkipPublishing, "The job is publishing. It finishes first so no file is left half replaced."
 	case store.CancelSkipStateChanged:
 		skip.Reason, skip.Detail = SkipStateChanged, fmt.Sprintf("The job moved to %s in the meantime.", state)
 	case store.CancelSkipMissing:

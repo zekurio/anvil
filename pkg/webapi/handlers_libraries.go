@@ -189,7 +189,7 @@ func (s *Server) createLibrary(_ http.ResponseWriter, r *http.Request) (int, any
 	s.mutations.Lock()
 	defer s.mutations.Unlock()
 	if _, err := s.Store.GetLibrary(r.Context(), library.Name); err == nil {
-		return fail(nameTakenf("A library named %q already exists. Library names are unique: choose a different one.", library.Name))
+		return fail(nameTakenf("A library named %q already exists. Choose another name.", library.Name))
 	} else if !errors.Is(err, store.ErrNotFound) {
 		return fail(err)
 	}
@@ -305,14 +305,14 @@ func libraryBusy(busy *store.LibraryBusyError) string {
 	}
 	var reasons []string
 	if busy.Running > 0 {
-		reasons = append(reasons, count(busy.Running, "job is running. Cancel it or wait until it has finished.", "jobs are running. Cancel them or wait until they have finished."))
+		reasons = append(reasons, count(busy.Running, "job is running. Cancel it or wait for it.", "jobs are running. Cancel them or wait for them."))
 	}
 	if busy.Publishing > 0 {
 		reasons = append(reasons, count(busy.Publishing,
-			"job was interrupted while publishing its result. The publish finishes the next time the job runs: retry the job if it failed, and resume the library if it is paused.",
-			"jobs were interrupted while publishing their results. Each publish finishes the next time its job runs: retry the jobs that failed, and resume the library if it is paused."))
+			"job was interrupted while publishing. Retry it if it failed, and resume the library if it is paused.",
+			"jobs were interrupted while publishing. Retry the failed ones, and resume the library if it is paused."))
 	}
-	return fmt.Sprintf("The library %q cannot be deleted yet: %s Jobs that only wait in the queue are deleted with the library.", busy.Library, strings.Join(reasons, " Also, "))
+	return fmt.Sprintf("The library %q cannot be deleted yet. %s", busy.Library, strings.Join(reasons, " "))
 }
 
 func (s *Server) scanLibrary(_ http.ResponseWriter, r *http.Request) (int, any, error) {

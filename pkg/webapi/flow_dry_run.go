@@ -93,7 +93,7 @@ func (s *Server) testFlow(_ http.ResponseWriter, r *http.Request) (int, any, err
 	profile := resolution.Profile
 	flowstep.DisableUnsafeStreamCleanup(profile, &metadata)
 	if metadata.StreamCleanupDisabled {
-		result.Plan = append(result.Plan, "Original language: not looked up in a dry run, so every track is kept here; a job asks the library's Arr connection")
+		result.Plan = append(result.Plan, "Original language: not looked up in a test, so every track is kept here")
 	}
 	command, notes, err := s.dryRunCommand(profile, input, probed, metadata)
 	if err != nil {
@@ -217,10 +217,10 @@ func (s *Server) dryRunCommand(profile domain.Profile, input string, probed doma
 	default:
 		if plan.QualityMode != domain.VideoQualityFixed {
 			replaceQuality(command)
-			notes = append(notes, fmt.Sprintf("CRF: picked by the quality search when the job runs, shown as %s; the search may also find that no CRF saves enough and copy the video", crfPlaceholder))
+			notes = append(notes, fmt.Sprintf("CRF: found by the quality search when the job runs, shown as %s", crfPlaceholder))
 		}
 		if !profile.Crop.Disabled {
-			notes = append(notes, "Crop: detected when the job runs, so the command has no crop filter")
+			notes = append(notes, "Crop: detected when the job runs, not shown in the command")
 		}
 	}
 	return command, notes, nil

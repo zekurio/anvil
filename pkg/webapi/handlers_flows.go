@@ -104,7 +104,7 @@ func flowInput(write FlowWrite) (store.FlowInput, error) {
 	if check := flowCheck(graph); !check.Valid {
 		return store.FlowInput{}, &apiError{
 			status: http.StatusUnprocessableEntity, code: CodeInvalidFlow, issues: check.Issues,
-			message: "The flow has problems that must be fixed before it can be saved.",
+			message: "Fix the problems in this flow before saving it.",
 		}
 	}
 	return store.FlowInput{Name: name, Description: strings.TrimSpace(write.Description), Graph: graph}, nil
@@ -136,7 +136,7 @@ func (s *Server) createFlow(_ http.ResponseWriter, r *http.Request) (int, any, e
 }
 
 func flowNameTaken(name string) error {
-	return nameTakenf("Another flow is already named %q. Flow names are unique: choose a different one.", name)
+	return nameTakenf("Another flow is already named %q. Choose another name.", name)
 }
 
 func (s *Server) updateFlow(_ http.ResponseWriter, r *http.Request) (int, any, error) {
@@ -159,7 +159,7 @@ func (s *Server) updateFlow(_ http.ResponseWriter, r *http.Request) (int, any, e
 	case errors.Is(err, store.ErrNotFound):
 		return fail(notFoundf("There is no flow %d.", id))
 	case errors.Is(err, store.ErrRevisionConflict):
-		return fail(conflictf("This flow was changed somewhere else since you opened it. Reload it to see the current version, then apply your changes again."))
+		return fail(conflictf("This flow was changed elsewhere. Reload it and apply your changes again."))
 	case errors.Is(err, store.ErrNameTaken):
 		return fail(flowNameTaken(input.Name))
 	case err != nil:

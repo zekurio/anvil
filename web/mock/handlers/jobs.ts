@@ -87,7 +87,7 @@ export function jobRoutes(router: Router): void {
       }
       // A journaled publish must finish: interrupting it could leave the destination half written.
       if (stateOf(file) === "replacing") {
-        result.skipped.push({ id: file.job_id ?? 0, reason: "publishing", detail: "The job is publishing its result. Canceling now could leave the file half replaced, so it finishes first." });
+        result.skipped.push({ id: file.job_id ?? 0, reason: "publishing", detail: "The job is publishing. It finishes first so no file is left half replaced." });
         continue;
       }
       file.status = "skipped";

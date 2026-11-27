@@ -341,7 +341,7 @@ func (s *Server) guardHost(next http.Handler) http.Handler {
 		if !s.auth.required() && !s.trustedHost(r) {
 			writeError(w, r, &apiError{
 				status: http.StatusForbidden, code: CodeInvalid,
-				message: fmt.Sprintf("This daemon has no password, so it only answers requests addressed to it by a loopback name, its listen host, or its own IP address, not %q. Set web.password_file to reach it under another name.", r.Host),
+				message: fmt.Sprintf("Without a password, the daemon only answers to a loopback name, its listen host or its IP address, not %q. Set web.password_file to use another name.", r.Host),
 			})
 			return
 		}

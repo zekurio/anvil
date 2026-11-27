@@ -158,7 +158,7 @@ func TestDeleteLibraryWithAnInterruptedPublishSaysWhatResolvesIt(t *testing.T) {
 	f.failAttempt(staged, err)
 
 	refused := wantError(t, f.send(http.MethodDelete, "/api/v1/libraries/inbox", nil), http.StatusConflict, CodeConflict)
-	const advice = "1 job was interrupted while publishing its result. The publish finishes the next time the job runs: retry the job if it failed, and resume the library if it is paused."
+	const advice = "1 job was interrupted while publishing. Retry it if it failed, and resume the library if it is paused."
 	if !strings.Contains(refused.Message, advice) {
 		t.Fatalf("refusal = %q, want it to say %q", refused.Message, advice)
 	}
