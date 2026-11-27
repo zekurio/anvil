@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"math"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -42,9 +43,12 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) (int, any, error)
 	if !valid {
 		failure := &apiError{status: http.StatusUnauthorized, code: CodeUnauthenticated, field: "password", message: "That password is not right."}
 		if wait > 0 {
-			seconds := int(wait.Seconds()) + 1
 			failure.status = http.StatusTooManyRequests
-			failure.message = fmt.Sprintf("Too many failed sign-ins. Try again in %d seconds.", seconds)
+			failure.message = "Too many failed sign-ins. Try again in 1 second."
+			// Rounded up, so the wait named is never shorter than the real one.
+			if seconds := int(math.Ceil(wait.Seconds())); seconds > 1 {
+				failure.message = fmt.Sprintf("Too many failed sign-ins. Try again in %d seconds.", seconds)
+			}
 		}
 		return fail(failure)
 	}

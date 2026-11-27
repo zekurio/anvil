@@ -115,7 +115,15 @@ func TestFailedSignInsAreThrottled(t *testing.T) {
 		wantError(t, f.send(http.MethodPost, "/api/v1/session", LoginRequest{Password: "guess"}), http.StatusUnauthorized, CodeUnauthenticated)
 	}
 	// The failure that uses up the allowance already answers with the wait.
-	wantError(t, f.send(http.MethodPost, "/api/v1/session", LoginRequest{Password: "guess"}), http.StatusTooManyRequests, CodeUnauthenticated)
+	throttled := wantError(t, f.send(http.MethodPost, "/api/v1/session", LoginRequest{Password: "guess"}), http.StatusTooManyRequests, CodeUnauthenticated)
+	if want := "Too many failed sign-ins. Try again in 2 seconds."; throttled.Message != want {
+		t.Errorf("message = %q, want %q", throttled.Message, want)
+	}
+	f.advance(loginDelay - time.Second)
+	throttled = wantError(t, f.send(http.MethodPost, "/api/v1/session", LoginRequest{Password: "guess"}), http.StatusTooManyRequests, CodeUnauthenticated)
+	if want := "Too many failed sign-ins. Try again in 1 second."; throttled.Message != want {
+		t.Errorf("message = %q, want %q", throttled.Message, want)
+	}
 	// Attempts during the delay do not renew it, including wrong ones.
 	wantError(t, f.send(http.MethodPost, "/api/v1/session", LoginRequest{Password: "open sesame"}), http.StatusTooManyRequests, CodeUnauthenticated)
 	wantError(t, f.send(http.MethodPost, "/api/v1/session", LoginRequest{Password: "guess"}), http.StatusTooManyRequests, CodeUnauthenticated)
