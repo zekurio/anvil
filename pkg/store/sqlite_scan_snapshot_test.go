@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -352,22 +353,28 @@ func TestScanSkipsQueuedJobsOfDeniedFiles(t *testing.T) {
 		}
 	}
 	// The denied file keeps its occurrence, so it stays listed with its reason
-	// and its job can be retried once the rules allow the file again.
+	// and its job goes back on the queue once the rules allow the file again.
 	if source, err := s.GetMediaSourceByPath(ctx, "test", "waiting.mkv"); err != nil || !source.Current || source.Status != domain.MediaSourceActive {
 		t.Fatalf("occurrence of the denied file = %+v, %v", source, err)
 	}
 	if _, err := s.GetMediaSourceByPath(ctx, "test", "never-seen.mkv"); err == nil {
 		t.Fatal("a denied file the library never tracked was recorded")
 	}
-	if _, err := s.RetryJob(ctx, waiting.ID, now); err != nil {
-		t.Fatalf("retry of the skipped job: %v", err)
+	// A retry does not go around the rules: queued by hand, the job would be
+	// leased against them or skipped again by the next scan.
+	var refusal *RetryRefusedError
+	if _, err := s.RetryJob(ctx, waiting.ID, now); !errors.As(err, &refusal) || !refusal.Denied {
+		t.Fatalf("retry of the job the rules skipped = %v, want a refusal that says the rules deny the file", err)
 	}
-	// A repeated scan skips it again: it never started.
+	if job := jobOf("waiting.mkv"); job.State != domain.JobStateSkipped {
+		t.Fatalf("refused retry left the job %s", job.State)
+	}
+	// A repeated scan has nothing left to skip.
 	third, err := s.ApplyLibraryScan(ctx, scanToken(t, s), ApplyScanInput{
 		LibraryName: "test", RequeueExisting: true, CompletedAt: now,
 		Entries: []ScanEntry{denied("waiting.mkv"), denied("started.mkv"), pathEntry("allowed.mkv", 1), unstable},
 	})
-	if err != nil || third.DeniedJobs != 1 {
+	if err != nil || third.DeniedJobs != 0 {
 		t.Fatalf("third scan = %+v, %v", third, err)
 	}
 }

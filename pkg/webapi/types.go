@@ -619,7 +619,9 @@ const (
 	SkipInputChanged = "input_changed"
 	// SkipActive: the file has a job that is queued or running (requeue).
 	SkipActive = "active"
-	// SkipDenied: the library's rules deny the file (requeue).
+	// SkipDenied: the library's rules deny the file (requeue), or took the
+	// job off the queue before it started (retry). A scan queues such a job
+	// again once the rules allow the file.
 	SkipDenied = "denied"
 	// SkipIgnored: the scanner leaves the file out on its own account: a
 	// sample, download residue, or one of anvil's own outputs (requeue).

@@ -813,7 +813,7 @@ export interface JobActionResult {
  *   not_retryable  the job is queued, running or complete (retry)
  *   input_changed  the file changed or went away after the job was created (retry)
  *   active         the file has a queued or running job (requeue)
- *   denied         the library's rules deny the file (requeue)
+ *   denied         the library's rules deny the file (requeue), or took the job off the queue before it started (retry)
  *   ignored        the scanner leaves the file out: a sample, download residue, one of anvil's outputs (requeue)
  *   unstable       the download is still being written (requeue)
  *   invalid        the path cannot name one file to queue (requeue)

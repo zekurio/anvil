@@ -60,8 +60,14 @@ export function cancelable(status: FileStatus): boolean {
   return status === "queued" || status === "running";
 }
 
-/** What pkg/store lets a retry start from: failed, skipped, canceled, and retrying. */
-export function retryable(status: FileStatus, state?: string): boolean {
+/**
+ * What pkg/store lets a retry start from: failed, skipped, canceled, and
+ * retrying. A job the rules took off the queue is the exception: a retry
+ * would go around the rules, and a scan queues it again by itself once they
+ * allow the file. `message` is the job's last error, which names the rule.
+ */
+export function retryable(status: FileStatus, state?: string, message?: string): boolean {
+  if (state === "skipped" && deniedLabel(message)) return false;
   return status === "failed" || status === "skipped" || state === "retrying";
 }
 

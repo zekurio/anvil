@@ -110,6 +110,11 @@ export function jobRoutes(router: Router): void {
         result.skipped.push({ id: file.job_id ?? 0, reason: "not_retryable", detail: `Cannot retry job ${file.job_id} from state "${state}".` });
         continue;
       }
+      // A job the rules took off the queue: the next scan queues it again once they allow the file.
+      if (state === "skipped" && /^(denied by rule \d+|no rule allows it)/.test(file.last_error ?? "")) {
+        result.skipped.push({ id: file.job_id ?? 0, reason: "denied", detail: `Cannot retry job ${file.job_id}: a rule of its library denies the file; a scan queues it again once the rules allow it.` });
+        continue;
+      }
       file.status = "queued";
       file.job_state = "pending";
       file.last_error = undefined;

@@ -10,6 +10,8 @@ export interface BulkJob {
   id: number;
   status: FileStatus;
   state?: string;
+  /** It tells a job the rules skipped, which cannot be retried, from any other skipped job. */
+  last_error?: string;
 }
 
 export interface BulkRequeue {
@@ -39,10 +41,10 @@ export interface JobBulkBarProps {
  */
 export function JobBulkBar(props: JobBulkBarProps) {
   const [busy, setBusy] = createSignal<"retry" | "cancel" | "requeue" | null>(null);
-  const retryIds = () => props.jobs.filter((job) => retryable(job.status, job.state)).map((job) => job.id);
+  const retryIds = () => props.jobs.filter((job) => retryable(job.status, job.state, job.last_error)).map((job) => job.id);
   const cancelIds = () => props.jobs.filter((job) => cancelable(job.status)).map((job) => job.id);
   const running = () => props.jobs.filter((job) => job.status === "running").length;
-  const failedOnly = () => props.jobs.every((job) => !retryable(job.status, job.state) || job.status === "failed");
+  const failedOnly = () => props.jobs.every((job) => !retryable(job.status, job.state, job.last_error) || job.status === "failed");
 
   const act = async (kind: "retry" | "cancel" | "requeue", work: () => Promise<unknown>) => {
     setBusy(kind);

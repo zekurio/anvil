@@ -97,7 +97,7 @@ export function FilesTab(props: { name: string; library: Library | undefined }) 
   const onSort = (key: string) => refine(() => setSort((current) => ({ key: key as FileSort, dir: current.key === key && current.dir === "asc" ? "desc" : "asc" })));
 
   const selected = () => selection.rows();
-  const bulkJobs = () => selected().flatMap((file) => (file.job_id !== undefined ? [{ id: file.job_id, status: file.status, state: file.job_state }] : []));
+  const bulkJobs = () => selected().flatMap((file) => (file.job_id !== undefined ? [{ id: file.job_id, status: file.status, state: file.job_state, last_error: file.last_error }] : []));
   // Queueing again applies to everything that has no job in flight.
   const requeueable = () => selected().filter((file) => !cancelable(file.status));
 

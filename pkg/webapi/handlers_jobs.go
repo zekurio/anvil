@@ -325,6 +325,8 @@ func retrySkip(r *http.Request, id int64, err error) JobActionSkip {
 	switch {
 	case errors.As(err, &refusal) && refusal.InputChanged:
 		skip.Reason = SkipInputChanged
+	case errors.As(err, &refusal) && refusal.Denied:
+		skip.Reason = SkipDenied
 	case errors.As(err, &refusal):
 		skip.Reason = SkipNotRetryable
 	case failure.status == http.StatusNotFound:

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/zekurio/anvil/pkg/config"
 	"github.com/zekurio/anvil/pkg/domain"
 	replacepkg "github.com/zekurio/anvil/pkg/replace"
 )
@@ -28,7 +29,7 @@ const inactiveOccurrenceJobError = "input occurrence is no longer current and ac
 
 const defaultCancelReason = "canceled by operator"
 
-// RetryRefusedError reports a job a retry left alone, and which of the two
+// RetryRefusedError reports a job a retry left alone, and which of the
 // reasons applies. A caller that retries many jobs uses it to tell a refusal,
 // which concerns one job, from a failure of the store.
 type RetryRefusedError struct {
@@ -36,15 +37,28 @@ type RetryRefusedError struct {
 	State domain.JobState
 	// InputChanged is set when the state would allow a retry but the file the
 	// job was created for has changed or gone since: its occurrence is no
-	// longer current and active. Otherwise the state itself refuses.
+	// longer current and active.
 	InputChanged bool
+	// Denied is set when a scan took the job off the queue because a rule of
+	// its library denies the file. Otherwise the state itself refuses.
+	Denied bool
 }
 
 func (e *RetryRefusedError) Error() string {
-	if e.InputChanged {
+	switch {
+	case e.InputChanged:
 		return fmt.Sprintf("cannot retry job %d: %s", e.JobID, inactiveOccurrenceJobError)
+	case e.Denied:
+		return fmt.Sprintf("cannot retry job %d: a rule of its library denies the file; a scan queues it again once the rules allow it", e.JobID)
 	}
 	return fmt.Sprintf("cannot retry job %d from state %q", e.JobID, e.State)
+}
+
+// deniedByRules reports whether a scan skipped the job because the rules of
+// its library deny the file (scanApplication.skipDeniedJobs): it never
+// started, and its reason is a rule's.
+func deniedByRules(job domain.Job) bool {
+	return job.State == domain.JobStateSkipped && job.AttemptCount == 0 && config.DeniedByRules(job.LastError)
 }
 
 func (s *SQLiteStore) EnqueueJob(ctx context.Context, input EnqueueJobInput) (domain.Job, bool, error) {
@@ -90,6 +104,12 @@ func retryJobTx(ctx context.Context, tx *sql.Tx, id domain.JobID, now time.Time)
 	}
 	if !active {
 		return domain.Job{}, &RetryRefusedError{JobID: id, State: job.State, InputChanged: true}
+	}
+	// Queued by hand, the job would be leased against the rules, or skipped
+	// again by the next scan, whichever came first. The rules decide: once
+	// they allow the file, the scan puts the job back by itself.
+	if deniedByRules(job) {
+		return domain.Job{}, &RetryRefusedError{JobID: id, State: job.State, Denied: true}
 	}
 
 	_, err = tx.ExecContext(ctx, `

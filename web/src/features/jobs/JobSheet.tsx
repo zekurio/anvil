@@ -71,7 +71,7 @@ function LoadedSheet(props: { detail: JobDetail; catalog: NodeCatalog; onClose: 
   // The status poll is the fresher source; the detail's own figure covers the gap before it lists the job.
   const progress = () => status().running.find((running) => running.job_id === job().id) ?? props.detail.progress;
   const canCancel = () => cancelable(props.detail.status);
-  const canRetry = () => retryable(props.detail.status, job().state);
+  const canRetry = () => retryable(props.detail.status, job().state, job().last_error);
 
   const cancel = async () => {
     if (props.detail.status === "running" && !(await confirm({ title: "Cancel this job?", description: "The encode stops and what it has done so far is discarded. The source file is not changed.", confirmLabel: "Cancel job", cancelLabel: "Keep running", danger: true }))) return;

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -599,6 +600,22 @@ func TestDeleteLibraryTakesWaitingJobsAndTheirScratchButNoMedia(t *testing.T) {
 	for _, file := range media {
 		if info, err := os.Stat(file); err != nil || info.Size() != 5000 {
 			t.Errorf("media file %s after the delete: %v, %v", file, info, err)
+		}
+	}
+}
+
+// A retry that the store refuses is reported per job with the reason from
+// the shared vocabulary, so the UI can say it in a sentence.
+func TestRetrySkipNamesTheStoresRefusal(t *testing.T) {
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/jobs/retry", nil)
+	for reason, refusal := range map[string]*store.RetryRefusedError{
+		SkipNotRetryable: {JobID: 7, State: domain.JobStatePending},
+		SkipInputChanged: {JobID: 7, State: domain.JobStateFailed, InputChanged: true},
+		SkipDenied:       {JobID: 7, State: domain.JobStateSkipped, Denied: true},
+	} {
+		skip := retrySkip(request, 7, fmt.Errorf("retry job: %w", refusal))
+		if skip.ID != 7 || skip.Reason != reason || skip.Detail == "" {
+			t.Errorf("refusal %+v reported as %+v, want reason %q with a detail", *refusal, skip, reason)
 		}
 	}
 }
