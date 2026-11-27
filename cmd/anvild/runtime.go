@@ -139,11 +139,16 @@ func importLegacyConfig(ctx context.Context, cfg config.Config, state *store.SQL
 		} else {
 			slog.Info("profile from anvil.toml matches an existing flow", "profile", imported.Profile, "flow", imported.Flow, "flow_id", imported.FlowID)
 		}
-		for _, issue := range imported.Issues {
-			slog.Warn("imported flow needs attention before its jobs can run", "flow", imported.Flow, "issue", issue)
-		}
 	}
 	for _, library := range result.Libraries {
+		if library.PausedFor != "" {
+			// One line per library, naming what to fix: left running, a
+			// library on a flow that does not validate fails every file it
+			// holds until the attempts run out.
+			slog.Warn("imported library from anvil.toml is paused because its flow does not validate; fix the flow in the web UI, then resume the library",
+				"library", library.Name, "flow", library.Flow, "issue", library.PausedFor)
+			continue
+		}
 		slog.Info("imported library from anvil.toml", "library", library.Name, "flow", library.Flow)
 	}
 	for _, skipped := range result.Skipped {

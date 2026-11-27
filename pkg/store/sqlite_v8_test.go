@@ -369,6 +369,54 @@ func TestImportLegacyConfigMarksAnEmptyFileAsDone(t *testing.T) {
 	}
 }
 
+// A library whose imported flow does not validate would fail every file it
+// holds, three attempts each. It is imported paused instead.
+func TestImportLegacyConfigPausesLibrariesOfAnInvalidFlow(t *testing.T) {
+	ctx := context.Background()
+	state := openTestStore(t)
+	// crf_min = 0 is valid TOML and below what libsvtav1 accepts.
+	legacy := legacyConfig(t, `
+[profiles.wide.video]
+crf_min = 0
+
+[profiles.fine.video]
+preset = "4"
+
+[libraries.movies]
+path = "/srv/media/movies"
+profile = "wide"
+
+[libraries.shows]
+path = "/srv/media/shows"
+profile = "wide"
+
+[libraries.music]
+path = "/srv/media/music"
+profile = "fine"
+`)
+	result, err := state.ImportLegacyConfig(ctx, legacy, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	pausedFor := map[string]string{}
+	for _, library := range result.Libraries {
+		pausedFor[library.Name] = library.PausedFor
+	}
+	const issue = "Must be between 1 and 63 for libsvtav1."
+	if len(pausedFor) != 3 || pausedFor["movies"] != issue || pausedFor["shows"] != issue || pausedFor["music"] != "" {
+		t.Fatalf("libraries = %+v", result.Libraries)
+	}
+	for name, wantPaused := range map[string]bool{"movies": true, "shows": true, "music": false} {
+		library, err := state.GetLibrary(ctx, name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if library.Paused != wantPaused {
+			t.Errorf("library %q paused = %t, want %t", name, library.Paused, wantPaused)
+		}
+	}
+}
+
 func TestImportLegacyConfigKeepsAModifiedDefaultProfileApart(t *testing.T) {
 	ctx := context.Background()
 	state := openTestStore(t)

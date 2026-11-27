@@ -34,8 +34,9 @@ type LegacyImportedFlow struct {
 	// existed, as the unmodified default profile does.
 	Created bool
 	// Issues lists what flow validation objects to. The flow is stored all
-	// the same, so the operator can open and fix it; until then its jobs fail
-	// with the first issue as the reason.
+	// the same, so the operator can open and fix it; until then a job that runs
+	// it fails with the first issue as the reason, which is why the libraries
+	// that use it are imported paused.
 	Issues []string
 }
 
@@ -43,6 +44,9 @@ type LegacyImportedFlow struct {
 type LegacyImportedLibrary struct {
 	Name string
 	Flow string
+	// PausedFor is the first validation issue of the library's flow. When it
+	// is set, the library was imported paused.
+	PausedFor string
 }
 
 // ImportLegacyConfig moves the libraries, Arr connections, and referenced
@@ -50,7 +54,11 @@ type LegacyImportedLibrary struct {
 // becomes a flow that resolves to the same profile; the unmodified built-in
 // profile maps onto the seeded default flow. Library names stay as they are,
 // so existing sources and jobs keep belonging to them, and imported libraries
-// are not paused: they were already running.
+// are not paused: they were already running. The exception is a library whose
+// flow does not validate, for example because a rule stricter than the TOML
+// one rejects a setting. Every file of such a library would fail until its
+// attempts ran out, so the library is imported paused and waits for the flow
+// to be fixed.
 //
 // The whole import is one transaction, and it records that it ran even when
 // the file had nothing to import. A second call therefore does nothing, and a
@@ -112,6 +120,11 @@ func (s *SQLiteStore) ImportLegacyConfig(ctx context.Context, legacy config.Lega
 				return LegacyImport{}, fmt.Errorf("import library %q: resolve handoff_path: %w", name, err)
 			}
 		}
+		pausedFor := ""
+		if len(imported.Issues) > 0 {
+			library.Paused = true
+			pausedFor = imported.Issues[0]
+		}
 		_, err := createLibraryTx(ctx, tx, library, now)
 		switch {
 		case errors.Is(err, ErrNameTaken):
@@ -119,7 +132,7 @@ func (s *SQLiteStore) ImportLegacyConfig(ctx context.Context, legacy config.Lega
 		case err != nil:
 			return LegacyImport{}, fmt.Errorf("import library %q: %w", name, err)
 		default:
-			result.Libraries = append(result.Libraries, LegacyImportedLibrary{Name: name, Flow: imported.Flow})
+			result.Libraries = append(result.Libraries, LegacyImportedLibrary{Name: name, Flow: imported.Flow, PausedFor: pausedFor})
 		}
 	}
 
