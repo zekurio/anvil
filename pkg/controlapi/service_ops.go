@@ -208,11 +208,60 @@ func (s Service) ForceOccurrence(ctx context.Context, request control.ForceOccur
 	if !ok {
 		return control.ForceOccurrenceResponse{}, notFoundf("library %q is not configured", name)
 	}
-	relativePath, err := control.CleanRelativePath(request.Path)
+	plan, err := s.Scanner.PlanLibrary(ctx, library)
+	if err != nil {
+		return control.ForceOccurrenceResponse{}, fmt.Errorf("plan library %q for forced occurrence: %w", library.Name, err)
+	}
+	return s.forcePlannedOccurrence(ctx, library, plan, request.Path)
+}
+
+// ForcedOccurrence is the outcome of one path of ForceOccurrences: the job it
+// created, or why it created none.
+type ForcedOccurrence struct {
+	Path     string
+	Response control.ForceOccurrenceResponse
+	Err      error
+}
+
+// ForceOccurrences is ForceOccurrence for many paths of one library. The
+// library is planned once, so requeueing a selection of files walks it once
+// and not once per file. One path's refusal does not stop the others; only a
+// failure to plan the library fails the call.
+func (s Service) ForceOccurrences(ctx context.Context, libraryName string, paths []string) ([]ForcedOccurrence, error) {
+	if err := s.requireStore(); err != nil {
+		return nil, err
+	}
+	if s.Scanner == nil {
+		return nil, newError(control.CodeInternal, "control service scanner is required")
+	}
+	name := strings.TrimSpace(libraryName)
+	library, ok := s.runtimeConfig().FindLibrary(domain.LibraryName(name))
+	if !ok {
+		return nil, notFoundf("library %q is not configured", name)
+	}
+	plan, err := s.Scanner.PlanLibrary(ctx, library)
+	if err != nil {
+		return nil, fmt.Errorf("plan library %q for forced occurrence: %w", library.Name, err)
+	}
+	results := make([]ForcedOccurrence, 0, len(paths))
+	for _, path := range paths {
+		response, err := s.forcePlannedOccurrence(ctx, library, plan, path)
+		results = append(results, ForcedOccurrence{Path: path, Response: response, Err: err})
+		if ctx.Err() != nil {
+			return results, ctx.Err()
+		}
+	}
+	return results, nil
+}
+
+// forcePlannedOccurrence forces one path against a library plan that was just
+// built.
+func (s Service) forcePlannedOccurrence(ctx context.Context, library config.LibraryConfig, plan scanner.LibraryPlan, path string) (control.ForceOccurrenceResponse, error) {
+	relativePath, err := control.CleanRelativePath(path)
 	if err != nil {
 		return control.ForceOccurrenceResponse{}, err
 	}
-	candidate, err := s.forceOccurrenceCandidate(ctx, library, relativePath)
+	candidate, err := forceOccurrenceCandidate(library, plan, relativePath)
 	if err != nil {
 		return control.ForceOccurrenceResponse{}, err
 	}
@@ -256,11 +305,7 @@ func (s Service) ForceOccurrence(ctx context.Context, request control.ForceOccur
 // applies: an ignored, unstable, ambiguous, or non-enqueueable target is a
 // mistake in every case, and enqueueing it anyway is how a half-written
 // download gets encoded.
-func (s Service) forceOccurrenceCandidate(ctx context.Context, library config.LibraryConfig, relativePath string) (scanner.CandidatePlan, error) {
-	plan, err := s.Scanner.PlanLibrary(ctx, library)
-	if err != nil {
-		return scanner.CandidatePlan{}, fmt.Errorf("plan library %q for forced occurrence: %w", library.Name, err)
-	}
+func forceOccurrenceCandidate(library config.LibraryConfig, plan scanner.LibraryPlan, relativePath string) (scanner.CandidatePlan, error) {
 	var target scanner.CandidatePlan
 	found := false
 	for _, candidate := range plan.Candidates {

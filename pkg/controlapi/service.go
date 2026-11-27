@@ -27,6 +27,7 @@ import (
 // uses, and that tests can stand in for parts of it.
 type Store interface {
 	ListJobs(context.Context, store.JobListFilter) ([]store.JobSummary, error)
+	CountJobs(context.Context, store.JobListFilter) (int64, error)
 	GetJobSummary(context.Context, domain.JobID) (store.JobSummary, error)
 	ResolveJobReference(context.Context, string) (domain.Job, error)
 	GetJob(context.Context, domain.JobID) (domain.Job, error)

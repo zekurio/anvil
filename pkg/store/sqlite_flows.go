@@ -220,6 +220,24 @@ func (s *SQLiteStore) DeleteFlow(ctx context.Context, id int64) error {
 	return nil
 }
 
+// FlowNames maps every flow to its name, without loading any graph.
+func (s *SQLiteStore) FlowNames(ctx context.Context) (map[int64]string, error) {
+	names := make(map[int64]string)
+	err := s.eachRow(ctx, "flow names", `SELECT id, name FROM flows`, nil, func(rows *sql.Rows) error {
+		var id int64
+		var name string
+		if err := rows.Scan(&id, &name); err != nil {
+			return err
+		}
+		names[id] = name
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return names, nil
+}
+
 // FlowLibraries maps every flow in use to the names of the libraries assigned
 // to it, sorted.
 func (s *SQLiteStore) FlowLibraries(ctx context.Context) (usage map[int64][]string, err error) {

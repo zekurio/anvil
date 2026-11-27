@@ -1023,5 +1023,5 @@ func filesystemPathRelevant(library filesystemLibrary, path string, isDir bool) 
 	if library.config.GroupsPackages() {
 		return true
 	}
-	return likelyMediaFile(rel)
+	return LikelyMediaFile(rel)
 }

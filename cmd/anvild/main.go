@@ -23,6 +23,7 @@ import (
 	"github.com/zekurio/anvil/pkg/scheduler"
 	"github.com/zekurio/anvil/pkg/staging"
 	"github.com/zekurio/anvil/pkg/store"
+	"github.com/zekurio/anvil/pkg/webapi"
 	"github.com/zekurio/anvil/pkg/worker"
 )
 
@@ -289,7 +290,7 @@ func runDaemon(ctx context.Context, cfg config.Config, opts options) error {
 	var plannerRef atomic.Pointer[scheduler.Scheduler]
 	completion := &scanner.CompletionTracker{}
 	progress := &worker.ProgressTracker{}
-	control := startControlService(serviceCtx, &wg, listener, controlServiceDeps{
+	jobs := newControlService(controlServiceDeps{
 		store:      state,
 		config:     runtimeCfg.Get,
 		startedAt:  startedAt,
@@ -309,7 +310,29 @@ func runDaemon(ctx context.Context, cfg config.Config, opts options) error {
 			return planner.CancelJob(jobID)
 		},
 	})
-	startReloadLoop(serviceCtx, &wg, opts, runtimeCfg, reloadSignals)
+
+	// The web UI comes last of the start-up claims: its address is bound only
+	// once the store is open, recovered, and imported into, and the snapshot it
+	// serves from exists.
+	var webServer *webapi.Server
+	if cfg.Web.Enabled {
+		webServer, err = newWebServer(cfg, webServiceDeps{
+			store: state, jobs: jobs, runtime: runtimeCfg, progress: progress, configPath: opts.configPath,
+		})
+		if err != nil {
+			return err
+		}
+		webListener, err := listenWeb(serviceCtx, cfg)
+		if err != nil {
+			return err
+		}
+		startWebService(serviceCtx, &wg, webListener, webServer, cfg)
+	} else {
+		slog.Info("web UI is disabled (web.enabled = false)")
+	}
+
+	control := startControlService(serviceCtx, &wg, listener, jobs)
+	startReloadLoop(serviceCtx, &wg, opts, runtimeCfg, webServer, reloadSignals)
 	runInitialScan(serviceCtx, runtimeCfg.Get(), state, completion)
 	startRecoveryLoop(serviceCtx, &wg, runtimeCfg.Get, state)
 	planner := startSchedulerLoop(serviceCtx, workerCtx, &wg, runtimeCfg.Get, state, progress)
@@ -471,7 +494,7 @@ func logScanComplete(message string, library string, reason string, result scann
 	slog.Info(message, args...)
 }
 
-func startReloadLoop(ctx context.Context, wg *sync.WaitGroup, opts options, runtimeCfg *runtimeConfig, reloadSignals <-chan os.Signal) {
+func startReloadLoop(ctx context.Context, wg *sync.WaitGroup, opts options, runtimeCfg *runtimeConfig, webServer *webapi.Server, reloadSignals <-chan os.Signal) {
 	wg.Go(func() {
 		for {
 			select {
@@ -488,6 +511,16 @@ func startReloadLoop(ctx context.Context, wg *sync.WaitGroup, opts options, runt
 					slog.Error("config reload rejected", "error", err)
 					continue
 				}
+				// The password is read before anything is applied: a password
+				// file that went missing rejects the whole reload and leaves
+				// the old password in force.
+				password := ""
+				if webServer != nil {
+					if password, err = next.Web.LoadPassword(); err != nil {
+						slog.Error("config reload rejected", "error", err)
+						continue
+					}
+				}
 				if err := configureLogging(next.Daemon.LogLevel); err != nil {
 					slog.Error("config reload rejected", "error", err)
 					continue
@@ -497,6 +530,9 @@ func startReloadLoop(ctx context.Context, wg *sync.WaitGroup, opts options, runt
 				if err := runtimeCfg.Reload(ctx, next); err != nil {
 					slog.Error("config reload failed", "error", err)
 					continue
+				}
+				if webServer != nil {
+					webServer.SetPassword(password)
 				}
 				warnLegacySections(next)
 				reloaded := runtimeCfg.Get()
@@ -701,13 +737,17 @@ func writeUsage(out io.Writer) error {
   anvild preflight [--config PATH] [--library NAME] [--limit N] [--json]
 
 anvild is the service binary: it owns the config it is running, the SQLite
-store, staging, and publication. check-config and preflight stay here because
-both are local, read-only, and useful before a daemon exists.
+store, staging, and publication, and it serves the web UI (web.listen,
+127.0.0.1:8484 unless configured), where libraries, flows, and Arr connections
+are managed. check-config and preflight stay here because both are local,
+read-only, and useful before a daemon exists.
 
 Every live operation is asked of the running daemon with anvilctl:
 
   anvilctl status
   anvilctl version
+  anvilctl libraries
+  anvilctl flows
   anvilctl jobs
   anvilctl show JOB_ID_OR_SLUG
   anvilctl cancel [JOB_ID_OR_SLUG...]

@@ -149,6 +149,11 @@ func importLegacyConfig(ctx context.Context, cfg config.Config, state *store.SQL
 	for _, skipped := range result.Skipped {
 		slog.Warn("anvil.toml entry not imported", "reason", skipped)
 	}
+	// A fresh installation has nothing to import; the store only notes that
+	// the question is settled, and there is nothing to tell the operator.
+	if len(result.Libraries)+len(result.Flows)+len(result.Arrs)+len(result.Skipped) == 0 {
+		return nil
+	}
 	slog.Info("anvil.toml import finished; libraries, flows, and arr connections are now managed in the web UI",
 		"libraries", len(result.Libraries), "flows", len(result.Flows), "arrs", len(result.Arrs))
 	return nil

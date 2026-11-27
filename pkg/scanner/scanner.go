@@ -374,7 +374,7 @@ func (d *discovery) visitDir(rel string) error {
 }
 
 func (d *discovery) visitFile(absPath, rel string, entry fs.DirEntry) error {
-	media := likelyMediaFile(rel)
+	media := LikelyMediaFile(rel)
 	// A pruned file is not part of the library: it is neither a candidate's
 	// residue nor counted towards a package. Pruned media is still reported,
 	// so a scan says what the rules kept out.
@@ -537,7 +537,9 @@ func matchesAny(patterns []string, rel string) (bool, error) {
 	return false, nil
 }
 
-func likelyMediaFile(rel string) bool {
+// LikelyMediaFile reports whether a path has one of the extensions the
+// scanner treats as media. It looks at the name only.
+func LikelyMediaFile(rel string) bool {
 	switch strings.ToLower(path.Ext(rel)) {
 	case ".mkv", ".mp4", ".m4v", ".mov", ".avi", ".webm", ".ts", ".m2ts":
 		return true
@@ -580,7 +582,7 @@ func (s Scanner) ScanPaths(ctx context.Context, library config.LibraryConfig, pa
 			return s.ScanLibrary(ctx, library)
 		}
 		rel = filepath.ToSlash(rel)
-		if !library.GroupsPackages() && !likelyMediaFile(rel) {
+		if !library.GroupsPackages() && !LikelyMediaFile(rel) {
 			return s.ScanLibrary(ctx, library)
 		}
 		source, _, _ := sourceFor(library, rel)

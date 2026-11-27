@@ -28,6 +28,12 @@ func (d Duration) MarshalText() ([]byte, error) {
 	return []byte(compactDuration(d.Duration)), nil
 }
 
+// String renders the duration the way it is written in a config file, such
+// as "30m" rather than "30m0s". time.ParseDuration reads it back.
+func (d Duration) String() string {
+	return compactDuration(d.Duration)
+}
+
 // compactDuration renders whole hours and minutes without their zero
 // components, so defaults read as "30m" instead of "30m0s".
 func compactDuration(value time.Duration) string {
