@@ -562,26 +562,75 @@ type JobFlow struct {
 }
 
 // JobActionRequest selects jobs to cancel or retry. IDs wins; otherwise
-// Library and States select, and at least one of the three must be set.
+// Library and States select, and at least one of the three must be set. A
+// retry without IDs and without States retries failed jobs.
+//
+// Neither action fails as a whole because of one job: every job the action
+// does not apply to is left alone and listed in JobActionResult.Skipped.
 type JobActionRequest struct {
 	IDs     []int64  `json:"ids,omitempty"`
 	Library string   `json:"library,omitempty"`
 	States  []string `json:"states,omitempty"`
 }
 
-// JobActionResult reports a bulk action.
+// JobActionResult reports a cancel, a retry, or a requeue.
 type JobActionResult struct {
+	// Matched counts the jobs, or for a requeue the paths, the request named.
 	Matched int `json:"matched"`
 	// Changed counts jobs the action applied to.
 	Changed int `json:"changed"`
-	// Skipped explains, per job, why the action did not apply.
+	// Skipped explains, per job or file, why the action did not apply.
 	Skipped []JobActionSkip `json:"skipped"`
 }
 
-// JobActionSkip is one job an action left alone.
+// The reasons an action leaves a job or a file alone. Cancel, retry, and
+// requeue share the one vocabulary; the comment says which action answers
+// each.
+const (
+	// SkipNotFound: the job no longer exists (cancel, retry), or the library
+	// holds no media file at the path (requeue).
+	SkipNotFound = "not_found"
+	// SkipFinished: the job already reached a final state (cancel).
+	SkipFinished = "finished"
+	// SkipPublishing: the job's publish is under way and has to complete,
+	// because stopping it could leave the file half replaced (cancel).
+	SkipPublishing = "publishing"
+	// SkipStateChanged: the job left the selected states before the action
+	// reached it (cancel by states).
+	SkipStateChanged = "state_changed"
+	// SkipNotRetryable: the job is queued, running, or complete; only failed,
+	// skipped, and canceled jobs and jobs waiting to retry start again (retry).
+	SkipNotRetryable = "not_retryable"
+	// SkipInputChanged: the file changed or went away after the job was
+	// created, so the job no longer describes it; requeue the file (retry).
+	SkipInputChanged = "input_changed"
+	// SkipActive: the file has a job that is queued or running (requeue).
+	SkipActive = "active"
+	// SkipDenied: the library's rules deny the file (requeue).
+	SkipDenied = "denied"
+	// SkipIgnored: the scanner leaves the file out on its own account: a
+	// sample, download residue, or one of anvil's own outputs (requeue).
+	SkipIgnored = "ignored"
+	// SkipUnstable: the download is still being written (requeue).
+	SkipUnstable = "unstable"
+	// SkipInvalid: the path cannot name one file to queue (requeue).
+	SkipInvalid = "invalid"
+	// SkipError: the daemon failed on this one job or file; Detail says how.
+	SkipError = "error"
+)
+
+// JobActionSkip is one job or file an action left alone.
 type JobActionSkip struct {
-	ID     int64  `json:"id"`
+	// ID is the job. A requeue names files, not jobs, and leaves it zero.
+	ID int64 `json:"id,omitempty"`
+	// Path is the file relative to the library root, set by a requeue.
+	Path string `json:"path,omitempty"`
+	// Reason is one of the Skip constants.
 	Reason string `json:"reason"`
+	// Detail is the daemon's own sentence about this one refusal. Clients
+	// word Reason themselves and show Detail where they have no words: for
+	// SkipError, and for a reason they do not know.
+	Detail string `json:"detail,omitempty"`
 }
 
 // ArrList lists the configured Arr connections, sorted by name.

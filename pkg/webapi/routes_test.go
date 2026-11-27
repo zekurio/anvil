@@ -166,13 +166,29 @@ func TestEveryRoute(t *testing.T) {
 		t.Fatal("the pause did not reach the runtime snapshot")
 	}
 
+	// One job that cannot be canceled or retried never fails the request:
+	// the others are acted on, and it is reported with its reason.
+	reasons := func(result JobActionResult) map[int64]string {
+		byJob := make(map[int64]string, len(result.Skipped))
+		for _, skip := range result.Skipped {
+			if skip.Detail == "" {
+				t.Errorf("skip %+v has no detail", skip)
+			}
+			byJob[skip.ID] = skip.Reason
+		}
+		return byJob
+	}
+	episodeJob := want[JobList](t, f.get("/api/v1/jobs?q=episode"), http.StatusOK).Jobs[0].ID
 	canceled := want[JobActionResult](t, f.send(http.MethodPost, "/api/v1/jobs/cancel", JobActionRequest{IDs: []int64{filmJob, 99999}}), http.StatusOK)
-	if canceled.Matched != 2 || canceled.Changed != 1 || len(canceled.Skipped) != 1 || canceled.Skipped[0].ID != 99999 {
+	if canceled.Matched != 2 || canceled.Changed != 1 || len(canceled.Skipped) != 1 || reasons(canceled)[99999] != SkipNotFound {
 		t.Fatalf("cancel = %+v", canceled)
 	}
-	retried := want[JobActionResult](t, f.send(http.MethodPost, "/api/v1/jobs/retry", JobActionRequest{IDs: []int64{filmJob, 99999}}), http.StatusOK)
-	if retried.Matched != 2 || retried.Changed != 1 || len(retried.Skipped) != 1 {
-		t.Fatalf("retry = %+v", retried)
+	if again := want[JobActionResult](t, f.send(http.MethodPost, "/api/v1/jobs/cancel", JobActionRequest{IDs: []int64{filmJob}}), http.StatusOK); again.Changed != 0 || reasons(again)[filmJob] != SkipFinished {
+		t.Fatalf("cancel of a canceled job = %+v", again)
+	}
+	retried := want[JobActionResult](t, f.send(http.MethodPost, "/api/v1/jobs/retry", JobActionRequest{IDs: []int64{episodeJob, filmJob, 99999}}), http.StatusOK)
+	if got := reasons(retried); retried.Matched != 3 || retried.Changed != 1 || len(retried.Skipped) != 2 || got[episodeJob] != SkipNotRetryable || got[99999] != SkipNotFound {
+		t.Fatalf("retry = %+v, want the canceled job queued and the pending and the missing one reported", retried)
 	}
 	if all := want[JobActionResult](t, f.send(http.MethodPost, "/api/v1/jobs/cancel", JobActionRequest{Library: "movies"}), http.StatusOK); all.Changed != 2 {
 		t.Fatalf("cancel by library = %+v", all)
@@ -184,10 +200,25 @@ func TestEveryRoute(t *testing.T) {
 		t.Fatalf("cancel by state = %+v", all)
 	}
 
-	requeued := want[JobActionResult](t, f.send(http.MethodPost, "/api/v1/libraries/movies/requeue", RequeueRequest{Paths: []string{"film.mkv", "gone.mkv"}}), http.StatusOK)
-	if requeued.Matched != 2 || requeued.Changed != 1 || len(requeued.Skipped) != 1 || !strings.Contains(requeued.Skipped[0].Reason, "gone.mkv") {
+	requeued := want[JobActionResult](t, f.send(http.MethodPost, "/api/v1/libraries/movies/requeue", RequeueRequest{Paths: []string{"film.mkv", "gone.mkv", "../outside.mkv"}}), http.StatusOK)
+	byPath := make(map[string]string)
+	for _, skip := range requeued.Skipped {
+		byPath[skip.Path] = skip.Reason
+	}
+	if requeued.Matched != 3 || requeued.Changed != 1 || len(requeued.Skipped) != 2 || byPath["gone.mkv"] != SkipNotFound || byPath["../outside.mkv"] != SkipInvalid {
 		t.Fatalf("requeue = %+v", requeued)
 	}
+	// The file that was just requeued has a pending job, and a file the rules
+	// deny is not queued by force either.
+	denying := want[Library](t, f.get("/api/v1/libraries/movies"), http.StatusOK).LibraryWrite
+	denying.Rules = []Rule{{Action: "deny", Field: "path", Op: "matches", Value: "show/**"}}
+	want[Library](t, f.send(http.MethodPut, "/api/v1/libraries/movies", denying), http.StatusOK)
+	requeued = want[JobActionResult](t, f.send(http.MethodPost, "/api/v1/libraries/movies/requeue", RequeueRequest{Paths: []string{"film.mkv", "show/episode.mkv"}}), http.StatusOK)
+	if requeued.Changed != 0 || len(requeued.Skipped) != 2 || requeued.Skipped[0].Reason != SkipActive || requeued.Skipped[1].Reason != SkipDenied {
+		t.Fatalf("requeue of a queued and a denied file = %+v", requeued)
+	}
+	denying.Rules = []Rule{}
+	want[Library](t, f.send(http.MethodPut, "/api/v1/libraries/movies", denying), http.StatusOK)
 
 	// Taking it down: everything still in use refuses with a 409 that says
 	// what uses it.

@@ -215,12 +215,49 @@ func (s Service) ForceOccurrence(ctx context.Context, request control.ForceOccur
 	return s.forcePlannedOccurrence(ctx, library, plan, request.Path)
 }
 
+// ForceRefusal names why a path was not requeued. It is stable and
+// machine-readable; the error next to it carries the words.
+type ForceRefusal string
+
+const (
+	// ForceRefusedNotFound: the library holds no media file at the path.
+	ForceRefusedNotFound ForceRefusal = "not_found"
+	// ForceRefusedDenied: the library's rules deny the file.
+	ForceRefusedDenied ForceRefusal = "denied"
+	// ForceRefusedIgnored: the scanner leaves the file out on its own
+	// account: a sample, download residue, or one of Anvil's own outputs.
+	ForceRefusedIgnored ForceRefusal = "ignored"
+	// ForceRefusedUnstable: the download is still being written.
+	ForceRefusedUnstable ForceRefusal = "unstable"
+	// ForceRefusedActive: the file has a job that is queued or running.
+	ForceRefusedActive ForceRefusal = "active"
+	// ForceRefusedInvalid: the path cannot name one file to queue.
+	ForceRefusedInvalid ForceRefusal = "invalid"
+)
+
+// forceRefusedError is a refusal together with the control error that words
+// it, so both front doors report the same sentence.
+type forceRefusedError struct {
+	refusal ForceRefusal
+	err     error
+}
+
+func (e *forceRefusedError) Error() string { return e.err.Error() }
+func (e *forceRefusedError) Unwrap() error { return e.err }
+
+func refused(refusal ForceRefusal, err error) error {
+	return &forceRefusedError{refusal: refusal, err: err}
+}
+
 // ForcedOccurrence is the outcome of one path of ForceOccurrences: the job it
 // created, or why it created none.
 type ForcedOccurrence struct {
 	Path     string
 	Response control.ForceOccurrenceResponse
 	Err      error
+	// Refusal is set when Err is a refusal that concerns this path alone. An
+	// Err without one is a failure of the daemon.
+	Refusal ForceRefusal
 }
 
 // ForceOccurrences is ForceOccurrence for many paths of one library. The
@@ -246,7 +283,12 @@ func (s Service) ForceOccurrences(ctx context.Context, libraryName string, paths
 	results := make([]ForcedOccurrence, 0, len(paths))
 	for _, path := range paths {
 		response, err := s.forcePlannedOccurrence(ctx, library, plan, path)
-		results = append(results, ForcedOccurrence{Path: path, Response: response, Err: err})
+		result := ForcedOccurrence{Path: path, Response: response, Err: err}
+		var refusal *forceRefusedError
+		if errors.As(err, &refusal) {
+			result.Refusal = refusal.refusal
+		}
+		results = append(results, result)
 		if ctx.Err() != nil {
 			return results, ctx.Err()
 		}
@@ -259,7 +301,7 @@ func (s Service) ForceOccurrences(ctx context.Context, libraryName string, paths
 func (s Service) forcePlannedOccurrence(ctx context.Context, library config.LibraryConfig, plan scanner.LibraryPlan, path string) (control.ForceOccurrenceResponse, error) {
 	relativePath, err := control.CleanRelativePath(path)
 	if err != nil {
-		return control.ForceOccurrenceResponse{}, err
+		return control.ForceOccurrenceResponse{}, refused(ForceRefusedInvalid, err)
 	}
 	candidate, err := forceOccurrenceCandidate(library, plan, relativePath)
 	if err != nil {
@@ -285,7 +327,7 @@ func (s Service) forcePlannedOccurrence(ctx context.Context, library config.Libr
 	if errors.Is(err, store.ErrActiveWork) {
 		// Active work is an operator-fixable state, not a daemon failure: the
 		// answer is to wait for or cancel the running job.
-		return control.ForceOccurrenceResponse{}, invalidArgumentf("library %q path %q still has active work; wait for it or cancel it first", library.Name, relativePath)
+		return control.ForceOccurrenceResponse{}, refused(ForceRefusedActive, invalidArgumentf("library %q path %q still has active work; wait for it or cancel it first", library.Name, relativePath))
 	}
 	if err != nil {
 		return control.ForceOccurrenceResponse{}, fmt.Errorf("force occurrence for library %q path %q: %w", library.Name, relativePath, err)
@@ -313,20 +355,29 @@ func forceOccurrenceCandidate(library config.LibraryConfig, plan scanner.Library
 			continue
 		}
 		if found {
-			return scanner.CandidatePlan{}, invalidArgumentf("target %q is ambiguous in library %q", relativePath, library.Name)
+			return scanner.CandidatePlan{}, refused(ForceRefusedInvalid, invalidArgumentf("target %q is ambiguous in library %q", relativePath, library.Name))
 		}
 		target = candidate
 		found = true
 	}
 	switch {
 	case !found:
-		return scanner.CandidatePlan{}, notFoundf("target %q was not found in library %q", relativePath, library.Name)
+		// A scan never looks inside a directory the rules prune, so a file
+		// below one is not among the candidates. It is denied all the same,
+		// and saying "not found" about a file the operator can see would send
+		// them looking for the wrong problem.
+		if rules, err := config.CompileRules(library.Rules, library.RuleFallback); err == nil && rules.Prunes(relativePath, false) {
+			return scanner.CandidatePlan{}, refused(ForceRefusedDenied, invalidArgumentf("target %q is ignored: %s", relativePath, rules.Decide(config.RuleFile{Path: relativePath}).Reason))
+		}
+		return scanner.CandidatePlan{}, refused(ForceRefusedNotFound, notFoundf("target %q was not found in library %q", relativePath, library.Name))
+	case target.Denied:
+		return scanner.CandidatePlan{}, refused(ForceRefusedDenied, invalidArgumentf("target %q is ignored: %s", relativePath, target.IgnoreReason))
 	case target.Ignored:
-		return scanner.CandidatePlan{}, invalidArgumentf("target %q is ignored: %s", relativePath, target.IgnoreReason)
+		return scanner.CandidatePlan{}, refused(ForceRefusedIgnored, invalidArgumentf("target %q is ignored: %s", relativePath, target.IgnoreReason))
 	case target.Unstable:
-		return scanner.CandidatePlan{}, invalidArgumentf("target %q is still unstable", relativePath)
+		return scanner.CandidatePlan{}, refused(ForceRefusedUnstable, invalidArgumentf("target %q is still unstable", relativePath))
 	case !target.Enqueueable:
-		return scanner.CandidatePlan{}, invalidArgumentf("target %q is not enqueueable", relativePath)
+		return scanner.CandidatePlan{}, refused(ForceRefusedInvalid, invalidArgumentf("target %q is not enqueueable", relativePath))
 	}
 	return target, nil
 }

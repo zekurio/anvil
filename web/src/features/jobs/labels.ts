@@ -2,7 +2,7 @@
 // steps, job states, stream-selection reasons, and the reasons an action left
 // a job alone. Anything not listed here is shown as the daemon wrote it.
 
-import type { FileStatus, JobState, PipelineContextDetail, Progress, StreamDecision, StreamSelectionDecision } from "../../api";
+import type { FileStatus, JobActionSkip, JobState, PipelineContextDetail, Progress, SkipReason, StreamDecision, StreamSelectionDecision } from "../../api";
 import { formatBitrate, formatCount, formatPercent, joinDot, plural } from "../../lib/format";
 import type { JobStatus } from "../../ui";
 
@@ -214,26 +214,44 @@ export function qualityOfContext(context: PipelineContextDetail): QualitySummary
   return { headline: joinDot(`CRF ${context.search_crf}`, score ? `${metricLabel(context.search_metric)} ${score.toFixed(1)}` : "") };
 }
 
-/* ---------- reasons an action left a job alone ---------- */
+/* ---------- reasons an action left a job or a file alone (webapi Skip constants) ---------- */
 
-// pkg/store CancelSkipReason, plus what a retry or requeue may answer.
-const SKIP_REASONS: Record<string, string> = {
-  already_terminal: "already finished",
-  publish_in_progress: "being published, which cannot be interrupted",
-  state_changed: "changed state before the action ran",
-  not_found: "no longer exists",
-  already_queued: "already queued",
-  already_complete: "already complete",
-  running: "running",
+type SkipSentence = (count: number, noun: "job" | "file") => string;
+
+const is = (count: number) => (count === 1 ? "is" : "are");
+
+// One sentence per reason of the contract's vocabulary. Each names how many
+// jobs or files it is about, so several can follow each other in one toast.
+const SKIP_SENTENCES: Record<Exclude<SkipReason, "error">, SkipSentence> = {
+  not_found: (count, noun) => `${plural(count, noun)} no longer ${count === 1 ? "exists" : "exist"}.`,
+  finished: (count) => `${plural(count, "job")} had already finished.`,
+  publishing: (count) => `${plural(count, "job")} ${is(count)} publishing ${count === 1 ? "its result" : "their results"}, which cannot be interrupted. ${count === 1 ? "It finishes" : "They finish"} first.`,
+  state_changed: (count) => `${plural(count, "job")} changed state before the action reached ${count === 1 ? "it" : "them"}.`,
+  not_retryable: (count) => `${plural(count, "job")} ${is(count)} queued, running or done. Only failed, skipped and canceled jobs can be retried.`,
+  input_changed: (count) => `The ${count === 1 ? "file of 1 job" : `files of ${formatCount(count)} jobs`} changed or ${count === 1 ? "is" : "are"} gone since the job was created. Queue ${count === 1 ? "the file" : "the files"} again from the library instead.`,
+  active: (count) => `${plural(count, "file")} already ${count === 1 ? "has" : "have"} a queued or running job.`,
+  denied: (count) => `${plural(count, "file")} ${is(count)} denied by the library's rules.`,
+  ignored: (count) => `${plural(count, "file")} ${is(count)} left out by every scan: a sample, download residue, or one of anvil's own outputs.`,
+  unstable: (count) => `${plural(count, "file")} ${is(count)} still being written.`,
+  invalid: (count) => `${plural(count, "path")} ${count === 1 ? "does" : "do"} not name a file of the library.`,
 };
 
-export function skipReason(reason: string): string {
-  return SKIP_REASONS[reason] ?? reason;
-}
-
-/** "2 already finished · 1 being published, which cannot be interrupted" */
-export function skipSummary(skipped: { reason: string }[]): string {
+/**
+ * Why an action left jobs or files alone: one sentence per reason, the most
+ * frequent first. A failure of the daemon and a reason this build does not
+ * know are told in the daemon's own words. `noun` is what the action named:
+ * a requeue names files, a cancel and a retry name jobs.
+ */
+export function skipSummary(skipped: JobActionSkip[], noun: "job" | "file"): string {
   const counts = new Map<string, number>();
-  for (const skip of skipped) counts.set(skip.reason, (counts.get(skip.reason) ?? 0) + 1);
-  return joinDot(...[...counts].map(([reason, count]) => `${formatCount(count)} ${skipReason(reason)}`));
+  const others: string[] = [];
+  for (const skip of skipped) {
+    if (skip.reason in SKIP_SENTENCES) counts.set(skip.reason, (counts.get(skip.reason) ?? 0) + 1);
+    else others.push(skip.detail ?? `${skip.path ?? `Job ${skip.id ?? ""}`}: ${skip.reason}.`);
+  }
+  const worded = [...counts].sort((a, b) => b[1] - a[1]).map(([reason, count]) => SKIP_SENTENCES[reason as Exclude<SkipReason, "error">](count, noun));
+  // Every failure has its own text; a few say enough, and the daemon's log has them all.
+  const shown = others.slice(0, 3);
+  const more = others.length - shown.length;
+  return [...worded, ...shown, more > 0 ? `${plural(more, "more failure")}: see the daemon's log.` : ""].filter(Boolean).join(" ");
 }

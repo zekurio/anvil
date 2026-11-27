@@ -3,7 +3,6 @@ package webapi
 import (
 	"context"
 	"errors"
-	"fmt"
 	"net/http"
 	"path/filepath"
 	"regexp"
@@ -11,6 +10,7 @@ import (
 
 	"github.com/zekurio/anvil/pkg/config"
 	"github.com/zekurio/anvil/pkg/control"
+	"github.com/zekurio/anvil/pkg/controlapi"
 	"github.com/zekurio/anvil/pkg/domain"
 	"github.com/zekurio/anvil/pkg/flow"
 	"github.com/zekurio/anvil/pkg/store"
@@ -378,11 +378,32 @@ func (s *Server) requeueFiles(_ http.ResponseWriter, r *http.Request) (int, any,
 			result.Changed++
 			continue
 		}
-		// A file that was not requeued has no new job, so the entry carries no
-		// job ID and names the file in its reason.
+		// A file that was not requeued has no new job, so the entry names the
+		// file and not a job.
 		result.Skipped = append(result.Skipped, JobActionSkip{
-			Reason: fmt.Sprintf("%s: %s", occurrence.Path, classify(r.Context(), occurrence.Err).message),
+			Path: occurrence.Path, Reason: requeueSkipReason(occurrence.Refusal), Detail: classify(r.Context(), occurrence.Err).message,
 		})
 	}
 	return ok(result)
+}
+
+// requeueSkipReason puts the job service's refusal into the contract's
+// vocabulary. A failure that is not a refusal is the daemon's own.
+func requeueSkipReason(refusal controlapi.ForceRefusal) string {
+	switch refusal {
+	case controlapi.ForceRefusedNotFound:
+		return SkipNotFound
+	case controlapi.ForceRefusedDenied:
+		return SkipDenied
+	case controlapi.ForceRefusedIgnored:
+		return SkipIgnored
+	case controlapi.ForceRefusedUnstable:
+		return SkipUnstable
+	case controlapi.ForceRefusedActive:
+		return SkipActive
+	case controlapi.ForceRefusedInvalid:
+		return SkipInvalid
+	default:
+		return SkipError
+	}
 }

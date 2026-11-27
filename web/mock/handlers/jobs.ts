@@ -76,18 +76,18 @@ export function jobRoutes(router: Router): void {
     return jobDetail(file);
   });
 
-  // Skip reasons are the stable codes of pkg/store (CancelSkipReason).
+  // Skip reasons are the Skip constants of pkg/webapi/types.go.
   router.on("POST", "/jobs/cancel", (ctx): JobActionResult => {
     const result: JobActionResult = { matched: 0, changed: 0, skipped: [] };
     for (const file of select(ctx)) {
       result.matched += 1;
       if (file.status !== "queued" && file.status !== "running") {
-        result.skipped.push({ id: file.job_id ?? 0, reason: "already_terminal" });
+        result.skipped.push({ id: file.job_id ?? 0, reason: "finished", detail: `The job is already ${stateOf(file)}.` });
         continue;
       }
       // A journaled publish must finish: interrupting it could leave the destination half written.
       if (stateOf(file) === "replacing") {
-        result.skipped.push({ id: file.job_id ?? 0, reason: "publish_in_progress" });
+        result.skipped.push({ id: file.job_id ?? 0, reason: "publishing", detail: "The job is publishing its result. Canceling now could leave the file half replaced, so it finishes first." });
         continue;
       }
       file.status = "skipped";
@@ -107,7 +107,7 @@ export function jobRoutes(router: Router): void {
       result.matched += 1;
       const state = stateOf(file);
       if (!RETRYABLE.includes(state)) {
-        result.skipped.push({ id: file.job_id ?? 0, reason: state === "complete" ? "already_complete" : state === "pending" || state === "leased" ? "already_queued" : state === "replacing" ? "publish_in_progress" : "running" });
+        result.skipped.push({ id: file.job_id ?? 0, reason: "not_retryable", detail: `Cannot retry job ${file.job_id} from state "${state}".` });
         continue;
       }
       file.status = "queued";

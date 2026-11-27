@@ -191,10 +191,13 @@ export function libraryRoutes(router: Router): void {
     const result: JobActionResult = { matched: 0, changed: 0, skipped: [] };
     for (const path of paths) {
       const file = db.files.find((f) => f.library === library.name && f.path === path);
-      if (!file) continue;
       result.matched += 1;
+      if (!file) {
+        result.skipped.push({ path, reason: "not_found", detail: `Target "${path}" was not found in library "${library.name}".` });
+        continue;
+      }
       if (file.status === "running" || file.status === "queued") {
-        result.skipped.push({ id: file.job_id ?? 0, reason: file.status === "running" ? "running" : "already_queued" });
+        result.skipped.push({ path, reason: "active", detail: `Library "${library.name}" path "${path}" still has active work; wait for it or cancel it first.` });
         continue;
       }
       queue(file);

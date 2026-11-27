@@ -28,6 +28,25 @@ const inactiveOccurrenceJobError = "input occurrence is no longer current and ac
 
 const defaultCancelReason = "canceled by operator"
 
+// RetryRefusedError reports a job a retry left alone, and which of the two
+// reasons applies. A caller that retries many jobs uses it to tell a refusal,
+// which concerns one job, from a failure of the store.
+type RetryRefusedError struct {
+	JobID domain.JobID
+	State domain.JobState
+	// InputChanged is set when the state would allow a retry but the file the
+	// job was created for has changed or gone since: its occurrence is no
+	// longer current and active. Otherwise the state itself refuses.
+	InputChanged bool
+}
+
+func (e *RetryRefusedError) Error() string {
+	if e.InputChanged {
+		return fmt.Sprintf("cannot retry job %d: %s", e.JobID, inactiveOccurrenceJobError)
+	}
+	return fmt.Sprintf("cannot retry job %d from state %q", e.JobID, e.State)
+}
+
 func (s *SQLiteStore) EnqueueJob(ctx context.Context, input EnqueueJobInput) (domain.Job, bool, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -63,14 +82,14 @@ func retryJobTx(ctx context.Context, tx *sql.Tx, id domain.JobID, now time.Time)
 	switch job.State {
 	case domain.JobStateFailed, domain.JobStateSkipped, domain.JobStateCanceled, domain.JobStateRetrying:
 	default:
-		return domain.Job{}, fmt.Errorf("cannot retry job %d from state %q", id, job.State)
+		return domain.Job{}, &RetryRefusedError{JobID: id, State: job.State}
 	}
 	active, err := jobTargetActiveTx(ctx, tx, id)
 	if err != nil {
 		return domain.Job{}, err
 	}
 	if !active {
-		return domain.Job{}, fmt.Errorf("cannot retry job %d: %s", id, inactiveOccurrenceJobError)
+		return domain.Job{}, &RetryRefusedError{JobID: id, State: job.State, InputChanged: true}
 	}
 
 	_, err = tx.ExecContext(ctx, `

@@ -206,20 +206,22 @@ func actionRequest(r *http.Request) (JobActionRequest, []domain.JobState, error)
 	return request, states, nil
 }
 
-// cancelSkipReason words the store's reason for leaving a job alone.
-func cancelSkipReason(reason, state string) string {
+// cancelSkip reports a job a cancel left alone in the contract's vocabulary.
+func cancelSkip(id int64, reason, state string) JobActionSkip {
+	skip := JobActionSkip{ID: id}
 	switch store.CancelSkipReason(reason) {
 	case store.CancelSkipAlreadyTerminal:
-		return fmt.Sprintf("The job is already %s.", state)
+		skip.Reason, skip.Detail = SkipFinished, fmt.Sprintf("The job is already %s.", state)
 	case store.CancelSkipPublishInFlight:
-		return "The job is publishing its result. Canceling now could leave the file half replaced, so it finishes first."
+		skip.Reason, skip.Detail = SkipPublishing, "The job is publishing its result. Canceling now could leave the file half replaced, so it finishes first."
 	case store.CancelSkipStateChanged:
-		return fmt.Sprintf("The job moved to %s in the meantime.", state)
+		skip.Reason, skip.Detail = SkipStateChanged, fmt.Sprintf("The job moved to %s in the meantime.", state)
 	case store.CancelSkipMissing:
-		return "The job no longer exists."
+		skip.Reason, skip.Detail = SkipNotFound, "The job no longer exists."
 	default:
-		return sentence(strings.ReplaceAll(reason, "_", " "))
+		skip.Reason, skip.Detail = SkipError, sentence(strings.ReplaceAll(reason, "_", " "))
 	}
+	return skip
 }
 
 func (s *Server) cancelJobs(_ http.ResponseWriter, r *http.Request) (int, any, error) {
@@ -236,7 +238,7 @@ func (s *Server) cancelJobs(_ http.ResponseWriter, r *http.Request) (int, any, e
 		for _, id := range request.IDs {
 			if _, err := s.Store.GetJob(r.Context(), domain.JobID(id)); errors.Is(err, store.ErrNotFound) {
 				result.Matched++
-				result.Skipped = append(result.Skipped, JobActionSkip{ID: id, Reason: "The job no longer exists."})
+				result.Skipped = append(result.Skipped, cancelSkip(id, string(store.CancelSkipMissing), ""))
 				continue
 			} else if err != nil {
 				return fail(err)
@@ -257,7 +259,7 @@ func (s *Server) cancelJobs(_ http.ResponseWriter, r *http.Request) (int, any, e
 	result.Changed = canceled.Canceled
 	for _, job := range canceled.Jobs {
 		if !job.Canceled {
-			result.Skipped = append(result.Skipped, JobActionSkip{ID: job.ID, Reason: cancelSkipReason(job.SkipReason, job.State)})
+			result.Skipped = append(result.Skipped, cancelSkip(job.ID, job.SkipReason, job.State))
 		}
 	}
 	return ok(result)
@@ -308,18 +310,25 @@ func (s *Server) retryJobs(_ http.ResponseWriter, r *http.Request) (int, any, er
 		case r.Context().Err() != nil:
 			return fail(r.Context().Err())
 		default:
-			result.Skipped = append(result.Skipped, JobActionSkip{ID: id, Reason: retrySkipReason(r, err)})
+			result.Skipped = append(result.Skipped, retrySkip(r, id, err))
 		}
 	}
 	return ok(result)
 }
 
-// retrySkipReason words why one job was not retried. The store's refusals
-// ("cannot retry job 12 from state ...") are written for the operator already.
-func retrySkipReason(r *http.Request, err error) string {
+// retrySkip reports a job a retry left alone. The store's refusals ("cannot
+// retry job 12 from state ...") are written for the operator already.
+func retrySkip(r *http.Request, id int64, err error) JobActionSkip {
 	failure := classify(r.Context(), err)
-	if failure.status == http.StatusNotFound {
-		return "The job no longer exists."
+	skip := JobActionSkip{ID: id, Reason: SkipError, Detail: failure.message}
+	var refusal *store.RetryRefusedError
+	switch {
+	case errors.As(err, &refusal) && refusal.InputChanged:
+		skip.Reason = SkipInputChanged
+	case errors.As(err, &refusal):
+		skip.Reason = SkipNotRetryable
+	case failure.status == http.StatusNotFound:
+		skip.Reason, skip.Detail = SkipNotFound, "The job no longer exists."
 	}
-	return failure.message
+	return skip
 }

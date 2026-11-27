@@ -757,22 +757,53 @@ export interface JobFlow {
   plan: string[];
 }
 
-/** ids wins; otherwise library and states select. At least one must be set. */
+/**
+ * ids wins; otherwise library and states select. At least one must be set. A
+ * retry without ids and without states retries failed jobs. Neither action
+ * fails as a whole because of one job: what it does not apply to is left
+ * alone and listed in JobActionResult.skipped.
+ */
 export interface JobActionRequest {
   ids?: number[];
   library?: string;
   states?: JobState[];
 }
 
+/** The answer to a cancel, a retry, or a requeue. */
 export interface JobActionResult {
+  /** The jobs, or for a requeue the paths, the request named. */
   matched: number;
   changed: number;
   skipped: JobActionSkip[];
 }
 
+/**
+ * Why an action left a job or a file alone. Cancel, retry and requeue share
+ * the one vocabulary:
+ *   not_found      the job no longer exists (cancel, retry); no media file at the path (requeue)
+ *   finished       the job already reached a final state (cancel)
+ *   publishing     its publish is under way and has to complete (cancel)
+ *   state_changed  the job left the selected states before the action reached it (cancel by states)
+ *   not_retryable  the job is queued, running or complete (retry)
+ *   input_changed  the file changed or went away after the job was created (retry)
+ *   active         the file has a queued or running job (requeue)
+ *   denied         the library's rules deny the file (requeue)
+ *   ignored        the scanner leaves the file out: a sample, download residue, one of anvil's outputs (requeue)
+ *   unstable       the download is still being written (requeue)
+ *   invalid        the path cannot name one file to queue (requeue)
+ *   error          the daemon failed on this one job or file; detail says how
+ */
+export type SkipReason = "not_found" | "finished" | "publishing" | "state_changed" | "not_retryable" | "input_changed" | "active" | "denied" | "ignored" | "unstable" | "invalid" | "error";
+
+/** One job or file an action left alone. */
 export interface JobActionSkip {
-  id: number;
-  reason: string;
+  /** The job. A requeue names files, not jobs, and leaves it out. */
+  id?: number;
+  /** The file relative to the library root, set by a requeue. */
+  path?: string;
+  reason: SkipReason;
+  /** The daemon's own sentence about this one refusal, for "error" and for a reason the UI has no words for. */
+  detail?: string;
 }
 
 export interface ArrList {

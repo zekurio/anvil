@@ -32,7 +32,7 @@ const FAILED: Record<JobActionKind, string> = {
 export async function jobAction(kind: JobActionKind, work: () => Promise<JobActionResult>): Promise<JobActionResult | undefined> {
   const result = await run(work, { invalidate: [keys.jobs, keys.libraries, keys.status], failure: FAILED[kind] });
   if (!result) return undefined;
-  const description = result.skipped.length > 0 ? `Left alone: ${skipSummary(result.skipped)}.` : undefined;
+  const description = result.skipped.length > 0 ? skipSummary(result.skipped, kind === "requeue" ? "file" : "job") : undefined;
   if (result.changed > 0) toast.success(CHANGED[kind](result.changed), { description });
   else toast.warning(UNCHANGED[kind], { description: description ?? "Nothing matched the selection." });
   return result;

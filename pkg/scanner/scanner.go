@@ -66,8 +66,12 @@ type CandidatePlan struct {
 	SourceModTime       time.Time
 	Ignored             bool
 	IgnoreReason        string
-	Unstable            bool
-	Enqueueable         bool
+	// Denied is set on an ignored candidate the library's rules keep out, as
+	// opposed to one the scanner leaves alone on its own account: a sample,
+	// download residue, or one of Anvil's own outputs.
+	Denied      bool
+	Unstable    bool
+	Enqueueable bool
 }
 
 func (s Scanner) Scan(ctx context.Context, cfg config.Config) (ScanResult, error) {
@@ -171,6 +175,7 @@ func (s Scanner) planPaths(ctx context.Context, library config.LibraryConfig, ro
 			SourceModTime:       stat.modTime.UTC(),
 			Ignored:             candidate.ignored,
 			IgnoreReason:        candidate.ignoreReason,
+			Denied:              candidate.denied,
 			Unstable:            unstable,
 			Enqueueable:         enqueueable,
 		})
@@ -242,6 +247,7 @@ type candidate struct {
 	info                fs.FileInfo
 	ignored             bool
 	ignoreReason        string
+	denied              bool
 }
 
 type sourceStat struct {
@@ -382,7 +388,12 @@ func (d *discovery) visitFile(absPath, rel string, entry fs.DirEntry) error {
 		if !media {
 			return nil
 		}
-		return d.skipEntry(absPath, rel, entry, d.rules.Decide(config.RuleFile{Path: rel}).Reason)
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		d.deny(absPath, rel, info, d.rules.Decide(config.RuleFile{Path: rel}).Reason)
+		return nil
 	}
 	ignorable, err := matchesAny(d.ignorable, rel)
 	if err != nil {
@@ -423,7 +434,7 @@ func (d *discovery) visitFile(absPath, rel string, entry fs.DirEntry) error {
 	}
 	recordSourceStat(d.stats, d.library, absPath, rel, info, d.completion)
 	if decision := d.rules.Decide(config.RuleFile{Path: rel, SizeBytes: info.Size()}); !decision.Allowed {
-		d.skip(absPath, rel, info, decision.Reason)
+		d.deny(absPath, rel, info, decision.Reason)
 		return nil
 	}
 	if classifyMediaAsset(rel) == domain.MediaAssetRoleSample {
@@ -448,6 +459,12 @@ func (d *discovery) skipEntry(absPath, rel string, entry fs.DirEntry, reason str
 func (d *discovery) skip(absPath, rel string, info fs.FileInfo, reason string) {
 	d.candidates = append(d.candidates, buildCandidate(d.library, absPath, rel, info, true, reason))
 	d.skipped++
+}
+
+// deny records a media file the library's rules keep out.
+func (d *discovery) deny(absPath, rel string, info fs.FileInfo, reason string) {
+	d.skip(absPath, rel, info, reason)
+	d.candidates[len(d.candidates)-1].denied = true
 }
 
 func buildCandidate(library config.LibraryConfig, absPath string, rel string, info fs.FileInfo, ignored bool, ignoreReason string) candidate {
