@@ -58,6 +58,8 @@ type nodeDef struct {
 	summary func(o options) string
 	// check reports option problems the field definitions cannot express.
 	check func(o options) []optionProblem
+	// warn reports options that are valid but will not do what they say.
+	warn func(o options) []optionProblem
 	// test evaluates a condition; reason completes "... → true (reason)".
 	test func(o options, facts Facts) (ok bool, reason string)
 	// apply writes the one part of the profile this node type owns.

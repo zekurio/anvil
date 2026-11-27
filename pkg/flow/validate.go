@@ -10,6 +10,8 @@ import (
 // Evaluate, Summaries, and Canonical all need.
 type analysis struct {
 	issues []Issue
+	// optionWarnings are held back until the errors are listed.
+	optionWarnings []Issue
 	// nodes holds the first node of every non-empty ID.
 	nodes map[string]Node
 	// options holds the decoded options of every node of a known type.
@@ -60,6 +62,7 @@ func analyze(g Graph) analysis {
 	a.readEdges(g)
 	a.findCycles(g)
 	reached := a.findDanglingPorts()
+	a.issues = append(a.issues, a.optionWarnings...)
 	if a.input != "" {
 		for _, node := range g.Nodes {
 			if _, unique := a.nodes[node.ID]; unique && !reached[node.ID] {
@@ -92,11 +95,16 @@ func (a *analysis) readNodes(g Graph) {
 			a.errorf(node.ID, "", "%q is not a node type Anvil knows. Replace this node.", node.Type)
 			continue
 		}
-		decoded, problems := decodeOptions(def, node.Options)
+		decoded, problems, warnings := decodeOptionsWithWarnings(def, node.Options)
 		a.options[node.ID] = decoded
 		a.targets[node.ID] = make([]string, len(def.Outputs))
 		for _, problem := range problems {
 			a.errorf(node.ID, problem.Field, "%s", problem.Message)
+		}
+		for _, warning := range warnings {
+			a.optionWarnings = append(a.optionWarnings, Issue{
+				Severity: SeverityWarning, NodeID: node.ID, Field: warning.Field, Message: warning.Message,
+			})
 		}
 		if node.Type == typeInput {
 			inputs = append(inputs, node.ID)

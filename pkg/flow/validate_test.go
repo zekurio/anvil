@@ -439,6 +439,46 @@ func TestValidateOptions(t *testing.T) {
 			want:     []Issue{problem("n", "target", `Must be set when metric is "xpsnr" (typical targets are 35-50).`)},
 		},
 		{
+			name:     "fixed CRF outside what the encoder accepts",
+			nodeType: typeVideoEncode,
+			options:  `{"codec": "hevc", "quality_mode": "fixed", "crf": 60}`,
+			want:     []Issue{problem("n", "crf", "Must be between 0 and 51 for libx265.")},
+		},
+		{
+			name:     "fixed CRF of zero reads as unset in libsvtav1",
+			nodeType: typeVideoEncode,
+			options:  `{"quality_mode": "fixed", "crf": 0}`,
+			want:     []Issue{problem("n", "crf", "Must be between 1 and 63 for libsvtav1.")},
+		},
+		{
+			name:     "search range outside what the encoder accepts",
+			nodeType: typeVideoEncode,
+			options:  `{"codec": "h264", "accelerator": "qsv", "crf_min": 0, "crf_max": 60}`,
+			want: []Issue{
+				problem("n", "crf_min", "Must be between 1 and 51 for h264_qsv."),
+				problem("n", "crf_max", "Must be between 1 and 51 for h264_qsv."),
+			},
+		},
+		{
+			name:     "hidden search range is not checked in fixed mode",
+			nodeType: typeVideoEncode,
+			options:  `{"codec": "hevc", "quality_mode": "fixed", "crf": 22, "crf_max": 200}`,
+		},
+		{
+			name:     "xpsnr target no encode reaches",
+			nodeType: typeVideoEncode,
+			options:  `{"metric": "xpsnr", "target": 95}`,
+			want: []Issue{{
+				Severity: SeverityWarning, NodeID: "n", Field: "target",
+				Message: "An XPSNR target of 95 dB is higher than encodes reach, so no CRF will meet it. Typical targets are 35 to 50.",
+			}},
+		},
+		{
+			name:     "plausible xpsnr target",
+			nodeType: typeVideoEncode,
+			options:  `{"metric": "xpsnr", "target": 42}`,
+		},
+		{
 			name:     "config rule: sample length is positive",
 			nodeType: typeVideoEncode,
 			options:  `{"sample_duration": "0s"}`,

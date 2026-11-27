@@ -204,7 +204,7 @@ func videoEncodeNode() nodeDef {
 		},
 		check: func(o options) []optionProblem {
 			settings := encodeSettings(o)
-			return ruleProblems(config.VideoConfig{
+			problems := ruleProblems(config.VideoConfig{
 				Codec:             settings.Codec,
 				Accelerator:       settings.Accelerator,
 				Preset:            settings.Preset,
@@ -218,6 +218,18 @@ func videoEncodeNode() nodeDef {
 				MinSavingsPercent: settings.MinSavingsPercent,
 				FFmpegArgs:        settings.FFmpegArgs,
 			}.Problems())
+			return append(problems, qualityRangeProblems(settings)...)
+		},
+		warn: func(o options) []optionProblem {
+			settings := encodeSettings(o)
+			if settings.QualityMode == domain.VideoQualityFixed || settings.Metric != domain.QualityMetricXPSNR || settings.Target <= xpsnrPlausibleMax {
+				return nil
+			}
+			return []optionProblem{{
+				Field: "target",
+				Message: fmt.Sprintf("An XPSNR target of %s dB is higher than encodes reach, so no CRF will meet it. Typical targets are 35 to 50.",
+					formatNumber(settings.Target)),
+			}}
 		},
 		summary: func(o options) string {
 			settings := encodeSettings(o)
@@ -236,6 +248,41 @@ func videoEncodeNode() nodeDef {
 			profile.Video = encodeSettings(o)
 		},
 	}
+}
+
+// xpsnrPlausibleMax is the highest XPSNR target, in dB, that is not flagged.
+// Visually lossless encodes score around 50; the field still accepts up to
+// 100 because the VMAF scale shares it.
+const xpsnrPlausibleMax = 60
+
+// qualityRangeProblems checks the CRF values in effect against what the
+// encoder the node resolves to accepts. Outside that range an encoder either
+// refuses to start or silently substitutes its default.
+func qualityRangeProblems(settings domain.VideoProfile) []optionProblem {
+	if !slices.Contains([]string{"av1", "hevc", "h264"}, settings.Codec) {
+		// The codec already has its own problem, and no encoder to ask.
+		return nil
+	}
+	encoder := video.ResolveEncoder(settings.Codec, settings.Accelerator)
+	lowest, highest := video.QualityRange(encoder)
+	fields := []struct {
+		key   string
+		value int
+	}{{"crf_min", settings.CRFMin}, {"crf_max", settings.CRFMax}}
+	if settings.QualityMode == domain.VideoQualityFixed {
+		fields = fields[:1]
+		fields[0].key, fields[0].value = "crf", settings.CRF
+	}
+	var problems []optionProblem
+	for _, field := range fields {
+		if field.value < lowest || field.value > highest {
+			problems = append(problems, optionProblem{
+				Field:   field.key,
+				Message: fmt.Sprintf("Must be between %d and %d for %s.", lowest, highest, encoder),
+			})
+		}
+	}
+	return problems
 }
 
 // encodeSettings reads a video.encode node. Search mode leaves QualityMode

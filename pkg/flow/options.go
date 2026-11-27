@@ -57,6 +57,13 @@ type optionProblem struct {
 // catalog order, which lets VisibleWhen look at the fields before it: a hidden
 // field is not in effect, so its stored value is neither checked nor used.
 func decodeOptions(def nodeDef, raw map[string]any) (options, []optionProblem) {
+	decoded, problems, _ := decodeOptionsWithWarnings(def, raw)
+	return decoded, problems
+}
+
+// decodeOptionsWithWarnings also returns what the node type's warn hook has
+// to say. A field that already has a problem is not warned about as well.
+func decodeOptionsWithWarnings(def nodeDef, raw map[string]any) (options, []optionProblem, []optionProblem) {
 	decoded := options{}
 	var problems []optionProblem
 	flagged := map[string]bool{}
@@ -99,7 +106,15 @@ func decodeOptions(def nodeDef, raw map[string]any) (options, []optionProblem) {
 			Message: fmt.Sprintf("%q is not an option of this node. Remove it.", key),
 		})
 	}
-	return decoded, problems
+	var warnings []optionProblem
+	if def.warn != nil {
+		for _, warning := range def.warn(decoded) {
+			if !slices.ContainsFunc(problems, func(problem optionProblem) bool { return problem.Field == warning.Field }) {
+				warnings = append(warnings, warning)
+			}
+		}
+	}
+	return decoded, problems, warnings
 }
 
 func visible(field Field, decoded options) bool {
