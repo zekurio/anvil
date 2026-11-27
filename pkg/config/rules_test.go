@@ -1,6 +1,9 @@
 package config
 
 import (
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -300,5 +303,39 @@ func TestWebValidation(t *testing.T) {
 	}
 	if cfg := Default(); !cfg.Web.Enabled || cfg.Web.Listen != DefaultWebListen || cfg.Web.AuthRequired() {
 		t.Errorf("default web config = %+v", cfg.Web)
+	}
+}
+
+// TestWebListenTable runs the addresses of testdata/web_listen.json, which
+// the NixOS module's mirror of this rule (nix/modules/web-listen.nix) is
+// checked against as well. The two must agree: the module asserts at
+// evaluation time what the daemon refuses at start.
+func TestWebListenTable(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("testdata", "web_listen.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cases []struct {
+		Listen   string `json:"listen"`
+		Valid    bool   `json:"valid"`
+		Loopback bool   `json:"loopback"`
+	}
+	if err := json.Unmarshal(data, &cases); err != nil {
+		t.Fatal(err)
+	}
+	if len(cases) < 40 {
+		t.Fatalf("only %d cases", len(cases))
+	}
+	for _, c := range cases {
+		var p problems
+		WebConfig{Enabled: true, Listen: c.Listen}.validate(&p)
+		joined := strings.Join(p, "\n")
+		valid := !strings.Contains(joined, "is invalid") && !strings.Contains(joined, "invalid port")
+		// Without a password, the one remaining problem of a valid address
+		// is that other machines can reach it.
+		loopback := valid && len(p) == 0
+		if valid != c.Valid || loopback != c.Loopback {
+			t.Errorf("%q: valid %v, loopback %v, want valid %v, loopback %v (%s)", c.Listen, valid, loopback, c.Valid, c.Loopback, joined)
+		}
 	}
 }

@@ -40,10 +40,11 @@ let
       password_file = toString cfg.web.passwordFile;
     };
   web = webDefaults // (cfg.settings.web or { });
-  webListen = builtins.match "(.*):([0-9]+)" web.listen;
-  webHost = lib.removeSuffix "]" (lib.removePrefix "[" (builtins.elemAt webListen 0));
-  webPort = lib.toIntBase10 (builtins.elemAt webListen 1);
-  webLoopback = webHost == "localhost" || webHost == "::1" || lib.hasPrefix "127." webHost;
+  # web-listen.nix reads the address exactly as the daemon does; see there.
+  listenAddress = import ./web-listen.nix { inherit lib; };
+  webListen = listenAddress.parse web.listen;
+  webPort = webListen.port;
+  webLoopback = listenAddress.isLoopback webListen.host;
   webHasPassword = (web.password_file or "") != "" || (web.password or "") != "";
 
   libraries = cfg.settings.libraries or { };
@@ -356,7 +357,8 @@ in
       {
         assertion = !web.enabled || webListen != null;
         message = ''
-          The web UI listen address "${web.listen}" is not host:port.
+          The web UI listen address "${web.listen}" is not host:port with a
+          port from 0 to 65535 (an IPv6 host needs brackets: "[::1]:8484").
           Set services.anvil.web.listenAddress and web.port, or fix
           services.anvil.settings.web.listen.
         '';
