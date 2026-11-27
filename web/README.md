@@ -25,6 +25,11 @@ restarts.
 `/_dev/components` shows every component in both themes. It exists in dev
 builds only.
 
+To see the flow editor handle a save conflict, open a flow, then run
+`curl -X POST localhost:5173/api/v1/flows/<id>/_touch`: the mock bumps the
+flow's revision as if someone else had saved it, and the next save answers 409.
+A second tab that saves the same flow does the same.
+
 ## Layout
 
 ```
