@@ -194,13 +194,25 @@ func Open(ctx context.Context, path string) (*SQLiteStore, error) {
 	db.SetMaxOpenConns(1)
 
 	store := &SQLiteStore{db: db, workAvailable: make(chan struct{}, 1)}
+	if err := db.PingContext(ctx); err != nil {
+		return nil, closeDBOnError(db, fmt.Errorf("connect sqlite store: %w", err))
+	}
+	if err := secureStoreFiles(path); err != nil {
+		return nil, closeDBOnError(db, err)
+	}
 	if err := store.configure(ctx); err != nil {
+		return nil, closeDBOnError(db, err)
+	}
+	if err := secureStoreFiles(path); err != nil {
 		return nil, closeDBOnError(db, err)
 	}
 	if err := store.migrate(ctx); err != nil {
 		return nil, closeDBOnError(db, err)
 	}
 	if err := store.seedDefaultFlow(ctx); err != nil {
+		return nil, closeDBOnError(db, err)
+	}
+	if err := secureStoreFiles(path); err != nil {
 		return nil, closeDBOnError(db, err)
 	}
 
