@@ -272,6 +272,27 @@ func TestMediaRootsConfineBrowsingAndLibraryWrites(t *testing.T) {
 	}
 }
 
+// TestLibraryOutsideMediaRootsCanStillBePaused covers a library the legacy
+// import stored outside the media roots: it stays editable where it is, and
+// only moving it is held to the roots.
+func TestLibraryOutsideMediaRootsCanStillBePaused(t *testing.T) {
+	f := newFixture(t, "", nil)
+	f.mediaLibrary("movies", f.defaultFlow().ID)
+	roots := t.TempDir()
+	f.mu.Lock()
+	f.cfg.Daemon.MediaRoots = []string{roots}
+	f.mu.Unlock()
+
+	write := LibraryWrite{Name: "movies", Kind: "media", Path: f.media, FlowID: f.defaultFlow().ID, Paused: true}
+	if got := want[Library](t, f.send(http.MethodPut, "/api/v1/libraries/movies", write), http.StatusOK); !got.Paused {
+		t.Fatalf("library = %+v, want it paused", got)
+	}
+	write.Path = t.TempDir()
+	if problem := wantError(t, f.send(http.MethodPut, "/api/v1/libraries/movies", write), http.StatusBadRequest, CodeInvalid); problem.Field != "path" {
+		t.Fatalf("moved library error = %+v", problem)
+	}
+}
+
 // TestListsAreNeverNull checks the empty answers of an empty daemon: a UI
 // that maps over a list must never meet null.
 func TestListsAreNeverNull(t *testing.T) {

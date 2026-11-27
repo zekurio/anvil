@@ -107,8 +107,18 @@ func (s *Server) checkLibrary(ctx context.Context, library config.LibraryConfig,
 		return err
 	}
 	if roots := s.Config().Daemon.MediaRoots; len(roots) > 0 {
-		for _, candidate := range []struct{ field, path string }{{"path", library.Path}, {"download.handoff_path", library.Download.HandoffPath}} {
-			if candidate.path == "" {
+		// A folder the update leaves alone is not checked again. The one-time
+		// import of anvil.toml may store a library outside the media roots,
+		// and it must stay possible to pause it or give it another flow.
+		kept := config.LibraryConfig{}
+		if current != nil {
+			kept = current.LibraryConfig
+		}
+		for _, candidate := range []struct{ field, path, stored string }{
+			{"path", library.Path, kept.Path},
+			{"download.handoff_path", library.Download.HandoffPath, kept.Download.HandoffPath},
+		} {
+			if candidate.path == "" || candidate.path == candidate.stored {
 				continue
 			}
 			allowed, err := pathWithinMediaRoots(candidate.path, roots)
