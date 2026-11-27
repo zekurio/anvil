@@ -6,6 +6,12 @@
 # listens on http://127.0.0.1:8484 and keeps its state under the system
 # temporary directory.
 #
+# The [daemon] keys from worker_count through log_level can also be changed on
+# the web UI's Settings page, which saves them in the store. A key written in
+# this file pins it: the UI shows it read-only, and only this file changes it.
+# Leave a key out to manage it in the UI. media_roots, the paths, and all of
+# [web] are file-only.
+#
 # The [daemon] and [web] sections show defaults. Machine-specific daemon paths
 # and CPU counts use stable examples.
 
@@ -24,7 +30,7 @@ scheduler_interval = "5s" # Queue planning cadence; duration > 0.
 lease_duration = "30m" # Time before an abandoned job lease is recoverable; duration > 0.
 shutdown_policy = "drain" # Let active jobs finish or cancel them; "drain" or "cancel".
 shutdown_timeout = "0s" # Force cancellation after this graceful wait; "0s" waits indefinitely; duration >= 0.
-staging_cleanup_age = "0s" # Remove abandoned staging older than this; "0s" disables cleanup; duration >= 0.
+staging_cleanup_age = "0s" # Remove abandoned staging older than this when the daemon starts, and by default in anvilctl staging cleanup; "0s" disables cleanup; duration >= 0.
 log_level = "info" # Keep logs useful without excessive detail; "debug", "info", "warn", or "error".
 
 [web]

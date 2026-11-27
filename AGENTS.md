@@ -21,11 +21,15 @@
   registers itself in `worker.DefaultPipeline`. `pkg/flowstep` is the `flow`
   block: it sits right after `probe`, sets `job.Profile`, and every later
   block reads that.
-- The daemon's loops read libraries and Arr connections from a runtime
-  snapshot, not from the store. `cmd/anvild/runtime.go` projects the stored
-  rows into a `config.Config` next to the `[daemon]` and `[web]` settings. The
-  web API refreshes it after every write it persists, `SIGHUP` reloads it, and
-  both wake the scanner and scheduler through `Reconfigured` channels. Flows
+- The daemon's loops read libraries, Arr connections, and daemon settings
+  from a runtime snapshot, not from the store. `cmd/anvild/runtime.go` merges
+  the `[daemon]` values saved in the web UI into `anvil.toml` as last loaded
+  (`config.Config.WithDaemonOverrides`), then projects the stored rows into
+  the same `config.Config`. Every rebuild merges the same way: the web API
+  refreshes after every write it persists, `SIGHUP` loads the file again and
+  merges the store back in (a reload never reverts a UI edit), start-up merges
+  right after the store opens, and all of them set the live log level and
+  wake the scanner and scheduler through `Reconfigured` channels. Flows
   are not in the snapshot: the worker reads the library's flow from the store
   when an attempt starts and records it on the attempt.
 - The web UI lives in `web/` (SolidJS 2, TypeScript, Vite). `npm run build`
@@ -191,7 +195,15 @@ process output goes to per-attempt log files plus artifact events
 - `pkg/config` is the only place raw TOML is parsed. `Load` decodes into the
   pointer-bearing raw structs in `pkg/config/raw.go` and `resolve.go` fills
   defaults in one pass; never reparse config elsewhere. At runtime only
-  `[daemon]` and `[web]` count. `[libraries]`, `[profiles]`, and `[arrs]`
+  `[daemon]` and `[web]` count, and the `[daemon]` keys of
+  `config.DaemonKeys` (`worker_count` through `log_level`) may also be saved
+  in the web UI. A key the file sets pins it: `Load` records it in
+  `Config.DaemonSources`, `anvild` adds the keys `--shutdown-policy` and
+  `--shutdown-timeout` override, and the web API refuses a value for a pinned
+  key. Precedence is option, file, store, default.
+  `DaemonOverrides.Problems` and `Validate` share one set of daemon rules.
+  `media_roots`, the paths, and `[web]` stay file-only: a signed-in browser
+  must never widen its own confinement. `[libraries]`, `[profiles]`, and `[arrs]`
   decode into `Config.Legacy` and are import-only: `store.ImportLegacyConfig`
   reads them once, and nothing at runtime may look at them.
   `Config.Libraries` and `Config.Arrs` are the snapshot of the store, which
@@ -225,7 +237,10 @@ process output goes to per-attempt log files plus artifact events
 - Schema version 8 added `flows`, `libraries`, `arrs`, and `meta`. `meta`
   records one-time actions (the seeded `Default AV1` flow, the legacy import)
   so they never run twice: a deleted default flow stays deleted, and a TOML
-  file edited later is never imported again. Flows carry a revision, and
+  file edited later is never imported again. It also holds the one setting
+  kept there, `daemon_settings`: the JSON of `config.DaemonOverrides` saved in
+  the web UI (`DaemonSettings`, `SetDaemonSettings`), replaced as a whole and
+  removed when nothing is saved. Flows carry a revision, and
   `UpdateFlow` refuses a stale one with `ErrRevisionConflict`. `DeleteLibrary`
   removes the library with its jobs, sources, and scan records in one
   transaction. Jobs that only wait go with it. It refuses with a
@@ -426,14 +441,15 @@ func (s *Server) getLibrary(w http.ResponseWriter, r *http.Request) {
   library before it asks the filesystem, so a path outside every library gets
   one answer whatever is there. Keep any new route that makes the daemon open
   a path as strict.
-- Changes to flows, libraries, and Arr connections hold `Server.mutations`,
-  validate against the stored state, write, call `refresh`, and only then
-  answer.
+- Changes to flows, libraries, Arr connections, and the daemon settings
+  (`PUT /api/v1/settings/daemon`) hold `Server.mutations`, validate against
+  the stored state, write, call `refresh`, and only then answer.
 - Job and scan operations are implemented once, in `controlapi.Service`. The
   control socket and the web API (`webapi.Jobs`) call the same value, so a
   cancel, retry, scan, or requeue follows the same rules from either side.
-  Do not reimplement one in a handler. Library, flow, and Arr edits exist only
-  in the web API; `anvilctl` lists libraries and flows and edits nothing.
+  Do not reimplement one in a handler. Library, flow, Arr, and daemon-setting
+  edits exist only in the web API; `anvilctl` lists libraries and flows and
+  edits nothing.
   Maintenance commands (`prune`, `recover`, `staging cleanup`, `backup`) exist
   only in `anvilctl`.
 - The control protocol (`pkg/control`) is private and versioned per frame.

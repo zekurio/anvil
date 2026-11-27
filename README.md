@@ -513,6 +513,14 @@ behavior, and log level.
 `allow_unauthenticated`. Libraries, flows, and Arr connections live in the
 SQLite store and are edited in the web UI.
 
+The `[daemon]` keys from `worker_count` through `log_level` can also be
+changed on the Settings page, which saves them in the store. A key written in
+`anvil.toml` pins it: the page shows it read-only, and only the file changes
+it. Leave a key out of the file to manage it in the UI, and clear it there to
+go back to its default. `--shutdown-policy` and `--shutdown-timeout` pin their
+keys the same way. `media_roots`, the paths, and all of `[web]` are file-only:
+a signed-in browser can never widen its own confinement.
+
 [`examples/anvil.toml`](examples/anvil.toml) is a minimal starting point.
 [`examples/anvil-reference.toml`](examples/anvil-reference.toml) documents
 every setting and its default. Without a config file the daemon keeps its
@@ -533,8 +541,10 @@ and where each result would be published. It opens the store read-only, so
 the daemon must have started once. Both commands are local and read-only.
 Anything that touches live state is in `anvilctl` or the web UI.
 
-Changes made in the web UI apply at once. `SIGHUP` re-reads `anvil.toml` and
-applies most daemon settings in place, and it re-reads the password file.
+Changes made in the web UI apply at once, except `staging_cleanup_age`, whose
+sweep runs when the daemon starts. `SIGHUP` re-reads `anvil.toml`, merges the
+values saved in the UI back in, and applies most daemon settings in place, and
+it re-reads the password file.
 Changing `store_path`, `temp_dir`, `control_socket`, `web.enabled`, or
 `web.listen` needs a restart. A reload that changes one of them, or that
 names a password file the daemon cannot read, is rejected as a whole and the

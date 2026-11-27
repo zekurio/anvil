@@ -317,6 +317,9 @@ in
         /var/lib/anvil/anvil.db and must stay on persistent storage, because
         the store holds the libraries, flows, and Arr connections made in the
         web UI. temp_dir defaults to /var/lib/anvil/tmp and only holds scratch.
+        A daemon key from worker_count through log_level that is set here is
+        pinned: the web UI's Settings page shows it read-only. Leave one out to
+        manage it on that page.
 
         The module fills web from services.anvil.web. Keys set here override
         those options one by one.
