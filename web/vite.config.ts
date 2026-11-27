@@ -32,7 +32,10 @@ export default defineConfig(({ command }) => {
     optimizeDeps: { exclude: ["@ui-sdk/core"] },
     server: {
       port: 5173,
-      proxy: mock ? undefined : { "/api": process.env.ANVIL_API ?? "http://127.0.0.1:8484" },
+      // xfwd passes the browser's host on as X-Forwarded-Host. The daemon
+      // refuses a mutating request whose Origin is neither its Host nor that
+      // header, and behind this proxy the Origin is the dev server's.
+      proxy: mock ? undefined : { "/api": { target: process.env.ANVIL_API ?? "http://127.0.0.1:8484", xfwd: true } },
     },
     build: {
       outDir: "dist",

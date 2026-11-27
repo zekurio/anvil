@@ -17,7 +17,8 @@ import { HttpError, Reply, Router } from "./http.ts";
 
 const PREFIX = "/api/v1";
 // Enough to make loading states visible without slowing work down.
-const LATENCY_MS = 120;
+// VITE_MOCK_LATENCY overrides it, to look at the UI over a slow link.
+const LATENCY_MS = Number(process.env.VITE_MOCK_LATENCY ?? 120);
 
 export interface MockOptions {
   /** Require the password "anvil" before anything but /session answers. */
