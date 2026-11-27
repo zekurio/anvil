@@ -36,34 +36,30 @@ func checkVideoCodecNode() nodeDef {
 			Label:       "Check video codec",
 			Description: "Branches on the codec of the main video stream.",
 			Outputs:     conditionOutputs(),
+			// The list is free-form rather than a fixed set of choices: a
+			// condition has to be able to name any codec ffprobe reports, or
+			// a file in a codec nobody listed here could not be told apart
+			// from the ones a flow re-encodes.
 			Sections: []Section{{Title: "Condition", Fields: []Field{{
-				Key:     "codecs",
-				Label:   "Video codecs",
-				Type:    FieldEnumList,
-				Hint:    "True when the main video stream uses any of these.",
-				Default: []string{"av1"},
-				Choices: []Choice{
-					{Value: "h264", Label: "H.264"},
-					{Value: "hevc", Label: "HEVC (H.265)"},
-					{Value: "av1", Label: "AV1"},
-					{Value: "vp9", Label: "VP9"},
-					{Value: "vp8", Label: "VP8"},
-					{Value: "mpeg2", Label: "MPEG-2"},
-					{Value: "mpeg4", Label: "MPEG-4 Part 2"},
-					{Value: "mpeg1", Label: "MPEG-1"},
-					{Value: "vc1", Label: "VC-1"},
-					{Value: "wmv3", Label: "WMV 9"},
-					{Value: "theora", Label: "Theora"},
-					{Value: "prores", Label: "ProRes"},
-				},
-				Mono: true,
+				Key:    "codecs",
+				Label:  "Video codecs",
+				Type:   FieldStringList,
+				Tokens: true,
+				Hint: "Codec names as ffprobe prints them, such as h264, hevc, av1, vp9, mpeg2video, mpeg4, vc1, or prores. " +
+					"h265 means hevc, and mpeg2 means mpeg2video. True when the main video stream uses any of these.",
+				Default:     []string{"av1"},
+				Mono:        true,
+				Placeholder: "hevc",
 			}}}},
 		},
 		check: func(o options) []optionProblem {
-			return requireEntries(o, "codecs", "Choose at least one codec.")
+			if problems := requireEntries(o, "codecs", "Add at least one codec."); problems != nil {
+				return problems
+			}
+			return blankEntries(o, "codecs")
 		},
 		summary: func(o options) string {
-			return "video.codec in " + listOr(o.list("codecs"), "nothing")
+			return "video.codec in " + listOr(codecFamilies(o.list("codecs")), "nothing")
 		},
 		test: func(o options, facts Facts) (bool, string) {
 			stream, ok := domain.PrimaryVideoStream(facts.Probe.Streams)
@@ -74,7 +70,7 @@ func checkVideoCodecNode() nodeDef {
 			if family == "" {
 				return false, "video codec is unknown"
 			}
-			return slices.Contains(o.list("codecs"), family), "video codec is " + family
+			return slices.Contains(codecFamilies(o.list("codecs")), family), "video codec is " + family
 		},
 	}
 }

@@ -39,10 +39,9 @@ func Default() Graph {
 // video settings with the override applied; the branches rejoin ahead of the
 // shared audio, subtitle, and container nodes.
 //
-// Three things do not carry over. No node sets the validation tolerance, so
-// the flow uses the default. A flow never crops copied video, so crop
-// settings are dropped where the profile skips the encode. And an override
-// is dropped when its key is not a codec check.video_codec offers.
+// Two things do not carry over. No node sets the validation tolerance, so
+// the flow uses the default. And a flow never crops copied video, so crop
+// settings are dropped where the profile skips the encode.
 func FromProfile(p domain.Profile) Graph {
 	overrides := overrideBranches(p)
 	encodes := []bool{!p.Video.SkipEncode}
@@ -170,14 +169,17 @@ func (l *layout) placeVideo(suffix string, settings domain.VideoProfile, crop do
 
 // overrideBranch is one per-codec video override as a branch of the flow.
 type overrideBranch struct {
-	// family is the codec as check.video_codec lists it.
+	// family is the codec as check.video_codec compares it.
 	family string
 	// settings are the base video settings with the override applied.
 	settings domain.VideoProfile
 }
 
-// overrideBranches lists a profile's video overrides in key order. Keys are
-// the canonical codec names pkg/config resolves them to.
+// overrideBranches lists a profile's video overrides in key order, one per
+// codec family. Keys are the canonical codec names pkg/config resolves them
+// to, and every key becomes a branch: a dropped override would send its
+// codec down the base settings, which re-encodes a source the profile said
+// to copy.
 func overrideBranches(p domain.Profile) []overrideBranch {
 	keys := make([]string, 0, len(p.Video.Overrides))
 	for key := range p.Video.Overrides {
@@ -185,18 +187,24 @@ func overrideBranches(p domain.Profile) []overrideBranch {
 	}
 	sort.Strings(keys)
 
-	offered := nodeDefsByID[typeCheckVideoCodec].Sections[0].Fields[0]
 	var branches []overrideBranch
 	for _, key := range keys {
 		family := codecFamily(key)
-		taken := slices.ContainsFunc(branches, func(branch overrideBranch) bool { return branch.family == family })
-		if taken || !hasChoice(offered, family) {
+		if family == "" {
 			continue
 		}
-		branches = append(branches, overrideBranch{
+		branch := overrideBranch{
 			family:   family,
 			settings: domain.EffectiveVideoProfile(p, domain.JobMetadata{}, key),
-		})
+		}
+		// Two keys share a family only as "mpeg2" and "mpeg2video", or the
+		// MPEG-1 pair. The legacy path compared keys with the name ffprobe
+		// prints, which is the longer one and sorts last, so that one wins.
+		if taken := slices.IndexFunc(branches, func(other overrideBranch) bool { return other.family == family }); taken >= 0 {
+			branches[taken] = branch
+			continue
+		}
+		branches = append(branches, branch)
 	}
 	return branches
 }

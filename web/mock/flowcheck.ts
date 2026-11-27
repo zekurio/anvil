@@ -163,7 +163,10 @@ function encoderArgsRule(args: string[]): string {
 }
 
 const CHECKS: Record<string, (o: Options) => Problem[]> = {
-  "check.video_codec": (o) => requireEntries(o, "codecs", "Choose at least one codec."),
+  "check.video_codec": (o) => {
+    const missing = requireEntries(o, "codecs", "Add at least one codec.");
+    return missing.length > 0 ? missing : blankEntries(o, "codecs");
+  },
   "check.hdr": (o) => requireEntries(o, "kinds", "Choose at least one HDR format."),
   "check.audio_language": (o) => {
     const missing = requireEntries(o, "languages", "Add at least one language.");
@@ -215,7 +218,7 @@ function keepSummary(o: Options): string {
 
 const SUMMARIES: Record<string, (o: Options) => string> = {
   input: () => "every queued file",
-  "check.video_codec": (o) => `video.codec in ${listOr(o.list("codecs"), "nothing")}`,
+  "check.video_codec": (o) => `video.codec in ${listOr(codecFamilies(o.list("codecs")), "nothing")}`,
   "check.resolution": (o) => `${o.text("op").replaceAll("_", " ")} ${o.text("resolution")}`,
   "check.hdr": (o) => `video.hdr in ${listOr(o.list("kinds"), "nothing")}`,
   "check.bitrate": (o) => `${o.text("op")} ${o.number("kbps")} kb/s`,
@@ -409,8 +412,20 @@ export function checkGraph(graph: Graph): FlowCheck {
 
 /* ---------- evaluation (pkg/flow/evaluate.go) ---------- */
 
+/**
+ * codecFamily names a video codec the way check.video_codec compares it
+ * (pkg/flow/facts.go): aliases fold into hevc, h264, and av1, and the MPEG-1
+ * and MPEG-2 decoders lose the "video" suffix ffprobe gives them. The daemon
+ * also folds encoder names such as libx265; the mock keeps to the aliases.
+ */
 function codecFamily(codec: string): string {
-  return { mpeg1video: "mpeg1", mpeg2video: "mpeg2", h265: "hevc", avc: "h264" }[codec] ?? codec;
+  const name = codec.trim().toLowerCase().replaceAll("_", "-");
+  return { mpeg1video: "mpeg1", mpeg2video: "mpeg2", h265: "hevc", "h.265": "hevc", avc: "h264", "h.264": "h264" }[name] ?? name;
+}
+
+/** The codec list of check.video_codec as a sorted set of families. */
+function codecFamilies(entries: string[]): string[] {
+  return [...new Set(entries.map(codecFamily).filter(Boolean))].sort();
 }
 
 function resolutionRank(width: number, height: number): number {
@@ -429,7 +444,7 @@ function decide(type: string, o: Options, file: FileFacts): { ok: boolean; reaso
   switch (type) {
     case "check.video_codec": {
       const family = codecFamily(file.video_codec);
-      return family ? { ok: o.list("codecs").includes(family), reason: `video codec is ${family}` } : { ok: false, reason: "video codec is unknown" };
+      return family ? { ok: codecFamilies(o.list("codecs")).includes(family), reason: `video codec is ${family}` } : { ok: false, reason: "video codec is unknown" };
     }
     case "check.resolution": {
       const rank = resolutionRank(file.width, file.height);

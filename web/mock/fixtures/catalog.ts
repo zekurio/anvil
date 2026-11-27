@@ -117,24 +117,14 @@ export const NODE_TYPES: NodeType[] = [
     {
       key: "codecs",
       label: "Video codecs",
-      type: "enum_list",
-      hint: "True when the main video stream uses any of these.",
+      type: "string_list",
+      tokens: true,
+      hint:
+        "Codec names as ffprobe prints them, such as h264, hevc, av1, vp9, mpeg2video, mpeg4, vc1, or prores. " +
+        "h265 means hevc, and mpeg2 means mpeg2video. True when the main video stream uses any of these.",
       default: ["av1"],
-      choices: [
-        choice("h264", "H.264"),
-        choice("hevc", "HEVC (H.265)"),
-        choice("av1", "AV1"),
-        choice("vp9", "VP9"),
-        choice("vp8", "VP8"),
-        choice("mpeg2", "MPEG-2"),
-        choice("mpeg4", "MPEG-4 Part 2"),
-        choice("mpeg1", "MPEG-1"),
-        choice("vc1", "VC-1"),
-        choice("wmv3", "WMV 9"),
-        choice("theora", "Theora"),
-        choice("prores", "ProRes"),
-      ],
       mono: true,
+      placeholder: "hevc",
     },
   ]),
   condition("check.resolution", "Check resolution", "Branches on the resolution class of the main video stream.", [

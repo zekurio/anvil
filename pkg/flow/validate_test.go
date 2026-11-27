@@ -376,7 +376,7 @@ func TestValidateOptions(t *testing.T) {
 			name:     "empty required list",
 			nodeType: typeCheckVideoCodec,
 			options:  `{"codecs": []}`,
-			want:     []Issue{problem("n", "codecs", "Choose at least one codec.")},
+			want:     []Issue{problem("n", "codecs", "Add at least one codec.")},
 		},
 		{
 			name:     "empty HDR list",

@@ -280,25 +280,63 @@ func TestFromProfileBranchesOnOverrides(t *testing.T) {
 	}
 }
 
-func TestFromProfileDropsOverridesItCannotBranchOn(t *testing.T) {
+// An override on a codec the old fixed list of check.video_codec did not
+// offer used to be dropped, and a replace-mode library then re-encoded
+// sources the profile said to copy.
+func TestFromProfileConvertsOverridesOnAnyCodec(t *testing.T) {
 	profile := loadProfile(t, `
-[profiles.p.video.overrides.rawvideo]
+[profiles.p.video.overrides.h265]
+target = 96.0
+
+[profiles.p.video.overrides.ffv1]
+skip_encode = true
+
+[profiles.p.video.overrides.vvc]
+skip_encode = true
+
+[profiles.p.video.overrides.wmv2]
+preset = "8"
+`)
+	g := viaJSON(t, FromProfile(profile))
+	if issues := Validate(g); len(issues) != 0 {
+		t.Fatalf("FromProfile() has issues:\n%s", printIssues(issues))
+	}
+	for _, key := range []string{"hevc", "ffv1", "vvc", "wmv2"} {
+		if !slices.ContainsFunc(g.Nodes, func(node Node) bool { return node.ID == "is-"+key }) {
+			t.Errorf("the override on %s has no condition node", key)
+		}
+	}
+
+	copied := map[string]bool{"ffv1": true, "vvc": true}
+	for _, codec := range []string{"hevc", "ffv1", "vvc", "wmv2", "h264", "mjpeg"} {
+		t.Run(codec, func(t *testing.T) {
+			facts := probeOf(videoStream(codec, 1920, 1080))
+			resolution := mustEvaluate(t, g, facts)
+			want := legacyProfile(profile, facts)
+			if want.Video.SkipEncode != copied[codec] {
+				t.Fatalf("the legacy path has SkipEncode = %t for %s", want.Video.SkipEncode, codec)
+			}
+			equivalent(t, resolution.Profile, want)
+		})
+	}
+}
+
+// "mpeg2" and "mpeg2video" are one family to check.video_codec. The legacy
+// path only ever matched the name ffprobe prints, so that key wins.
+func TestFromProfileKeepsTheOverrideFFprobeNames(t *testing.T) {
+	profile := loadProfile(t, `
+[profiles.p.video.overrides.mpeg2]
 preset = "2"
 
-[profiles.p.video.overrides.hevc]
-preset = "4"
+[profiles.p.video.overrides.mpeg2video]
+skip_encode = true
 `)
 	g := FromProfile(profile)
 	if issues := Validate(g); len(issues) != 0 {
 		t.Fatalf("FromProfile() has issues:\n%s", printIssues(issues))
 	}
-	ids := make([]string, 0, len(g.Nodes))
-	for _, node := range g.Nodes {
-		ids = append(ids, node.ID)
-	}
-	if want := []string{"input", "is-hevc", "video-hevc", "video", "crop", "audio", "subtitles", "metadata", "publish"}; !slices.Equal(ids, want) {
-		t.Errorf("nodes = %v, want %v", ids, want)
-	}
+	facts := probeOf(videoStream("mpeg2video", 720, 576))
+	equivalent(t, mustEvaluate(t, g, facts).Profile, legacyProfile(profile, facts))
 }
 
 func TestFromProfileRoundTripsWhatAFlowResolves(t *testing.T) {

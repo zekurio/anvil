@@ -2,6 +2,7 @@ package flow
 
 import (
 	"math"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -108,7 +109,22 @@ func overallBitrateKbps(probe domain.ProbeResult) (int64, bool) {
 	return int64(math.Round(float64(probe.SizeBytes) * 8 / probe.DurationSeconds / 1000)), true
 }
 
-// codecFamily names a video codec the way check.video_codec lists it. It
+// codecFamilies reads the codec list of check.video_codec as a set of
+// families: sorted, without blanks or repeats. The entries and the codec of
+// a file go through the same codecFamily, so "h265" matches hevc video and
+// "mpeg2" matches what ffprobe calls mpeg2video.
+func codecFamilies(entries []string) []string {
+	var families []string
+	for _, entry := range entries {
+		if family := codecFamily(entry); family != "" && !slices.Contains(families, family) {
+			families = append(families, family)
+		}
+	}
+	slices.Sort(families)
+	return families
+}
+
+// codecFamily names a video codec the way check.video_codec compares it. It
 // builds on video.CanonicalCodec, which folds encoder and alias names, and
 // drops the "video" suffix ffprobe puts on the MPEG-1 and MPEG-2 decoders.
 // An empty name stays empty rather than becoming CanonicalCodec's default.

@@ -22,7 +22,7 @@ func canonicalSample() Graph {
 	return Graph{
 		Nodes: []Node{
 			{ID: "in", Type: typeInput, X: 288, Y: 32},
-			{ID: "check", Type: typeCheckVideoCodec, X: 288, Y: 144, Options: map[string]any{"codecs": []any{"hevc", "h264"}}},
+			{ID: "check", Type: typeCheckHDR, X: 288, Y: 144, Options: map[string]any{"kinds": []any{"hlg", "hdr10"}}},
 			{ID: "copy", Type: typeVideoCopy, X: 64, Y: 256},
 			{ID: "encode", Type: typeVideoEncode, X: 512, Y: 256, Options: map[string]any{"preset": "4", "target": 93.5, "ffmpeg_args": []any{"-g", "240"}}},
 			{ID: "audio", Type: typeAudioKeep, X: 288, Y: 368, Options: map[string]any{"languages": []any{"orig", "eng"}}},
@@ -88,7 +88,7 @@ func TestCanonicalIgnoresLayoutLabelsAndOrder(t *testing.T) {
 	var reordered Graph
 	source := `{"nodes":[
 		{"id":"in","type":"input","x":0,"y":0},
-		{"id":"check","type":"check.video_codec","x":0,"y":0,"options":{"codecs":["h264","hevc","hevc"]}},
+		{"id":"check","type":"check.hdr","x":0,"y":0,"options":{"kinds":["hdr10","hlg","hlg"]}},
 		{"id":"copy","type":"video.copy","x":0,"y":0},
 		{"id":"encode","type":"video.encode","x":0,"y":0,"options":{"ffmpeg_args":["-g","240"],"target":93.5,"preset":"4"}},
 		{"id":"audio","type":"audio.keep","x":0,"y":0,"options":{"languages":["orig","eng"]}},
