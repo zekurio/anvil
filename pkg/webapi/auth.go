@@ -22,11 +22,11 @@ const (
 	// session closest to expiry.
 	maxSessions = 256
 
-	// A client may fail freeAttempts sign-ins before it has to wait, and the
-	// wait doubles with every further failure up to maxLockout.
+	// A client may fail freeAttempts sign-ins before attempts are spaced by a
+	// fixed delay. Attempts made during that delay do not extend it, so a peer
+	// cannot keep a correct password locked out indefinitely.
 	freeAttempts = 5
-	firstLockout = 5 * time.Second
-	maxLockout   = 15 * time.Minute
+	loginDelay   = 2 * time.Second
 	// maxThrottled bounds the table of clients being throttled.
 	maxThrottled = 1024
 )
@@ -41,9 +41,9 @@ type auth struct {
 }
 
 type failure struct {
-	count     int
-	lockedTil time.Time
-	last      time.Time
+	count       int
+	nextAttempt time.Time
+	last        time.Time
 }
 
 // setPassword installs the password in effect. A changed password ends every
@@ -95,8 +95,8 @@ func (a *auth) authenticated(r *http.Request, now time.Time) bool {
 func (a *auth) login(client, password string, now time.Time) (session string, wait time.Duration, ok bool) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if record := a.failures[client]; record != nil && record.lockedTil.After(now) {
-		return "", record.lockedTil.Sub(now), false
+	if record := a.failures[client]; record != nil && record.nextAttempt.After(now) {
+		return "", record.nextAttempt.Sub(now), false
 	}
 	// Comparing digests keeps the comparison constant-time whatever the
 	// lengths of the two values are.
@@ -139,12 +139,8 @@ func (a *auth) recordFailure(client string, now time.Time) time.Duration {
 	if record.count < freeAttempts {
 		return 0
 	}
-	lockout := firstLockout << min(record.count-freeAttempts, 16)
-	if lockout > maxLockout || lockout <= 0 {
-		lockout = maxLockout
-	}
-	record.lockedTil = now.Add(lockout)
-	return lockout
+	record.nextAttempt = now.Add(loginDelay)
+	return loginDelay
 }
 
 func (a *auth) dropOldestFailure() {

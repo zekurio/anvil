@@ -116,9 +116,10 @@ func TestFailedSignInsAreThrottled(t *testing.T) {
 	}
 	// The failure that uses up the allowance already answers with the wait.
 	wantError(t, f.send(http.MethodPost, "/api/v1/session", LoginRequest{Password: "guess"}), http.StatusTooManyRequests, CodeUnauthenticated)
-	// While locked out, the right password is not even looked at.
+	// Attempts during the delay do not renew it, including wrong ones.
 	wantError(t, f.send(http.MethodPost, "/api/v1/session", LoginRequest{Password: "open sesame"}), http.StatusTooManyRequests, CodeUnauthenticated)
-	f.advance(firstLockout + time.Second)
+	wantError(t, f.send(http.MethodPost, "/api/v1/session", LoginRequest{Password: "guess"}), http.StatusTooManyRequests, CodeUnauthenticated)
+	f.advance(loginDelay + time.Millisecond)
 	want[Session](t, f.send(http.MethodPost, "/api/v1/session", LoginRequest{Password: "open sesame"}), http.StatusOK)
 }
 
