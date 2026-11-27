@@ -194,7 +194,7 @@ func videoEncodeNode() nodeDef {
 						Label: "Extra encoder arguments",
 						Type:  FieldStringList,
 						Hint: "Option and value pairs, one per entry, used for the search and the final encode. " +
-							"Stream mapping, filters, timing, and rate control stay with Anvil.",
+							"Only encoder parameter bundles and value-only tuning options are accepted; files, URLs, devices, filters, mapping, timing, and rate control stay with Anvil.",
 						Default:     []string{},
 						Mono:        true,
 						Placeholder: "-svtav1-params",

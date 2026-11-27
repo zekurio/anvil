@@ -54,7 +54,7 @@ func TestProfileProblemsKeepCheckConfigWording(t *testing.T) {
 		`profile "default-av1" CRF values must be non-negative`,
 		`profile "default-av1" crf_min must be less than or equal to crf_max`,
 		`profile "default-av1" video.sample_duration must be positive`,
-		`profile "default-av1" video.ffmpeg_args option "-crf" is managed by Anvil and cannot be used during CRF search`,
+		`profile "default-av1" video.ffmpeg_args option "-crf" is not accepted; accepted: encoder parameter bundles (-svtav1-params, -x265-params, -x264-params) or value-only tuning options (-tune, -profile:v, -level, -g, -keyint_min, -bf, -refs, -sc_threshold, -aq-mode, -aq-strength, -rc-lookahead, -b_strategy, -look_ahead, -look_ahead_depth, -extbrc, -low_power, -async_depth, -adaptive_i, -adaptive_b, -quality)`,
 		`profile "default-av1" video.samples must be non-negative`,
 		`profile "default-av1" video.target must be set when metric is "xpsnr" (typical targets are 35-50)`,
 		`profile "default-av1" min_savings_percent must be between 0 and 100`,

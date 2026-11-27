@@ -101,7 +101,12 @@ func TestQSVSamplesUseSoftwareFrames(t *testing.T) {
 }
 
 func TestEncoderArgumentsCannotOverrideSearch(t *testing.T) {
-	for _, args := range [][]string{{"-crf", "20"}, {"-vf", "scale=128:128"}, {"-filter:v:0", "fps=24"}, {"-i", "other.mkv"}, {"output.mkv"}, {"-tune"}, {"-c:v", "copy"}, {"-r", "25"}} {
+	for _, args := range [][]string{
+		{"-crf", "20"}, {"-vstats_file", "/tmp/x"}, {"-attach", "cover.jpg"}, {"-dump_attachment", "x"},
+		{"-i", "other.mkv"}, {"-f", "matroska"}, {"-map", "0:v"}, {"-filter_complex", "null"},
+		{"-vf", "scale=128:128"}, {"-passlogfile", "/tmp/pass"}, {"-progress", "pipe:1"}, {"-y", "output.mkv"},
+		{"output.mkv"}, {"-tune"}, {"-c:v", "copy"}, {"-r", "25"}, {"-tune", "-film"},
+	} {
 		if err := ValidateEncoderArgs(args); err == nil {
 			t.Fatalf("accepted %q", args)
 		}

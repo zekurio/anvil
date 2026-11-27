@@ -66,7 +66,7 @@ target = 95.0 # Minimum score for metric; number from 0 through 100. Required wh
 min_savings_percent = 20.0 # Minimum estimated video-only savings from sample sizes, including container overhead; number from 0 through 100.
 force_encode_on_no_fit = false # On no fit, use best measured quality within the size limit, or best measured quality overall when no size fits.
 skip_encode = false # Copy video instead of searching and encoding when policy requires it.
-ffmpeg_args = [] # Encoder option/value pairs shared by search and final encoding; Anvil manages mapping, filters, timing, and rate control.
+ffmpeg_args = [] # Encoder parameter bundles and value-only tuning option/value pairs; files, URLs, devices, filters, mapping, timing, and rate control are rejected.
 
 [profiles.default-av1.crop]
 seek_offsets = [] # Sample crop candidates at these input offsets; an empty list spreads windows across the input instead; non-negative Go duration strings.

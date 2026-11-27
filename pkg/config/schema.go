@@ -221,8 +221,9 @@ type VideoConfig struct {
 	ForceEncodeOnNoFit bool `toml:"force_encode_on_no_fit"`
 	// Copy video instead of searching and encoding when policy requires it.
 	SkipEncode bool `toml:"skip_encode"`
-	// Extra encoder option/value pairs shared by search and final encoding.
-	// Stream mapping, filters, timing, and rate control are managed by Anvil.
+	// Encoder parameter bundles and value-only tuning option/value pairs shared
+	// by search and final encoding. Files, URLs, devices, filters, mapping,
+	// timing, and rate control are not accepted.
 	FFmpegArgs []string `toml:"ffmpeg_args"`
 	// Per-source-codec adjustments; see VideoOverrideConfig.
 	Overrides map[string]VideoOverrideConfig `toml:"overrides"`

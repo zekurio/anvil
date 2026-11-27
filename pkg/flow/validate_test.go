@@ -420,7 +420,7 @@ func TestValidateOptions(t *testing.T) {
 			name:     "config rule: managed ffmpeg option",
 			nodeType: typeVideoEncode,
 			options:  `{"ffmpeg_args": ["-crf", "20"]}`,
-			want:     []Issue{problem("n", "ffmpeg_args", `Option "-crf" is managed by Anvil and cannot be used during CRF search.`)},
+			want:     []Issue{problem("n", "ffmpeg_args", `Option "-crf" is not accepted; accepted: encoder parameter bundles (-svtav1-params, -x265-params, -x264-params) or value-only tuning options (-tune, -profile:v, -level, -g, -keyint_min, -bf, -refs, -sc_threshold, -aq-mode, -aq-strength, -rc-lookahead, -b_strategy, -look_ahead, -look_ahead_depth, -extbrc, -low_power, -async_depth, -adaptive_i, -adaptive_b, -quality).`)},
 		},
 		{
 			name:     "config rule: managed encoder param",
@@ -432,7 +432,7 @@ func TestValidateOptions(t *testing.T) {
 			name:     "config rule: ffmpeg options come in pairs",
 			nodeType: typeVideoEncode,
 			options:  `{"ffmpeg_args": ["-g"]}`,
-			want:     []Issue{problem("n", "ffmpeg_args", `Must contain encoder option/value pairs; invalid option "-g".`)},
+			want:     []Issue{problem("n", "ffmpeg_args", `Must contain option/value pairs; invalid option "-g"; accepted: encoder parameter bundles (-svtav1-params, -x265-params, -x264-params) or value-only tuning options (-tune, -profile:v, -level, -g, -keyint_min, -bf, -refs, -sc_threshold, -aq-mode, -aq-strength, -rc-lookahead, -b_strategy, -look_ahead, -look_ahead_depth, -extbrc, -low_power, -async_depth, -adaptive_i, -adaptive_b, -quality).`)},
 		},
 		{
 			name:     "config rule: xpsnr needs a target",
@@ -552,7 +552,7 @@ func TestValidateOptions(t *testing.T) {
 			options:  `{"zzz": 1, "aaa": 1, "ffmpeg_args": ["-map", "0"], "codec": "theora"}`,
 			want: []Issue{
 				problem("n", "codec", "Must be one of: AV1, HEVC (H.265), H.264."),
-				problem("n", "ffmpeg_args", `Option "-map" is managed by Anvil and cannot be used during CRF search.`),
+				problem("n", "ffmpeg_args", `Option "-map" is not accepted; accepted: encoder parameter bundles (-svtav1-params, -x265-params, -x264-params) or value-only tuning options (-tune, -profile:v, -level, -g, -keyint_min, -bf, -refs, -sc_threshold, -aq-mode, -aq-strength, -rc-lookahead, -b_strategy, -look_ahead, -look_ahead_depth, -extbrc, -low_power, -async_depth, -adaptive_i, -adaptive_b, -quality).`),
 				problem("n", "aaa", `"aaa" is not an option of this node. Remove it.`),
 				problem("n", "zzz", `"zzz" is not an option of this node. Remove it.`),
 			},

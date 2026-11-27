@@ -71,6 +71,19 @@ var encoderParamsOptions = map[string]bool{
 	"x264-params":   true,
 }
 
+// encoderOptions is the small set of value-only encoder controls accepted
+// across Anvil's software, QSV, VAAPI, and AMF encoders. None names a file,
+// URL, device, stream selector, or filter graph.
+var encoderOptions = map[string]bool{
+	"tune": true, "profile": true, "level": true,
+	"g": true, "keyint_min": true, "bf": true, "refs": true, "sc_threshold": true,
+	"aq-mode": true, "aq-strength": true, "rc-lookahead": true, "b_strategy": true,
+	"look_ahead": true, "look_ahead_depth": true, "extbrc": true, "low_power": true,
+	"async_depth": true, "adaptive_i": true, "adaptive_b": true, "quality": true,
+}
+
+const acceptedEncoderArgs = "encoder parameter bundles (-svtav1-params, -x265-params, -x264-params) or value-only tuning options (-tune, -profile:v, -level, -g, -keyint_min, -bf, -refs, -sc_threshold, -aq-mode, -aq-strength, -rc-lookahead, -b_strategy, -look_ahead, -look_ahead_depth, -extbrc, -low_power, -async_depth, -adaptive_i, -adaptive_b, -quality)"
+
 // managedParamsKeys are encoder-params keys that select quality, rate control,
 // or speed, which Anvil owns for the search and final encode.
 var managedParamsKeys = map[string]bool{
@@ -85,24 +98,21 @@ func ValidateEncoderArgs(args []string) error {
 	for i := 0; i < len(args); i += 2 {
 		key := args[i]
 		if !strings.HasPrefix(key, "-") || key == "-" || i+1 == len(args) {
-			return fmt.Errorf("ffmpeg_args must contain encoder option/value pairs; invalid option %q", key)
+			return fmt.Errorf("ffmpeg_args must contain option/value pairs; invalid option %q; accepted: %s", key, acceptedEncoderArgs)
 		}
 		name := strings.SplitN(strings.TrimLeft(key, "-"), ":", 2)[0]
-		if strings.HasPrefix(name, "filter") || strings.HasPrefix(name, "map") {
-			return fmt.Errorf("ffmpeg_args option %q is managed by Anvil and cannot be used during CRF search", key)
+		value := args[i+1]
+		if strings.HasPrefix(value, "-") {
+			return fmt.Errorf("ffmpeg_args value %q for option %q must not begin with \"-\"", value, key)
 		}
 		if encoderParamsOptions[name] {
-			if err := validateEncoderParams(args[i+1]); err != nil {
+			if err := validateEncoderParams(value); err != nil {
 				return fmt.Errorf("ffmpeg_args option %q: %w", key, err)
 			}
 			continue
 		}
-		switch name {
-		case "i", "f", "y", "n", "stdin", "nostdin", "vf", "af", "lavfi", "s", "video_size", "r", "vsync", "fps_mode",
-			"t", "to", "ss", "sseof", "fs", "frames", "vframes", "stream_loop", "shortest", "copyts", "start_at_zero", "itsoffset", "itsscale",
-			"c", "codec", "vcodec", "an", "vn", "sn", "dn", "crf", "qp", "q", "qscale", "global_quality", "rc", "qp_i", "qp_p", "qp_b", "b", "vb", "bit_rate",
-			"pix_fmt", "pixel_format", "threads", "preset", "pass", "passlogfile", "progress", "stats_period":
-			return fmt.Errorf("ffmpeg_args option %q is managed by Anvil and cannot be used during CRF search", key)
+		if !encoderOptions[name] {
+			return fmt.Errorf("ffmpeg_args option %q is not accepted; accepted: %s", key, acceptedEncoderArgs)
 		}
 	}
 	return nil
