@@ -136,6 +136,60 @@ func TestProgressEstimate(t *testing.T) {
 	}
 }
 
+// A subtitle track whose last line is early in the file holds ffmpeg's output
+// timestamp there while the video goes on; the progress must follow the frames.
+func TestProgressFollowsFramesPastAStalledTimestamp(t *testing.T) {
+	tracker := &ProgressTracker{}
+	recorder := &processLogRecorder{jobID: 3, attempt: 1, tracker: tracker}
+	ctx := process.WithMediaFrames(process.WithMediaDuration(process.WithStep(context.Background(), "encode"), 150*time.Second), 3600)
+	report := func(frame, fps, outTimeUS, speed string) domain.JobProgress {
+		t.Helper()
+		recorder.logFFmpegProgress(ctx, map[string]string{"frame": frame, "fps": fps, "out_time_us": outTimeUS, "speed": speed})
+		progress, ok := tracker.Snapshot(3)
+		if !ok {
+			t.Fatal("no progress recorded")
+		}
+		return progress
+	}
+	near := func(got, want float64) bool { return math.Abs(got-want) < 0.01 }
+
+	// The timestamp is ahead of the frame count: it stays the authority.
+	if got := report("100", "12", "5000000", "0.5x"); !near(got.Percent, 100*5.0/150) || !near(got.Speed, 0.5) || !near(got.ETASeconds, 145/0.5) {
+		t.Fatalf("timestamp ahead: %+v", got)
+	}
+	// 1800 of 3600 frames at 12 fps against a 24 fps source: half done at half speed.
+	if got := report("1800", "12", "8023000", "0.0802x"); !near(got.Percent, 50) || !near(got.Speed, 0.5) || !near(got.ETASeconds, 150) {
+		t.Fatalf("stalled timestamp: %+v", got)
+	}
+	// Before the first packet there is no timestamp at all.
+	if got := report("900", "12", "N/A", "N/A"); !near(got.Percent, 25) || !near(got.Speed, 0.5) {
+		t.Fatalf("no timestamp: %+v", got)
+	}
+	// More frames than estimated is the end, not past it.
+	if got := report("3700", "12", "8023000", "0.04x"); !near(got.Percent, 100) || !near(got.ETASeconds, 0) {
+		t.Fatalf("past the estimate: %+v", got)
+	}
+}
+
+func TestFramePosition(t *testing.T) {
+	for name, tt := range map[string]struct {
+		frames, total int64
+		duration      time.Duration
+		want          time.Duration
+		ok            bool
+	}{
+		"halfway":              {1800, 3600, 150 * time.Second, 75 * time.Second, true},
+		"past the estimate":    {4000, 3600, 150 * time.Second, 150 * time.Second, true},
+		"unknown frame count":  {1800, 0, 150 * time.Second, 0, false},
+		"unknown duration":     {1800, 3600, 0, 0, false},
+		"nonsense frame count": {-1, 3600, 150 * time.Second, 0, false},
+	} {
+		if got, ok := framePosition(tt.frames, tt.total, tt.duration); got != tt.want || ok != tt.ok {
+			t.Errorf("%s: framePosition = %v, %v; want %v, %v", name, got, ok, tt.want, tt.ok)
+		}
+	}
+}
+
 func TestParseProgressNumber(t *testing.T) {
 	for value, want := range map[string]float64{"23.5": 23.5, " 1.02": 1.02, "N/A": 0, "": 0, "inf": 0, "NaN": 0, "-3": 0} {
 		if got := parseProgressNumber(value); got != want {

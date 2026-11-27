@@ -262,7 +262,29 @@ func (r *processLogRecorder) logFFmpegProgress(ctx context.Context, values map[s
 	if !known {
 		position, known = parseMediaClock(values["out_time"])
 	}
-	r.logProgress(ctx, values["frame"], values["fps"], outTime, values["speed"], position, known)
+	speed := values["speed"]
+	// The frame counter stands in where the timestamp trails behind it, and
+	// so does the speed, which ffmpeg derives from that timestamp.
+	if frames, err := strconv.ParseInt(strings.TrimSpace(values["frame"]), 10, 64); err == nil {
+		totalFrames, duration := process.MediaFrames(ctx), process.MediaDuration(ctx)
+		if written, counted := framePosition(frames, totalFrames, duration); counted && (!known || written > position) {
+			position, known = written, true
+			speed = strconv.FormatFloat(parseProgressNumber(values["fps"])*duration.Seconds()/float64(totalFrames), 'g', 3, 64) + "x"
+		}
+	}
+	r.logProgress(ctx, values["frame"], values["fps"], outTime, speed, position, known)
+}
+
+// framePosition turns the video frames written so far into a media position,
+// given the frames and the duration of the whole input. ffmpeg's output
+// timestamp is that of the output stream furthest behind, so one subtitle
+// track whose last line was early in the file holds it there for the rest of
+// the encode.
+func framePosition(frames, totalFrames int64, duration time.Duration) (time.Duration, bool) {
+	if frames < 0 || totalFrames <= 0 || duration <= 0 {
+		return 0, false
+	}
+	return time.Duration(float64(duration) * float64(min(frames, totalFrames)) / float64(totalFrames)), true
 }
 
 // logProgress logs one ffmpeg progress report and stores it as the job's

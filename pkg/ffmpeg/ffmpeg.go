@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"strconv"
 	"strings"
 	"time"
@@ -299,6 +300,11 @@ func (b Block) Run(ctx context.Context, job *pipeline.JobContext) error {
 	// probed duration is an honest percentage for whoever reports progress.
 	if job.Probe != nil {
 		ctx = process.WithMediaDuration(ctx, time.Duration(job.Probe.DurationSeconds*float64(time.Second)))
+		// The frame count keeps the percentage moving where the timestamp
+		// stalls; see process.WithMediaFrames.
+		if video, found := domain.PrimaryVideoStream(job.Probe.Streams); found {
+			ctx = process.WithMediaFrames(ctx, int64(math.Round(job.Probe.DurationSeconds*video.FrameRate)))
+		}
 	}
 	_, err = b.Encoder.Encode(ctx, plan)
 	if err != nil {

@@ -20,6 +20,9 @@ type MediaStream struct {
 	ColorSpace     string
 	ColorTransfer  string
 	ColorPrimaries string
+	// FrameRate is a video stream's average frames per second, or 0 when
+	// ffprobe reports none.
+	FrameRate float64
 	// MasteringDisplay and ContentLightLevel report HDR10 static metadata
 	// (SMPTE ST 2086 mastering display, MaxCLL/MaxFALL) declared by the
 	// container or found on the first decoded frames.
