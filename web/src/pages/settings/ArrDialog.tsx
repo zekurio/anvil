@@ -12,7 +12,6 @@ interface Draft {
   api_key: string;
   /** Edit only: clear the stored key instead of keeping it. */
   remove_key: boolean;
-  api_key_file: string;
 }
 
 const NAME = /^[a-z0-9_-]{1,64}$/;
@@ -25,7 +24,7 @@ const NAME = /^[a-z0-9_-]{1,64}$/;
 export function ArrDialog(props: { arr?: Arr; onClose: () => void }) {
   // Read once on purpose: the dialog is mounted per open, and a poll must not reset what is being typed.
   const editing = props.arr;
-  const [draft, setDraft] = createStore<Draft>({ name: editing?.name ?? "", type: editing?.type ?? "radarr", base_url: editing?.base_url ?? "", api_key: "", remove_key: false, api_key_file: editing?.api_key_file ?? "" });
+  const [draft, setDraft] = createStore<Draft>({ name: editing?.name ?? "", type: editing?.type ?? "radarr", base_url: editing?.base_url ?? "", api_key: "", remove_key: false });
   const [errors, setErrors] = createStore<Record<string, string | undefined>>({});
   const [general, setGeneral] = createSignal<string | null>(null);
   const [saving, setSaving] = createSignal(false);
@@ -40,7 +39,6 @@ export function ArrDialog(props: { arr?: Arr; onClose: () => void }) {
     const next: Record<string, string | undefined> = {
       name: editing || NAME.test(draft.name) ? undefined : 'Must be 1 to 64 characters of a-z, 0-9, "-" and "_".',
       base_url: /^https?:\/\/\S+$/.test(draft.base_url.trim()) ? undefined : "Must be a URL starting with http:// or https://.",
-      api_key_file: draft.api_key_file === "" || draft.api_key_file.startsWith("/") ? undefined : "Must be an absolute path, starting with /.",
     };
     setErrors(() => next);
     return Object.values(next).every((message) => message === undefined);
@@ -51,14 +49,14 @@ export function ArrDialog(props: { arr?: Arr; onClose: () => void }) {
     if (saving() || !validate()) return;
     // null keeps the stored key, "" clears it, anything else replaces it.
     const api_key = draft.remove_key ? "" : draft.api_key !== "" ? draft.api_key : null;
-    const write: ArrWrite = { name: draft.name, type: draft.type, base_url: draft.base_url.trim(), api_key_file: draft.api_key_file.trim(), api_key };
+    const write: ArrWrite = { name: draft.name, type: draft.type, base_url: draft.base_url.trim(), api_key };
     setSaving(true);
     setGeneral(null);
     const saved = await run(() => (editing ? api.arrs.update(editing.name, write) : api.arrs.create(write)), {
       invalidate: [keys.arrs],
       success: (arr) => (editing ? `Saved the connection ${arr.name}.` : `Added the connection ${arr.name}.`),
       onError: (error: ApiError) => {
-        if (error.field && ["name", "type", "base_url", "api_key", "api_key_file"].includes(error.field)) setErrors((current) => void (current[error.field as string] = error.message));
+        if (error.field && ["name", "type", "base_url", "api_key"].includes(error.field)) setErrors((current) => void (current[error.field as string] = error.message));
         else setGeneral(error.message);
         return true;
       },
@@ -130,9 +128,13 @@ export function ArrDialog(props: { arr?: Arr; onClose: () => void }) {
             Remove stored key
           </label>
         </Show>
-        <Field label="API key file" htmlFor="arr-key-file" hint="The absolute path of a file that holds the key, read by the daemon. Use it instead of storing the key." error={errors.api_key_file}>
-          <Input id="arr-key-file" mono autocomplete="off" spellcheck={false} placeholder="/run/secrets/radarr" invalid={!!errors.api_key_file} value={draft.api_key_file} onInput={(event) => edit("api_key_file", (d) => void (d.api_key_file = event.currentTarget.value))} />
-        </Field>
+        <Show when={editing?.api_key_file}>
+          {(path) => (
+            <Field label="API key file" hint="This read-only path comes from the administrator's imported configuration.">
+              <p class="av-readonly">{path()}</p>
+            </Field>
+          )}
+        </Show>
       </form>
     </Dialog>
   );

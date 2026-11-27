@@ -103,12 +103,9 @@ func TestEveryRoute(t *testing.T) {
 	if stored, err := f.state.GetArr(context.Background(), "radarr"); err != nil || stored.APIKey != "s3cret-key" {
 		t.Fatalf("stored arr = %+v, %v", stored, err)
 	}
-	cleared := want[Arr](t, f.send(http.MethodPut, "/api/v1/arrs/radarr", ArrWrite{
-		Name: "radarr", Type: "radarr", BaseURL: "http://localhost:7879", APIKeyFile: "/run/secrets/radarr", APIKey: pointer(""),
-	}), http.StatusOK)
-	if cleared.APIKeySet || cleared.APIKeyFile != "/run/secrets/radarr" {
-		t.Fatalf("an empty api_key must clear the key: %+v", cleared)
-	}
+	wantError(t, f.send(http.MethodPut, "/api/v1/arrs/radarr", map[string]any{
+		"name": "radarr", "type": "radarr", "base_url": "http://localhost:7879", "api_key_file": "/run/secrets/radarr",
+	}), http.StatusBadRequest, CodeInvalid)
 	if arrs := want[ArrList](t, f.get("/api/v1/arrs"), http.StatusOK); len(arrs.Arrs) != 1 {
 		t.Fatalf("arrs = %+v", arrs)
 	}

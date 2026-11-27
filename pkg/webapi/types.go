@@ -668,10 +668,9 @@ type Arr struct {
 
 // ArrWrite creates or replaces an Arr connection.
 type ArrWrite struct {
-	Name       string `json:"name"`
-	Type       string `json:"type"`
-	BaseURL    string `json:"base_url"`
-	APIKeyFile string `json:"api_key_file"`
+	Name    string `json:"name"`
+	Type    string `json:"type"`
+	BaseURL string `json:"base_url"`
 	// APIKey replaces the stored key when non-nil; nil keeps it and an
 	// empty string clears it.
 	APIKey *string `json:"api_key"`

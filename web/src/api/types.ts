@@ -852,7 +852,6 @@ export interface ArrWrite {
   name: string;
   type: "radarr" | "sonarr";
   base_url: string;
-  api_key_file: string;
   /** Replaces the stored key when a string; null keeps it and "" clears it. */
   api_key: string | null;
 }

@@ -55,18 +55,22 @@ func (s *Server) arrResponse(ctx context.Context, stored store.Arr) (Arr, error)
 	return arrOf(stored, usage[stored.Name]), nil
 }
 
-// arrConfig builds the connection a write describes. currentKey is the stored
-// key, which a write without api_key keeps.
-func arrConfig(write ArrWrite, currentKey string) (config.ArrConfig, error) {
+// arrConfig builds the connection a write describes. An API write cannot add
+// a key file, but it preserves one imported from configuration until a literal
+// key replaces it.
+func arrConfig(write ArrWrite, current config.ArrConfig) (config.ArrConfig, error) {
 	arr := config.ArrConfig{
 		Name:       write.Name,
 		Type:       strings.TrimSpace(write.Type),
 		BaseURL:    strings.TrimRight(strings.TrimSpace(write.BaseURL), "/"),
-		APIKey:     currentKey,
-		APIKeyFile: strings.TrimSpace(write.APIKeyFile),
+		APIKey:     current.APIKey,
+		APIKeyFile: current.APIKeyFile,
 	}
 	if write.APIKey != nil {
 		arr.APIKey = strings.TrimSpace(*write.APIKey)
+		if arr.APIKey != "" {
+			arr.APIKeyFile = ""
+		}
 	}
 	return arr, fieldProblem(arr.Problems())
 }
@@ -79,7 +83,7 @@ func (s *Server) createArr(_ http.ResponseWriter, r *http.Request) (int, any, er
 	if !arrName.MatchString(write.Name) {
 		return fail(invalidf("name", "An Arr connection name has 1 to 64 characters out of letters, digits, \"-\", \"_\", and \".\"."))
 	}
-	arr, err := arrConfig(write, "")
+	arr, err := arrConfig(write, config.ArrConfig{})
 	if err != nil {
 		return fail(err)
 	}
@@ -125,7 +129,7 @@ func (s *Server) updateArr(_ http.ResponseWriter, r *http.Request) (int, any, er
 	if err != nil {
 		return fail(err)
 	}
-	arr, err := arrConfig(write, current.APIKey)
+	arr, err := arrConfig(write, current.ArrConfig)
 	if err != nil {
 		return fail(err)
 	}

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -19,7 +20,10 @@ import (
 	"github.com/zekurio/anvil/pkg/language"
 )
 
-const defaultHTTPTimeout = 15 * time.Second
+const (
+	defaultHTTPTimeout = 15 * time.Second
+	maxResponseBytes   = 4 << 20
+)
 
 type Resolver struct {
 	Client *http.Client
@@ -127,17 +131,28 @@ func (r Resolver) getJSON(ctx context.Context, policy domain.MetadataProviderPol
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return fmt.Errorf("fetch metadata: unexpected status %s", resp.Status)
 	}
-	if err := json.NewDecoder(resp.Body).Decode(target); err != nil {
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))
+	if err != nil {
+		return fmt.Errorf("read metadata response: %w", err)
+	}
+	if len(body) > maxResponseBytes {
+		return fmt.Errorf("decode metadata response: response too large (limit is %d bytes)", maxResponseBytes)
+	}
+	if err := json.Unmarshal(body, target); err != nil {
 		return fmt.Errorf("decode metadata response: %w", err)
 	}
 	return nil
 }
 
 func (r Resolver) client() *http.Client {
+	client := http.Client{Timeout: defaultHTTPTimeout}
 	if r.Client != nil {
-		return r.Client
+		client = *r.Client
 	}
-	return &http.Client{Timeout: defaultHTTPTimeout}
+	client.CheckRedirect = func(req *http.Request, _ []*http.Request) error {
+		return fmt.Errorf("refusing metadata redirect to host %q", req.URL.Host)
+	}
+	return &client
 }
 
 func apiKey(policy domain.MetadataProviderPolicy) (string, error) {

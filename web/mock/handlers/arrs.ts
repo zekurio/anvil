@@ -17,12 +17,11 @@ function parse(write: Partial<ArrWrite>, existing?: StoredArr): StoredArr {
   if (typeof name !== "string" || !/^[a-z0-9_-]{1,64}$/.test(name)) throw invalid('Must be 1 to 64 characters of a-z, 0-9, "-" and "_".', "name");
   if (write.type !== "radarr" && write.type !== "sonarr") throw invalid("Must be radarr or sonarr.", "type");
   if (typeof write.base_url !== "string" || !/^https?:\/\/\S+$/.test(write.base_url)) throw invalid("Must be a URL starting with http:// or https://.", "base_url");
-  const api_key_file = write.api_key_file ?? "";
-  if (api_key_file !== "" && !api_key_file.startsWith("/")) throw invalid("Must be an absolute path.", "api_key_file");
+  const api_key_file = existing?.api_key_file ?? "";
   // null keeps the stored key, "" clears it, anything else replaces it.
   const api_key_set = write.api_key === null || write.api_key === undefined ? (existing?.api_key_set ?? false) : write.api_key !== "";
   if (!api_key_set && api_key_file === "") throw invalid("Give an API key or the path of a file that holds it.", "api_key");
-  return { name, type: write.type, base_url: write.base_url.replace(/\/+$/, ""), api_key_file, api_key_set };
+  return { name, type: write.type, base_url: write.base_url.replace(/\/+$/, ""), api_key_file: api_key_set && write.api_key ? "" : api_key_file, api_key_set };
 }
 
 export function arrRoutes(router: Router): void {
