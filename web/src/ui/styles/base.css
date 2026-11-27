@@ -1,5 +1,8 @@
 /* anvil: base element styles, helpers and the one focus rule. Colours, spacing and radii come from tokens. */
 
+/* Native scrollbars and form controls follow the chosen theme, not the system's. */
+:root, [data-theme="dark"] { color-scheme: dark; }
+[data-theme="light"] { color-scheme: light; }
 html, body, #root { height: 100%; }
 body { margin: 0; background: var(--bg); color: var(--text); font-family: var(--font-sans); font-size: 14px; line-height: 20px; -webkit-font-smoothing: antialiased; }
 .av-mono { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
