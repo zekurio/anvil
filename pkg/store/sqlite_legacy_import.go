@@ -47,6 +47,10 @@ type LegacyImportedLibrary struct {
 	// PausedFor is the first validation issue of the library's flow. When it
 	// is set, the library was imported paused.
 	PausedFor string
+	// PathConflict is the first thing config.LibraryPathConflicts objects to
+	// about the library's directories. When it is set, the library was
+	// imported paused.
+	PathConflict string
 }
 
 // ImportLegacyConfig moves the libraries, Arr connections, and referenced
@@ -58,12 +62,15 @@ type LegacyImportedLibrary struct {
 // flow does not validate, for example because a rule stricter than the TOML
 // one rejects a setting. Every file of such a library would fail until its
 // attempts ran out, so the library is imported paused and waits for the flow
-// to be fixed.
+// to be fixed. A library whose directories overlap another library's or
+// tempDir, the daemon's temp_dir, is imported paused for the same reason:
+// the TOML never checked that, the web API refuses such a library, and
+// leaving it out instead would strand the sources and jobs it already has.
 //
 // The whole import is one transaction, and it records that it ran even when
 // the file had nothing to import. A second call therefore does nothing, and a
 // TOML file edited later is never imported silently.
-func (s *SQLiteStore) ImportLegacyConfig(ctx context.Context, legacy config.LegacyConfig, now time.Time) (LegacyImport, error) {
+func (s *SQLiteStore) ImportLegacyConfig(ctx context.Context, legacy config.LegacyConfig, tempDir string, now time.Time) (LegacyImport, error) {
 	now = defaultNow(now)
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -87,6 +94,17 @@ func (s *SQLiteStore) ImportLegacyConfig(ctx context.Context, legacy config.Lega
 		default:
 			result.Arrs = append(result.Arrs, name)
 		}
+	}
+
+	// Directories are compared against the libraries the store already has
+	// and the ones imported before this one, in name order.
+	stored, err := listLibraries(ctx, tx)
+	if err != nil {
+		return LegacyImport{}, err
+	}
+	others := make(map[string]config.LibraryConfig, len(stored)+len(legacy.Libraries))
+	for _, library := range stored {
+		others[library.Name] = library.LibraryConfig
 	}
 
 	flows := make(map[string]LegacyImportedFlow)
@@ -125,6 +143,13 @@ func (s *SQLiteStore) ImportLegacyConfig(ctx context.Context, legacy config.Lega
 			library.Paused = true
 			pausedFor = imported.Issues[0]
 		}
+		pathConflict := ""
+		if _, taken := others[name]; !taken {
+			if conflicts := config.LibraryPathConflicts(tempDir, others, library); len(conflicts) > 0 {
+				library.Paused = true
+				pathConflict = conflicts[0].Message
+			}
+		}
 		_, err := createLibraryTx(ctx, tx, library, now)
 		switch {
 		case errors.Is(err, ErrNameTaken):
@@ -132,7 +157,8 @@ func (s *SQLiteStore) ImportLegacyConfig(ctx context.Context, legacy config.Lega
 		case err != nil:
 			return LegacyImport{}, fmt.Errorf("import library %q: %w", name, err)
 		default:
-			result.Libraries = append(result.Libraries, LegacyImportedLibrary{Name: name, Flow: imported.Flow, PausedFor: pausedFor})
+			others[name] = library
+			result.Libraries = append(result.Libraries, LegacyImportedLibrary{Name: name, Flow: imported.Flow, PausedFor: pausedFor, PathConflict: pathConflict})
 		}
 	}
 

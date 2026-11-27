@@ -122,11 +122,16 @@ func sentence(message string) string {
 }
 
 // LibraryPathConflicts reports where a library's directories collide with
-// those of the other libraries. The engine assumes they are disjoint: a file
-// below two library roots would be queued twice and replaced under the
-// second job's feet, and a handoff directory inside a library root would be
-// scanned as that library's media, part files included.
-func LibraryPathConflicts(others map[string]LibraryConfig, candidate LibraryConfig) []FieldProblem {
+// those of the other libraries or with the daemon's temp_dir. The engine
+// assumes they are disjoint: a file below two library roots would be queued
+// twice and replaced under the second job's feet, and a handoff directory
+// inside a library root would be scanned as that library's media, part files
+// included. temp_dir holds the daemon's own working files, search samples
+// among them: a library around or inside it would have those scanned as
+// media, and a handoff folder there would mix published files into a
+// directory the daemon cleans up after itself. An empty tempDir is not
+// compared.
+func LibraryPathConflicts(tempDir string, others map[string]LibraryConfig, candidate LibraryConfig) []FieldProblem {
 	var found []FieldProblem
 	add := func(field, format string, args ...any) {
 		found = append(found, FieldProblem{Field: field, Message: fmt.Sprintf(format, args...)})
@@ -137,6 +142,20 @@ func LibraryPathConflicts(others map[string]LibraryConfig, candidate LibraryConf
 		handoff = filepath.Clean(candidate.Download.HandoffPath)
 		if pathsOverlap(root, handoff) {
 			add("download.handoff_path", "%s overlaps the library's own folder %s. The importer's folder must be outside the scanned one.", handoff, root)
+		}
+	}
+	if strings.TrimSpace(tempDir) != "" {
+		// A relative temp_dir is resolved against the working directory, as
+		// the daemon itself resolves it when it creates the directory.
+		if absolute, err := filepath.Abs(tempDir); err == nil {
+			tempDir = absolute
+		}
+		tempDir = filepath.Clean(tempDir)
+		if pathsOverlap(root, tempDir) {
+			add("path", "%s overlaps %s, where anvil keeps its working files (daemon.temp_dir). A library folder must be outside it.", root, tempDir)
+		}
+		if handoff != "" && pathsOverlap(handoff, tempDir) {
+			add("download.handoff_path", "%s overlaps %s, where anvil keeps its working files (daemon.temp_dir). A handoff folder must be outside it.", handoff, tempDir)
 		}
 	}
 	for _, name := range sortedKeys(others) {

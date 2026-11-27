@@ -250,7 +250,7 @@ func TestLibraryProblemsAndPathConflicts(t *testing.T) {
 	}
 	conflicts := func(candidate LibraryConfig) string {
 		var fields []string
-		for _, problem := range LibraryPathConflicts(others, candidate) {
+		for _, problem := range LibraryPathConflicts("/var/lib/anvil/tmp", others, candidate) {
 			fields = append(fields, problem.Field)
 		}
 		return strings.Join(fields, ",")
@@ -269,11 +269,21 @@ func TestLibraryProblemsAndPathConflicts(t *testing.T) {
 		{"handoff into a library", LibraryConfig{Name: "dl", Kind: "download", Path: "/dl", Download: DownloadLibraryConfig{HandoffPath: "/media/movies/new"}}, "download.handoff_path"},
 		{"handoff inside its own root", LibraryConfig{Name: "dl", Kind: "download", Path: "/dl", Download: DownloadLibraryConfig{HandoffPath: "/dl/done"}}, "download.handoff_path"},
 		{"itself is not a conflict", valid, ""},
+		{"same as temp_dir", LibraryConfig{Name: "tmp", Kind: "media", Path: "/var/lib/anvil/tmp/"}, "path"},
+		{"inside temp_dir", LibraryConfig{Name: "tmp", Kind: "media", Path: "/var/lib/anvil/tmp/samples"}, "path"},
+		{"around temp_dir", LibraryConfig{Name: "var", Kind: "media", Path: "/var/lib"}, "path"},
+		{"beside temp_dir with a shared prefix", LibraryConfig{Name: "tmp2", Kind: "media", Path: "/var/lib/anvil/tmp2"}, ""},
+		{"handoff inside temp_dir", LibraryConfig{Name: "dl", Kind: "download", Path: "/dl", Download: DownloadLibraryConfig{HandoffPath: "/var/lib/anvil/tmp/done"}}, "download.handoff_path"},
+		{"handoff around temp_dir", LibraryConfig{Name: "dl", Kind: "download", Path: "/dl", Download: DownloadLibraryConfig{HandoffPath: "/var/lib/anvil"}}, "download.handoff_path"},
 	}
 	for _, test := range tests {
 		if got := conflicts(test.candidate); got != test.want {
 			t.Errorf("%s: conflicts on %q, want %q", test.name, got, test.want)
 		}
+	}
+	// Without a temp_dir there is nothing to compare against.
+	if problems := LibraryPathConflicts("", nil, LibraryConfig{Name: "tmp", Kind: "media", Path: "/var/lib/anvil/tmp"}); len(problems) != 0 {
+		t.Errorf("conflicts without a temp_dir: %+v", problems)
 	}
 }
 

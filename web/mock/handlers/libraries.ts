@@ -58,6 +58,9 @@ function rules(value: unknown): Rule[] {
   });
 }
 
+/** The daemon's temp_dir, as GET /settings reports it (handlers/system.ts). */
+const TEMP_DIR = "/var/lib/anvil/staging";
+
 /** Validates a write and fills what it leaves out. `existing` is set on PUT. */
 function parse(write: Partial<LibraryWrite>, existing?: StoredLibrary): LibraryWrite {
   const name = existing?.name ?? write.name;
@@ -68,6 +71,8 @@ function parse(write: Partial<LibraryWrite>, existing?: StoredLibrary): LibraryW
   const path = absolute(write.path, "path");
   const clash = db.libraries.find((l) => l !== existing && (l.path === path || path.startsWith(`${l.path}/`) || l.path.startsWith(`${path}/`)));
   if (clash) throw invalid(`${path} overlaps the library "${clash.name}" at ${clash.path}. Library folders must not contain each other.`, "path");
+  if (path === TEMP_DIR || path.startsWith(`${TEMP_DIR}/`) || TEMP_DIR.startsWith(`${path}/`))
+    throw invalid(`${path} overlaps ${TEMP_DIR}, where anvil keeps its working files (daemon.temp_dir). A library folder must be outside it.`, "path");
   if (!db.flows.some((f) => f.id === write.flow_id)) throw invalid("Choose a flow that exists.", "flow_id");
   const arr = write.arr ?? "";
   if (arr !== "" && !db.arrs.some((a) => a.name === arr)) throw invalid(`No Arr connection is named "${arr}".`, "arr");

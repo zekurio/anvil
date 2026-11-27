@@ -1,6 +1,7 @@
 package webapi
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"os"
@@ -11,6 +12,7 @@ import (
 	"testing/fstest"
 	"time"
 
+	"github.com/zekurio/anvil/pkg/config"
 	"github.com/zekurio/anvil/pkg/flow"
 )
 
@@ -339,6 +341,36 @@ func TestErrorShapes(t *testing.T) {
 	if parent := wantError(t, f.send(http.MethodPost, "/api/v1/libraries", library(func(w *LibraryWrite) { w.Path = filepath.Dir(f.media) })), http.StatusBadRequest, CodeInvalid); parent.Field != "path" {
 		t.Errorf("a root above another library: %+v", parent)
 	}
+	// Neither may overlap the daemon's temp_dir, which holds its own files.
+	tempDir := f.config().Daemon.TempDir
+	for field, write := range map[string]LibraryWrite{
+		"path": library(func(w *LibraryWrite) { w.Path = filepath.Join(tempDir, "samples") }),
+		"download.handoff_path": library(func(w *LibraryWrite) {
+			w.Kind, w.Download.HandoffPath = "download", tempDir
+		}),
+	} {
+		refused := wantError(t, f.send(http.MethodPost, "/api/v1/libraries", write), http.StatusBadRequest, CodeInvalid)
+		if refused.Field != field || !strings.Contains(refused.Message, "daemon.temp_dir") {
+			t.Errorf("%s overlapping temp_dir: %+v, want it to name daemon.temp_dir", field, refused)
+		}
+	}
+	// A library the anvil.toml import paused over its folders can be edited
+	// while it stays paused, and resumed only once they are fixed.
+	misplaced := config.LibraryConfig{Name: "scratch", Kind: "media", Path: filepath.Join(tempDir, "scratch"), FlowID: seeded.ID, Paused: true}.WithDefaults()
+	if _, err := f.state.CreateLibrary(context.Background(), misplaced, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	imported := want[Library](t, f.get("/api/v1/libraries/scratch"), http.StatusOK).LibraryWrite
+	imported.Priority = 3
+	want[Library](t, f.send(http.MethodPut, "/api/v1/libraries/scratch", imported), http.StatusOK)
+	imported.Paused = false
+	if refused := wantError(t, f.send(http.MethodPut, "/api/v1/libraries/scratch", imported), http.StatusBadRequest, CodeInvalid); refused.Field != "path" {
+		t.Errorf("resuming a library inside temp_dir = %+v, want field path", refused)
+	}
+	imported.Path = filepath.Join(filepath.Dir(f.media), "scratch")
+	want[Library](t, f.send(http.MethodPut, "/api/v1/libraries/scratch", imported), http.StatusOK)
+	wantNoContent(t, f.send(http.MethodDelete, "/api/v1/libraries/scratch", nil))
+
 	if taken := wantError(t, f.send(http.MethodPost, "/api/v1/libraries", LibraryWrite{Name: "movies", Kind: "media", Path: "/srv/other", FlowID: seeded.ID}), http.StatusConflict, CodeConflict); taken.Field != "name" {
 		t.Errorf("taken library name = %+v, want field name", taken)
 	}

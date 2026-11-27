@@ -50,8 +50,15 @@ type libraryDownloadSettings struct {
 
 const libraryColumns = `name, kind, path, flow_id, arr_name, paused, settings_json, created_at, updated_at`
 
-func (s *SQLiteStore) ListLibraries(ctx context.Context) (libraries []Library, err error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT `+libraryColumns+` FROM libraries ORDER BY name`)
+func (s *SQLiteStore) ListLibraries(ctx context.Context) ([]Library, error) {
+	return listLibraries(ctx, s.db)
+}
+
+// listLibraries reads every library through a *sql.DB or a *sql.Tx.
+func listLibraries(ctx context.Context, q interface {
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+}) (libraries []Library, err error) {
+	rows, err := q.QueryContext(ctx, `SELECT `+libraryColumns+` FROM libraries ORDER BY name`)
 	if err != nil {
 		return nil, fmt.Errorf("list libraries: %w", err)
 	}

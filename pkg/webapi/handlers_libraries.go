@@ -123,9 +123,12 @@ func (s *Server) checkLibrary(ctx context.Context, library config.LibraryConfig,
 	// The directories are compared against the stored libraries, not the
 	// runtime snapshot: the store is what this write is about to change. An
 	// update that leaves both directories alone is not checked again, so a
-	// library can always be paused or given another flow.
+	// library can always be paused or given another flow. Resuming is the
+	// exception: the one-time import of anvil.toml pauses a library whose
+	// directories conflict, and it must not run again until they are fixed.
 	moved := current == nil || current.Path != library.Path || current.Download.HandoffPath != library.Download.HandoffPath
-	if moved {
+	resumed := current != nil && current.Paused && !library.Paused
+	if moved || resumed {
 		stored, err := s.Store.ListLibraries(ctx)
 		if err != nil {
 			return err
@@ -134,7 +137,7 @@ func (s *Server) checkLibrary(ctx context.Context, library config.LibraryConfig,
 		for _, other := range stored {
 			others[other.Name] = other.LibraryConfig
 		}
-		if err := fieldProblem(config.LibraryPathConflicts(others, library)); err != nil {
+		if err := fieldProblem(config.LibraryPathConflicts(s.Config().Daemon.TempDir, others, library)); err != nil {
 			return err
 		}
 	}

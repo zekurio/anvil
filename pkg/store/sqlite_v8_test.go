@@ -346,7 +346,7 @@ profile = "fast"
 handoff_path = "/srv/import"
 stable_for = "90s"
 `)
-	result, err := state.ImportLegacyConfig(ctx, legacy, time.Now())
+	result, err := state.ImportLegacyConfig(ctx, legacy, "/var/lib/anvil/tmp", time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -430,7 +430,7 @@ stable_for = "90s"
 [libraries.extra]
 path = "/srv/media/extra"
 `)
-	again, err := state.ImportLegacyConfig(ctx, changed, time.Now())
+	again, err := state.ImportLegacyConfig(ctx, changed, "/var/lib/anvil/tmp", time.Now())
 	if err != nil || again.Imported || len(again.Libraries) != 0 {
 		t.Fatalf("second import = %+v, %v", again, err)
 	}
@@ -445,7 +445,7 @@ func TestImportLegacyConfigMarksAnEmptyFileAsDone(t *testing.T) {
 	if done, err := state.LegacyConfigImported(ctx); err != nil || done {
 		t.Fatalf("LegacyConfigImported before import = %t, %v", done, err)
 	}
-	result, err := state.ImportLegacyConfig(ctx, legacyConfig(t, ``), time.Now())
+	result, err := state.ImportLegacyConfig(ctx, legacyConfig(t, ``), "/var/lib/anvil/tmp", time.Now())
 	if err != nil || !result.Imported || len(result.Libraries)+len(result.Flows)+len(result.Arrs) != 0 {
 		t.Fatalf("empty import = %+v, %v", result, err)
 	}
@@ -453,7 +453,7 @@ func TestImportLegacyConfigMarksAnEmptyFileAsDone(t *testing.T) {
 		t.Fatalf("LegacyConfigImported after import = %t, %v", done, err)
 	}
 	// Libraries added to the file later are not picked up.
-	later, err := state.ImportLegacyConfig(ctx, legacyConfig(t, "[libraries.movies]\npath = \"/srv/media/movies\"\n"), time.Now())
+	later, err := state.ImportLegacyConfig(ctx, legacyConfig(t, "[libraries.movies]\npath = \"/srv/media/movies\"\n"), "/var/lib/anvil/tmp", time.Now())
 	if err != nil || later.Imported {
 		t.Fatalf("later import = %+v, %v", later, err)
 	}
@@ -487,7 +487,7 @@ profile = "wide"
 path = "/srv/media/music"
 profile = "fine"
 `)
-	result, err := state.ImportLegacyConfig(ctx, legacy, time.Now())
+	result, err := state.ImportLegacyConfig(ctx, legacy, "/var/lib/anvil/tmp", time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -520,7 +520,7 @@ preset = "4"
 [libraries.movies]
 path = "/srv/media/movies"
 `)
-	result, err := state.ImportLegacyConfig(ctx, legacy, time.Now())
+	result, err := state.ImportLegacyConfig(ctx, legacy, "/var/lib/anvil/tmp", time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1209,5 +1209,47 @@ func TestUpdateLibraryPriorityReachesItsQueuedJobs(t *testing.T) {
 	leased, err := state.LeaseNextJob(ctx, "w1", now.Add(time.Hour), now)
 	if err != nil || leased == nil || leased.LibraryName != "shows" {
 		t.Fatalf("LeaseNextJob = %+v, %v; want a job of shows", leased, err)
+	}
+}
+
+// The TOML never compared directories. A library that overlaps another one or
+// the daemon's temp_dir still comes over, because its sources and jobs belong
+// to it, but paused and with the reason.
+func TestImportLegacyConfigPausesLibrariesWithConflictingFolders(t *testing.T) {
+	ctx := context.Background()
+	state := openTestStore(t)
+	legacy := legacyConfig(t, `
+[libraries.movies]
+path = "/srv/media/movies"
+
+[libraries.movies-4k]
+path = "/srv/media/movies/4k"
+
+[libraries.scratch]
+path = "/var/lib/anvil/tmp/incoming"
+
+[libraries.shows]
+path = "/srv/media/shows"
+`)
+	result, err := state.ImportLegacyConfig(ctx, legacy, "/var/lib/anvil/tmp", time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	conflicts := map[string]string{}
+	for _, library := range result.Libraries {
+		conflicts[library.Name] = library.PathConflict
+	}
+	if len(conflicts) != 4 || conflicts["movies"] != "" || conflicts["shows"] != "" ||
+		!strings.Contains(conflicts["movies-4k"], `overlaps the library "movies"`) || !strings.Contains(conflicts["scratch"], "daemon.temp_dir") {
+		t.Fatalf("path conflicts = %+v", conflicts)
+	}
+	for name, wantPaused := range map[string]bool{"movies": false, "movies-4k": true, "scratch": true, "shows": false} {
+		library, err := state.GetLibrary(ctx, name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if library.Paused != wantPaused {
+			t.Errorf("library %q paused = %t, want %t", name, library.Paused, wantPaused)
+		}
 	}
 }

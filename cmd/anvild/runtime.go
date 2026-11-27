@@ -123,7 +123,7 @@ func (r *runtimeConfig) libraryChanged() {
 // hold them starts. It runs after the ownership claims, like every other
 // start-up side effect.
 func importLegacyConfig(ctx context.Context, cfg config.Config, state *store.SQLiteStore) error {
-	result, err := state.ImportLegacyConfig(ctx, cfg.Legacy, time.Now())
+	result, err := state.ImportLegacyConfig(ctx, cfg.Legacy, cfg.Daemon.TempDir, time.Now())
 	if err != nil {
 		return fmt.Errorf("import libraries from anvil.toml: %w", err)
 	}
@@ -141,6 +141,13 @@ func importLegacyConfig(ctx context.Context, cfg config.Config, state *store.SQL
 		}
 	}
 	for _, library := range result.Libraries {
+		if library.PathConflict != "" {
+			// The TOML never compared directories. A library whose folders
+			// overlap another's or temp_dir must not run as it is.
+			slog.Warn("imported library from anvil.toml is paused because of where its folders are; move them in the web UI, then resume the library",
+				"library", library.Name, "issue", library.PathConflict)
+			continue
+		}
 		if library.PausedFor != "" {
 			// One line per library, naming what to fix: left running, a
 			// library on a flow that does not validate fails every file it
