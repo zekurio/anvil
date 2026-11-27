@@ -239,6 +239,40 @@ func validateHDR(request Request, outputProbe domain.ProbeResult, result *domain
 			addError(result, fmt.Sprintf("output HDR %s %q does not match source %q", field.name, field.output, field.source))
 		}
 	}
+	// Players tone map HDR10 with the static metadata, so losing it changes
+	// how the output looks even when the color tags match.
+	if sourceVideo.MasteringDisplay && !outputVideo.MasteringDisplay {
+		addError(result, "output lost the source's HDR10 mastering display metadata")
+	}
+	if sourceVideo.ContentLightLevel && !outputVideo.ContentLightLevel {
+		addError(result, "output lost the source's HDR10 content light level metadata")
+	}
+	validateDolbyVision(request, sourceVideo, outputVideo, result)
+}
+
+// validateDolbyVision checks the Dolby Vision outcome the plan chose: copied
+// video keeps the RPU, and a re-encode keeps only a base layer that plays on
+// its own.
+func validateDolbyVision(request Request, sourceVideo, outputVideo domain.MediaStream, result *domain.ValidationResult) {
+	if sourceVideo.DolbyVision != nil {
+		result.SourceDolbyVision = sourceVideo.DolbyVision.String()
+	}
+	if outputVideo.DolbyVision != nil {
+		result.OutputDolbyVision = outputVideo.DolbyVision.String()
+	}
+	source := sourceVideo.DolbyVision
+	if source == nil {
+		return
+	}
+	if videoCopy(request) {
+		if source.RPU && (outputVideo.DolbyVision == nil || !outputVideo.DolbyVision.RPU) {
+			addError(result, fmt.Sprintf("copied video lost the source's Dolby Vision %s RPU", source))
+		}
+		return
+	}
+	if !source.CompatibleBaseLayer() {
+		addError(result, fmt.Sprintf("re-encoded Dolby Vision %s without its RPU; the base layer shows wrong colors on its own", source))
+	}
 }
 
 func computeSizeMetrics(result *domain.ValidationResult) {

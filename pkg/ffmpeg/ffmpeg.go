@@ -71,7 +71,7 @@ func BuildPlanFromRequest(request BuildPlanRequest) (domain.EncodePlan, error) {
 	if err := ValidateEncoderArgs(video.FFmpegArgs); err != nil {
 		return domain.EncodePlan{}, err
 	}
-	videoCopy, videoCopyReason := videoCopyState(video, request.Search)
+	videoCopy, videoCopyReason := videoCopyState(video, inputVideo, request.Search)
 	crf := selectedCRF(video, videoCopy, request.Search)
 	plan := domain.EncodePlan{
 		InputPath:            request.InputPath,
@@ -106,7 +106,12 @@ func BuildPlanFromRequest(request BuildPlanRequest) (domain.EncodePlan, error) {
 		AttachmentMode:       request.Profile.Attachments.Mode,
 		ChapterMode:          request.Profile.Chapters.Mode,
 		FFmpegArgs:           append([]string(nil), video.FFmpegArgs...),
-		HDR:                  request.Metadata.HDR,
+		Color: domain.VideoColor{
+			Range:     inputVideo.ColorRange,
+			Space:     inputVideo.ColorSpace,
+			Transfer:  inputVideo.ColorTransfer,
+			Primaries: inputVideo.ColorPrimaries,
+		},
 	}
 	if inputVideoFound {
 		plan.VideoSelectionApplied = true
@@ -128,12 +133,18 @@ func (request BuildPlanRequest) validate() error {
 	return nil
 }
 
-func videoCopyState(video domain.VideoProfile, search *domain.SearchResult) (bool, string) {
+func videoCopyState(video domain.VideoProfile, source domain.MediaStream, search *domain.SearchResult) (bool, string) {
 	videoCopy := false
 	videoCopyReason := ""
 	if video.SkipEncode {
 		videoCopy = true
 		videoCopyReason = "video encoding disabled by profile"
+	}
+	// A re-encode drops the RPU. Without it, a profile 5 or 10.0 base layer
+	// shows wrong colors on every player, so keep the source video instead.
+	if dv := source.DolbyVision; dv != nil && !dv.CompatibleBaseLayer() {
+		videoCopy = true
+		videoCopyReason = fmt.Sprintf("Dolby Vision profile %s has no base layer that plays without the RPU", dv)
 	}
 	if search != nil && search.SkipVideoEncode {
 		videoCopy = true
@@ -239,6 +250,13 @@ func (b Block) Run(ctx context.Context, job *pipeline.JobContext) error {
 		slog.Info("dropping embedded cover art video streams",
 			"input", plan.InputPath,
 			"streams", dropped,
+		)
+	}
+	if video, ok := primaryInputVideo(job.Probe); ok && video.DolbyVision != nil && !plan.VideoCopy {
+		slog.Info("re-encode drops the Dolby Vision RPU and keeps the base layer",
+			"input", plan.InputPath,
+			"dolby_vision_profile", video.DolbyVision.String(),
+			"color_transfer", video.ColorTransfer,
 		)
 	}
 	job.EncodePlan = &plan
@@ -392,6 +410,7 @@ func videoArgs(plan domain.EncodePlan) []string {
 	if pixelFormat := finalPixelFormat(plan); pixelFormat != "" {
 		args = append(args, "-pix_fmt", pixelFormat)
 	}
+	args = append(args, colorArgs(plan.Color)...)
 	if plan.Threads > 0 {
 		args = append(args, "-threads", strconv.Itoa(plan.Threads))
 	}
@@ -406,6 +425,33 @@ func finalPixelFormat(plan domain.EncodePlan) string {
 		return plan.PixelFormat
 	}
 	return videocodec.SoftwarePixelFormat(plan.BitDepth)
+}
+
+// colorArgs tags an HDR encode with the source's color signalling, so the
+// output does not depend on every decoder, filter, and encoder in the chain
+// passing frame color properties through. SDR is left to FFmpeg: ffprobe
+// names a few legacy SDR values (transfer bt470bg, matrix gbr) differently
+// from the options that set them, and the encode would fail to start.
+func colorArgs(color domain.VideoColor) []string {
+	switch color.Transfer {
+	case "smpte2084", "arib-std-b67":
+	default:
+		return nil
+	}
+	var args []string
+	for _, tag := range [...]struct{ option, value string }{
+		{"-color_range", color.Range},
+		{"-colorspace", color.Space},
+		{"-color_trc", color.Transfer},
+		{"-color_primaries", color.Primaries},
+	} {
+		switch tag.value {
+		case "", "unknown", "unspecified", "reserved":
+		default:
+			args = append(args, tag.option, tag.value)
+		}
+	}
+	return args
 }
 
 func qualityArgs(plan domain.EncodePlan) []string {
@@ -546,7 +592,7 @@ func videoTrackTitle(plan domain.EncodePlan, stream domain.MediaStream) string {
 	}
 	return joinTitleParts(
 		resolutionLabel(stream),
-		dynamicRangeLabel(stream),
+		dynamicRangeLabel(plan, stream),
 		codecLabel(codec),
 	)
 }
@@ -609,7 +655,16 @@ func absInt(value int) int {
 	return value
 }
 
-func dynamicRangeLabel(stream domain.MediaStream) string {
+func dynamicRangeLabel(plan domain.EncodePlan, stream domain.MediaStream) string {
+	label := transferLabel(stream)
+	// Only copied video keeps the RPU; a re-encode leaves the base layer.
+	if plan.VideoCopy && stream.DolbyVision != nil {
+		return joinTitleParts("DV", label)
+	}
+	return label
+}
+
+func transferLabel(stream domain.MediaStream) string {
 	transfer := strings.ToLower(strings.TrimSpace(stream.ColorTransfer))
 	switch transfer {
 	case "":

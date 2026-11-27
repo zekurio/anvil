@@ -139,6 +139,24 @@ and 4K model. Use `samples` and `sample_duration` for sampling. Other ab-av1
 options have no automatic translation. Upgrading invalidates existing
 checkpoints.
 
+## HDR and Dolby Vision
+
+HDR10 and HLG come through unchanged. For PQ and HLG sources, Anvil passes the
+source's color range, matrix, transfer, and primaries to FFmpeg as explicit
+options. FFmpeg carries HDR10 mastering display and content light level
+metadata into the output. HDR10+ dynamic metadata is not carried, so those
+sources play as HDR10. Validation records a finding when the output's color
+tags differ from the source or the static metadata is gone.
+
+The probe reads the Dolby Vision configuration record and the RPU on the first
+decoded frames, so remuxes that dropped the record are still recognized. A
+re-encode drops the RPU and keeps the base layer: profiles 7 and 8.1 become
+HDR10, 8.4 becomes HLG, and 8.2 becomes SDR. Profiles 5 and 10.0 have no base
+layer that shows correct colors without the RPU. For those, Anvil copies the
+video stream and still cleans up audio and subtitles. FFmpeg cannot
+stream-copy MP4 video tagged `dvh1` or `dvhe` into Matroska, so those jobs
+fail and leave the source alone.
+
 ## Operating
 
 ```
