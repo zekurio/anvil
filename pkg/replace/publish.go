@@ -144,7 +144,7 @@ func (m Manager) Replace(ctx context.Context, job *pipeline.JobContext) (string,
 	if err != nil {
 		return "", err
 	}
-	return m.execute(ctx, op)
+	return m.execute(ctx, job, op)
 }
 
 func (m Manager) Handoff(ctx context.Context, job *pipeline.JobContext) (string, error) {
@@ -161,11 +161,14 @@ func (m Manager) Handoff(ctx context.Context, job *pipeline.JobContext) (string,
 	if err != nil {
 		return "", err
 	}
-	return m.execute(ctx, op)
+	return m.execute(ctx, job, op)
 }
 
 // Recover resumes a journaled operation before the pipeline touches an input or
-// attempt-local staging path that may already have been removed.
+// attempt-local staging path that may already have been removed. What the job
+// context learns from it, the final path and whether the source media is
+// gone, comes from the journaled operation: the library may have been edited
+// since the operation was prepared.
 func (m Manager) Recover(ctx context.Context, job *pipeline.JobContext) (bool, error) {
 	if m.Journal == nil || job == nil || job.Job.ID == 0 {
 		return false, nil
@@ -177,7 +180,7 @@ func (m Manager) Recover(ctx context.Context, job *pipeline.JobContext) (bool, e
 	if !ok {
 		return false, nil
 	}
-	finalPath, err := m.resume(ctx, op)
+	finalPath, err := m.resume(ctx, job, op)
 	if err != nil {
 		return true, err
 	}
@@ -185,7 +188,7 @@ func (m Manager) Recover(ctx context.Context, job *pipeline.JobContext) (bool, e
 	return true, nil
 }
 
-func (m Manager) execute(ctx context.Context, intended PublishOperation) (string, error) {
+func (m Manager) execute(ctx context.Context, job *pipeline.JobContext, intended PublishOperation) (string, error) {
 	if m.Journal == nil {
 		return "", errors.New("publish journal is required")
 	}
@@ -201,7 +204,7 @@ func (m Manager) execute(ctx context.Context, intended PublishOperation) (string
 		if !samePublishIntent(op, intended) {
 			return "", &ConflictError{Destination: op.DestinationPath, Reason: "journaled operation does not match the resolved publish plan"}
 		}
-		return m.resume(ctx, op)
+		return m.resume(ctx, job, op)
 	}
 
 	now := m.now()
@@ -214,10 +217,12 @@ func (m Manager) execute(ctx context.Context, intended PublishOperation) (string
 	if err := m.boundary(BoundaryPrepared); err != nil {
 		return "", pending(err)
 	}
-	return m.resume(ctx, intended)
+	return m.resume(ctx, job, intended)
 }
 
-func (m Manager) resume(ctx context.Context, op PublishOperation) (string, error) {
+// resume carries an operation from the stage the journal holds to committed
+// and records on the job what the operation did.
+func (m Manager) resume(ctx context.Context, job *pipeline.JobContext, op PublishOperation) (string, error) {
 	if op.Stage == PublishStageConflict {
 		return "", &ConflictError{Destination: op.DestinationPath, Reason: op.ConflictDescription}
 	}
@@ -242,6 +247,7 @@ func (m Manager) resume(ctx context.Context, op PublishOperation) (string, error
 	if op.Stage != PublishStageCommitted {
 		return "", pending(fmt.Errorf("unexpected publish stage %q", op.Stage))
 	}
+	job.SourceMediaRemoved = op.Kind == publishKindHandoff && op.CleanupSource
 	return op.DestinationPath, nil
 }
 

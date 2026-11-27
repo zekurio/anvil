@@ -35,6 +35,12 @@ type JobContext struct {
 	OutputPath      string
 	StagingDir      string
 	FinalPath       string
+	// SourceMediaRemoved is set by the publish step when the operation it
+	// committed removed the source media, as a handoff with source cleanup
+	// does. It reports what the journaled operation did, which is not always
+	// what the library says now: the library may have been edited between a
+	// publish that was interrupted and the attempt that finished it.
+	SourceMediaRemoved bool
 
 	Probe      *domain.ProbeResult
 	Audio      *domain.AudioSelection

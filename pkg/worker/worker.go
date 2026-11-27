@@ -477,17 +477,15 @@ func (r Runner) complete(ctx context.Context, job *pipeline.JobContext) error {
 	if _, err := r.Store.CompleteJobOccurrence(ctx, store.CompleteJobOccurrenceInput{
 		JobID: job.Job.ID, AttemptID: job.Attempt.ID,
 		InputSizeBytes: jobInputSize(job), OutputSizeBytes: jobOutputSize(job),
-		SourceMediaRemoved:    sourceMediaRemovedOnCompletion(job),
+		// From the committed publish operation, never from the library: see
+		// pipeline.JobContext.SourceMediaRemoved.
+		SourceMediaRemoved:    job.SourceMediaRemoved,
 		FinalInputFingerprint: finalInputFingerprint(job),
 		CompletedAt:           r.now(),
 	}); err != nil {
 		return fmt.Errorf("complete job occurrence: %w", err)
 	}
 	return nil
-}
-
-func sourceMediaRemovedOnCompletion(job *pipeline.JobContext) bool {
-	return job != nil && job.Library.Kind == domain.LibraryKindDownload && job.Library.Download.CleanupSourceMedia
 }
 
 func finalInputFingerprint(job *pipeline.JobContext) *domain.FileFingerprint {
