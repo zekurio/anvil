@@ -663,6 +663,7 @@ export interface LibraryStats {
 export interface ScanResult {
   sources: number;
   assets: number;
+  /** New jobs, and jobs put back on the queue because the rules allow their files again (see denied_jobs). */
   enqueued_jobs: number;
   existing_jobs: number;
   /**

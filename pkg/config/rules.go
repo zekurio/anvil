@@ -300,14 +300,26 @@ func (s RuleSet) Decide(file RuleFile) RuleDecision {
 			continue
 		}
 		if rule.deny {
-			return RuleDecision{Rule: index, Reason: fmt.Sprintf("denied by rule %d (%s %s %q)", index+1, rule.source.Field, rule.source.Op, rule.source.Value)}
+			return RuleDecision{Rule: index, Reason: fmt.Sprintf("%s%d (%s %s %q)", deniedByRulePrefix, index+1, rule.source.Field, rule.source.Op, rule.source.Value)}
 		}
 		return RuleDecision{Allowed: true, Rule: index}
 	}
 	if s.fallbackDeny {
-		return RuleDecision{Rule: -1, Reason: "no rule allows it"}
+		return RuleDecision{Rule: -1, Reason: deniedByFallback}
 	}
 	return RuleDecision{Allowed: true, Rule: -1}
+}
+
+const (
+	deniedByRulePrefix = "denied by rule "
+	deniedByFallback   = "no rule allows it"
+)
+
+// DeniedByRules reports whether reason is one Decide gives for a denial. A
+// job skipped by a scan carries that reason as its last error, and the store
+// uses this to tell such a job from one that was skipped for any other cause.
+func DeniedByRules(reason string) bool {
+	return reason == deniedByFallback || strings.HasPrefix(reason, deniedByRulePrefix)
 }
 
 func (r compiledRule) matches(file RuleFile) bool {

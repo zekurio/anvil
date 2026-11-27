@@ -64,8 +64,8 @@ export function RulesTab(props: { library: Library }) {
       <div class="av-rulespage">
         <p class="av-rules-intro">A scan checks every file against these rules, top to bottom. The first rule that matches decides whether the file is queued. Paths are relative to the library folder.</p>
         <p class="av-rules-intro">
-          A denied file is never queued, and the Files tab does not list it unless anvil already knew the file. A file that was waiting in the queue when a rule denied it is skipped by the next scan, with the rule as its reason. A path rule that denies a
-          whole folder takes the files below it off the list. A job that has already started is not stopped.
+          A denied file is never queued, and the Files tab does not list it unless anvil already knew the file. A file that was waiting in the queue when a rule denied it is skipped by the next scan, with the rule as its reason, and queued again by the scan
+          after the rules allow it. A path rule that denies a whole folder takes the files below it off the list. A job that has already started is not stopped.
         </p>
         <Show when={general()}>{(message) => <Banner tone="danger">{message()}</Banner>}</Show>
         <RuleList rules={draft.value().rules} fallback={fallback()} errors={errors()} disabled={saving()} onChange={(rules) => change({ rules })} />

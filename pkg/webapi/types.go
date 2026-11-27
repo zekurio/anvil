@@ -415,8 +415,10 @@ type LibraryStats struct {
 
 // ScanResult reports one manual scan.
 type ScanResult struct {
-	Sources      int `json:"sources"`
-	Assets       int `json:"assets"`
+	Sources int `json:"sources"`
+	Assets  int `json:"assets"`
+	// EnqueuedJobs counts new jobs, and jobs put back on the queue because
+	// the rules allow their files again (see DeniedJobs).
 	EnqueuedJobs int `json:"enqueued_jobs"`
 	ExistingJobs int `json:"existing_jobs"`
 	// SkippedIgnored counts media files the scan saw and left out: those the

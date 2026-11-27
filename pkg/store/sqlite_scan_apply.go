@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/zekurio/anvil/pkg/config"
 	"github.com/zekurio/anvil/pkg/domain"
 )
 
@@ -323,8 +324,8 @@ WHERE id = ?
 // behind it may own staging, a part file, or a publish journal, and a running
 // one is the worker's; both are left to finish or fail on their own terms.
 // The occurrence itself stays as it is, so the file keeps its place in the
-// listing with the rule as the reason, and allowing it again lets the job be
-// retried.
+// listing with the rule as the reason, and requeueAllowedJob puts the job
+// back once the rules allow the file again.
 func (a *scanApplication) skipDeniedJobs(ctx context.Context, group *scanSourceGroup) error {
 	source, tracked := a.snapshot.sources[group.path]
 	if !tracked {
@@ -351,6 +352,42 @@ WHERE asset_id = ? AND state = ? AND attempt_count = 0
 		a.result.DeniedJobs += int(skipped)
 	}
 	return nil
+}
+
+// requeueAllowedJob is the reverse of skipDeniedJobs: the rules allow a file
+// again whose job they took off the queue, so the job waits in the queue
+// again. Without it a rule that was too strict would have to be undone file
+// by file, by retrying each job by hand.
+//
+// It reaches only what skipDeniedJobs left behind: a skipped job that never
+// started and whose reason is a rule's. A job the flow skipped, one that was
+// canceled, and one whose file was already processed all have an attempt or
+// another reason, and stay as they are.
+func (a *scanApplication) requeueAllowedJob(ctx context.Context, assetID domain.MediaAssetID) (bool, error) {
+	var id int64
+	var reason string
+	err := a.tx.QueryRowContext(ctx, `
+SELECT id, last_error FROM jobs WHERE asset_id = ? AND state = ? AND attempt_count = 0
+`, int64(assetID), string(domain.JobStateSkipped)).Scan(&id, &reason)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("find job of allowed file: %w", err)
+	}
+	if !config.DeniedByRules(reason) {
+		return false, nil
+	}
+	if _, err := a.tx.ExecContext(ctx, `
+UPDATE jobs
+SET state = ?, lease_owner = '', lease_deadline = NULL, heartbeat_at = NULL,
+	last_error = '', updated_at = ?, completed_at = NULL
+WHERE id = ?
+`, string(domain.JobStatePending), encodeTime(a.now), id); err != nil {
+		return false, fmt.Errorf("requeue job of allowed file: %w", err)
+	}
+	a.result.EnqueuedJobs++
+	return true, nil
 }
 
 // applyAsset records one persisted asset observation and reports whether the
@@ -396,7 +433,18 @@ WHERE id = ?
 	a.touchedAssets = append(a.touchedAssets, int64(asset.ID))
 
 	active := asset.Status == domain.MediaAssetActive
-	if entry.Enqueue && active && !skipKnown {
+	if !entry.Enqueue || !active {
+		return active, nil
+	}
+	if found {
+		// A known path is not queued a second time, but a job the rules took
+		// off the queue goes back on it.
+		requeued, err := a.requeueAllowedJob(ctx, asset.ID)
+		if err != nil || requeued {
+			return active, err
+		}
+	}
+	if !skipKnown {
 		if err := a.enqueue(ctx, sourceID, asset.ID); err != nil {
 			return false, err
 		}

@@ -193,6 +193,15 @@ func TestRuleSetDecide(t *testing.T) {
 		if !decision.Allowed && decision.Reason == "" {
 			t.Errorf("%s: denial has no reason", test.name)
 		}
+		// The store tells a job the rules skipped from any other by this.
+		if DeniedByRules(decision.Reason) == decision.Allowed {
+			t.Errorf("%s: DeniedByRules(%q) = %t for allowed=%t", test.name, decision.Reason, !decision.Allowed, decision.Allowed)
+		}
+	}
+	for _, other := range []string{"", "skipped by flow: Already AV1", "canceled by operator", "the file is no longer in the library: it was removed or renamed, or a rule now denies its folder"} {
+		if DeniedByRules(other) {
+			t.Errorf("DeniedByRules(%q) = true", other)
+		}
 	}
 }
 

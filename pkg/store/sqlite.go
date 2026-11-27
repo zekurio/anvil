@@ -105,9 +105,11 @@ type ApplyScanInput struct {
 }
 
 type ApplyScanResult struct {
-	Applied      bool
-	Sources      int
-	Assets       int
+	Applied bool
+	Sources int
+	Assets  int
+	// EnqueuedJobs counts new jobs and jobs put back on the queue because
+	// the rules allow their files again.
 	EnqueuedJobs int
 	ExistingJobs int
 	// DeniedJobs counts queued jobs this scan skipped because the rules now

@@ -371,3 +371,103 @@ func TestScanSkipsQueuedJobsOfDeniedFiles(t *testing.T) {
 		t.Fatalf("third scan = %+v, %v", third, err)
 	}
 }
+
+// A rule that was too strict is undone by changing the rule: the scan after
+// puts the jobs it took off the queue back, and nothing else.
+func TestScanRequeuesJobsOnceTheRulesAllowTheFileAgain(t *testing.T) {
+	for _, requeueExisting := range []bool{false, true} {
+		ctx := context.Background()
+		s := scanStore(t)
+		now := time.Unix(100, 0).UTC()
+		paths := []string{"denied.mkv", "by-fallback.mkv", "by-flow.mkv", "canceled.mkv", "done.mkv"}
+		entries := func(deny map[string]string) []ScanEntry {
+			list := make([]ScanEntry, 0, len(paths))
+			for _, path := range paths {
+				entry := pathEntry(path, 1)
+				if reason := deny[path]; reason != "" {
+					entry.Persist, entry.Enqueue, entry.DeniedReason = false, false, reason
+				}
+				list = append(list, entry)
+			}
+			return list
+		}
+		scan := func(deny map[string]string) ApplyScanResult {
+			t.Helper()
+			result, err := s.ApplyLibraryScan(ctx, scanToken(t, s), ApplyScanInput{LibraryName: "test", RequeueExisting: requeueExisting, CompletedAt: now, Entries: entries(deny)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			return result
+		}
+		stateOf := func(path string) domain.JobState {
+			t.Helper()
+			var state string
+			if err := s.db.QueryRowContext(ctx, `
+SELECT jobs.state FROM jobs JOIN media_sources ON media_sources.id = jobs.source_id WHERE media_sources.relative_path = ?
+`, path).Scan(&state); err != nil {
+				t.Fatalf("%s: %v", path, err)
+			}
+			return domain.JobState(state)
+		}
+		idOf := func(path string) int64 {
+			t.Helper()
+			var id int64
+			if err := s.db.QueryRowContext(ctx, `
+SELECT jobs.id FROM jobs JOIN media_sources ON media_sources.id = jobs.source_id WHERE media_sources.relative_path = ?
+`, path).Scan(&id); err != nil {
+				t.Fatalf("%s: %v", path, err)
+			}
+			return id
+		}
+
+		if first := scan(nil); first.EnqueuedJobs != len(paths) {
+			t.Fatalf("first scan = %+v, want %d queued jobs", first, len(paths))
+		}
+		// Three jobs end for reasons that are not a rule's. The flow skipped
+		// one in its first attempt; its reason only happens to read like a
+		// rule's, so the attempt is what tells it apart.
+		for _, change := range []struct {
+			path  string
+			query string
+			args  []any
+		}{
+			{"by-flow.mkv", `UPDATE jobs SET state = 'skipped', attempt_count = 1, last_error = ? WHERE id = ?`, []any{`denied by rule 9 of the flow`}},
+			{"canceled.mkv", `UPDATE jobs SET state = 'canceled', last_error = ? WHERE id = ?`, []any{"canceled by operator"}},
+			{"done.mkv", `UPDATE jobs SET state = 'skipped', last_error = ? WHERE id = ?`, []any{"the file is no longer in the library"}},
+		} {
+			if _, err := s.db.ExecContext(ctx, change.query, append(change.args, idOf(change.path))...); err != nil {
+				t.Fatal(err)
+			}
+		}
+
+		second := scan(map[string]string{"denied.mkv": `denied by rule 2 (size gt "1 MB")`, "by-fallback.mkv": "no rule allows it"})
+		if second.DeniedJobs != 2 {
+			t.Fatalf("scan with the strict rules = %+v, want two jobs skipped", second)
+		}
+		third := scan(nil)
+		if third.EnqueuedJobs != 2 || third.DeniedJobs != 0 {
+			t.Fatalf("scan with the rules relaxed = %+v, want the two jobs queued again", third)
+		}
+		want := map[string]domain.JobState{
+			"denied.mkv": domain.JobStatePending, "by-fallback.mkv": domain.JobStatePending,
+			"by-flow.mkv": domain.JobStateSkipped, "canceled.mkv": domain.JobStateCanceled, "done.mkv": domain.JobStateSkipped,
+		}
+		for path, state := range want {
+			if got := stateOf(path); got != state {
+				t.Errorf("requeue existing %t: job of %s = %s, want %s", requeueExisting, path, got, state)
+			}
+		}
+		var lastError string
+		var completedAt sql.NullString
+		if err := s.db.QueryRowContext(ctx, `SELECT last_error, completed_at FROM jobs WHERE id = ?`, idOf("denied.mkv")).Scan(&lastError, &completedAt); err != nil {
+			t.Fatal(err)
+		}
+		if lastError != "" || completedAt.Valid {
+			t.Errorf("requeued job keeps last_error %q, completed_at %v", lastError, completedAt)
+		}
+		// Nothing left to put back: the next scan changes nothing.
+		if fourth := scan(nil); fourth.EnqueuedJobs != 0 {
+			t.Errorf("repeated scan = %+v, want nothing queued", fourth)
+		}
+	}
+}
