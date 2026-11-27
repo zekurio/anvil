@@ -372,9 +372,9 @@ export function NodePalette(props: NodePaletteProps) {
     };
     const end = (event: PointerEvent) => {
       if (event.pointerId !== down.pointerId) return;
-      el.removeEventListener("pointermove", move);
-      el.removeEventListener("pointerup", end);
-      el.removeEventListener("pointercancel", end);
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", end);
+      window.removeEventListener("pointercancel", end);
       window.removeEventListener("keydown", key, true);
       if (!dragging) return;
       // The click that follows a drag must not also pick the entry.
@@ -388,9 +388,12 @@ export function NodePalette(props: NodePaletteProps) {
       event.stopPropagation();
       end(new PointerEvent("pointercancel", { pointerId: down.pointerId, clientX: down.clientX, clientY: down.clientY }));
     };
-    el.addEventListener("pointermove", move);
-    el.addEventListener("pointerup", end);
-    el.addEventListener("pointercancel", end);
+    // On the window, not the entry: until the drag has started nothing holds
+    // the pointer, and a quick pull leaves the 28px row between two move
+    // events. The entry would never hear of it and the drag would not start.
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", end);
+    window.addEventListener("pointercancel", end);
     window.addEventListener("keydown", key, true);
   };
 

@@ -66,7 +66,7 @@ function Editor(props: { data: Loaded; onReload: () => void }) {
   const editor = createEditor({ flowId, doc: data.doc, saved: data.saved, catalog: data.catalog, seed: data.seed, handoff: data.handoff });
   const draft = editor.draft;
   const navigate = useNavigate();
-  const { flows } = useAppData();
+  const { flows, libraries } = useAppData();
 
   let revision = data.flow?.revision ?? 0;
   const [saving, setSaving] = createSignal(false);
@@ -88,6 +88,14 @@ function Editor(props: { data: Loaded; onReload: () => void }) {
 
   // The polled list knows about libraries assigned after the editor opened.
   const usedBy = createMemo(() => flows().find((flow) => flow.id === flowId)?.libraries ?? data.flow?.libraries ?? []);
+
+  /** Where the file picker opens: beside the last tested file, else in a library this flow is for, else in any library. */
+  const testFolder = () => {
+    const last = editor.test()?.path || editor.lastTestPath();
+    if (last) return dirname(last);
+    const known = libraries();
+    return (known.find((library) => library.flow_id === flowId) ?? known[0])?.path ?? "";
+  };
 
   /* ---------- save ---------- */
 
@@ -342,7 +350,7 @@ function Editor(props: { data: Loaded; onReload: () => void }) {
         files
         title="Choose a file to test"
         confirmLabel="Test this file"
-        initialPath={dirname(editor.test()?.path || editor.lastTestPath())}
+        initialPath={testFolder()}
         onClose={() => setPicking(false)}
         onPick={(path) => {
           setPicking(false);
