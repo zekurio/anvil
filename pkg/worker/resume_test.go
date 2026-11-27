@@ -2,10 +2,13 @@ package worker
 
 import (
 	"context"
+	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/zekurio/anvil/pkg/domain"
+	"github.com/zekurio/anvil/pkg/flow"
 	"github.com/zekurio/anvil/pkg/pipeline"
 )
 
@@ -180,32 +183,174 @@ func TestResumeSearchAcrossQualityModes(t *testing.T) {
 	}
 }
 
-// The checkpoint fingerprint is the resolved profile as JSON, so it has to
-// change with every field that changes what a checkpointed step decides.
-func TestProfileFingerprintCoversFlowFields(t *testing.T) {
-	base := domain.Profile{Video: domain.VideoProfile{CRFMin: 18, CRFMax: 40}}
+// The first guard keys a checkpoint on what the flow means. Moving nodes
+// around, relabelling them, or spelling out a default must keep it; anything
+// that changes what the flow does to a file must drop it.
+func TestCheckpointFollowsFlowMeaningNotLayout(t *testing.T) {
+	original := flow.Default()
+	fingerprint := func(graph flow.Graph) string {
+		t.Helper()
+		value, err := flowFingerprint(graph)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return value
+	}
+	job := &pipeline.JobContext{InputPath: "movie.mkv"}
+	library := []byte(`{"Name":"movies"}`)
+	cached := basePipelineContext(job, library, fingerprint(original), domain.JobMetadata{})
+	matches := func(graph flow.Graph) bool {
+		return pipelineContextMatches(basePipelineContext(job, library, fingerprint(graph), domain.JobMetadata{}), cached)
+	}
+	if !matches(original) {
+		t.Fatal("an unchanged flow does not match its own checkpoint")
+	}
+
+	tidied := copyGraph(t, original)
+	for i := range tidied.Nodes {
+		tidied.Nodes[i].X += 160
+		tidied.Nodes[i].Y += 48
+		tidied.Nodes[i].Label = "renamed " + tidied.Nodes[i].ID
+	}
+	slices.Reverse(tidied.Nodes)
+	slices.Reverse(tidied.Edges)
+	if !matches(tidied) {
+		t.Fatal("moving, relabelling, and reordering nodes invalidated the checkpoint")
+	}
+
+	video := slices.IndexFunc(original.Nodes, func(node flow.Node) bool { return node.Type == "video.encode" })
+	if video < 0 {
+		t.Fatal("the default flow has no video.encode node")
+	}
+	changes := map[string]func(*flow.Node){
+		"quality target": func(node *flow.Node) { node.Options["target"] = 93.0 },
+		"fixed CRF": func(node *flow.Node) {
+			node.Options["quality_mode"] = "fixed"
+			node.Options["crf"] = 24
+		},
+		"preset": func(node *flow.Node) { node.Options["preset"] = "4" },
+	}
+	for name, change := range changes {
+		edited := copyGraph(t, original)
+		if edited.Nodes[video].Options == nil {
+			edited.Nodes[video].Options = map[string]any{}
+		}
+		change(&edited.Nodes[video])
+		if matches(edited) {
+			t.Errorf("checkpoint survived a changed %s", name)
+		}
+	}
+
+	// An unreadable flow has no fingerprint, and a checkpoint is never
+	// reused without one.
+	unknown := basePipelineContext(job, library, "", domain.JobMetadata{})
+	if pipelineContextMatches(unknown, unknown) {
+		t.Fatal("a checkpoint matched without a flow fingerprint")
+	}
+	if _, err := flowFingerprint(flow.Graph{}); err == nil {
+		t.Fatal("an invalid graph has a fingerprint")
+	}
+}
+
+func copyGraph(t *testing.T, graph flow.Graph) flow.Graph {
+	t.Helper()
+	data, err := json.Marshal(graph)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var copied flow.Graph
+	if err := json.Unmarshal(data, &copied); err != nil {
+		t.Fatal(err)
+	}
+	return copied
+}
+
+// The second guard sits behind the flow step: whatever the flow resolves now,
+// results computed under a different effective profile are gone before a step
+// can resume from them. Only the probe survives.
+func TestProfileGuardDropsResultsOfAnotherProfile(t *testing.T) {
+	base := domain.Profile{Name: "Default AV1", Video: domain.VideoProfile{CRFMin: 18, CRFMax: 40}}
 	changes := map[string]func(*domain.Profile){
 		"quality mode": func(p *domain.Profile) { p.Video.QualityMode = domain.VideoQualityFixed },
 		"fixed CRF":    func(p *domain.Profile) { p.Video.CRF = 24 },
+		"target":       func(p *domain.Profile) { p.Video.Target = 93 },
 		"crop opt-out": func(p *domain.Profile) { p.Crop.Disabled = true },
 		"audio encode": func(p *domain.Profile) { p.Audio.Encode = &domain.AudioEncode{Codec: "opus"} },
 		"encode bitrate": func(p *domain.Profile) {
 			p.Audio.Encode = &domain.AudioEncode{Codec: "opus", BitrateKbpsPerChannel: 64}
 		},
-		"audio downmix": func(p *domain.Profile) { p.Audio.Downmix = &domain.AudioDownmix{MaxChannels: 2, Codec: "aac"} },
-		"remove subs":   func(p *domain.Profile) { p.Subtitles.RemoveAll = true },
-		"drop bitmap":   func(p *domain.Profile) { p.Subtitles.DropBitmap = true },
+		"audio downmix":   func(p *domain.Profile) { p.Audio.Downmix = &domain.AudioDownmix{MaxChannels: 2, Codec: "aac"} },
+		"audio languages": func(p *domain.Profile) { p.Audio.LanguagesToKeep = []string{"eng"} },
+		"remove subs":     func(p *domain.Profile) { p.Subtitles.RemoveAll = true },
+		"drop bitmap":     func(p *domain.Profile) { p.Subtitles.DropBitmap = true },
 	}
-	job := &pipeline.JobContext{InputPath: "movie.mkv"}
-	cached := basePipelineContext(job, nil, mustJSON(base), domain.JobMetadata{})
-	if !pipelineContextMatches(cached, cached) {
-		t.Fatal("unchanged profile does not match its own checkpoint")
+	checkpoint := func() *pipelineContextPersistence {
+		cached := domain.JobPipelineContext{
+			ResolvedProfileJSON: profileFingerprint(base),
+			Probe:               &domain.ProbeResult{FormatName: "matroska"},
+			Audio:               &domain.AudioSelection{},
+			Crop:                &domain.CropResult{Filter: "crop=1920:800:0:140"},
+			Search:              &domain.SearchResult{CRF: 27},
+		}
+		return &pipelineContextPersistence{cached: &cached, current: cached}
+	}
+	resumes := func(p *pipelineContextPersistence, profile domain.Profile) (audio, search bool) {
+		t.Helper()
+		job := &pipeline.JobContext{Profile: profile}
+		if err := p.StepSucceeded(context.Background(), "flow", job); err != nil {
+			t.Fatal(err)
+		}
+		audio, err := p.ResumeStep(context.Background(), "audio-cleanup", job)
+		if err != nil {
+			t.Fatal(err)
+		}
+		search, err = p.ResumeStep(context.Background(), "crf-search", job)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return audio, search
+	}
+
+	p := checkpoint()
+	if audio, search := resumes(p, base); !audio || !search {
+		t.Fatalf("the same profile did not resume: audio %t, search %t", audio, search)
+	}
+	renamed := base
+	renamed.Name = "Renamed flow"
+	if audio, search := resumes(checkpoint(), renamed); !audio || !search {
+		t.Fatalf("renaming the flow invalidated its results: audio %t, search %t", audio, search)
 	}
 	for name, change := range changes {
 		profile := base
 		change(&profile)
-		if pipelineContextMatches(basePipelineContext(job, nil, mustJSON(profile), domain.JobMetadata{}), cached) {
-			t.Fatalf("checkpoint survived a changed %s", name)
+		p := checkpoint()
+		if audio, search := resumes(p, profile); audio || search {
+			t.Errorf("results survived a changed %s: audio %t, search %t", name, audio, search)
 		}
+		if p.current.Crop != nil || p.current.Audio != nil || p.current.Search != nil || p.current.Probe == nil {
+			t.Errorf("%s: checkpoint after the guard = %+v", name, p.current)
+		}
+		if p.current.ResolvedProfileJSON != profileFingerprint(profile) {
+			t.Errorf("%s: the checkpoint does not record the profile now in effect", name)
+		}
+	}
+}
+
+// A resumed probe hands back the probe and nothing else: the stream-cleanup
+// decision a previous attempt made under its profile must not leak into this
+// one, which is about to make its own.
+func TestResumedProbeDoesNotRestoreDerivedMetadata(t *testing.T) {
+	cached := domain.JobPipelineContext{
+		Probe:    &domain.ProbeResult{FormatName: "matroska"},
+		Metadata: domain.JobMetadata{StreamCleanupDisabled: true, StreamCleanupDisabledReason: "stale", CropFilter: "crop=1:1:0:0"},
+	}
+	p := &pipelineContextPersistence{cached: &cached, current: cached}
+	job := &pipeline.JobContext{Metadata: domain.JobMetadata{OriginalLanguage: "eng"}}
+	resumed, err := p.ResumeStep(context.Background(), "probe", job)
+	if err != nil || !resumed || job.Probe == nil {
+		t.Fatalf("probe resume = %t, %v", resumed, err)
+	}
+	if job.Metadata != (domain.JobMetadata{OriginalLanguage: "eng"}) {
+		t.Fatalf("metadata after probe resume = %+v", job.Metadata)
 	}
 }

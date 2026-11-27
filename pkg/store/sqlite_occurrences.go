@@ -25,6 +25,9 @@ func (s *SQLiteStore) ForceOccurrence(ctx context.Context, input ForceOccurrence
 	}
 	defer rollback(tx)
 
+	if err := requireLibraryTx(ctx, tx, input.LibraryName); err != nil {
+		return ForceOccurrenceResult{}, err
+	}
 	active, err := activeWorkForOccurrencePathTx(ctx, tx, input.LibraryName, input.SourceRelativePath, input.AssetRelativePath)
 	if err != nil {
 		return ForceOccurrenceResult{}, err

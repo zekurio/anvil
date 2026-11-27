@@ -70,27 +70,6 @@ type options struct {
 	showConfig      bool
 }
 
-type runtimeConfig struct {
-	mu  sync.RWMutex
-	cfg config.Config
-}
-
-func newRuntimeConfig(cfg config.Config) *runtimeConfig {
-	return &runtimeConfig{cfg: cfg}
-}
-
-func (r *runtimeConfig) Get() config.Config {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	return r.cfg
-}
-
-func (r *runtimeConfig) Set(cfg config.Config) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.cfg = cfg
-}
-
 func main() {
 	if err := run(os.Args[1:]); err != nil {
 		slog.Error("anvild failed", "error", err)
@@ -234,7 +213,6 @@ type shutdownRequest struct {
 
 func runDaemon(ctx context.Context, cfg config.Config, opts options) error {
 	startedAt := time.Now().UTC()
-	runtimeCfg := newRuntimeConfig(cfg)
 	serviceCtx, stopServices, workerCtx, stopWorkers := daemonContexts(ctx)
 	defer stopServices()
 	defer stopWorkers()
@@ -290,12 +268,27 @@ func runDaemon(ctx context.Context, cfg config.Config, opts options) error {
 
 	runConfiguredStagingCleanup(serviceCtx, cfg, state)
 
+	// Libraries, flows, and arr connections live in the store. An installation
+	// that still has them in anvil.toml gets them moved over once, and only
+	// then is the snapshot built that every loop below reads.
+	if err := importLegacyConfig(serviceCtx, cfg, state); err != nil {
+		return err
+	}
+	warnLegacySections(cfg)
+	cfg, err = withStoreSnapshot(serviceCtx, cfg, state)
+	if err != nil {
+		return err
+	}
+	runtimeCfg := newRuntimeConfig(cfg, state)
+	monitorReconfigured, watcherReconfigured := runtimeCfg.Reconfigured(), runtimeCfg.Reconfigured()
+
 	slog.Info("starting anvild", "mode", mode, "config", configPathLabel(opts.configPath), "temp_dir", cfg.Daemon.TempDir, "store", cfg.Daemon.StorePath, "control_socket", cfg.Daemon.ControlSocket, "workers", cfg.Daemon.WorkerCount, "threads", cfg.Daemon.TotalThreads, "filesystem_event_debounce", cfg.FilesystemEventDebounce(), "shutdown_policy", cfg.Daemon.ShutdownPolicy, "shutdown_timeout", cfg.Daemon.ShutdownTimeout, "log_level", cfg.Daemon.LogLevel, "recovered_jobs", recovered)
 	logConfiguredWork(cfg)
 
 	var wg sync.WaitGroup
 	var plannerRef atomic.Pointer[scheduler.Scheduler]
 	completion := &scanner.CompletionTracker{}
+	progress := &worker.ProgressTracker{}
 	control := startControlService(serviceCtx, &wg, listener, controlServiceDeps{
 		store:      state,
 		config:     runtimeCfg.Get,
@@ -319,9 +312,9 @@ func runDaemon(ctx context.Context, cfg config.Config, opts options) error {
 	startReloadLoop(serviceCtx, &wg, opts, runtimeCfg, reloadSignals)
 	runInitialScan(serviceCtx, runtimeCfg.Get(), state, completion)
 	startRecoveryLoop(serviceCtx, &wg, runtimeCfg.Get, state)
-	planner := startSchedulerLoop(serviceCtx, workerCtx, &wg, runtimeCfg.Get, state)
+	planner := startSchedulerLoop(serviceCtx, workerCtx, &wg, runtimeCfg.Get, state, progress)
 	plannerRef.Store(planner)
-	startScannerLoop(serviceCtx, &wg, runtimeCfg.Get, state, completion, planner.ActiveCount)
+	startScannerLoop(serviceCtx, &wg, runtimeCfg.Get, state, completion, planner.ActiveCount, monitorReconfigured, watcherReconfigured)
 
 	request := awaitShutdown(shutdown, control, stopServices)
 	shutdownCfg := runtimeCfg.Get()
@@ -437,12 +430,12 @@ func closeStore(state *store.SQLiteStore) {
 
 func logConfiguredWork(cfg config.Config) {
 	if len(cfg.Libraries) == 0 {
-		slog.Info("no libraries configured; scanner and scheduler will stay idle")
+		slog.Info("no libraries yet; scanner and scheduler stay idle until one is added in the web UI")
 		return
 	}
 
 	for name, library := range cfg.Libraries {
-		slog.Info("library configured", "name", name, "kind", library.Kind, "path", library.Path, "profile", library.Profile, "scan_interval", cfg.ScanIntervalForLibrary(domain.LibraryName(name)))
+		slog.Info("library loaded", "name", name, "kind", library.Kind, "path", library.Path, "flow_id", library.FlowID, "paused", library.Paused, "scan_interval", cfg.ScanIntervalForLibrary(domain.LibraryName(name)))
 	}
 	slog.Info("scanner, scheduler, worker, and built-in media pipeline are enabled")
 }
@@ -499,8 +492,15 @@ func startReloadLoop(ctx context.Context, wg *sync.WaitGroup, opts options, runt
 					slog.Error("config reload rejected", "error", err)
 					continue
 				}
-				runtimeCfg.Set(next)
-				slog.Info("config reloaded", "config", configPathLabel(opts.configPath), "libraries", len(next.Libraries), "profiles", len(next.Profiles), "workers", next.Daemon.WorkerCount, "threads", next.Daemon.TotalThreads, "filesystem_event_debounce", next.FilesystemEventDebounce(), "log_level", next.Daemon.LogLevel)
+				// SIGHUP re-reads both halves: the process settings from
+				// anvil.toml and the libraries from the store.
+				if err := runtimeCfg.Reload(ctx, next); err != nil {
+					slog.Error("config reload failed", "error", err)
+					continue
+				}
+				warnLegacySections(next)
+				reloaded := runtimeCfg.Get()
+				slog.Info("config reloaded", "config", configPathLabel(opts.configPath), "libraries", len(reloaded.Libraries), "workers", next.Daemon.WorkerCount, "threads", next.Daemon.TotalThreads, "filesystem_event_debounce", next.FilesystemEventDebounce(), "log_level", next.Daemon.LogLevel)
 			}
 		}
 	})
@@ -543,11 +543,12 @@ func parseLogLevel(logLevel string) (slog.Level, string, error) {
 	}
 }
 
-func startScannerLoop(ctx context.Context, wg *sync.WaitGroup, cfgProvider func() config.Config, state *store.SQLiteStore, completion *scanner.CompletionTracker, activeWorkers func() int) {
+func startScannerLoop(ctx context.Context, wg *sync.WaitGroup, cfgProvider func() config.Config, state *store.SQLiteStore, completion *scanner.CompletionTracker, activeWorkers func() int, monitorReconfigured, watcherReconfigured <-chan struct{}) {
 	monitor := &scanner.Monitor{
 		Scanner:        scanner.Scanner{Store: state, Completion: completion},
 		ConfigProvider: cfgProvider,
-		EventSource:    &scanner.FilesystemEventSource{Completion: completion},
+		EventSource:    &scanner.FilesystemEventSource{Completion: completion, Reconfigured: watcherReconfigured},
+		Reconfigured:   monitorReconfigured,
 		OnScan: func(library config.LibraryConfig, reason string, result scanner.ScanResult, err error) {
 			if err != nil {
 				slog.Error("scan failed", "library", library.Name, "reason", reason, "error", err)
@@ -594,12 +595,13 @@ func startRecoveryLoop(ctx context.Context, wg *sync.WaitGroup, cfgProvider func
 	})
 }
 
-func startSchedulerLoop(ctx context.Context, workerCtx context.Context, wg *sync.WaitGroup, cfgProvider func() config.Config, state *store.SQLiteStore) *scheduler.Scheduler {
+func startSchedulerLoop(ctx context.Context, workerCtx context.Context, wg *sync.WaitGroup, cfgProvider func() config.Config, state *store.SQLiteStore, progress *worker.ProgressTracker) *scheduler.Scheduler {
 	runner := worker.Runner{
 		Store:            state,
 		ConfigProvider:   cfgProvider,
 		MetadataResolver: metadata.Resolver{},
 		Pipeline:         worker.DefaultPipeline(cfgProvider().Daemon.TempDir, state),
+		Progress:         progress,
 		TempDir:          cfgProvider().Daemon.TempDir,
 	}
 	planner := &scheduler.Scheduler{

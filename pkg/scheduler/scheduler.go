@@ -250,10 +250,16 @@ func (s *Scheduler) allocator(cfg config.Config) resources.Allocator {
 	return resources.NewAllocator(cfg.Daemon.TotalThreads)
 }
 
+// eligibleLibrariesForCounts lists the libraries a job may be leased from
+// right now. A paused library is left out, so its jobs stay pending while the
+// ones already running finish; so is a library at its concurrency limit.
 func eligibleLibrariesForCounts(cfg config.Config, activeByLibrary map[domain.LibraryName]int) []domain.LibraryName {
 	allowed := make([]domain.LibraryName, 0, len(cfg.Libraries))
 	for libraryName, library := range cfg.Libraries {
 		name := domain.LibraryName(libraryName)
+		if library.Paused {
+			continue
+		}
 		if library.ConcurrencyLimit > 0 && activeByLibrary[name] >= library.ConcurrencyLimit {
 			continue
 		}

@@ -32,7 +32,7 @@ target = 0
 	if cfg.Daemon.TotalThreads != 0 {
 		t.Fatalf("TotalThreads = %d, want explicit 0", cfg.Daemon.TotalThreads)
 	}
-	video := cfg.Profiles[DefaultProfileName].Video
+	video := cfg.Legacy.Profiles[DefaultProfileName].Video
 	if video.CRFMin != 0 {
 		t.Fatalf("CRFMin = %d, want explicit 0", video.CRFMin)
 	}
@@ -57,7 +57,7 @@ func TestLoadFillsDefaultsWhenOmitted(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	video := cfg.Profiles[DefaultProfileName].Video
+	video := cfg.Legacy.Profiles[DefaultProfileName].Video
 	if video.CRFMin != DefaultCRFMin || video.CRFMax != DefaultCRFMax {
 		t.Fatalf("CRF range = %d..%d", video.CRFMin, video.CRFMax)
 	}
@@ -80,10 +80,10 @@ preset = "4"
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := cfg.Profiles[DefaultProfileName]; !ok {
+	if _, ok := cfg.Legacy.Profiles[DefaultProfileName]; !ok {
 		t.Fatal("default profile is missing")
 	}
-	fast := cfg.Profiles["fast"].Video
+	fast := cfg.Legacy.Profiles["fast"].Video
 	if fast.Preset != "4" || fast.CRFMin != DefaultCRFMin || fast.CRFMax != DefaultCRFMax {
 		t.Fatalf("fast video = %#v", fast)
 	}
@@ -184,15 +184,101 @@ stable_for = "90s"
 	if err != nil {
 		t.Fatal(err)
 	}
-	library := cfg.Libraries["downloads"]
+	library := cfg.Legacy.Libraries["downloads"]
 	if library.ScanInterval.Duration != 5*time.Minute {
 		t.Fatalf("ScanInterval = %v", library.ScanInterval)
 	}
 	if library.Download.StableFor.Duration != 90*time.Second {
 		t.Fatalf("StableFor = %v", library.Download.StableFor)
 	}
+	// The runtime snapshot is empty until the daemon fills it from the store;
+	// a legacy library converts into it with its settings intact.
+	if len(cfg.Libraries) != 0 {
+		t.Fatalf("Load filled the runtime libraries: %+v", cfg.Libraries)
+	}
+	cfg.Libraries["downloads"] = library.Runtime()
 	if got := cfg.ScanIntervalForLibrary("downloads"); got != 5*time.Minute {
 		t.Fatalf("ScanIntervalForLibrary = %v", got)
+	}
+	if got := cfg.Legacy.Sections; len(got) != 1 || got[0] != "libraries" {
+		t.Fatalf("Sections = %v", got)
+	}
+}
+
+func TestLibraryProblemsAndPathConflicts(t *testing.T) {
+	valid := LibraryConfig{Name: "movies", Kind: "media", Path: "/media/movies", FlowID: 1}.WithDefaults()
+	if problems := valid.Problems(); len(problems) != 0 {
+		t.Fatalf("valid library has problems: %+v", problems)
+	}
+	if valid.Media.ReplacementMode != DefaultReplacementMode || valid.RuleFallback != RuleAllow {
+		t.Fatalf("defaults = %+v", valid)
+	}
+
+	broken := LibraryConfig{
+		Name: "inbox", Kind: "download", Path: "relative/inbox", ConcurrencyLimit: -1,
+		Rules:    []Rule{{Action: RuleDeny, Field: RuleFieldSize, Op: RuleOpLess, Value: "small"}},
+		Download: DownloadLibraryConfig{HandoffPath: "also/relative", HandoffMode: "teleport", IgnorableGlobs: []string{"[a-"}},
+	}.WithDefaults()
+	fields := make(map[string]string)
+	for _, problem := range broken.Problems() {
+		fields[problem.Field] = problem.Message
+	}
+	for _, field := range []string{"path", "flow_id", "concurrency_limit", "rules[0].value", "download.handoff_path", "download.handoff_mode", "download.ignorable_globs[0]"} {
+		if fields[field] == "" {
+			t.Errorf("no problem reported for %s: %+v", field, fields)
+		}
+	}
+	if len(fields) != 7 {
+		t.Errorf("unexpected problems: %+v", fields)
+	}
+
+	others := map[string]LibraryConfig{
+		"movies": valid,
+		"inbox":  {Name: "inbox", Kind: "download", Path: "/downloads", Download: DownloadLibraryConfig{HandoffPath: "/import/movies"}},
+	}
+	conflicts := func(candidate LibraryConfig) string {
+		var fields []string
+		for _, problem := range LibraryPathConflicts(others, candidate) {
+			fields = append(fields, problem.Field)
+		}
+		return strings.Join(fields, ",")
+	}
+	tests := []struct {
+		name      string
+		candidate LibraryConfig
+		want      string
+	}{
+		{"disjoint", LibraryConfig{Name: "shows", Kind: "media", Path: "/media/shows"}, ""},
+		{"sibling with a shared prefix", LibraryConfig{Name: "m2", Kind: "media", Path: "/media/movies2"}, ""},
+		{"same root", LibraryConfig{Name: "dup", Kind: "media", Path: "/media/movies/"}, "path"},
+		{"below another root", LibraryConfig{Name: "sub", Kind: "media", Path: "/media/movies/4k"}, "path"},
+		{"above another root", LibraryConfig{Name: "all", Kind: "media", Path: "/media"}, "path"},
+		{"on another library's handoff directory", LibraryConfig{Name: "imp", Kind: "media", Path: "/import"}, "path"},
+		{"handoff into a library", LibraryConfig{Name: "dl", Kind: "download", Path: "/dl", Download: DownloadLibraryConfig{HandoffPath: "/media/movies/new"}}, "download.handoff_path"},
+		{"handoff inside its own root", LibraryConfig{Name: "dl", Kind: "download", Path: "/dl", Download: DownloadLibraryConfig{HandoffPath: "/dl/done"}}, "download.handoff_path"},
+		{"itself is not a conflict", valid, ""},
+	}
+	for _, test := range tests {
+		if got := conflicts(test.candidate); got != test.want {
+			t.Errorf("%s: conflicts on %q, want %q", test.name, got, test.want)
+		}
+	}
+}
+
+func TestArrProblems(t *testing.T) {
+	if problems := (ArrConfig{Type: "radarr", BaseURL: "http://localhost:7878", APIKeyFile: "/run/secrets/radarr"}).Problems(); len(problems) != 0 {
+		t.Fatalf("valid arr has problems: %+v", problems)
+	}
+	problems := ArrConfig{Type: "plex", BaseURL: "localhost:7878", APIKeyFile: "key.txt"}.Problems()
+	var fields []string
+	for _, problem := range problems {
+		fields = append(fields, problem.Field)
+	}
+	if got := strings.Join(fields, ","); got != "type,base_url,api_key_file" {
+		t.Fatalf("problem fields = %q", got)
+	}
+	if problems := (ArrConfig{Type: "sonarr", BaseURL: "https://sonarr.example"}).Problems(); len(problems) != 1 || problems[0].Field != "api_key" {
+		t.Fatalf("missing key: %+v", problems)
 	}
 }
 
@@ -208,7 +294,7 @@ handoff_path = "/srv/imports"
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := cfg.Libraries["downloads"].Download.StableFor.Duration; got != DefaultStableFor {
+	if got := cfg.Legacy.Libraries["downloads"].Download.StableFor.Duration; got != DefaultStableFor {
 		t.Fatalf("StableFor = %v", got)
 	}
 }
@@ -228,7 +314,7 @@ ffmpeg_args = ["-svtav1-params", "tune=0"]
 	if err != nil {
 		t.Fatal(err)
 	}
-	video := cfg.Profiles[DefaultProfileName].ToDomain().Video
+	video := cfg.Legacy.Profiles[DefaultProfileName].ToDomain().Video
 	if video.Samples != 4 || video.SampleDuration != 10*time.Second {
 		t.Fatalf("video = %+v", video)
 	}

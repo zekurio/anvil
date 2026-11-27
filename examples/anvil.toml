@@ -1,34 +1,14 @@
-# Start with one library; the built-in AV1 profile is a safe default.
-[arrs.radarr]
-type = "radarr"
-base_url = "http://localhost:7878"
-# Keep credentials out of a broadly readable config file.
-api_key_file = "/run/secrets/radarr-api-key"
+# anvil.toml holds the process settings only. Libraries, flows, and Arr
+# connections are created and edited in the web UI.
+[daemon]
+temp_dir = "/var/lib/anvil/tmp"
+store_path = "/var/lib/anvil/anvil.db"
+control_socket = "/run/anvil/anvild.sock"
 
-[libraries.movies]
-path = "/srv/media/movies"
-arr = "radarr"
-
-# Use download mode when another service should import completed downloads.
-# [libraries.downloads]
-# kind = "download"
-# path = "/srv/downloads/complete"
-# arr = "radarr"
-#
-# [libraries.downloads.download]
-# handoff_path = "/srv/imports/movies"
-# stable_for = "5m" # Fallback quiet period when no close-write or moved-in completion is observed.
-# handoff_mode = "move" # Choose move only when the downloader no longer needs its copy.
-# cleanup_source_media = true # Remove the source only after a successful handoff.
-# prune_empty_dirs = true # Clean release directories only when source cleanup is enabled.
-
-# Switch the search metric only when XPSNR better fits your quality policy.
-# [profiles.default-av1.video]
-# metric = "xpsnr" # Typical XPSNR targets are 35-50.
-# target = 42.0
-#
-# [profiles.default-av1.video.overrides.hevc]
-# metric = "vmaf" # Let already-compressed HEVC use a stricter source-specific rule.
-# target = 96.0
+[web]
+# The UI can replace and delete media files. Keep it on loopback, or set a
+# password before listening on an address other machines can reach.
+listen = "127.0.0.1:8484"
+# password_file = "/run/secrets/anvil-web"
 
 # Every supported setting and its default: examples/anvil-reference.toml

@@ -1,19 +1,13 @@
 # Complete Anvil configuration reference. Copy only the settings your deployment needs.
-# Names after profiles, arrs, and libraries are your own non-empty names.
 #
-# The smallest useful configuration is one library:
+# anvil.toml holds the process settings: [daemon] and [web]. Libraries, flows,
+# and Arr connections live in the daemon's store and are created and edited in
+# the web UI. A daemon needs no configuration file at all to start; it then
+# listens on http://127.0.0.1:8484 and keeps its state under the system
+# temporary directory.
 #
-# [libraries.movies]
-# path = "/srv/media/movies"
-#
-# A custom profile needs only changed values:
-#
-# [profiles.fast.video]
-# preset = "4"
-#
-# The daemon and default profile sections show defaults. Machine-specific
-# daemon paths and CPU counts use stable examples. Arr, library, and override
-# sections are examples.
+# The [daemon] and [web] sections show defaults. Machine-specific daemon paths
+# and CPU counts use stable examples.
 
 [daemon]
 temp_dir = "/var/lib/anvil/tmp" # Scratch directory for search samples and process logs. Encode artifacts are written on the destination filesystem as <name>.job-<id>.anvil-part: beside the destination for media libraries, under <handoff_path>/.anvil-work for download libraries. store_path and control_socket default to locations inside this directory.
@@ -38,6 +32,22 @@ listen = "127.0.0.1:8484" # TCP address to listen on; "host:port". Changing it n
 # password_file = "/run/secrets/anvil-web" # File holding the single shared password, preferred over password. Its trailing newline is ignored. Re-read on SIGHUP.
 # password = "change-me" # Literal password, redacted by check-config --show. Set this or password_file; with neither, the UI asks for no sign-in.
 allow_unauthenticated = false # Accept a listen address other machines can reach without a password. Only for a network where everyone may change and delete the media.
+
+# ---------------------------------------------------------------------------
+# Import-only sections
+#
+# [profiles], [arrs], and [libraries] are what Anvil was configured with
+# before libraries moved into the store. They still parse, and the first start
+# of a daemon whose store has never seen them imports them once: every profile
+# a library uses becomes a flow that resolves to the same settings, and
+# include, exclude, and ignore_regex become the library's rules. After that
+# import the daemon ignores them and says so in its log at every start. Do not
+# add them to a new installation.
+#
+# Names after profiles, arrs, and libraries are your own non-empty names. The
+# default profile section shows defaults; arr, library, and override sections
+# are examples.
+# ---------------------------------------------------------------------------
 
 [profiles.default-av1]
 container = "mkv" # Output container; only "mkv".

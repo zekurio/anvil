@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -152,6 +153,246 @@ func testLibrary(name string, flowID int64) config.LibraryConfig {
 	return config.LibraryConfig{
 		Name: name, Kind: "media", Path: "/media/" + name, FlowID: flowID,
 		Media: config.MediaLibraryConfig{ReplacementMode: "replace"},
+	}
+}
+
+// mustCreateLibrary gives a test the library row every scan and requeue
+// needs.
+func mustCreateLibrary(t testing.TB, state *SQLiteStore, name string) {
+	t.Helper()
+	flows, err := state.ListFlows(context.Background())
+	if err != nil || len(flows) == 0 {
+		t.Fatalf("ListFlows = %v, %v", flows, err)
+	}
+	if _, err := state.CreateLibrary(context.Background(), testLibrary(name, flows[0].ID), time.Now()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestScansOfAnUnknownLibraryAreRefused(t *testing.T) {
+	ctx := context.Background()
+	state := openTestStore(t)
+	if _, err := state.BeginLibraryScan(ctx, "ghost"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("BeginLibraryScan = %v, want ErrNotFound", err)
+	}
+	mustCreateLibrary(t, state, "movies")
+	token, err := state.BeginLibraryScan(ctx, "movies")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The library is deleted while the scan walks the filesystem: applying
+	// its result must not bring sources back.
+	if err := state.DeleteLibrary(ctx, "movies"); err != nil {
+		t.Fatal(err)
+	}
+	entry := scanTestEntry(1)
+	if _, err := state.ApplyLibraryScan(ctx, token, ApplyScanInput{LibraryName: "movies", Entries: []ScanEntry{entry}}); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("ApplyLibraryScan after delete = %v, want ErrNotFound", err)
+	}
+	if _, err := state.ForceOccurrence(ctx, ForceOccurrenceInput{
+		LibraryName: "movies", SourceKind: domain.SourceKindFile, SourceRelativePath: "a.mkv", AssetRelativePath: "a.mkv",
+	}); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("ForceOccurrence after delete = %v, want ErrNotFound", err)
+	}
+	var sources int
+	if err := state.db.QueryRowContext(ctx, `SELECT count(*) FROM media_sources`).Scan(&sources); err != nil || sources != 0 {
+		t.Fatalf("%d sources were written for a deleted library, %v", sources, err)
+	}
+}
+
+func legacyConfig(t *testing.T, text string) config.LegacyConfig {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "anvil.toml")
+	if err := os.WriteFile(path, []byte(text), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return cfg.Legacy
+}
+
+func TestImportLegacyConfigOnceAndEquivalently(t *testing.T) {
+	ctx := context.Background()
+	state := openTestStore(t)
+	legacy := legacyConfig(t, `
+[arrs.radarr]
+type = "radarr"
+base_url = "http://localhost:7878"
+api_key = "secret"
+
+[profiles.fast.video]
+preset = "8"
+crf_max = 45
+
+[profiles.fast.video.overrides.hevc]
+skip_encode = true
+
+[profiles.unused.video]
+preset = "2"
+
+[libraries.movies]
+path = "/srv/media/movies"
+arr = "radarr"
+include = ["Films/**"]
+exclude = ["**/Extras/**"]
+ignore_regex = ['\.sample\.']
+priority = 3
+
+[libraries.shows]
+path = "/srv/media/shows"
+profile = "fast"
+
+[libraries.inbox]
+kind = "download"
+path = "/srv/downloads"
+profile = "fast"
+
+[libraries.inbox.download]
+handoff_path = "/srv/import"
+stable_for = "90s"
+`)
+	result, err := state.ImportLegacyConfig(ctx, legacy, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Imported || len(result.Arrs) != 1 || len(result.Libraries) != 3 || len(result.Flows) != 2 || len(result.Skipped) != 0 {
+		t.Fatalf("result = %+v", result)
+	}
+
+	flows, err := state.ListFlows(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byName := make(map[string]Flow)
+	for _, item := range flows {
+		byName[item.Name] = item
+	}
+	// The unmodified default profile is the seeded flow; the unused profile
+	// is not imported at all.
+	if len(flows) != 2 || byName[DefaultFlowName].ID == 0 || byName["fast"].ID == 0 {
+		t.Fatalf("flows = %v", byName)
+	}
+
+	libraries, err := state.ListLibraries(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(libraries) != 3 {
+		t.Fatalf("libraries = %+v", libraries)
+	}
+	for _, library := range libraries {
+		if library.Paused {
+			t.Errorf("imported library %q is paused", library.Name)
+		}
+	}
+	movies, err := state.GetLibrary(ctx, "movies")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantRules, wantFallback := config.LegacyRules([]string{"Films/**"}, []string{"**/Extras/**"}, []string{`\.sample\.`})
+	if movies.FlowID != byName[DefaultFlowName].ID || movies.Arr != "radarr" || movies.Priority != 3 ||
+		movies.RuleFallback != wantFallback || len(movies.Rules) != len(wantRules) || movies.Media.ReplacementMode != "replace" {
+		t.Fatalf("movies = %+v", movies)
+	}
+	for i := range wantRules {
+		if movies.Rules[i] != wantRules[i] {
+			t.Errorf("movies rule %d = %+v, want %+v", i, movies.Rules[i], wantRules[i])
+		}
+	}
+	inbox, err := state.GetLibrary(ctx, "inbox")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if inbox.FlowID != byName["fast"].ID || inbox.Download.HandoffPath != "/srv/import" ||
+		inbox.Download.StableFor.Duration != 90*time.Second || len(inbox.Download.IgnorableGlobs) == 0 {
+		t.Fatalf("inbox = %+v", inbox)
+	}
+	if arr, err := state.GetArr(ctx, "radarr"); err != nil || arr.APIKey != "secret" || arr.Type != "radarr" {
+		t.Fatalf("arr = %+v, %v", arr, err)
+	}
+
+	// The imported flow resolves to what the profile resolved to, for a
+	// source the override matches and for one it does not.
+	profile := legacy.Profiles["fast"]
+	profile.Name = "fast"
+	for _, codec := range []string{"hevc", "h264"} {
+		probe := domain.ProbeResult{Streams: []domain.MediaStream{{Type: "video", Codec: codec, Width: 1920, Height: 1080}}}
+		resolution, err := flow.Evaluate(byName["fast"].Graph, flow.Facts{Probe: probe})
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := domain.EffectiveVideoProfile(profile.ToDomain(), domain.JobMetadata{}, codec)
+		if resolution.Profile.Video.SkipEncode != want.SkipEncode {
+			t.Errorf("%s: flow skips encode = %t, profile = %t", codec, resolution.Profile.Video.SkipEncode, want.SkipEncode)
+		}
+		if !want.SkipEncode && (resolution.Profile.Video.Preset != want.Preset || resolution.Profile.Video.CRFMax != want.CRFMax) {
+			t.Errorf("%s: flow video = %+v, profile = %+v", codec, resolution.Profile.Video, want)
+		}
+	}
+
+	// A second import does nothing, even with a changed file.
+	changed := legacyConfig(t, `
+[libraries.extra]
+path = "/srv/media/extra"
+`)
+	again, err := state.ImportLegacyConfig(ctx, changed, time.Now())
+	if err != nil || again.Imported || len(again.Libraries) != 0 {
+		t.Fatalf("second import = %+v, %v", again, err)
+	}
+	if libraries, err := state.ListLibraries(ctx); err != nil || len(libraries) != 3 {
+		t.Fatalf("libraries after second import = %d, %v", len(libraries), err)
+	}
+}
+
+func TestImportLegacyConfigMarksAnEmptyFileAsDone(t *testing.T) {
+	ctx := context.Background()
+	state := openTestStore(t)
+	if done, err := state.LegacyConfigImported(ctx); err != nil || done {
+		t.Fatalf("LegacyConfigImported before import = %t, %v", done, err)
+	}
+	result, err := state.ImportLegacyConfig(ctx, legacyConfig(t, ``), time.Now())
+	if err != nil || !result.Imported || len(result.Libraries)+len(result.Flows)+len(result.Arrs) != 0 {
+		t.Fatalf("empty import = %+v, %v", result, err)
+	}
+	if done, err := state.LegacyConfigImported(ctx); err != nil || !done {
+		t.Fatalf("LegacyConfigImported after import = %t, %v", done, err)
+	}
+	// Libraries added to the file later are not picked up.
+	later, err := state.ImportLegacyConfig(ctx, legacyConfig(t, "[libraries.movies]\npath = \"/srv/media/movies\"\n"), time.Now())
+	if err != nil || later.Imported {
+		t.Fatalf("later import = %+v, %v", later, err)
+	}
+	if libraries, err := state.ListLibraries(ctx); err != nil || len(libraries) != 0 {
+		t.Fatalf("libraries = %+v, %v", libraries, err)
+	}
+}
+
+func TestImportLegacyConfigKeepsAModifiedDefaultProfileApart(t *testing.T) {
+	ctx := context.Background()
+	state := openTestStore(t)
+	legacy := legacyConfig(t, `
+[profiles.default-av1.video]
+preset = "4"
+
+[libraries.movies]
+path = "/srv/media/movies"
+`)
+	result, err := state.ImportLegacyConfig(ctx, legacy, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Flows) != 1 || !result.Flows[0].Created || result.Flows[0].Flow != config.DefaultProfileName {
+		t.Fatalf("flows = %+v", result.Flows)
+	}
+	movies, err := state.GetLibrary(ctx, "movies")
+	if err != nil {
+		t.Fatal(err)
+	}
+	seeded := defaultFlowID(t, state)
+	if movies.FlowID == seeded || movies.FlowID != result.Flows[0].FlowID {
+		t.Fatalf("movies runs flow %d, seeded flow is %d", movies.FlowID, seeded)
 	}
 }
 

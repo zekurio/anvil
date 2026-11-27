@@ -32,6 +32,7 @@ func TestApplyLibraryScanRequeuesOnlyWhenAllowed(t *testing.T) {
 			})
 
 			library := domain.LibraryName(test.name)
+			mustCreateLibrary(t, state, test.name)
 			first := scanTestEntry(1)
 			result := applyScanForTest(t, ctx, state, library, test.requeueExisting, first)
 			if result.EnqueuedJobs != 1 {

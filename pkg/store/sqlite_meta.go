@@ -12,6 +12,11 @@ const (
 	// metaDefaultFlowSeeded records that the starter flow was created once,
 	// so deleting it does not bring it back at the next start.
 	metaDefaultFlowSeeded = "default_flow_seeded_at"
+	// metaLegacyConfigImported records that the libraries, profiles, and Arr
+	// connections of anvil.toml were looked at once. It is set even when
+	// there was nothing to import, so a TOML file edited later is never
+	// imported silently.
+	metaLegacyConfigImported = "legacy_config_imported_at"
 )
 
 // queryer is satisfied by both *sql.DB and *sql.Tx.

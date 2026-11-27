@@ -404,20 +404,17 @@ func stagedDestinations(ctx context.Context, store Store, job domain.Job, source
 	seen := make(map[string]struct{})
 	var errs []error
 	for _, attempt := range attempts {
+		// The profile is recorded once the flow step has resolved it, which
+		// is before anything is staged. An attempt without one never staged.
 		if len(attempt.ResolvedLibrary) == 0 || len(attempt.ResolvedProfile) == 0 {
-			continue // config resolution failed before the pipeline ran: never staged
+			continue
 		}
 		var library domain.Library
-		var profile domain.Profile
 		if err := json.Unmarshal(attempt.ResolvedLibrary, &library); err != nil {
 			errs = append(errs, fmt.Errorf("decode attempt %d resolved library: %w", attempt.Number, err))
 			continue
 		}
-		if err := json.Unmarshal(attempt.ResolvedProfile, &profile); err != nil {
-			errs = append(errs, fmt.Errorf("decode attempt %d resolved profile: %w", attempt.Number, err))
-			continue
-		}
-		destination, err := replacepkg.PlanDestination(pipeline.NewJobContext(job, source, asset, library, profile))
+		destination, err := replacepkg.PlanDestination(pipeline.NewJobContext(job, source, asset, library))
 		if err != nil {
 			errs = append(errs, fmt.Errorf("plan destination for attempt %d: %w", attempt.Number, err))
 			continue
@@ -622,11 +619,11 @@ func (s Service) jobOccurrence(ctx context.Context, job domain.Job) (domain.Medi
 }
 
 func plannedDestination(cfg config.Config, job domain.Job, source domain.MediaSource, asset domain.MediaAsset) string {
-	library, profile, err := cfg.ResolveForLibrary(job.LibraryName)
+	library, err := cfg.ResolveLibrary(job.LibraryName)
 	if err != nil {
 		return ""
 	}
-	destination, err := replacepkg.PlanDestination(pipeline.NewJobContext(job, source, asset, library, profile))
+	destination, err := replacepkg.PlanDestination(pipeline.NewJobContext(job, source, asset, library))
 	if err != nil {
 		return ""
 	}

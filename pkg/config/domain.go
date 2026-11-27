@@ -16,8 +16,10 @@ func (c Config) FindLibrary(name domain.LibraryName) (LibraryConfig, bool) {
 	return LibraryConfig{}, false
 }
 
+// FindProfile looks a profile up among the legacy TOML profiles. The built-in
+// default profile is always there.
 func (c Config) FindProfile(name string) (ProfileConfig, bool) {
-	profile, ok := c.Profiles[name]
+	profile, ok := c.Legacy.Profiles[name]
 	if ok {
 		profile.Name = name
 		return profile, true
@@ -33,24 +35,22 @@ func (c Config) FindArr(name string) (ArrConfig, bool) {
 	return arr, ok
 }
 
-func (c Config) ResolveForLibrary(name domain.LibraryName) (domain.Library, domain.Profile, error) {
+// ResolveLibrary returns a library of the runtime snapshot together with the
+// Arr connection it names, in the shape the pipeline works with.
+func (c Config) ResolveLibrary(name domain.LibraryName) (domain.Library, error) {
 	library, ok := c.FindLibrary(name)
 	if !ok {
-		return domain.Library{}, domain.Profile{}, fmt.Errorf("library %q not found", name)
-	}
-	profile, ok := c.FindProfile(library.Profile)
-	if !ok {
-		return domain.Library{}, domain.Profile{}, fmt.Errorf("profile %q not found", library.Profile)
+		return domain.Library{}, fmt.Errorf("library %q not found", name)
 	}
 	var arr ArrConfig
 	if library.Arr != "" {
 		var ok bool
 		arr, ok = c.FindArr(library.Arr)
 		if !ok {
-			return domain.Library{}, domain.Profile{}, fmt.Errorf("arr %q not found", library.Arr)
+			return domain.Library{}, fmt.Errorf("arr %q not found", library.Arr)
 		}
 	}
-	return library.ToDomain(arr), profile.ToDomain(), nil
+	return library.ToDomain(arr), nil
 }
 
 func (c Config) ScanInterval() time.Duration {
@@ -85,29 +85,32 @@ func (c Config) StagingCleanupAge() time.Duration {
 	return c.Daemon.StagingCleanupAge.Duration
 }
 
-// IsDownload reports whether the library processes downloader output and
-// hands it off instead of replacing media in place.
-func (l LibraryConfig) IsDownload() bool {
-	return l.Kind == string(domain.LibraryKindDownload)
-}
-
-// GroupsPackages reports whether each top-level directory is one package
-// source. Media libraries and file-mode downloads treat every file as its own
-// source.
-func (l LibraryConfig) GroupsPackages() bool {
-	return l.IsDownload() && l.Download.PackageMode != string(domain.DownloadPackageModeFile)
+// Runtime converts a TOML library into the shape the daemon runs libraries
+// in. include, exclude, and ignore_regex become the equivalent rule list; the
+// flow is left for the importer to assign from the profile name.
+func (l LegacyLibraryConfig) Runtime() LibraryConfig {
+	rules, fallback := LegacyRules(l.Include, l.Exclude, l.IgnoreRegex)
+	return LibraryConfig{
+		Name:             l.Name,
+		Kind:             l.Kind,
+		Path:             l.Path,
+		ScanInterval:     l.ScanInterval,
+		Priority:         l.Priority,
+		ConcurrencyLimit: l.ConcurrencyLimit,
+		Arr:              l.Arr,
+		Rules:            rules,
+		RuleFallback:     fallback,
+		Media:            l.Media,
+		Download:         l.Download,
+	}
 }
 
 func (l LibraryConfig) ToDomain(arr ArrConfig) domain.Library {
 	return domain.Library{
-		Name:             domain.LibraryName(l.Name),
-		Kind:             domain.LibraryKind(l.Kind),
-		Path:             l.Path,
-		Priority:         l.Priority,
-		ProfileName:      domain.ProfileName(l.Profile),
-		IncludeGlobs:     append([]string(nil), l.Include...),
-		ExcludeGlobs:     append([]string(nil), l.Exclude...),
-		ConcurrencyLimit: l.ConcurrencyLimit,
+		Name:   domain.LibraryName(l.Name),
+		Kind:   domain.LibraryKind(l.Kind),
+		Path:   l.Path,
+		FlowID: l.FlowID,
 		Metadata: domain.MetadataProviderPolicy{
 			Provider:   domain.MetadataProviderKind(arr.Type),
 			BaseURL:    arr.BaseURL,

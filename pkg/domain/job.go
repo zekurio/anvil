@@ -69,8 +69,12 @@ func (j Job) Label() string {
 // results; an older probe checkpoint would hide a profile 5 source. Version 7
 // added the per-track output plan to audio selections, the keep_all rule for
 // profiles without languages, and the fixed-CRF and crop-disabled results; an
-// older audio checkpoint would copy tracks the profile re-encodes.
-const JobPipelineContextVersion = 7
+// older audio checkpoint would copy tracks the profile re-encodes. Version 8
+// came with flows: the profile is no longer known before the pipeline runs, so
+// the checkpoint is keyed on what the library's flow means (FlowFingerprint)
+// and ResolvedProfileJSON turned from part of that key into the record of the
+// profile the audio, crop, and search results were computed under.
+const JobPipelineContextVersion = 8
 
 type JobPipelineContext struct {
 	Version             int             `json:"version"`
@@ -79,6 +83,12 @@ type JobPipelineContext struct {
 	AssetFingerprint    FileFingerprint `json:"asset_fingerprint"`
 	InitialMetadata     JobMetadata     `json:"initial_metadata"`
 	ResolvedLibraryJSON string          `json:"resolved_library_json"`
+	// FlowFingerprint is the SHA-256 of the canonical form of the flow the
+	// checkpoint was built under.
+	FlowFingerprint string `json:"flow_fingerprint"`
+	// ResolvedProfileJSON is the effective profile, without its name, that
+	// Audio, Crop, and Search were computed under. It is empty until the flow
+	// step has run.
 	ResolvedProfileJSON string          `json:"resolved_profile_json"`
 	Metadata            JobMetadata     `json:"metadata"`
 	Probe               *ProbeResult    `json:"probe,omitempty"`

@@ -1,0 +1,197 @@
+package config
+
+import (
+	"fmt"
+	"net/url"
+	"path/filepath"
+	"slices"
+	"strings"
+
+	"github.com/bmatcuk/doublestar/v4"
+	"github.com/zekurio/anvil/pkg/domain"
+)
+
+// FieldProblem is one thing wrong with a library or an Arr connection. Field
+// names the setting at fault the way the web API spells it, such as
+// "download.handoff_path" or "rules[2].value".
+type FieldProblem struct {
+	Field   string
+	Message string
+}
+
+// WithDefaults fills the settings a library may leave unset: the rule
+// fallback, the replacement mode of a media library, and the modes, quiet
+// period, and residue globs of a download library. Settings of the other
+// kind are cleared, so a stored library never carries values that do not
+// apply to it.
+func (l LibraryConfig) WithDefaults() LibraryConfig {
+	l.RuleFallback = NormalizeRuleFallback(l.RuleFallback)
+	if l.Rules == nil {
+		l.Rules = []Rule{}
+	}
+	if !l.IsDownload() {
+		l.Media.ReplacementMode = orDefault(l.Media.ReplacementMode, DefaultReplacementMode)
+		l.Download = DownloadLibraryConfig{}
+		return l
+	}
+	l.Media = MediaLibraryConfig{}
+	l.Download.PackageMode = orDefault(l.Download.PackageMode, DefaultPackageMode)
+	l.Download.HandoffMode = orDefault(l.Download.HandoffMode, DefaultHandoffMode)
+	l.Download.IgnorableGlobs = EffectiveIgnorableGlobs(l.Download.IgnorableGlobs)
+	return l
+}
+
+// Problems reports every rule a library's own settings break. It does not
+// look at other libraries (see LibraryPathConflicts) or at whether the flow
+// and Arr connection it names exist, which only the store can tell.
+func (l LibraryConfig) Problems() []FieldProblem {
+	var found []FieldProblem
+	add := func(field, format string, args ...any) {
+		found = append(found, FieldProblem{Field: field, Message: fmt.Sprintf(format, args...)})
+	}
+	if !slices.Contains(libraryKinds, l.Kind) {
+		add("kind", "kind must be \"media\" or \"download\", not %q", l.Kind)
+	}
+	switch {
+	case strings.TrimSpace(l.Path) == "":
+		add("path", "path is required")
+	case !filepath.IsAbs(l.Path):
+		add("path", "path %q must be absolute", l.Path)
+	}
+	if l.FlowID <= 0 {
+		add("flow_id", "a flow is required")
+	}
+	if l.ConcurrencyLimit < 0 {
+		add("concurrency_limit", "concurrency_limit must not be negative")
+	}
+	if l.ScanInterval.Duration < 0 {
+		add("scan_interval", "scan_interval must not be negative")
+	}
+	for _, problem := range ValidateRules(l.Rules, l.RuleFallback) {
+		if problem.Index < 0 {
+			add("rule_fallback", "%s", problem.Message)
+			continue
+		}
+		add(fmt.Sprintf("rules[%d].%s", problem.Index, problem.Key), "rule %d: %s", problem.Index+1, problem.Message)
+	}
+	if !l.IsDownload() {
+		if !slices.Contains(replacementModes, l.Media.ReplacementMode) {
+			add("media.replacement_mode", "replacement_mode must be \"replace\" or \"copy\", not %q", l.Media.ReplacementMode)
+		}
+		return found
+	}
+
+	download := l.Download
+	switch {
+	case strings.TrimSpace(download.HandoffPath) == "":
+		add("download.handoff_path", "a download library needs a handoff_path, the directory its importer watches")
+	case !filepath.IsAbs(download.HandoffPath):
+		add("download.handoff_path", "handoff_path %q must be absolute", download.HandoffPath)
+	}
+	if download.StableFor.Duration < 0 {
+		add("download.stable_for", "stable_for must not be negative")
+	}
+	if !slices.Contains(packageModes, download.PackageMode) {
+		add("download.package_mode", "package_mode must be \"auto\", \"directory\", or \"file\", not %q", download.PackageMode)
+	}
+	if !slices.Contains(handoffModes, download.HandoffMode) {
+		add("download.handoff_mode", "handoff_mode must be \"copy\" or \"move\", not %q", download.HandoffMode)
+	}
+	for index, glob := range download.IgnorableGlobs {
+		if strings.TrimSpace(glob) == "" || !doublestar.ValidatePattern(filepath.ToSlash(strings.TrimSpace(glob))) {
+			add(fmt.Sprintf("download.ignorable_globs[%d]", index), "%q is not a valid glob", glob)
+		}
+	}
+	return found
+}
+
+// LibraryPathConflicts reports where a library's directories collide with
+// those of the other libraries. The engine assumes they are disjoint: a file
+// below two library roots would be queued twice and replaced under the
+// second job's feet, and a handoff directory inside a library root would be
+// scanned as that library's media, part files included.
+func LibraryPathConflicts(others map[string]LibraryConfig, candidate LibraryConfig) []FieldProblem {
+	var found []FieldProblem
+	add := func(field, format string, args ...any) {
+		found = append(found, FieldProblem{Field: field, Message: fmt.Sprintf(format, args...)})
+	}
+	root := filepath.Clean(candidate.Path)
+	handoff := ""
+	if candidate.IsDownload() && strings.TrimSpace(candidate.Download.HandoffPath) != "" {
+		handoff = filepath.Clean(candidate.Download.HandoffPath)
+		if pathsOverlap(root, handoff) {
+			add("download.handoff_path", "handoff_path %q overlaps the library's own path %q; the importer's directory must be outside the scanned one", handoff, root)
+		}
+	}
+	for _, name := range sortedKeys(others) {
+		other := others[name]
+		if name == candidate.Name {
+			continue
+		}
+		otherRoot := filepath.Clean(other.Path)
+		if pathsOverlap(root, otherRoot) {
+			add("path", "path %q overlaps library %q at %q; library roots must not contain each other", root, name, otherRoot)
+		}
+		if handoff != "" && pathsOverlap(handoff, otherRoot) {
+			add("download.handoff_path", "handoff_path %q overlaps library %q at %q", handoff, name, otherRoot)
+		}
+		if other.IsDownload() && strings.TrimSpace(other.Download.HandoffPath) != "" {
+			if otherHandoff := filepath.Clean(other.Download.HandoffPath); pathsOverlap(root, otherHandoff) {
+				add("path", "path %q overlaps the handoff_path %q of library %q", root, otherHandoff, name)
+			}
+		}
+	}
+	return found
+}
+
+// pathsOverlap reports whether two cleaned absolute paths are the same or
+// one contains the other. The comparison is lexical, like every other path
+// comparison between libraries.
+func pathsOverlap(left, right string) bool {
+	return pathWithin(left, right) || pathWithin(right, left)
+}
+
+func pathWithin(path, root string) bool {
+	if path == root {
+		return true
+	}
+	relative, err := filepath.Rel(root, path)
+	if err != nil {
+		return false
+	}
+	return relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator))
+}
+
+// Problems reports every rule an Arr connection breaks.
+func (arr ArrConfig) Problems() []FieldProblem {
+	var found []FieldProblem
+	if !slices.Contains(arrProviders, arr.Type) {
+		found = append(found, FieldProblem{Field: "type", Message: fmt.Sprintf("type must be \"radarr\" or \"sonarr\", not %q", arr.Type)})
+	}
+	switch parsed, err := url.Parse(strings.TrimSpace(arr.BaseURL)); {
+	case strings.TrimSpace(arr.BaseURL) == "":
+		found = append(found, FieldProblem{Field: "base_url", Message: "base_url is required"})
+	case err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "":
+		found = append(found, FieldProblem{Field: "base_url", Message: fmt.Sprintf("base_url %q must be an http or https URL, such as \"http://localhost:7878\"", arr.BaseURL)})
+	}
+	if strings.TrimSpace(arr.APIKey) == "" && strings.TrimSpace(arr.APIKeyFile) == "" {
+		found = append(found, FieldProblem{Field: "api_key", Message: "an API key is required; set api_key or api_key_file"})
+	}
+	if file := strings.TrimSpace(arr.APIKeyFile); file != "" && !filepath.IsAbs(file) {
+		found = append(found, FieldProblem{Field: "api_key_file", Message: fmt.Sprintf("api_key_file %q must be absolute", arr.APIKeyFile)})
+	}
+	return found
+}
+
+// IsDownload reports whether the library processes downloader output and
+// hands it off instead of replacing media in place.
+func (l LibraryConfig) IsDownload() bool {
+	return l.Kind == string(domain.LibraryKindDownload)
+}
+
+// GroupsPackages reports whether each top-level directory is one package
+// source. Media libraries and file-mode downloads treat every file as its own
+// source.
+func (l LibraryConfig) GroupsPackages() bool {
+	return l.IsDownload() && l.Download.PackageMode != string(domain.DownloadPackageModeFile)
+}

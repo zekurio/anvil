@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/zekurio/anvil/pkg/domain"
 	"github.com/zekurio/anvil/pkg/ffmpeg"
 	"github.com/zekurio/anvil/pkg/video"
 )
@@ -45,41 +46,42 @@ func (p *problems) addf(format string, args ...any) {
 	*p = append(*p, fmt.Sprintf(format, args...))
 }
 
-// Validate checks that the configuration is internally consistent.
+// Validate checks the process settings and, so that check-config still says
+// what is wrong with a file that has them, the legacy sections.
 func (c Config) Validate() error {
 	var p problems
 	c.Daemon.validate(&p)
 	c.Web.validate(&p)
 
-	profiles := make(map[string]struct{}, len(c.Profiles))
-	for _, key := range sortedKeys(c.Profiles) {
+	profiles := make(map[string]struct{}, len(c.Legacy.Profiles))
+	for _, key := range sortedKeys(c.Legacy.Profiles) {
 		name := strings.TrimSpace(key)
 		if name == "" {
 			p.addf("profile name is required")
 			continue
 		}
 		profiles[name] = struct{}{}
-		c.Profiles[key].validate(&p, name)
+		c.Legacy.Profiles[key].validate(&p, name)
 	}
 
-	arrs := make(map[string]struct{}, len(c.Arrs))
-	for _, key := range sortedKeys(c.Arrs) {
+	arrs := make(map[string]struct{}, len(c.Legacy.Arrs))
+	for _, key := range sortedKeys(c.Legacy.Arrs) {
 		name := strings.TrimSpace(key)
 		if name == "" {
 			p.addf("arr name is required")
 			continue
 		}
 		arrs[name] = struct{}{}
-		c.Arrs[key].validate(&p, name)
+		c.Legacy.Arrs[key].validate(&p, name)
 	}
 
-	for _, key := range sortedKeys(c.Libraries) {
+	for _, key := range sortedKeys(c.Legacy.Libraries) {
 		name := strings.TrimSpace(key)
 		if name == "" {
 			p.addf("library name is required")
 			continue
 		}
-		c.Libraries[key].validate(&p, name, profiles, arrs)
+		c.Legacy.Libraries[key].validate(&p, name, profiles, arrs)
 	}
 
 	if len(p) > 0 {
@@ -340,7 +342,7 @@ func (arr ArrConfig) validate(p *problems, name string) {
 	}
 }
 
-func (library LibraryConfig) validate(p *problems, name string, profiles, arrs map[string]struct{}) {
+func (library LegacyLibraryConfig) validate(p *problems, name string, profiles, arrs map[string]struct{}) {
 	if !slices.Contains(libraryKinds, library.Kind) {
 		p.addf("library %q kind %q is invalid", name, library.Kind)
 	}
@@ -362,7 +364,7 @@ func (library LibraryConfig) validate(p *problems, name string, profiles, arrs m
 			p.addf("library %q references unknown arr %q", name, library.Arr)
 		}
 	}
-	if !library.IsDownload() {
+	if library.Kind != string(domain.LibraryKindDownload) {
 		if !slices.Contains(replacementModes, library.Media.ReplacementMode) {
 			p.addf("library %q media.replacement_mode %q is invalid", name, library.Media.ReplacementMode)
 		}

@@ -59,14 +59,32 @@ var DefaultIgnorableGlobs = []string{
 // only, which is the one place a UI without a password is safe.
 const DefaultWebListen = "127.0.0.1:8484"
 
-// Config is the resolved top-level daemon configuration. Load fills defaults
-// and validates it before use.
+// Config is what the daemon runs with. Load fills the process settings of
+// anvil.toml, with defaults, and validates them. Arrs and Libraries are the
+// runtime snapshot of what the store holds: flows, libraries, and Arr
+// connections are created and edited in the web UI, and the daemon copies
+// the latter two in here so that every loop reads one consistent value. Load
+// leaves both empty.
 type Config struct {
 	Daemon    DaemonConfig             `toml:"daemon"`
 	Web       WebConfig                `toml:"web"`
-	Arrs      map[string]ArrConfig     `toml:"arrs"`
-	Profiles  map[string]ProfileConfig `toml:"profiles"`
-	Libraries map[string]LibraryConfig `toml:"libraries"`
+	Arrs      map[string]ArrConfig     `toml:"-"`
+	Libraries map[string]LibraryConfig `toml:"-"`
+	// Legacy holds the [arrs], [profiles], and [libraries] tables of
+	// anvil.toml. They are read once, by the import that moves them into the
+	// store, and nothing at runtime looks at them.
+	Legacy LegacyConfig `toml:"-"`
+}
+
+// LegacyConfig is the part of anvil.toml that moved into the store. Profiles
+// always holds the built-in default profile, whose values are also the
+// defaults of the flow nodes.
+type LegacyConfig struct {
+	Arrs      map[string]ArrConfig           `toml:"arrs,omitempty"`
+	Profiles  map[string]ProfileConfig       `toml:"profiles,omitempty"`
+	Libraries map[string]LegacyLibraryConfig `toml:"libraries,omitempty"`
+	// Sections names the tables the file actually contains, sorted.
+	Sections []string `toml:"-"`
 }
 
 // WebConfig controls the web UI and its JSON API. The UI can replace and
@@ -295,8 +313,38 @@ type ModeConfig struct {
 	Mode string `toml:"mode"`
 }
 
-// LibraryConfig describes a user-defined media library.
+// LibraryConfig describes one library as the daemon runs it. Libraries live
+// in the store and are edited in the web UI; this is their in-memory shape.
 type LibraryConfig struct {
+	Name string
+	// Replace media in place or process downloader output; "media" or
+	// "download". It cannot change once the library exists.
+	Kind string
+	// Absolute root scanned for source files.
+	Path string
+	// FlowID is the flow every file of the library runs through.
+	FlowID int64
+	// Paused keeps scanning and queueing but starts no new job.
+	Paused bool
+	// Override the daemon scan cadence; zero uses daemon.scan_interval.
+	ScanInterval Duration
+	// Prefer higher-priority libraries when work competes.
+	Priority int
+	// Cap active jobs from this library; 0 means no per-library cap.
+	ConcurrencyLimit int
+	// Arr connection used for original-language lookup; empty disables it.
+	Arr string
+	// Rules run top to bottom and the first match decides whether a file is
+	// queued; RuleFallback ("allow" or "deny") decides when none match.
+	Rules        []Rule
+	RuleFallback string
+	Media        MediaLibraryConfig
+	Download     DownloadLibraryConfig
+}
+
+// LegacyLibraryConfig is a [libraries.NAME] table of anvil.toml. It is
+// import-only: see LegacyConfig.
+type LegacyLibraryConfig struct {
 	Name string `toml:"-"`
 	// Replace media in place or process downloader output; "media" or "download".
 	Kind string `toml:"kind"`
@@ -321,17 +369,9 @@ type LibraryConfig struct {
 	ConcurrencyLimit int `toml:"concurrency_limit"`
 	// Use this Arr instance for metadata; omit to disable lookup; existing
 	// arr name.
-	Arr string `toml:"arr"`
-	// FlowID is the flow every file of the library runs through.
-	FlowID int64 `toml:"-"`
-	// Paused keeps scanning and queueing but starts no new job.
-	Paused bool `toml:"-"`
-	// Rules run top to bottom and the first match decides whether a file is
-	// queued; RuleFallback ("allow" or "deny") decides when none match.
-	Rules        []Rule                `toml:"-"`
-	RuleFallback string                `toml:"-"`
-	Media        MediaLibraryConfig    `toml:"media"`
-	Download     DownloadLibraryConfig `toml:"download"`
+	Arr      string                `toml:"arr"`
+	Media    MediaLibraryConfig    `toml:"media"`
+	Download DownloadLibraryConfig `toml:"download"`
 }
 
 // ArrConfig controls external metadata lookup through an Arr instance.

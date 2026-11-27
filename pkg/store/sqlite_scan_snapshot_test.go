@@ -23,6 +23,7 @@ func scanStore(t testing.TB) *SQLiteStore {
 			t.Error(err)
 		}
 	})
+	mustCreateLibrary(t, state, "test")
 	return state
 }
 
@@ -241,6 +242,7 @@ func TestUpgradeSchemaSixToSeven(t *testing.T) {
 	if err := s.db.QueryRow(`SELECT max(version) FROM schema_migrations`).Scan(&version); err != nil {
 		t.Fatal(err)
 	}
+	mustCreateLibrary(t, s, "test")
 	if version != currentSchemaVersion {
 		t.Fatalf("schema version %d", version)
 	}

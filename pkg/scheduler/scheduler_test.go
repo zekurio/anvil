@@ -119,3 +119,41 @@ func TestWorkerCompletionWakesScheduler(t *testing.T) {
 		t.Fatalf("next job = %d", next.Job.ID)
 	}
 }
+
+func TestPausedLibrariesAreNotLeased(t *testing.T) {
+	cfg := config.Default()
+	cfg.Libraries = map[string]config.LibraryConfig{
+		"paused": {Paused: true},
+		"open":   {},
+		"full":   {ConcurrencyLimit: 1},
+	}
+	allowed := eligibleLibrariesForCounts(cfg, map[domain.LibraryName]int{"full": 1})
+	if len(allowed) != 1 || allowed[0] != "open" {
+		t.Fatalf("eligible libraries = %v, want only the open one", allowed)
+	}
+
+	// With every library paused there is nothing to lease from. That must
+	// not reach the store as an empty filter, which would mean "any library".
+	cfg.Libraries = map[string]config.LibraryConfig{"media": {Paused: true}}
+	queue := &queueStore{wake: make(chan struct{}, 1)}
+	queue.add(1)
+	worker := heldWorker{started: make(chan Assignment, 1), finish: make(chan struct{})}
+	planner := &Scheduler{Store: queue, Worker: worker, ConfigProvider: func() config.Config { return cfg }}
+	started, err := planner.ScheduleAvailable(context.Background())
+	if err != nil || started != 0 {
+		t.Fatalf("ScheduleAvailable = %d, %v; a paused library's job was started", started, err)
+	}
+	if len(queue.jobs) != 1 {
+		t.Fatal("the pending job of a paused library was leased")
+	}
+
+	// Resuming the library lets the same job run.
+	cfg.Libraries = map[string]config.LibraryConfig{"media": {}}
+	started, err = planner.ScheduleAvailable(context.Background())
+	if err != nil || started != 1 {
+		t.Fatalf("ScheduleAvailable after resume = %d, %v", started, err)
+	}
+	receiveAssignment(t, worker.started)
+	close(worker.finish)
+	planner.Wait()
+}

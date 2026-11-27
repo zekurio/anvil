@@ -6,9 +6,11 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"time"
 
+	"github.com/zekurio/anvil/pkg/domain"
 	"github.com/zekurio/anvil/pkg/video"
 )
 
@@ -34,12 +36,22 @@ func resolve(raw rawConfig) (Config, error) {
 			Password:             raw.Web.Password,
 			AllowUnauthenticated: raw.Web.AllowUnauthenticated,
 		},
-		Arrs: make(map[string]ArrConfig, len(raw.Arrs)),
+		Arrs:      map[string]ArrConfig{},
+		Libraries: map[string]LibraryConfig{},
+		Legacy: LegacyConfig{
+			Arrs: make(map[string]ArrConfig, len(raw.Arrs)),
+		},
 	}
+	for section, present := range map[string]bool{"arrs": raw.Arrs != nil, "profiles": raw.Profiles != nil, "libraries": raw.Libraries != nil} {
+		if present {
+			cfg.Legacy.Sections = append(cfg.Legacy.Sections, section)
+		}
+	}
+	sort.Strings(cfg.Legacy.Sections)
 
 	for name, arr := range raw.Arrs {
 		arr.Name = name
-		cfg.Arrs[name] = arr
+		cfg.Legacy.Arrs[name] = arr
 	}
 
 	if raw.Profiles == nil {
@@ -48,22 +60,22 @@ func resolve(raw rawConfig) (Config, error) {
 	if _, exists := raw.Profiles[DefaultProfileName]; !exists {
 		raw.Profiles[DefaultProfileName] = rawProfileConfig{}
 	}
-	cfg.Profiles = make(map[string]ProfileConfig, len(raw.Profiles))
+	cfg.Legacy.Profiles = make(map[string]ProfileConfig, len(raw.Profiles))
 	for name, profile := range raw.Profiles {
 		resolved, err := resolveProfile(name, profile)
 		if err != nil {
 			return Config{}, err
 		}
-		cfg.Profiles[name] = resolved
+		cfg.Legacy.Profiles[name] = resolved
 	}
 
-	cfg.Libraries = make(map[string]LibraryConfig, len(raw.Libraries))
+	cfg.Legacy.Libraries = make(map[string]LegacyLibraryConfig, len(raw.Libraries))
 	for name, library := range raw.Libraries {
 		resolved, err := resolveLibrary(name, library)
 		if err != nil {
 			return Config{}, err
 		}
-		cfg.Libraries[name] = resolved
+		cfg.Legacy.Libraries[name] = resolved
 	}
 
 	return cfg, nil
@@ -209,12 +221,12 @@ func resolveOverrides(profileName string, raw map[string]VideoOverrideConfig) (m
 	return overrides, nil
 }
 
-func resolveLibrary(name string, raw rawLibraryConfig) (LibraryConfig, error) {
+func resolveLibrary(name string, raw rawLibraryConfig) (LegacyLibraryConfig, error) {
 	if raw.ScanInterval != nil && raw.ScanInterval.Duration <= 0 {
-		return LibraryConfig{}, fmt.Errorf("library %q scan_interval must be greater than zero", name)
+		return LegacyLibraryConfig{}, fmt.Errorf("library %q scan_interval must be greater than zero", name)
 	}
 	kind := orDefault(raw.Kind, DefaultLibraryKind)
-	library := LibraryConfig{
+	library := LegacyLibraryConfig{
 		Name:             name,
 		Kind:             kind,
 		Path:             raw.Path,
@@ -228,16 +240,11 @@ func resolveLibrary(name string, raw rawLibraryConfig) (LibraryConfig, error) {
 		Arr:              raw.Arr,
 		Media:            raw.Media,
 	}
-	library.Rules, library.RuleFallback = LegacyRules(raw.Include, raw.Exclude, raw.IgnoreRegex)
-	if !library.IsDownload() {
+	if kind != string(domain.LibraryKindDownload) {
 		library.Media.ReplacementMode = orDefault(library.Media.ReplacementMode, DefaultReplacementMode)
 		return library, nil
 	}
 
-	ignorableGlobs := raw.Download.IgnorableGlobs
-	if len(ignorableGlobs) == 0 {
-		ignorableGlobs = append([]string(nil), DefaultIgnorableGlobs...)
-	}
 	library.Download = DownloadLibraryConfig{
 		HandoffPath:          raw.Download.HandoffPath,
 		StableFor:            valueOr(raw.Download.StableFor, Duration{Duration: DefaultStableFor}),
@@ -246,9 +253,18 @@ func resolveLibrary(name string, raw rawLibraryConfig) (LibraryConfig, error) {
 		PreserveRelativePath: raw.Download.PreserveRelativePath,
 		CleanupSourceMedia:   raw.Download.CleanupSourceMedia,
 		PruneEmptyDirs:       raw.Download.PruneEmptyDirs,
-		IgnorableGlobs:       ignorableGlobs,
+		IgnorableGlobs:       EffectiveIgnorableGlobs(raw.Download.IgnorableGlobs),
 	}
 	return library, nil
+}
+
+// EffectiveIgnorableGlobs returns the residue globs of a download library:
+// the given list, or the built-in default when it is empty.
+func EffectiveIgnorableGlobs(globs []string) []string {
+	if len(globs) == 0 {
+		return append([]string(nil), DefaultIgnorableGlobs...)
+	}
+	return globs
 }
 
 func valueOr[T any](value *T, fallback T) T {

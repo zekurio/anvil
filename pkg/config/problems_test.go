@@ -11,7 +11,7 @@ import (
 // the rules that Problems also exposes to the flow editor.
 func TestProfileProblemsKeepCheckConfigWording(t *testing.T) {
 	cfg := Default()
-	profile := cfg.Profiles[DefaultProfileName]
+	profile := cfg.Legacy.Profiles[DefaultProfileName]
 	profile.Video.Codec = "vp9"
 	profile.Video.Accelerator = "cuda"
 	profile.Video.BitDepth = 12
@@ -30,7 +30,7 @@ func TestProfileProblemsKeepCheckConfigWording(t *testing.T) {
 		ResetCount:         -1,
 		MinRetainedAreaPct: math.NaN(),
 	}
-	cfg.Profiles[DefaultProfileName] = profile
+	cfg.Legacy.Profiles[DefaultProfileName] = profile
 
 	err := cfg.Validate()
 	if err == nil {
@@ -65,7 +65,7 @@ func TestProfileProblemsKeepCheckConfigWording(t *testing.T) {
 }
 
 func TestProblemsNameFieldAndRule(t *testing.T) {
-	video := Default().Profiles[DefaultProfileName].Video
+	video := Default().Legacy.Profiles[DefaultProfileName].Video
 	video.CRFMin = 41
 	video.FFmpegArgs = []string{"-svtav1-params", "crf=20"}
 
@@ -82,7 +82,7 @@ func TestProblemsNameFieldAndRule(t *testing.T) {
 			t.Errorf("Problems()[%d] = %q %q, want %q %q", i, got[i].Field, got[i].Rule, want[i].Field, want[i].Rule)
 		}
 	}
-	if problems := Default().Profiles[DefaultProfileName].Crop.Problems(); len(problems) != 0 {
+	if problems := Default().Legacy.Profiles[DefaultProfileName].Crop.Problems(); len(problems) != 0 {
 		t.Fatalf("default crop Problems() = %+v", problems)
 	}
 }

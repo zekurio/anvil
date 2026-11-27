@@ -30,11 +30,38 @@ func (s *SQLiteStore) BeginLibraryScan(ctx context.Context, libraryName domain.L
 	if strings.TrimSpace(string(libraryName)) == "" {
 		return ScanToken{}, errors.New("scan library name is required")
 	}
-	token, err := issueScanToken(ctx, s.db, libraryName)
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return ScanToken{}, fmt.Errorf("begin library scan: %w", err)
 	}
+	defer rollback(tx)
+	if err := requireLibraryTx(ctx, tx, libraryName); err != nil {
+		return ScanToken{}, fmt.Errorf("begin library scan: %w", err)
+	}
+	token, err := issueScanToken(ctx, tx, libraryName)
+	if err != nil {
+		return ScanToken{}, fmt.Errorf("begin library scan: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return ScanToken{}, fmt.Errorf("begin library scan: %w", err)
+	}
 	return ScanToken{LibraryName: libraryName, Sequence: token}, nil
+}
+
+// requireLibraryTx refuses to record anything for a library that is not in
+// the store. A scan or requeue can be in flight, working from a snapshot of
+// the libraries, at the moment its library is deleted; without this check it
+// would write sources and jobs back that nothing owns and nothing removes.
+func requireLibraryTx(ctx context.Context, tx *sql.Tx, libraryName domain.LibraryName) error {
+	var exists int
+	err := tx.QueryRowContext(ctx, `SELECT 1 FROM libraries WHERE name = ?`, string(libraryName)).Scan(&exists)
+	if errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("library %q: %w", libraryName, ErrNotFound)
+	}
+	if err != nil {
+		return fmt.Errorf("look up library %q: %w", libraryName, err)
+	}
+	return nil
 }
 
 // issueScanToken hands out the next scan sequence for a library. A scan only
@@ -79,6 +106,9 @@ func (s *SQLiteStore) ApplyLibraryScan(ctx context.Context, token ScanToken, inp
 	}
 	defer rollback(tx)
 
+	if err := requireLibraryTx(ctx, tx, input.LibraryName); err != nil {
+		return ApplyScanResult{}, fmt.Errorf("apply library scan: %w", err)
+	}
 	superseded, err := scanSupersededTx(ctx, tx, token)
 	if err != nil {
 		return ApplyScanResult{}, err
