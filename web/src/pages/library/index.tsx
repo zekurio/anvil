@@ -1,4 +1,5 @@
 import { useParams } from "@solidjs/router";
+import type { JSX } from "@solidjs/web";
 import { createMemo, createSignal, Match, Show, Switch } from "solid-js";
 
 import { api, keys, type Library, type LibraryWrite } from "../../api";
@@ -23,35 +24,69 @@ import "./library.css";
  */
 export default function LibraryPage() {
   const params = useParams();
-  const { libraries } = useAppData();
-  const known = createMemo(() => (libraries().some((candidate) => candidate.name === params.name) ? params.name : undefined));
   useTitle(() => params.name);
-
   return (
     // Keyed by name: another library is another view, with its own filters, selection and drafts.
+    <Show when={params.name} keyed>
+      {(name) => <LibraryLoader name={name} tab={(params.tab as LibraryTab | undefined) ?? "files"} />}
+    </Show>
+  );
+}
+
+function LibraryLoader(props: { name: string; tab: LibraryTab }) {
+  const { libraries } = useAppData();
+  // The last known state stays up for the moment between a delete and the navigation away.
+  const library = createMemo<Library | undefined>((previous) => libraries().find((candidate) => candidate.name === props.name) ?? previous);
+
+  // Built here, not inside the <Show> below: a tab asks the daemon by the
+  // library's name, which the address already gives, so its request starts
+  // with the page rather than after the list of libraries has answered. The
+  // tabs are only put on screen once the library is known to exist.
+  const tabs = (
+    <Switch>
+      <Match when={props.tab === "files"}>
+        <FilesTab name={props.name} library={library()} />
+      </Match>
+      <Match when={props.tab === "rules"}>
+        <Show when={library()}>{(known) => <RulesTab library={known()} />}</Show>
+      </Match>
+      <Match when={props.tab === "history"}>
+        <HistoryTab name={props.name} />
+      </Match>
+      <Match when={props.tab === "settings"}>
+        <SettingsTab library={library()} />
+      </Match>
+    </Switch>
+  );
+
+  return (
     <Show
-      when={known()}
-      keyed
+      when={library()}
       fallback={
         <>
-          <Topbar title={params.name ?? "Library"} />
-          <ErrorState title="This library does not exist" error={new Error(`No library is named "${params.name}". It may have been deleted, or the address is mistyped.`)}>
+          <Topbar title={props.name} />
+          <ErrorState title="This library does not exist" error={new Error(`No library is named "${props.name}". It may have been deleted, or the address is mistyped.`)}>
             <LinkButton href="/">Open the first library</LinkButton>
           </ErrorState>
         </>
       }
     >
-      {(name) => <LibraryView name={name} tab={(params.tab as LibraryTab | undefined) ?? "files"} />}
+      {(known) => (
+        <LibraryView library={known()} tab={props.tab}>
+          {tabs}
+        </LibraryView>
+      )}
     </Show>
   );
 }
 
-function LibraryView(props: { name: string; tab: LibraryTab }) {
-  const { status, libraries, flows } = useAppData();
+function LibraryView(props: { library: Library; tab: LibraryTab; children: JSX.Element }) {
+  const { status, flows } = useAppData();
   const [busy, setBusy] = createSignal<"flow" | "pause" | null>(null);
-  // The last known state stays up for the moment between a delete and the navigation away.
-  const library = createMemo<Library>((previous) => libraries().find((candidate) => candidate.name === props.name) ?? (previous as Library));
-  const base = () => `/libraries/${encodeURIComponent(props.name)}`;
+  const library = () => props.library;
+  // Constant for this component: the page is keyed by library name.
+  const name = () => props.library.name;
+  const base = () => `/libraries/${encodeURIComponent(name())}`;
   const stats = () => library().stats;
 
   // The status poll carries the server's clock, so "4 min ago" keeps counting without a timer.
@@ -59,7 +94,7 @@ function LibraryView(props: { name: string; tab: LibraryTab }) {
 
   const update = async (kind: "flow" | "pause", change: Partial<LibraryWrite>, success: string, failure: string) => {
     setBusy(kind);
-    await run(() => api.libraries.update(props.name, { ...toWrite(library()), ...change }), { invalidate: [keys.libraries, keys.flows, keys.status], success, failure });
+    await run(() => api.libraries.update(name(), { ...toWrite(library()), ...change }), { invalidate: [keys.libraries, keys.flows, keys.status], success, failure });
     setBusy(null);
   };
 
@@ -68,7 +103,7 @@ function LibraryView(props: { name: string; tab: LibraryTab }) {
     if (!flow || flow.id === library().flow_id) return;
     if (stats().pending > 0) {
       const agreed = await confirm({
-        title: `Use the flow "${flow.name}" for ${props.name}?`,
+        title: `Use the flow "${flow.name}" for ${name()}?`,
         description: `${plural(stats().pending, "file")} of this library ${stats().pending === 1 ? "is" : "are"} queued. Queued files use the new flow from their next attempt. Files that are done are not processed again.`,
         confirmLabel: "Change flow",
       });
@@ -78,23 +113,23 @@ function LibraryView(props: { name: string; tab: LibraryTab }) {
         return;
       }
     }
-    await update("flow", { flow_id: flow.id }, `${props.name} now uses the flow ${flow.name}.`, "The flow could not be changed.");
+    await update("flow", { flow_id: flow.id }, `${name()} now uses the flow ${flow.name}.`, "The flow could not be changed.");
     select.value = String(library().flow_id);
   };
 
-  const pause = () => update("pause", { paused: true }, `Paused ${props.name}. Running jobs finish; no new job starts.`, "The library could not be paused.");
+  const pause = () => update("pause", { paused: true }, `Paused ${name()}. Running jobs finish; no new job starts.`, "The library could not be paused.");
 
   const resume = async () => {
     if (replacesInPlace(library())) {
-      const agreed = await confirm({ title: `Resume ${props.name}?`, description: resumeConsequence(stats().pending), confirmLabel: "Resume library", cancelLabel: "Keep it paused" });
+      const agreed = await confirm({ title: `Resume ${name()}?`, description: resumeConsequence(stats().pending), confirmLabel: "Resume library", cancelLabel: "Keep it paused" });
       if (!agreed) return;
     }
-    await update("pause", { paused: false }, `Resumed ${props.name}.`, "The library could not be resumed.");
+    await update("pause", { paused: false }, `Resumed ${name()}.`, "The library could not be resumed.");
   };
 
   return (
     <>
-      <Topbar title={props.name} meta={joinDot(library().path, scanned())}>
+      <Topbar title={name()} meta={joinDot(library().path, scanned())}>
         <div class="av-topbar-select">
           <Select
             aria-label="Flow of this library"
@@ -104,7 +139,7 @@ function LibraryView(props: { name: string; tab: LibraryTab }) {
             onChange={(event) => void assignFlow(event.currentTarget)}
           />
         </div>
-        <Button icon="refresh-cw" busy={isScanning(props.name)} onClick={() => void scanLibrary(props.name)}>
+        <Button icon="refresh-cw" busy={isScanning(name())} onClick={() => void scanLibrary(name())}>
           Scan library
         </Button>
         <Show
@@ -140,7 +175,7 @@ function LibraryView(props: { name: string; tab: LibraryTab }) {
       </div>
       <div class="av-page-tabs">
         <Tabs
-          label={`Views of ${props.name}`}
+          label={`Views of ${name()}`}
           value={props.tab}
           tabs={[
             { id: "files", label: "Files", count: formatCount(stats().files), href: base() },
@@ -150,20 +185,7 @@ function LibraryView(props: { name: string; tab: LibraryTab }) {
           ]}
         />
       </div>
-      <Switch>
-        <Match when={props.tab === "files"}>
-          <FilesTab library={library()} />
-        </Match>
-        <Match when={props.tab === "rules"}>
-          <RulesTab library={library()} />
-        </Match>
-        <Match when={props.tab === "history"}>
-          <HistoryTab library={library()} />
-        </Match>
-        <Match when={props.tab === "settings"}>
-          <SettingsTab library={library()} />
-        </Match>
-      </Switch>
+      {props.children}
     </>
   );
 }

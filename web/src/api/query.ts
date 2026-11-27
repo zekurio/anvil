@@ -1,8 +1,18 @@
-// Server state on Solid 2's async primitives: a query is an async memo with a
-// key. Read it under <Loading> and <Errored>; invalidate it by key after a
-// mutation; give it `poll` to keep it fresh while the tab is visible.
+// Server state on Solid 2's async primitives: a query is a memo over a push
+// source with a key. Read it under <Loading> and <Errored>; invalidate it by
+// key after a mutation; give it `poll` to keep it fresh while the tab is
+// visible.
+//
+// The first answer for a key is the question the screen waits for: the memo
+// is not ready until it lands, and a failure throws to <Errored>. Every later
+// answer for the same key (a poll, an invalidation) is news from outside, the
+// way a websocket message would be. It is fetched outside the reactive graph
+// and pushed into the memo through from(), so it never opens a transition.
+// A refetch that went through refresh() would: for as long as it is in
+// flight, Solid holds every write that lands, and with a poll every two
+// seconds that is most clicks on a slow link.
 
-import { createDeferred, createMemo, onCleanup, onFlush, onSettled, refresh, type Accessor } from "solid-js";
+import { createDeferred, createMemo, from, onFlush, type Accessor } from "solid-js";
 
 export type QueryKey = readonly (string | number | boolean | null | undefined | object)[];
 
@@ -47,9 +57,8 @@ function matches(key: string, prefix: string): boolean {
  */
 export function invalidate(...prefixes: QueryKey[]): Promise<void> {
   const wanted = prefixes.map((prefix) => serialize(prefix).slice(0, -1));
-  // Refetching is async work, and Solid holds every write of the same frame
-  // with it. Starting it after the flush keeps the caller's own writes (a
-  // toast, a closed dialog) from waiting on the network.
+  // After the flush, so the answers land on what the caller's own writes (a
+  // closed dialog, a cleared selection) left on screen.
   return new Promise((resolve) => {
     onFlush(() => {
       const hit = [...live].filter((entry) => wanted.some((prefix) => matches(entry.key, prefix)));
@@ -60,7 +69,7 @@ export function invalidate(...prefixes: QueryKey[]): Promise<void> {
 
 /**
  * Creates a keyed query. `key` and `fetcher` run in one tracking scope, so a
- * signal read by either refetches the query.
+ * signal read by either asks again under the new key.
  *
  * A failed background refetch (a poll, or an invalidation) keeps the last
  * answer on screen; the shell reports an unreachable daemon on its own. A
@@ -68,60 +77,67 @@ export function invalidate(...prefixes: QueryKey[]): Promise<void> {
  * nearest <Errored>.
  */
 export function createQuery<T>(key: () => QueryKey, fetcher: () => Promise<T>, options: QueryOptions = {}): Accessor<T> {
-  let background = false;
-  let answered: { key: string; value: T } | undefined;
-
-  const compute = (): Promise<T> => {
+  const compute = () => {
     const id = serialize(key());
-    const entry: Entry = { key: id, refetch };
-    live.add(entry);
-    onCleanup(() => live.delete(entry));
+    // Asked here rather than in the subscription, which runs untracked: the
+    // signals the fetcher reads are what make this a new question.
+    const first = fetcher();
 
-    const keep = background && answered?.key === id ? answered : undefined;
-    background = false;
-    return fetcher().then(
-      (value) => {
-        answered = { key: id, value };
-        return value;
-      },
-      (err: unknown) => {
-        if (keep) return keep.value;
-        throw err;
-      },
-    );
-  };
-
-  const data = options.deferred ? createDeferred(compute) : createMemo(compute);
-
-  function refetch(): Promise<void> {
-    background = true;
-    return refresh(data).then(
-      () => undefined,
-      () => undefined,
-    );
-  }
-
-  const interval = options.poll;
-  if (interval) {
-    onSettled(() => {
+    return from<T>((next, error) => {
+      let open = true;
+      // Requests are numbered so that an answer overtaken by a newer one is dropped.
+      let asked = 0;
+      let shown = 0;
+      let flying = 0;
       let timer: ReturnType<typeof setInterval> | undefined;
-      const start = () => {
-        timer = setInterval(() => void refetch(), interval);
+
+      const ask = (request: Promise<T>): Promise<void> => {
+        const number = ++asked;
+        flying++;
+        return request.then(
+          (value) => {
+            flying--;
+            if (!open || number < shown) return;
+            shown = number;
+            next(value);
+          },
+          (err: unknown) => {
+            flying--;
+            // Only a question that never got an answer fails. It closes the source.
+            if (open && shown === 0 && flying === 0) error(err);
+          },
+        );
+      };
+
+      const entry: Entry = { key: id, refetch: () => ask(fetcher()) };
+      live.add(entry);
+
+      // A poll waits its turn: on a slow link, or while a request waits for
+      // the operator to sign in again, asking more often answers nothing sooner.
+      const poll = () => {
+        if (flying === 0) void entry.refetch();
+      };
+      const watch = () => {
+        clearInterval(timer);
+        if (!options.poll || document.hidden) return;
+        timer = setInterval(poll, options.poll);
       };
       const onVisibility = () => {
-        clearInterval(timer);
-        if (document.hidden) return;
-        void refetch();
-        start();
+        if (!document.hidden) poll();
+        watch();
       };
-      if (!document.hidden) start();
       document.addEventListener("visibilitychange", onVisibility);
+      watch();
+      void ask(first);
+
       return () => {
+        open = false;
+        live.delete(entry);
         clearInterval(timer);
         document.removeEventListener("visibilitychange", onVisibility);
       };
     });
-  }
+  };
 
-  return data;
+  return options.deferred ? createDeferred(compute) : createMemo(compute);
 }

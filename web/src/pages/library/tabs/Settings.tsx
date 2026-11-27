@@ -1,7 +1,7 @@
 import { useNavigate } from "@solidjs/router";
 import { createSignal, Errored, flush, Loading, Show } from "solid-js";
 
-import { api, createQuery, errorMessage, invalidate, keys, type ApiError, type DownloadOptions, type Library, type LibraryWrite } from "../../../api";
+import { api, createQuery, errorMessage, invalidate, keys, type ApiError, type Arr, type DownloadOptions, type Library, type LibraryWrite, type Settings } from "../../../api";
 import { FormBar, FormSection } from "../../../features/layout/Form";
 import { homeTarget } from "../../../features/libraries/home";
 import { replacesInPlace, resumeConsequence, toWrite } from "../../../features/libraries/library";
@@ -37,26 +37,32 @@ const SHOWN_FIELDS = new Set([
   "download.ignorable_globs",
 ]);
 
-/** The Settings tab: everything about the library except its rules, and deleting it. */
-export function SettingsTab(props: { library: Library }) {
+/**
+ * The Settings tab: everything about the library except its rules, and
+ * deleting it. `library` is undefined until the list of libraries has
+ * answered; what the form needs besides it is asked for meanwhile.
+ */
+export function SettingsTab(props: { library: Library | undefined }) {
+  const daemon = createQuery(() => keys.settings, api.settings);
+  const arrs = createQuery(
+    () => keys.arrs,
+    async () => (await api.arrs.list()).arrs,
+  );
   return (
     <div class="av-page-body av-surface">
       <Errored fallback={(error, reset) => <ErrorState title="The settings could not be loaded" error={error()} onRetry={reset} />}>
         <Loading fallback={<LoadingState label="Loading settings" />}>
-          <SettingsForm library={props.library} />
+          <Show when={props.library}>{(library) => <SettingsForm library={library()} daemon={daemon()} arrs={arrs()} />}</Show>
         </Loading>
       </Errored>
     </div>
   );
 }
 
-function SettingsForm(props: { library: Library }) {
+function SettingsForm(props: { library: Library; daemon: Settings; arrs: Arr[] }) {
   const { flows } = useAppData();
-  const daemon = createQuery(() => keys.settings, api.settings);
-  const arrs = createQuery(
-    () => keys.arrs,
-    async () => (await api.arrs.list()).arrs,
-  );
+  const daemon = () => props.daemon;
+  const arrs = () => props.arrs;
   const draft = createDraft(() => toDraft(props.library));
   const [errors, setErrors] = createSignal<Record<string, string>>({});
   const [saving, setSaving] = createSignal(false);

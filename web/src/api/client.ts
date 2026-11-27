@@ -40,8 +40,22 @@ export { unauthenticated };
 /** True while the daemon does not answer. */
 export { unreachable };
 
+// Reads that answered 401 wait here for the next sign-in.
+let signedIn: { promise: Promise<void>; resolve: () => void } | undefined;
+
+function nextSignIn(): Promise<void> {
+  if (!signedIn) {
+    let resolve = () => {};
+    const promise = new Promise<void>((done) => (resolve = done));
+    signedIn = { promise, resolve };
+  }
+  return signedIn.promise;
+}
+
 export function markAuthenticated(): void {
   setUnauthenticated(false);
+  signedIn?.resolve();
+  signedIn = undefined;
 }
 
 export interface RequestOptions {
@@ -112,7 +126,16 @@ export async function request<T>(method: string, path: string, options: RequestO
   const body = (await response.json().catch(() => null)) as { error?: ErrorBody } | null;
   // The session probe answers 401 only for a wrong password, which the
   // sign-in form reports itself.
-  if (response.status === 401 && path !== "/session") setUnauthenticated(true);
+  if (response.status === 401 && path !== "/session") {
+    setUnauthenticated(true);
+    // A read is still wanted once the operator has signed in again, so it
+    // waits and asks again: the app behind the sign-in screen picks up where
+    // it was instead of failing. A write is not repeated behind their back.
+    if (method === "GET") {
+      await nextSignIn();
+      return request<T>(method, path, options);
+    }
+  }
   throw new ApiError(response.status, {
     code: body?.error?.code ?? fallbackCode(response.status),
     message: body?.error?.message ?? `The daemon answered ${response.status} ${response.statusText}.`,

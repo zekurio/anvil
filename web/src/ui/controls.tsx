@@ -119,8 +119,12 @@ export function Tabs(props: TabsProps) {
     <TabsRoot
       value={props.value}
       defaultValue={props.defaultValue}
-      onValueChange={(id) => {
-        if (id !== null) props.onChange?.(id);
+      onValueChange={(id, details) => {
+        if (id === null) return;
+        // A tab that is a link changes the address, and `value` follows the
+        // route. The press is not the change: a route guard may still refuse it.
+        if (props.tabs.find((tab) => tab.id === id)?.href) return details.cancel();
+        props.onChange?.(id);
       }}
     >
       <TabsList class="av-tabs" aria-label={props.label}>

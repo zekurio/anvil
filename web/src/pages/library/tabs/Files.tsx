@@ -8,6 +8,7 @@ import { JobSheet } from "../../../features/jobs/JobSheet";
 import { cancelable } from "../../../features/jobs/labels";
 import { JobBadge } from "../../../features/jobs/parts";
 import { Pager } from "../../../features/layout/Pager";
+import { loadPage } from "../../../features/layout/paging";
 import { createSelection } from "../../../features/layout/selection";
 import { isScanning, scanLibrary } from "../../../features/libraries/library";
 import { createDebounced } from "../../../lib/debounce";
@@ -45,8 +46,12 @@ const fileName = (path: string) => path.slice(path.lastIndexOf("/") + 1);
 /** A probe-derived cell: mono text, or a dash until a job has probed the file. */
 const probed = (value: string) => value || <span class="av-cell-muted">—</span>;
 
-/** The Files tab: every file of the library with the state of its job, paged, sorted and filtered by the daemon. */
-export function FilesTab(props: { library: Library }) {
+/**
+ * The Files tab: every file of the library with the state of its job, paged,
+ * sorted and filtered by the daemon. The list needs only the library's name;
+ * `library` is undefined until the list of libraries has answered.
+ */
+export function FilesTab(props: { name: string; library: Library | undefined }) {
   const { status } = useAppData();
   const [filter, setFilter] = createSignal<Filter>("all");
   const [sort, setSort] = createSignal<{ key: FileSort; dir: "asc" | "desc" }>({ key: "path", dir: "asc" });
@@ -54,7 +59,7 @@ export function FilesTab(props: { library: Library }) {
   const [opened, setOpened] = createSignal<LibraryFile | null>(null);
   const search = createDebounced();
   // Constant for this component: the page is keyed by library name.
-  const name = () => props.library.name;
+  const name = () => props.name;
 
   const query = createMemo(
     (): FileQuery => ({
@@ -63,12 +68,11 @@ export function FilesTab(props: { library: Library }) {
       sort: sort().key,
       dir: sort().dir,
       limit: PAGE_SIZE,
-      offset: page() * PAGE_SIZE,
     }),
   );
   const list = createQuery(
-    () => keys.libraryFiles(name(), query()),
-    () => api.libraries.files(name(), query()),
+    () => keys.libraryFiles(name(), { ...query(), offset: page() * PAGE_SIZE }),
+    () => loadPage(page(), PAGE_SIZE, (offset) => api.libraries.files(name(), { ...query(), offset })),
     { deferred: true, poll: POLL_LIST },
   );
   const selection = createSelection(
@@ -146,7 +150,7 @@ export function FilesTab(props: { library: Library }) {
                   <Switch
                     fallback={
                       <Show
-                        when={props.library.last_scan_at}
+                        when={props.library?.last_scan_at}
                         fallback={
                           <EmptyState icon="file-video" title="No files yet" description="This library has never been scanned. A scan finds its media files and queues the ones the rules allow.">
                             <Button variant="primary" icon="refresh-cw" busy={isScanning(name())} onClick={() => void scanLibrary(name())}>
@@ -155,7 +159,7 @@ export function FilesTab(props: { library: Library }) {
                           </EmptyState>
                         }
                       >
-                        <EmptyState icon="file-video" title="No files found" description={`The last scan found no media file in ${props.library.path}.`} />
+                        <EmptyState icon="file-video" title="No files found" description={`The last scan found no media file in ${props.library?.path ?? "the library folder"}.`} />
                       </Show>
                     }
                   >
@@ -168,7 +172,7 @@ export function FilesTab(props: { library: Library }) {
                   </Switch>
                 }
               />
-              <Pager page={page()} pageSize={PAGE_SIZE} total={list().total} noun="file" pending={isPending(() => list())} onPage={setPage} />
+              <Pager page={list().page} pageSize={PAGE_SIZE} total={list().total} noun="file" pending={isPending(() => list())} onPage={setPage} />
             </div>
           </Loading>
         </Errored>

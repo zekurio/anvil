@@ -1,11 +1,12 @@
 import { createMemo, createSignal, Errored, isPending, Loading, Show } from "solid-js";
 
-import { api, createQuery, keys, POLL_LIST, type Job, type JobQuery, type JobStatusFilter, type Library } from "../../../api";
+import { api, createQuery, keys, POLL_LIST, type Job, type JobQuery, type JobStatusFilter } from "../../../api";
 import { ErrorCell, SizeCell, TimeCell } from "../../../features/jobs/cells";
 import { JobSheet } from "../../../features/jobs/JobSheet";
 import { savedLabel } from "../../../features/jobs/labels";
 import { JobBadge } from "../../../features/jobs/parts";
 import { Pager } from "../../../features/layout/Pager";
+import { loadPage } from "../../../features/layout/paging";
 import { formatDuration } from "../../../lib/format";
 import { useAppData } from "../../../shell/data";
 import { DataTable, EmptyState, ErrorState, LoadingRows, PathCell, type DataTableColumn } from "../../../ui";
@@ -22,14 +23,14 @@ function took(job: Job): string {
 }
 
 /** The History tab: the library's finished jobs, newest first as the daemon lists them. */
-export function HistoryTab(props: { library: Library }) {
+export function HistoryTab(props: { name: string }) {
   const { status } = useAppData();
   const [page, setPage] = createSignal(0);
   const [opened, setOpened] = createSignal<Job | null>(null);
-  const query = createMemo((): JobQuery => ({ library: props.library.name, status: FINISHED, limit: PAGE_SIZE, offset: page() * PAGE_SIZE }));
+  const query = createMemo((): JobQuery => ({ library: props.name, status: FINISHED, limit: PAGE_SIZE }));
   const list = createQuery(
-    () => keys.jobList(query()),
-    () => api.jobs.list(query()),
+    () => keys.jobList({ ...query(), offset: page() * PAGE_SIZE }),
+    () => loadPage(page(), PAGE_SIZE, (offset) => api.jobs.list({ ...query(), offset })),
     { deferred: true, poll: POLL_LIST },
   );
   const now = () => Date.parse(status().server_time);
@@ -52,7 +53,7 @@ export function HistoryTab(props: { library: Library }) {
           <Loading fallback={<LoadingRows label="Loading history" />}>
             <div class="av-tablearea" aria-busy={isPending(() => list()) ? "true" : undefined}>
               <DataTable
-                label={`Finished jobs of ${props.library.name}`}
+                label={`Finished jobs of ${props.name}`}
                 columns={columns}
                 rows={list().jobs}
                 rowId={(job) => job.id}
@@ -60,7 +61,7 @@ export function HistoryTab(props: { library: Library }) {
                 activeId={opened()?.id}
                 empty={<EmptyState icon="list-video" title="No finished jobs yet" description="Jobs of this library show up here once they are done, failed, skipped or canceled." />}
               />
-              <Pager page={page()} pageSize={PAGE_SIZE} total={list().total} noun="job" pending={isPending(() => list())} onPage={setPage} />
+              <Pager page={list().page} pageSize={PAGE_SIZE} total={list().total} noun="job" pending={isPending(() => list())} onPage={setPage} />
             </div>
           </Loading>
         </Errored>

@@ -1,13 +1,12 @@
 import { useLocation } from "@solidjs/router";
 import { Show } from "solid-js";
 
-import { api, keys } from "../api";
 import { formatCount, joinDot, plural } from "../lib/format";
-import { run } from "../lib/mutate";
 import { setTheme, theme } from "../lib/theme";
 import { Button, Sidebar, type SidebarItem } from "../ui";
 import { openAddLibrary } from "./AddLibraryDialog";
 import { useAppData } from "./data";
+import { signOut } from "./session";
 
 const ADD_LIBRARY = "add-library";
 
@@ -47,9 +46,6 @@ export function AppSidebar() {
     { id: "settings", label: "Settings", icon: "settings", href: "/settings" },
   ];
 
-  // The session query then reports "not authenticated" and the app shows the sign-in screen.
-  const signOut = () => run(() => api.session.logout(), { invalidate: [keys.session], failure: "Signing out failed." });
-
   const version = () => (/^\d/.test(status().version) ? `v${status().version}` : status().version);
 
   return (
@@ -65,7 +61,7 @@ export function AppSidebar() {
         <>
           <Button size="sm" variant="ghost" icon={theme() === "dark" ? "sun" : "moon"} label={theme() === "dark" ? "Switch to the light theme" : "Switch to the dark theme"} onClick={() => setTheme(theme() === "dark" ? "light" : "dark")} />
           <Show when={session().auth_required}>
-            <Button size="sm" variant="ghost" icon="log-out" label="Sign out" onClick={signOut} />
+            <Button size="sm" variant="ghost" icon="log-out" label="Sign out" onClick={() => void signOut()} />
           </Show>
         </>
       }

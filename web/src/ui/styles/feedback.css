@@ -41,7 +41,9 @@
 .av-picker-chosen { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: var(--text-mono); color: var(--text-muted); }
 
 /* sign-in */
-.av-signin { display: flex; align-items: center; justify-content: center; height: 100%; padding: var(--space-4); box-sizing: border-box; }
+.av-signin { box-sizing: border-box; position: fixed; inset: 0; width: 100vw; height: 100dvh; max-width: none; max-height: none; margin: 0; padding: var(--space-4); border: 0; background: var(--bg); color: var(--text); }
+.av-signin[open] { display: flex; align-items: center; justify-content: center; }
+.av-signin::backdrop { background: var(--bg); }
 .av-signin-panel { box-sizing: border-box; display: flex; flex-direction: column; gap: var(--space-4); width: 320px; max-width: 100%; padding: var(--space-5); border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--surface); }
 .av-signin-head { display: flex; flex-direction: column; align-items: flex-start; gap: var(--space-3); color: var(--text); }
 .av-signin-text { margin: 0; font: var(--text-small); color: var(--text-muted); }

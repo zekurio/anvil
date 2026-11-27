@@ -1,4 +1,4 @@
-import { createSignal } from "solid-js";
+import { createSignal, onSettled } from "solid-js";
 
 import { api, ApiError, errorMessage, invalidate, keys } from "../api";
 import { markAuthenticated } from "../api/client";
@@ -6,14 +6,26 @@ import { useTitle } from "../lib/title";
 import { Button, Field, Input, Logo } from "../ui";
 
 /**
- * Shown instead of the app when the daemon wants a password: GET /session
- * says so, or any request answered 401.
+ * Covers the app when the daemon wants a password: GET /session says so, or
+ * any request answered 401.
+ *
+ * It is a modal dialog the size of the window. The app stays mounted
+ * underneath, and whatever it had open (a dialog, a sheet, a menu) is inert
+ * below the newest modal, so the password field can always be reached and
+ * the work in progress is intact after signing in.
  */
 export function SignIn() {
+  let dialog: HTMLDialogElement | undefined;
   const [password, setPassword] = createSignal("");
   const [error, setError] = createSignal<string | null>(null);
   const [busy, setBusy] = createSignal(false);
   useTitle(() => "Sign in");
+
+  onSettled(() => {
+    dialog?.showModal();
+    // Closing hands the focus back to where it was in the app.
+    return () => dialog?.close();
+  });
 
   const submit = async (event: SubmitEvent) => {
     event.preventDefault();
@@ -33,7 +45,8 @@ export function SignIn() {
   };
 
   return (
-    <main class="av-signin">
+    // Escape does not dismiss it: there is nothing to go back to without a session.
+    <dialog ref={(el) => (dialog = el)} class="av-signin" aria-label="Sign in" onCancel={(event) => event.preventDefault()}>
       <div class="av-signin-panel">
         <div class="av-signin-head">
           <Logo variant="wordmark" size={28} />
@@ -59,6 +72,6 @@ export function SignIn() {
           </Button>
         </form>
       </div>
-    </main>
+    </dialog>
   );
 }

@@ -1,4 +1,4 @@
-import { createEffect, Show } from "solid-js";
+import { Show } from "solid-js";
 
 import { formatCount } from "../../lib/format";
 import { Button } from "../../ui";
@@ -6,7 +6,7 @@ import { Button } from "../../ui";
 import "./layout.css";
 
 export interface PagerProps {
-  /** Zero-based page. */
+  /** Zero-based page that is on screen: the `page` of what `loadPage` answered. */
   page: number;
   pageSize: number;
   /** Every row matching the filter, across all pages. */
@@ -23,15 +23,6 @@ export function Pager(props: PagerProps) {
   const pages = () => Math.max(1, Math.ceil(props.total / props.pageSize));
   const first = () => props.page * props.pageSize + 1;
   const last = () => Math.min(props.total, (props.page + 1) * props.pageSize);
-  // The list can shrink under the page that is open: jobs finish, files leave
-  // a filter. The daemon answers a page past the end with no rows and the real
-  // total, and the table steps back to the last page that has any.
-  createEffect(
-    () => (!props.pending && props.page > pages() - 1 ? pages() - 1 : undefined),
-    (lastPage) => {
-      if (lastPage !== undefined) props.onPage(lastPage);
-    },
-  );
   return (
     <div class="av-tablefoot">
       {/* While the next page loads the rows above are still the previous ones, so the range says which one is on its way. */}

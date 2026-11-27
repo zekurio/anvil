@@ -7,6 +7,7 @@ import { run } from "../../lib/mutate";
 import { setTheme, theme, type Theme } from "../../lib/theme";
 import { useTitle } from "../../lib/title";
 import { useAppData } from "../../shell/data";
+import { signOut } from "../../shell/session";
 import { Banner, Button, confirm, DataTable, EmptyState, ErrorState, LoadingRows, LoadingState, Menu, Segmented, StatusBadge, Topbar, type DataTableColumn } from "../../ui";
 import { ArrDialog } from "./ArrDialog";
 
@@ -104,10 +105,9 @@ function WebSection(props: { settings: Settings }) {
   const web = () => props.settings.web;
   const open = () => !web().auth_required && !isLoopback(web().listen);
 
-  // The session query then reports "not authenticated" and the app shows the sign-in screen.
-  const signOut = async () => {
+  const leave = async () => {
     setBusy(true);
-    await run(() => api.session.logout(), { invalidate: [keys.session], failure: "Signing out failed." });
+    await signOut();
     setBusy(false);
   };
 
@@ -132,7 +132,7 @@ function WebSection(props: { settings: Settings }) {
       </dl>
       <Show when={session().auth_required && session().authenticated}>
         <div>
-          <Button icon="log-out" busy={busy()} onClick={signOut}>
+          <Button icon="log-out" busy={busy()} onClick={leave}>
             Sign out
           </Button>
         </div>

@@ -9,6 +9,7 @@ import { JobSheet } from "../../features/jobs/JobSheet";
 import { STATES_OF_STATUS, stepLabel } from "../../features/jobs/labels";
 import { JobBadge, StepProgress } from "../../features/jobs/parts";
 import { Pager } from "../../features/layout/Pager";
+import { loadPage } from "../../features/layout/paging";
 import { createSelection } from "../../features/layout/selection";
 import { createDebounced } from "../../lib/debounce";
 import { formatCount, joinDot, plural } from "../../lib/format";
@@ -179,12 +180,11 @@ function JobsTable(props: { activeId?: number; onOpen: (id: number) => void }) {
       library: library() || undefined,
       q: search.settled() || undefined,
       limit: PAGE_SIZE,
-      offset: page() * PAGE_SIZE,
     }),
   );
   const list = createQuery(
-    () => keys.jobList(query()),
-    () => api.jobs.list(query()),
+    () => keys.jobList({ ...query(), offset: page() * PAGE_SIZE }),
+    () => loadPage(page(), PAGE_SIZE, (offset) => api.jobs.list({ ...query(), offset })),
     { deferred: true, poll: POLL_LIST },
   );
   const selection = createSelection(
@@ -255,7 +255,7 @@ function JobsTable(props: { activeId?: number; onOpen: (id: number) => void }) {
                 </Show>
               }
             />
-            <Pager page={page()} pageSize={PAGE_SIZE} total={list().total} noun="job" pending={isPending(() => list())} onPage={setPage} />
+            <Pager page={list().page} pageSize={PAGE_SIZE} total={list().total} noun="job" pending={isPending(() => list())} onPage={setPage} />
           </div>
         </Loading>
       </Errored>
