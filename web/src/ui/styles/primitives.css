@@ -88,6 +88,6 @@ a.av-btn { box-sizing: border-box; text-decoration: none; }
 .av-tab { position: relative; display: inline-flex; align-items: center; gap: var(--space-2); height: var(--control-md); padding: 0; border: 0; background: none; color: var(--text-muted); font: 400 14px/20px var(--font-sans); cursor: pointer; }
 a.av-tab { text-decoration: none; }
 .av-tab:hover { color: var(--text); }
-.av-tab[aria-selected="true"] { color: var(--text); font-weight: 500; }
+.av-tab[aria-selected="true"] { color: var(--text); }
 .av-tab[aria-selected="true"]::after { content: ""; position: absolute; left: 0; right: 0; bottom: -1px; height: 2px; background: var(--accent); }
 .av-tab-count { font: 400 12px/16px var(--font-mono); color: var(--text-muted); }

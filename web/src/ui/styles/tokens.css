@@ -82,7 +82,7 @@
   --text-heading: 600 20px/28px var(--font-sans); /* Page title in the top bar area: the library or flow name. One per view. */
   --text-title: 600 16px/24px var(--font-sans); /* Side sheet title, dialog title, empty-state headline. */
   --text-body: 400 14px/20px var(--font-sans); /* Default text: descriptions, buttons, inputs, nav. */
-  --text-body-strong: 500 14px/20px var(--font-sans); /* Button labels, node titles, the selected tab, emphasis inside body. */
+  --text-body-strong: 500 14px/20px var(--font-sans); /* Button labels, node titles, emphasis inside body. Never a selected or current state: those change color and background, not weight. */
   --text-small: 400 13px/18px var(--font-sans); /* Table cells, palette entries, sheet section content where density matters. */
   --text-label: 500 12px/16px var(--font-sans); /* Form labels, table column headers, sheet section headings. Sentence case, never all caps. */
   --text-caption: 400 12px/16px var(--font-sans); /* Hints under fields, timestamps, the node type under a node title. Set in text-muted. */
