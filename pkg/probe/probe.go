@@ -45,7 +45,62 @@ func (p FFProbe) Probe(ctx context.Context, path string) (domain.ProbeResult, er
 	if err != nil {
 		return domain.ProbeResult{}, fmt.Errorf("parse ffprobe output for %q: %w", path, err)
 	}
+	if err := probeVideoFrames(ctx, runner, binary, &probed); err != nil {
+		return domain.ProbeResult{}, err
+	}
 	return probed, nil
+}
+
+// frameProbePackets bounds the frame probe. A few packets get past a leading
+// frame that failed to decode or carries no side data, without decoding
+// more than a fraction of a second.
+const frameProbePackets = 8
+
+// frameArgs decodes the first packets of one stream and prints only their
+// frame side data.
+func frameArgs(path string, streamIndex int) []string {
+	return []string{"-v", "error", "-print_format", "json",
+		"-select_streams", strconv.Itoa(streamIndex),
+		"-read_intervals", "%+#" + strconv.Itoa(frameProbePackets),
+		"-show_frames", "-show_entries", "frame=side_data_list", path}
+}
+
+// probeVideoFrames adds frame-level HDR signalling to the primary video
+// stream. HDR10 static metadata often lives only in SEI messages, and
+// remuxes made without Dolby Vision support (FFmpeg's MP4 muxer without
+// -strict unofficial, for one) keep the RPU but drop the configuration
+// record, so the container alone misses both.
+func probeVideoFrames(ctx context.Context, runner process.Runner, binary string, probed *domain.ProbeResult) error {
+	var stream *domain.MediaStream
+	for i := range probed.Streams {
+		if probed.Streams[i].Type == "video" && !probed.Streams[i].AttachedPic() {
+			stream = &probed.Streams[i]
+			break
+		}
+	}
+	if stream == nil {
+		return nil
+	}
+	result, err := runner.Run(ctx, process.Command{
+		Name:              binary,
+		RequireFullStdout: true,
+		Args:              frameArgs(probed.Path, stream.Index),
+	})
+	if err != nil {
+		return fmt.Errorf("run ffprobe frame probe for %q: %w", probed.Path, err)
+	}
+	var raw struct {
+		Frames []struct {
+			SideData []ffprobeSideData `json:"side_data_list"`
+		} `json:"frames"`
+	}
+	if err := json.Unmarshal(result.Stdout, &raw); err != nil {
+		return fmt.Errorf("parse ffprobe frame probe for %q: %w", probed.Path, err)
+	}
+	for _, frame := range raw.Frames {
+		applySideData(stream, frame.SideData)
+	}
+	return nil
 }
 
 type Block struct {
@@ -66,8 +121,87 @@ func (b Block) Run(ctx context.Context, job *pipeline.JobContext) error {
 		return err
 	}
 	job.Probe = &result
-	job.Metadata.HDR = hdrMetadata(result)
 	return nil
+}
+
+// ffprobeSideData covers both stream side data (the Dolby Vision
+// configuration record) and frame side data (the parsed RPU header). Types
+// are matched by FFmpeg's side data names.
+type ffprobeSideData struct {
+	Type              string `json:"side_data_type"`
+	DVProfile         int    `json:"dv_profile"`
+	DVLevel           int    `json:"dv_level"`
+	ELPresent         int    `json:"el_present_flag"`
+	BLCompatibilityID int    `json:"dv_bl_signal_compatibility_id"`
+	VDRRPUProfile     int    `json:"vdr_rpu_profile"`
+	BLFullRange       int    `json:"bl_video_full_range_flag"`
+}
+
+const (
+	sideDataDolbyVisionRecord = "DOVI configuration record"
+	sideDataDolbyVisionRPU    = "Dolby Vision Metadata"
+	sideDataMasteringDisplay  = "Mastering display metadata"
+	sideDataContentLight      = "Content light level metadata"
+)
+
+func applySideData(stream *domain.MediaStream, sideData []ffprobeSideData) {
+	for _, data := range sideData {
+		switch data.Type {
+		case sideDataMasteringDisplay:
+			stream.MasteringDisplay = true
+		case sideDataContentLight:
+			stream.ContentLightLevel = true
+		case sideDataDolbyVisionRecord:
+			dv := dolbyVision(stream)
+			dv.ConfigurationRecord = true
+			dv.Profile = data.DVProfile
+			dv.Level = data.DVLevel
+			dv.BLCompatibilityID = data.BLCompatibilityID
+			dv.EnhancementLayer = data.ELPresent != 0
+		case sideDataDolbyVisionRPU:
+			dv := dolbyVision(stream)
+			if !dv.RPU && !dv.ConfigurationRecord {
+				guessDolbyVision(dv, *stream, data)
+			}
+			dv.RPU = true
+		}
+	}
+}
+
+func dolbyVision(stream *domain.MediaStream) *domain.DolbyVision {
+	if stream.DolbyVision == nil {
+		stream.DolbyVision = &domain.DolbyVision{}
+	}
+	return stream.DolbyVision
+}
+
+// guessDolbyVision fills in what a missing configuration record would have
+// said, the way FFmpeg guesses it: an RPU with vdr_rpu_profile 0 and a
+// full-range base layer is profile 5. Otherwise the base layer is whatever
+// its color tags say, and unknown tags leave it marked incompatible.
+func guessDolbyVision(dv *domain.DolbyVision, stream domain.MediaStream, rpu ffprobeSideData) {
+	if rpu.VDRRPUProfile == 0 && rpu.BLFullRange != 0 {
+		dv.Profile, dv.BLCompatibilityID = 5, 0
+		return
+	}
+	switch stream.Codec {
+	case "av1":
+		dv.Profile = 10
+	case "h264":
+		dv.Profile = 9
+	default:
+		dv.Profile = 8
+	}
+	switch stream.ColorTransfer {
+	case "smpte2084":
+		dv.BLCompatibilityID = 1
+	case "arib-std-b67":
+		dv.BLCompatibilityID = 4
+	case "bt709":
+		dv.BLCompatibilityID = 2
+	default:
+		dv.BLCompatibilityID = 0
+	}
 }
 
 type ffprobeJSON struct {
@@ -85,6 +219,7 @@ type ffprobeJSON struct {
 		ColorSpace     string            `json:"color_space"`
 		ColorTransfer  string            `json:"color_transfer"`
 		ColorPrimaries string            `json:"color_primaries"`
+		SideData       []ffprobeSideData `json:"side_data_list"`
 		Tags           map[string]string `json:"tags"`
 		Disposition    map[string]int    `json:"disposition"`
 	} `json:"streams"`
@@ -115,7 +250,7 @@ func parseFFProbe(path string, data []byte) (domain.ProbeResult, error) {
 			disposition[key] = value != 0
 		}
 		bitRate := parseFFProbeInt(stream.BitRate)
-		probed.Streams = append(probed.Streams, domain.MediaStream{
+		parsed := domain.MediaStream{
 			Index:          stream.Index,
 			Type:           stream.CodecType,
 			Codec:          stream.CodecName,
@@ -133,7 +268,9 @@ func parseFFProbe(path string, data []byte) (domain.ProbeResult, error) {
 			Title:          stream.Tags["title"],
 			Tags:           copyTags(stream.Tags),
 			Disposition:    disposition,
-		})
+		}
+		applySideData(&parsed, stream.SideData)
+		probed.Streams = append(probed.Streams, parsed)
 	}
 	return probed, nil
 }
@@ -152,19 +289,6 @@ func parseFFProbeInt(value string) int64 {
 		return 0
 	}
 	return parsed
-}
-
-func hdrMetadata(result domain.ProbeResult) domain.HDRMetadata {
-	stream, ok := domain.PrimaryVideoStream(result.Streams)
-	if !ok {
-		return domain.HDRMetadata{}
-	}
-	return domain.HDRMetadata{
-		ColorRange:     stream.ColorRange,
-		ColorSpace:     stream.ColorSpace,
-		ColorTransfer:  stream.ColorTransfer,
-		ColorPrimaries: stream.ColorPrimaries,
-	}
 }
 
 func copyTags(tags map[string]string) map[string]string {

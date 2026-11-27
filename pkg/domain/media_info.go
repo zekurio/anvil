@@ -1,6 +1,7 @@
 package domain
 
 import (
+	"strconv"
 	"strings"
 	"time"
 )
@@ -19,10 +20,59 @@ type MediaStream struct {
 	ColorSpace     string
 	ColorTransfer  string
 	ColorPrimaries string
-	Language       string
-	Title          string
-	Tags           map[string]string
-	Disposition    map[string]bool
+	// MasteringDisplay and ContentLightLevel report HDR10 static metadata
+	// (SMPTE ST 2086 mastering display, MaxCLL/MaxFALL) declared by the
+	// container or found on the first decoded frames.
+	MasteringDisplay  bool
+	ContentLightLevel bool
+	// DolbyVision is nil when neither the container nor the first decoded
+	// frames carry Dolby Vision signalling.
+	DolbyVision *DolbyVision
+	Language    string
+	Title       string
+	Tags        map[string]string
+	Disposition map[string]bool
+}
+
+// DolbyVision is a stream's Dolby Vision signalling. Profile, Level, and
+// BLCompatibilityID come from the container's configuration record. A stream
+// with an RPU but no record gets them guessed from the RPU header and the
+// stream's color tags.
+type DolbyVision struct {
+	Profile int
+	Level   int
+	// BLCompatibilityID is dv_bl_signal_compatibility_id: 1 HDR10, 2 SDR,
+	// 4 HLG, 6 Blu-ray HDR10, and 0 for a base layer that only shows correct
+	// colors with the RPU applied (profile 5, 10.0).
+	BLCompatibilityID int
+	EnhancementLayer  bool
+	// ConfigurationRecord reports a container-level record (dvcC/dvvC or a
+	// Matroska block addition mapping).
+	ConfigurationRecord bool
+	// RPU reports Dolby Vision metadata on the first decoded frames.
+	RPU bool
+}
+
+// CompatibleBaseLayer reports whether the base layer is a correct HDR10,
+// SDR, or HLG picture on its own, which is what remains when a re-encode
+// drops the RPU.
+func (d DolbyVision) CompatibleBaseLayer() bool {
+	switch d.BLCompatibilityID {
+	case 1, 2, 4, 6:
+		return true
+	default:
+		return false
+	}
+}
+
+// String names the profile the way players and media servers do: 5, 7,
+// 8.1, 10.1, ...
+func (d DolbyVision) String() string {
+	name := strconv.Itoa(d.Profile)
+	if d.Profile == 8 || d.Profile == 10 {
+		name += "." + strconv.Itoa(d.BLCompatibilityID)
+	}
+	return name
 }
 
 // AttachedPic reports whether the stream is an embedded image, such as cover
@@ -148,7 +198,7 @@ type EncodePlan struct {
 	AttachmentMode           MetadataMode
 	ChapterMode              MetadataMode
 	FFmpegArgs               []string
-	HDR                      HDRMetadata
+	Color                    VideoColor
 }
 
 type TrackTitle struct {
@@ -181,6 +231,8 @@ type ValidationResult struct {
 	OutputHDRColorTransfer      string
 	SourceHDRColorPrimaries     string
 	OutputHDRColorPrimaries     string
+	SourceDolbyVision           string
+	OutputDolbyVision           string
 	Errors                      []string
 }
 
@@ -189,14 +241,15 @@ type JobMetadata struct {
 	CropFilter                  string
 	StreamCleanupDisabled       bool
 	StreamCleanupDisabledReason string
-	HDR                         HDRMetadata
 }
 
-type HDRMetadata struct {
-	ColorRange     string
-	ColorSpace     string
-	ColorTransfer  string
-	ColorPrimaries string
+// VideoColor is the color signalling an encode tags its video with, using
+// FFmpeg's names (tv, bt2020nc, smpte2084, bt2020, ...).
+type VideoColor struct {
+	Range     string
+	Space     string
+	Transfer  string
+	Primaries string
 }
 
 // EffectiveVideoProfile returns the video settings for this job after

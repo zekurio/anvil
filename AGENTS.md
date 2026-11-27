@@ -166,6 +166,11 @@ process output goes to per-attempt log files plus artifact events
   Attempt-local output is never resumed except through the publish journal.
 - `validate` is observational: `validate.Block.Run` logs and returns `nil` even
   on `ErrValidationFailed`. A missing artifact is the one hard failure. Native CRF search in `pkg/search` is the encode acceptance authority.
+- HDR signalling (color tags, HDR10 static metadata, Dolby Vision record and
+  RPU) comes from `probe.FFProbe`, which also decodes the first frames of the
+  primary video. Re-encodes drop the Dolby Vision RPU, so
+  `ffmpeg.videoCopyState` copies video whose base layer is not viewable on its
+  own (profile 5, 10.0).
 - Publication (`pkg/replace`) goes through a durable journal
   (`prepared → published → source_cleaned → committed`, or `conflict`). Never
   overwrite an existing destination, and record intent before mutating the
