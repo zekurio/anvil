@@ -114,7 +114,7 @@ func (a *analysis) readNodes(g Graph) {
 		a.nodes[node.ID] = node
 		def, known := nodeDefsByID[node.Type]
 		if !known {
-			a.errorf(node.ID, "", "%q is not a node type Anvil knows. Replace this node.", node.Type)
+			a.errorf(node.ID, "", "%q is not a node type anvil knows. Replace this node.", node.Type)
 			continue
 		}
 		decoded, problems, warnings := decodeOptionsWithWarnings(def, node.Options)

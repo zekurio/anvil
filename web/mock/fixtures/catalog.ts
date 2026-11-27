@@ -199,7 +199,7 @@ export const NODE_TYPES: NodeType[] = [
     kind: "video",
     group: "Video",
     label: "Encode video",
-    description: "Re-encodes the video stream. With a quality target, Anvil measures samples of each file and picks the highest CRF that still meets it.",
+    description: "Re-encodes the video stream. With a quality target, anvil measures samples of each file and picks the highest CRF that still meets it.",
     outputs: [""],
     sections: [
       section("Encoder", [
@@ -275,7 +275,7 @@ export const NODE_TYPES: NodeType[] = [
             key: "ffmpeg_args",
             label: "Extra encoder arguments",
             type: "string_list",
-            hint: "Option and value pairs, one per entry, used for the search and the final encode. Only encoder parameter bundles and value-only tuning options are accepted; files, URLs, devices, filters, mapping, timing, and rate control stay with Anvil.",
+            hint: "Option and value pairs, one per entry, used for the search and the final encode. Only encoder parameter bundles and value-only tuning options are accepted; files, URLs, devices, filters, mapping, timing, and rate control stay with anvil.",
             default: [],
             mono: true,
             placeholder: "-svtav1-params",

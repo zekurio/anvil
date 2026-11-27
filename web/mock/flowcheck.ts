@@ -321,7 +321,7 @@ function analyze(graph: Graph): Analysis {
     a.nodes.set(node.id, node);
     const type = NODE_TYPE_BY_ID.get(node.type);
     if (!type) {
-      error(node.id, "", `${quote(node.type)} is not a node type Anvil knows. Replace this node.`);
+      error(node.id, "", `${quote(node.type)} is not a node type anvil knows. Replace this node.`);
       continue;
     }
     const { options, problems } = decodeOptions(type, node.options);

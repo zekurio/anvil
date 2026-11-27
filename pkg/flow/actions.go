@@ -27,7 +27,7 @@ func videoEncodeNode() nodeDef {
 			Kind:  KindVideo,
 			Group: groupVideo,
 			Label: "Encode video",
-			Description: "Re-encodes the video stream. With a quality target, Anvil measures samples of each file " +
+			Description: "Re-encodes the video stream. With a quality target, anvil measures samples of each file " +
 				"and picks the highest CRF that still meets it.",
 			Outputs: []string{""},
 			Sections: []Section{
@@ -194,7 +194,7 @@ func videoEncodeNode() nodeDef {
 						Label: "Extra encoder arguments",
 						Type:  FieldStringList,
 						Hint: "Option and value pairs, one per entry, used for the search and the final encode. " +
-							"Only encoder parameter bundles and value-only tuning options are accepted; files, URLs, devices, filters, mapping, timing, and rate control stay with Anvil.",
+							"Only encoder parameter bundles and value-only tuning options are accepted; files, URLs, devices, filters, mapping, timing, and rate control stay with anvil.",
 						Default:     []string{},
 						Mono:        true,
 						Placeholder: "-svtav1-params",

@@ -91,7 +91,7 @@ func TestValidateStructure(t *testing.T) {
 			name:  "unknown node type",
 			graph: simple(newNode("mystery", "video.upscale", nil)),
 			want: []Issue{
-				problem("mystery", "", `"video.upscale" is not a node type Anvil knows. Replace this node.`),
+				problem("mystery", "", `"video.upscale" is not a node type anvil knows. Replace this node.`),
 			},
 		},
 		{
