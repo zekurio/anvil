@@ -142,7 +142,7 @@ in
       package = mkOption {
         type = types.nullOr types.package;
         default = null;
-        example = literalExpression "inputs.anvil.packages.\${pkgs.system}.anvilctl";
+        example = literalExpression "inputs.anvil.packages.\${pkgs.stdenv.hostPlatform.system}.anvilctl";
         description = ''
           Standalone package providing anvilctl. Required when install is true.
           The daemon package is not a fallback because it includes the media tools.
@@ -180,7 +180,12 @@ in
       port = mkOption {
         type = types.port;
         default = 8484;
-        description = "TCP port the web UI listens on.";
+        description = ''
+          TCP port the web UI listens on. A port below 1024 fails an
+          assertion: the unit runs without CAP_NET_BIND_SERVICE and cannot
+          bind it. Put a reverse proxy in front to serve the UI on port 80 or
+          443.
+        '';
       };
 
       passwordFile = mkOption {
@@ -208,6 +213,13 @@ in
           Rendered as web.allow_unauthenticated. Anyone who can reach the port
           can then change libraries and flows, so use this only behind a
           reverse proxy that authenticates.
+
+          A daemon without a password only answers a request whose Host
+          header is a loopback name, its listen host, or the IP address the
+          connection arrived on. The proxy must therefore send such a Host,
+          for example 127.0.0.1:8484, and pass the browser's host in
+          X-Forwarded-Host, which the daemon compares with the Origin of a
+          request that changes something.
         '';
       };
 
@@ -232,16 +244,22 @@ in
 
         The unit runs with ProtectSystem=strict, which leaves the rest of the
         filesystem read-only to it, and the module cannot see what the
-        operator adds in the web UI. A library outside these paths can still
-        be added and scanned, but its jobs fail with a read-only file system
-        or permission error as soon as Anvil writes the encode beside the
-        source. The service user also needs ordinary write permission on the
-        directories. Changing this list restarts the service.
+        operator adds in the web UI. The service user also needs ordinary
+        write permission on the directories. Changing this list restarts the
+        service.
+
+        The list is also rendered as daemon.media_roots, without the "-"
+        prefix, unless settings.daemon.media_roots is set. The web UI then
+        refuses a library or handoff directory outside these paths, and its
+        folder picker shows nothing else. With media_roots set to [ ] a
+        library outside these paths can be added and scanned, but its jobs
+        fail with a read-only file system or permission error as soon as
+        Anvil writes the encode beside the source.
 
         Each path must exist when the service starts, or the unit fails.
-        Prefix a path with "-" to let it be missing. The module adds the path
-        and download.handoff_path of every legacy settings.libraries entry to
-        this list.
+        Prefix a path with "-" to let it be missing. The module also makes
+        the path and download.handoff_path of every legacy settings.libraries
+        entry writable, but does not add them to media_roots.
       '';
     };
 
@@ -308,8 +326,9 @@ in
         it ignores them, so later changes here have no effect. Manage
         libraries, flows, and Arr connections in the web UI.
 
-        Prefer web.passwordFile and api_key_file to literal secrets, because
-        literal secrets in Nix enter the Nix store.
+        Prefer web.passwordFile to a literal web.password, and api_key_file
+        to api_key in a legacy arrs table, because literal secrets in Nix
+        enter the Nix store.
       '';
     };
 
