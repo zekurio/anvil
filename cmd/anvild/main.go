@@ -256,6 +256,23 @@ func runDaemon(ctx context.Context, cfg config.Config, opts options) error {
 		}
 	}()
 
+	// The web UI's address and password are the last things that can fail
+	// for reasons outside the store, so they are settled before the store is
+	// opened: a start that fails on them leaves the store as it was, without
+	// a migration. Nothing is served until the snapshot exists, further down.
+	var webClaimed webClaim
+	if cfg.Web.Enabled {
+		webClaimed, err = claimWeb(serviceCtx, cfg)
+		if err != nil {
+			return err
+		}
+		defer func() {
+			if err := webClaimed.release(); err != nil {
+				slog.Error("release web listener", "error", err)
+			}
+		}()
+	}
+
 	state, err := openStore(serviceCtx, cfg)
 	if err != nil {
 		return err
@@ -314,22 +331,15 @@ func runDaemon(ctx context.Context, cfg config.Config, opts options) error {
 		},
 	})
 
-	// The web UI comes last of the start-up claims: its address is bound only
-	// once the store is open, recovered, and imported into, and the snapshot it
-	// serves from exists.
+	// The address was bound before the store was opened. Serving starts only
+	// here, once the store is open, recovered, and imported into, and the
+	// snapshot the UI is served from exists.
 	var webServer *webapi.Server
 	if cfg.Web.Enabled {
-		webServer, err = newWebServer(cfg, webServiceDeps{
+		webServer = newWebServer(webClaimed.password, webServiceDeps{
 			store: state, jobs: jobs, runtime: runtimeCfg, progress: progress, configPath: opts.configPath,
 		})
-		if err != nil {
-			return err
-		}
-		webListener, err := listenWeb(serviceCtx, cfg)
-		if err != nil {
-			return err
-		}
-		startWebService(serviceCtx, &wg, webListener, webServer, cfg)
+		startWebService(serviceCtx, &wg, webClaimed.listener, webServer, cfg)
 	} else {
 		slog.Info("web UI is disabled (web.enabled = false)")
 	}

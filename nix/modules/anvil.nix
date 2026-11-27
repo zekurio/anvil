@@ -369,6 +369,19 @@ in
         '';
       }
       {
+        # The unit runs with an empty CapabilityBoundingSet, so not even root
+        # can bind a port below 1024 in it. Without this the mistake shows as
+        # a unit that fails at start with "permission denied".
+        assertion = !web.enabled || webListen == null || webPort == 0 || webPort >= 1024;
+        message = ''
+          The Anvil web UI is set to listen on port ${toString webPort}, and the anvil service
+          cannot bind a port below 1024: it runs without CAP_NET_BIND_SERVICE. Set
+          services.anvil.web.port (or the port of services.anvil.settings.web.listen) to
+          1024 or higher, such as the default 8484, and put a reverse proxy in front of it
+          to serve the UI on port 80 or 443.
+        '';
+      }
+      {
         # Mirrors the daemon's own startup rule so the mistake surfaces at
         # evaluation time rather than as a failed unit.
         assertion =

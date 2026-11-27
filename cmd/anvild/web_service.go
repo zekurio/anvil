@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -25,27 +26,46 @@ type webServiceDeps struct {
 	configPath string
 }
 
-// listenWeb claims the web UI's address. It runs after the store is open and
-// the runtime snapshot is built, so nothing is served that is not ready, and a
-// taken port stops the daemon with the address in the error instead of leaving
-// it running without the UI its operator expects.
-func listenWeb(ctx context.Context, cfg config.Config) (net.Listener, error) {
+// webClaim is what the web UI needs from outside the daemon: its address and
+// its password. Both are settled before the store is opened.
+type webClaim struct {
+	listener net.Listener
+	password string
+}
+
+// claimWeb reads the password and binds the web UI's address without serving
+// on it. It runs before the store is opened, so a start that cannot have its
+// web UI, because the address is taken or the password file cannot be read,
+// fails without having migrated the store or recovered a job. Connections
+// that arrive before startWebService wait in the listener's backlog.
+//
+// The password comes first: running without sign-in is never the fallback,
+// and a daemon that cannot sign anyone in has no use for the address.
+func claimWeb(ctx context.Context, cfg config.Config) (webClaim, error) {
+	password, err := cfg.Web.LoadPassword()
+	if err != nil {
+		return webClaim{}, err
+	}
 	var listenConfig net.ListenConfig
 	listener, err := listenConfig.Listen(ctx, "tcp", cfg.Web.Listen)
 	if err != nil {
-		return nil, fmt.Errorf("the web UI cannot listen on %s (web.listen): %w", cfg.Web.Listen, err)
+		return webClaim{}, fmt.Errorf("the web UI cannot listen on %s (web.listen): %w", cfg.Web.Listen, err)
 	}
-	return listener, nil
+	return webClaim{listener: listener, password: password}, nil
 }
 
-// newWebServer builds the web server with the password in effect. A password
-// file that cannot be read fails the start: running without sign-in is never
-// the fallback.
-func newWebServer(cfg config.Config, deps webServiceDeps) (*webapi.Server, error) {
-	password, err := cfg.Web.LoadPassword()
-	if err != nil {
-		return nil, err
+// release gives the address back. After startWebService the server owns the
+// listener and has closed it by the time the daemon returns, which is not an
+// error here.
+func (c webClaim) release() error {
+	if err := c.listener.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+		return fmt.Errorf("close web listener: %w", err)
 	}
+	return nil
+}
+
+// newWebServer builds the web server with the password claimWeb read.
+func newWebServer(password string, deps webServiceDeps) *webapi.Server {
 	ui, built := web.Dist()
 	server := &webapi.Server{
 		Store:      deps.store,
@@ -59,7 +79,7 @@ func newWebServer(cfg config.Config, deps webServiceDeps) (*webapi.Server, error
 		Version:    control.BuildVersion,
 	}
 	server.SetPassword(password)
-	return server, nil
+	return server
 }
 
 // startWebService serves the UI and the API on an already-claimed listener. A

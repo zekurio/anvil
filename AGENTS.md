@@ -259,8 +259,11 @@ process output goes to per-attempt log files plus artifact events
 - `anvild` takes an exclusive `flock` on `<store_path>.lock`, then claims the
   control socket, and only then opens the store, recovers jobs, sweeps
   staging, runs the legacy import, and builds the runtime snapshot. Nothing
-  with a side effect may run ahead of those two claims. The web listener is
-  bound last, once the snapshot it serves from exists.
+  with a side effect may run ahead of those two claims. The web password is
+  read and the web listener bound (`claimWeb`) right after them and before the
+  store is opened, so a start with a taken address or an unreadable password
+  file fails without migrating the store. The listener serves last, once the
+  snapshot it serves from exists.
 - Live progress (`domain.JobProgress`) is in memory only. The worker writes it
   to `worker.ProgressTracker` and the web API reads it from there; it is never
   persisted and never read from the store.
