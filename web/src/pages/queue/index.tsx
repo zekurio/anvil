@@ -1,7 +1,7 @@
 import { useNavigate, useParams } from "@solidjs/router";
 import { createMemo, createSignal, Errored, For, isPending, Loading, Show } from "solid-js";
 
-import { api, createQuery, keys, POLL_LIST, type Job, type JobQuery, type JobState } from "../../api";
+import { api, createQuery, keys, POLL_LIST, type Job, type JobQuery, type JobState, type Progress } from "../../api";
 import { jobAction } from "../../features/jobs/actions";
 import { ErrorCell, SizeCell, TimeCell } from "../../features/jobs/cells";
 import { JobBulkBar } from "../../features/jobs/JobBulkBar";
@@ -115,6 +115,10 @@ export default function QueuePage() {
 function RunningJobs(props: { queued: number; activeId?: number; onOpen: (id: number) => void }) {
   const { status } = useAppData();
   const workers = () => status().workers;
+  // A job no worker of this daemon run has reported on, last touched before the
+  // run began: the daemon was stopped hard in the middle of it. Its lease has
+  // to run out before a worker takes it again.
+  const interrupted = (job: Progress) => job.step === "" && Date.parse(job.updated_at) < Date.parse(status().started_at);
 
   return (
     <section class="av-running" aria-label="Running jobs">
@@ -152,8 +156,11 @@ function RunningJobs(props: { queued: number; activeId?: number; onOpen: (id: nu
                 <span class="av-running-library" title={job().flow_name ? `Flow: ${job().flow_name}` : undefined}>
                   {job().library}
                 </span>
-                <span class="av-running-step">{job().step ? stepLabel(job().step) : "Starting"}</span>
-                <Show when={job().step !== ""} fallback={<span class="av-step-open">Waiting for the first progress report</span>}>
+                <span class="av-running-step">{job().step ? stepLabel(job().step) : interrupted(job()) ? "Interrupted" : "Starting"}</span>
+                <Show
+                  when={job().step !== ""}
+                  fallback={<span class="av-step-open">{interrupted(job()) ? "Stopped with the daemon. It starts again when its lease runs out." : "Waiting for the first progress report"}</span>}
+                >
                   <StepProgress progress={job()} label={fileName(job().path)} />
                 </Show>
               </div>
