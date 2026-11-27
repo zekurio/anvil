@@ -86,7 +86,10 @@ export async function request<T>(method: string, path: string, options: RequestO
     response = await fetch(url(path, options.query), {
       method,
       credentials: "same-origin",
-      headers: options.body === undefined ? { Accept: "application/json" } : { Accept: "application/json", "Content-Type": "application/json" },
+      // The daemon refuses every mutating request without a JSON content type,
+      // body or not: it is its proof that a script built the request on
+      // purpose, which no HTML form on another site can give.
+      headers: method === "GET" ? { Accept: "application/json" } : { Accept: "application/json", "Content-Type": "application/json" },
       body: options.body === undefined ? undefined : JSON.stringify(options.body),
       signal: options.signal,
     });
