@@ -444,9 +444,10 @@ const builtIndex = `<!doctype html><html><head><meta property="csp-nonce"><scrip
 
 func testUI() fstest.MapFS {
 	return fstest.MapFS{
-		"index.html":         {Data: []byte(builtIndex)},
-		"assets/app-1a2b.js": {Data: []byte(`console.log("anvil")`)},
-		"favicon.svg":        {Data: []byte(`<svg xmlns="http://www.w3.org/2000/svg"/>`)},
+		"index.html":           {Data: []byte(builtIndex)},
+		"assets/app-1a2b.js":   {Data: []byte(`console.log("anvil")`)},
+		"favicon.svg":          {Data: []byte(`<svg xmlns="http://www.w3.org/2000/svg"/>`)},
+		"manifest.webmanifest": {Data: []byte(`{"name":"anvil"}`)},
 	}
 }
 
@@ -485,6 +486,9 @@ func TestStaticUI(t *testing.T) {
 	}
 	if icon := f.get("/favicon.svg"); icon.Code != http.StatusOK || !strings.Contains(icon.Header().Get("Content-Type"), "svg") {
 		t.Fatalf("favicon = %d %q", icon.Code, icon.Header().Get("Content-Type"))
+	}
+	if manifest := f.get("/manifest.webmanifest"); manifest.Code != http.StatusOK || manifest.Header().Get("Content-Type") != "application/manifest+json" {
+		t.Fatalf("manifest = %d %q", manifest.Code, manifest.Header().Get("Content-Type"))
 	}
 	// The API never falls back to the page.
 	wantError(t, f.get("/api/v1/flows/3/nope"), http.StatusNotFound, CodeNotFound)

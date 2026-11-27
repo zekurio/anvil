@@ -94,6 +94,11 @@ func (s *Server) uiHandler(index []byte) http.Handler {
 			http.ServeFileFS(w, r, s.UI, name)
 		default:
 			w.Header().Set("Cache-Control", "no-cache")
+			// Go's table of types does not know the manifest, and nosniff
+			// leaves the browser no way to guess.
+			if path.Ext(name) == ".webmanifest" {
+				w.Header().Set("Content-Type", "application/manifest+json")
+			}
 			http.ServeFileFS(w, r, s.UI, name)
 		}
 	})
