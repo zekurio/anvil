@@ -3,6 +3,7 @@ package crop
 import (
 	"context"
 	"errors"
+	"reflect"
 	"testing"
 	"time"
 
@@ -107,6 +108,52 @@ func TestBlockAppliesSafetyPolicyToDetectorResult(t *testing.T) {
 	}
 	if job.Crop == nil || job.Crop.Filter != "crop=1920:960:0:60" || job.Metadata.CropFilter != "crop=1920:960:0:60" {
 		t.Fatalf("crop = %#v", job.Crop)
+	}
+}
+
+type countingDetector struct{ calls int }
+
+func (d *countingDetector) Detect(context.Context, string) (domain.CropResult, error) {
+	d.calls++
+	return domain.CropResult{CandidateFilter: "crop=1920:800:0:140"}, nil
+}
+
+func TestBlockRunsNothingWhenCropIsDisabled(t *testing.T) {
+	detector := &countingDetector{}
+	job := &pipeline.JobContext{
+		Probe:    videoProbe(1920, 1080),
+		Profile:  domain.Profile{Crop: domain.CropPolicy{Disabled: true}},
+		Metadata: domain.JobMetadata{CropFilter: "crop=1920:800:0:140"},
+	}
+	block := Block{Detector: detector}
+	if err := block.Run(context.Background(), job); err != nil {
+		t.Fatal(err)
+	}
+	if detector.calls != 0 {
+		t.Fatalf("detector ran %d times", detector.calls)
+	}
+	want := domain.CropResult{Disabled: true, SourceWidth: 1920, SourceHeight: 1080, OutputWidth: 1920, OutputHeight: 1080, RetainedAreaPercent: 100}
+	if !reflect.DeepEqual(*job.Crop, want) || job.Metadata.CropFilter != "" {
+		t.Fatalf("crop = %#v, metadata filter = %q", job.Crop, job.Metadata.CropFilter)
+	}
+	report, ok := block.Artifact(job)
+	if !ok || report.Message != "crop detection disabled by profile; using source dimensions" {
+		t.Fatalf("report = %+v, %v", report, ok)
+	}
+}
+
+func TestApplySafetyPolicyDiscardsCachedCropOnceDisabled(t *testing.T) {
+	cached := domain.CropResult{
+		CandidateFilter: "crop=1920:800:0:140",
+		Filter:          "crop=1920:800:0:140",
+		Samples:         []domain.CropSample{{Filter: "crop=1920:800:0:140"}, {Filter: "crop=1920:800:0:140"}},
+	}
+	if enabled := ApplySafetyPolicy(cached, videoProbe(1920, 1080), domain.CropPolicy{}); enabled.Filter != "crop=1920:800:0:140" || enabled.Disabled {
+		t.Fatalf("enabled policy = %#v", enabled)
+	}
+	disabled := ApplySafetyPolicy(cached, videoProbe(1920, 1080), domain.CropPolicy{Disabled: true})
+	if !disabled.Disabled || disabled.Filter != "" || disabled.CandidateFilter != "" || len(disabled.Samples) != 0 || disabled.OutputHeight != 1080 {
+		t.Fatalf("disabled policy kept the cached crop: %#v", disabled)
 	}
 }
 

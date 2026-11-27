@@ -15,6 +15,7 @@ import (
 	"github.com/zekurio/anvil/pkg/pipeline"
 	"github.com/zekurio/anvil/pkg/probe"
 	"github.com/zekurio/anvil/pkg/process"
+	"github.com/zekurio/anvil/pkg/video"
 )
 
 type Searcher interface {
@@ -344,6 +345,19 @@ func (b Block) Run(ctx context.Context, job *pipeline.JobContext) error {
 		job.Search = &domain.SearchResult{Metric: plan.Metric, SkipVideoEncode: true, VideoEncodeSkipReason: plan.VideoCopyReason}
 		return nil
 	}
+	switch plan.QualityMode {
+	case domain.VideoQualityFixed:
+		// Nothing is sampled or measured: no quality target, no savings
+		// floor, and no "no fit" outcome apply to a CRF the profile chose.
+		if err := validateFixedCRF(plan); err != nil {
+			return err
+		}
+		job.Search = &domain.SearchResult{QualityMode: domain.VideoQualityFixed, CRF: plan.CRF}
+		return nil
+	case "", domain.VideoQualitySearch:
+	default:
+		return fmt.Errorf("unsupported video quality mode %q", plan.QualityMode)
+	}
 	searcher := b.Searcher
 	if searcher == nil {
 		searcher = FFmpeg{}
@@ -354,4 +368,65 @@ func (b Block) Run(ctx context.Context, job *pipeline.JobContext) error {
 	}
 	job.Search = &result
 	return nil
+}
+
+// validateFixedCRF checks a profile-chosen CRF against the range its encoder
+// honors. A search finds a bad range on its first sample; a fixed CRF would
+// fail only in the final encode, or be replaced by the encoder's default
+// without a word.
+func validateFixedCRF(plan domain.EncodePlan) error {
+	lowest, highest := video.QualityRange(plan.VideoCodec)
+	if plan.CRF < lowest || plan.CRF > highest {
+		return fmt.Errorf("fixed CRF %d is outside the %d-%d range of encoder %s", plan.CRF, lowest, highest, plan.VideoCodec)
+	}
+	return nil
+}
+
+// SelectionArtifact is the attempt-event name for the outcome of the
+// crf-search step: the CRF and how it was arrived at.
+const SelectionArtifact = "crf-selection"
+
+type selectionPayload struct {
+	// Mode is "search" or "fixed".
+	Mode         domain.VideoQualityMode `json:"mode"`
+	CRF          int                     `json:"crf"`
+	Metric       domain.QualityMetric    `json:"metric,omitempty"`
+	Score        float64                 `json:"score,omitempty"`
+	Trials       int                     `json:"trials,omitempty"`
+	SkipReason   string                  `json:"skip_reason,omitempty"`
+	ForcedReason string                  `json:"forced_reason,omitempty"`
+}
+
+// Artifact records which CRF the encode uses and why, so an attempt reads
+// the same whether the step searched, took a fixed CRF, or was resumed.
+func (Block) Artifact(job *pipeline.JobContext) (pipeline.ArtifactReport, bool) {
+	if job == nil || job.Search == nil {
+		return pipeline.ArtifactReport{}, false
+	}
+	result := job.Search
+	payload := selectionPayload{
+		Mode:         domain.VideoQualitySearch,
+		CRF:          result.CRF,
+		Metric:       result.Metric,
+		Score:        result.VMAF,
+		Trials:       len(result.Candidates),
+		ForcedReason: result.ForcedVideoEncodeReason,
+	}
+	if result.Metric == domain.QualityMetricXPSNR {
+		payload.Score = result.XPSNR
+	}
+	var message string
+	switch {
+	case result.SkipVideoEncode:
+		payload.SkipReason = result.VideoEncodeSkipReason
+		message = "video encode skipped: " + result.VideoEncodeSkipReason
+	case result.QualityMode == domain.VideoQualityFixed:
+		payload.Mode = domain.VideoQualityFixed
+		message = fmt.Sprintf("fixed CRF %d, search skipped", result.CRF)
+	case result.ForcedVideoEncodeReason != "":
+		message = result.ForcedVideoEncodeReason
+	default:
+		message = fmt.Sprintf("selected CRF %d (%s %.2f, %d trials)", result.CRF, result.Metric, payload.Score, payload.Trials)
+	}
+	return pipeline.ArtifactReport{Name: SelectionArtifact, Message: message, Payload: payload}, true
 }

@@ -70,6 +70,16 @@ func (p *pipelineContextPersistence) ResumeStep(ctx context.Context, step string
 		if p.cached.Crop == nil {
 			return false, nil
 		}
+		// A result cached while the profile had detection off never looked at
+		// the picture. Detect now, and drop the search that measured the
+		// uncropped frame.
+		if p.cached.Crop.Disabled && !job.Profile.Crop.Disabled {
+			p.cached.Search = nil
+			p.current.Search = nil
+			return false, nil
+		}
+		// ApplySafetyPolicy also discards a cached crop once the profile has
+		// turned detection off.
 		result := crop.ApplySafetyPolicy(*p.cached.Crop, job.Probe, job.Profile.Crop)
 		cropChanged := result.Filter != p.cached.Crop.Filter
 		job.Crop = &result
@@ -89,6 +99,13 @@ func (p *pipelineContextPersistence) ResumeStep(ctx context.Context, step string
 		}
 	case "crf-search":
 		if p.cached.Search == nil {
+			return false, nil
+		}
+		// A fixed CRF costs nothing to restate, and a result from one quality
+		// mode must never decide an encode in the other. The profile
+		// fingerprint already separates the modes; this holds even if the
+		// fingerprint ever stops covering them.
+		if job.Profile.Video.QualityMode == domain.VideoQualityFixed || p.cached.Search.QualityMode == domain.VideoQualityFixed {
 			return false, nil
 		}
 		job.Search = p.cached.Search

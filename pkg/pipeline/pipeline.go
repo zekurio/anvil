@@ -194,6 +194,9 @@ func (r Runner) recordBlockArtifact(ctx context.Context, block Block, job *JobCo
 	if !ok {
 		return nil
 	}
+	// The log carries the same one-line outcome as the attempt event, also
+	// for a resumed step whose block never ran.
+	slog.Info("pipeline step result", "job", job.Job.Label(), "attempt", job.Attempt.Number, "step", block.Name(), "artifact", artifact.Name, "result", artifact.Message)
 	return r.record(ctx, job.Attempt.ID, domain.AttemptEventArtifact, artifact.Name, artifact.Message, artifact.Payload)
 }
 

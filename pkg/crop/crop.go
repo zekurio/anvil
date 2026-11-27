@@ -226,6 +226,12 @@ func (Block) Name() string {
 }
 
 func (b Block) Run(ctx context.Context, job *pipeline.JobContext) error {
+	if job.Profile.Crop.Disabled {
+		result := disabledResult(job.Probe)
+		job.Crop = &result
+		job.Metadata.CropFilter = ""
+		return nil
+	}
 	detector := b.Detector
 	if detector == nil {
 		detector = jobDetector(job)
@@ -247,6 +253,8 @@ func (Block) Artifact(job *pipeline.JobContext) (pipeline.ArtifactReport, bool) 
 	result := job.Crop
 	message := "no crop detected; using source dimensions"
 	switch {
+	case result.Disabled:
+		message = "crop detection disabled by profile; using source dimensions"
 	case result.RejectionReason != "" && result.CandidateFilter != "":
 		message = fmt.Sprintf("rejected %s; using no crop: %s", result.CandidateFilter, result.RejectionReason)
 	case result.RejectionReason != "":
@@ -261,6 +269,7 @@ func (Block) Artifact(job *pipeline.JobContext) (pipeline.ArtifactReport, bool) 
 		Name:    CropSelectionArtifact,
 		Message: message,
 		Payload: cropSelectionPayload{
+			Disabled:            result.Disabled,
 			CandidateFilter:     result.CandidateFilter,
 			AppliedFilter:       result.Filter,
 			SourceWidth:         result.SourceWidth,
@@ -277,6 +286,7 @@ func (Block) Artifact(job *pipeline.JobContext) (pipeline.ArtifactReport, bool) 
 }
 
 type cropSelectionPayload struct {
+	Disabled            bool                `json:"disabled,omitempty"`
 	Samples             []domain.CropSample `json:"samples,omitempty"`
 	SelectionReason     string              `json:"selection_reason,omitempty"`
 	CandidateFilter     string              `json:"candidate_filter,omitempty"`
@@ -292,8 +302,14 @@ type cropSelectionPayload struct {
 
 // ApplySafetyPolicy revalidates a detected or cached candidate against the
 // current source dimensions and profile. Rejected candidates become an
-// explicit no-crop result so search and encode cannot accidentally reuse them.
+// explicit no-crop result so search and encode cannot accidentally reuse them,
+// and a profile that has since turned detection off discards the candidate
+// altogether.
 func ApplySafetyPolicy(result domain.CropResult, probe *domain.ProbeResult, configured domain.CropPolicy) domain.CropResult {
+	if configured.Disabled {
+		return disabledResult(probe)
+	}
+	result.Disabled = false
 	// Cached decisions must satisfy the current selection rules too.
 	if len(result.Samples) > 0 {
 		result.CandidateFilter, result.SelectionReason = selectSamples(result.Samples)
@@ -359,6 +375,18 @@ func ApplySafetyPolicy(result domain.CropResult, probe *domain.ProbeResult, conf
 		return result
 	}
 	result.Filter = candidate
+	return result
+}
+
+// disabledResult is the outcome under a profile that turns crop detection
+// off: nothing sampled, no candidate, and the source frame kept whole.
+func disabledResult(probe *domain.ProbeResult) domain.CropResult {
+	result := domain.CropResult{Disabled: true}
+	if stream, ok := primaryVideo(probe); ok {
+		result.SourceWidth, result.SourceHeight = stream.Width, stream.Height
+		result.OutputWidth, result.OutputHeight = stream.Width, stream.Height
+		result.RetainedAreaPercent = 100
+	}
 	return result
 }
 
