@@ -127,10 +127,13 @@ func (s *Server) Serve(ctx context.Context, listener net.Listener) error {
 		Handler:           s.Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       time.Minute,
-		IdleTimeout:       2 * time.Minute,
-		MaxHeaderBytes:    64 << 10,
-		BaseContext:       func(net.Listener) context.Context { return ctx },
-		ErrorLog:          slog.NewLogLogger(slog.Default().Handler(), slog.LevelDebug),
+		// A manual scan of a large library answers when it is done, which takes
+		// minutes. The limit only has to end a response nobody reads any more.
+		WriteTimeout:   15 * time.Minute,
+		IdleTimeout:    2 * time.Minute,
+		MaxHeaderBytes: 64 << 10,
+		BaseContext:    func(net.Listener) context.Context { return ctx },
+		ErrorLog:       slog.NewLogLogger(slog.Default().Handler(), slog.LevelDebug),
 	}
 	stopped := make(chan struct{})
 	go func() {

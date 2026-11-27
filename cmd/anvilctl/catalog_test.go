@@ -69,7 +69,7 @@ func TestLibraryAndFlowTables(t *testing.T) {
 	}
 	text := out.String()
 	t.Log("\n" + text)
-	for _, value := range []string{"movies", "Default AV1", "active", "120", "/srv/media/movies", "usenet", "paused", "Skip HEVC", "Queued", "Running", "Failed", "/srv/downloads  →  /srv/import"} {
+	for _, value := range []string{"movies", "Default AV1", "active", "120", "/srv/media/movies", "usenet", "paused", "Skip HEVC", "Queued", "Running", "Failed", "/srv/downloads", "/srv/import", "Hands off to"} {
 		if !strings.Contains(text, value) {
 			t.Errorf("libraries: missing %q\n%s", value, text)
 		}

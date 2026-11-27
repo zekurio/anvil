@@ -76,17 +76,14 @@ func writeLibraries(out io.Writer, response control.LibraryListResponse) error {
 			})
 		}
 		w.Table([]string{"Name", "Kind", "State", "Flow", "Files", "Queued", "Running", "Done", "Failed"}, rows)
-		// Paths are as long as they are; in a table column they would squeeze
+		// Paths are as long as they are; in the table above they would squeeze
 		// every count next to them.
 		w.Println()
-		w.Heading("Paths")
+		var paths [][]string
 		for _, library := range response.Libraries {
-			path := library.Path
-			if library.HandoffPath != "" {
-				path += "  →  " + library.HandoffPath
-			}
-			w.Field(library.Name, path)
+			paths = append(paths, []string{library.Name, library.Path, library.HandoffPath})
 		}
+		w.Table([]string{"Name", "Path", "Hands off to"}, paths)
 	})
 }
 

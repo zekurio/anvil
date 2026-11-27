@@ -60,9 +60,9 @@ func writeEffectiveConfig(out io.Writer, cfg config.Config) error {
 	}
 	if err := textout.Write(out, func(w *textout.Writer) {
 		w.Println("")
-		w.Println("# Import-only: the tables below were read once, when the daemon first started")
-		w.Println("# with a store that had no libraries, and became libraries, flows, and Arr")
-		w.Println("# connections there. They are ignored now; edit those in the web UI.")
+		w.Println("# Import-only: the tables below are read once, by the first start of a daemon")
+		w.Println("# whose store has never imported them, and become libraries, flows, and Arr")
+		w.Println("# connections there. After that they are ignored; edit those in the web UI.")
 	}); err != nil {
 		return err
 	}
