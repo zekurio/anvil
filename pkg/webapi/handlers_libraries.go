@@ -375,14 +375,11 @@ func (s *Server) listFiles(_ http.ResponseWriter, r *http.Request) (int, any, er
 			OutputSizeBytes: file.OutputSizeBytes,
 			UpdatedAt:       file.UpdatedAt,
 		}
-		if file.Probe != nil {
-			item.Container = containerLabel(*file.Probe)
-			item.Resolution = flow.Describe(*file.Probe).Resolution
-			item.Audio = audioLabel(*file.Probe)
-			if video, found := domain.PrimaryVideoStream(file.Probe.Streams); found {
-				item.VideoCodec = video.Codec
-			}
-		}
+		probe := listedProbe(file.Path, file.Probe)
+		item.Container = containerLabel(probe)
+		item.Resolution = flow.Describe(probe).Resolution
+		item.Audio = audioLabel(probe)
+		item.VideoCodec = file.Probe.VideoCodec
 		list.Files = append(list.Files, item)
 	}
 	if err := s.attachProgress(r.Context(), library, list.Files); err != nil {

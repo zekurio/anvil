@@ -191,6 +191,20 @@ func streamFacts(probe domain.ProbeResult, kind string) []StreamFacts {
 	return facts
 }
 
+// listedProbe turns the probe facts the store keeps for a file list back
+// into a probe, so a list labels a file with the same functions that label
+// it everywhere else. It holds nothing but those facts.
+func listedProbe(path string, facts store.ProbeFacts) domain.ProbeResult {
+	probe := domain.ProbeResult{Path: path, FormatName: facts.FormatName}
+	if facts.VideoCodec != "" || facts.Width > 0 || facts.Height > 0 {
+		probe.Streams = append(probe.Streams, domain.MediaStream{Type: "video", Codec: facts.VideoCodec, Width: facts.Width, Height: facts.Height})
+	}
+	if facts.AudioCodec != "" || facts.AudioChannels > 0 {
+		probe.Streams = append(probe.Streams, domain.MediaStream{Type: "audio", Codec: facts.AudioCodec, Channels: facts.AudioChannels})
+	}
+	return probe
+}
+
 // containerLabel names a container by the extension people know it under.
 // ffprobe reports demuxer names, several of which cover a family of formats.
 func containerLabel(probe domain.ProbeResult) string {

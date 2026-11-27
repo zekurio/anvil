@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -125,6 +126,98 @@ CREATE TABLE publish_operations (
 	updated_at TEXT NOT NULL
 );
 `
+
+// version7Checkpoint is a job checkpoint as a version 7 daemon stored it:
+// the probe has cover art ahead of the main video stream.
+const version7Checkpoint = `{"version":8,"input_path":"/media/movies/film.mkv","probe":{"Path":"/media/movies/film.mkv","FormatName":"matroska,webm","DurationSeconds":7200,"SizeBytes":1000,"Streams":[` +
+	`{"Index":0,"Type":"video","Codec":"mjpeg","Width":600,"Height":900,"Disposition":{"attached_pic":true}},` +
+	`{"Index":1,"Type":"video","Codec":"hevc","Width":3840,"Height":1600,"Disposition":{"default":true}},` +
+	`{"Index":2,"Type":"audio","Codec":"truehd","Channels":8,"Language":"eng","Disposition":null},` +
+	`{"Index":3,"Type":"audio","Codec":"ac3","Channels":6,"Language":"eng","Disposition":null}]}}`
+
+// schemaObjects describes the tables and indexes of a database in a form
+// that does not depend on how its statements were spelled or in which order
+// they ran: every column with its type, default, and constraints, and every
+// index with its definition.
+func schemaObjects(t *testing.T, state *SQLiteStore) map[string]string {
+	t.Helper()
+	ctx := context.Background()
+	objects := map[string]string{}
+	var tables []string
+	err := state.eachRow(ctx, "schema", `SELECT type, name, COALESCE(sql, '') FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'`, nil, func(rows *sql.Rows) error {
+		var kind, name, statement string
+		if err := rows.Scan(&kind, &name, &statement); err != nil {
+			return err
+		}
+		if kind == "table" {
+			tables = append(tables, name)
+			// Checks and foreign keys are only in the statement. A rebuilt
+			// table is named in quotes, which says nothing about it.
+			statement = strings.Replace(statement, `"`+name+`"`, name, 1)
+		}
+		statement = strings.Join(strings.Fields(statement), " ")
+		objects[kind+" "+name] = strings.NewReplacer("( ", "(", " )", ")").Replace(statement)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, table := range tables {
+		var columns []string
+		err := state.eachRow(ctx, "columns", `SELECT cid, name, type, "notnull", COALESCE(dflt_value, 'NULL'), pk FROM pragma_table_info(?)`, []any{table}, func(rows *sql.Rows) error {
+			var cid, notNull, pk int
+			var name, kind, fallback string
+			if err := rows.Scan(&cid, &name, &kind, &notNull, &fallback, &pk); err != nil {
+				return err
+			}
+			columns = append(columns, fmt.Sprintf("%d %s %s notnull=%d default=%s pk=%d", cid, name, kind, notNull, fallback, pk))
+			return nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		objects["columns "+table] = strings.Join(columns, "; ")
+	}
+	return objects
+}
+
+// A database that was migrated has to end up with the schema a fresh one is
+// created with, down to the order of the columns: the probe facts of a job
+// sit ahead of its checkpoint on purpose.
+func TestMigratedSchemaEqualsAFreshOne(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "anvil.db")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, schemaVersion7+`INSERT INTO schema_migrations (version, applied_at) VALUES (7, '2026-03-01T12:00:00Z')`); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	migrated, err := Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := migrated.Close(); err != nil {
+			t.Error(err)
+		}
+	}()
+	fresh, upgraded := schemaObjects(t, openTestStore(t)), schemaObjects(t, migrated)
+	for name, want := range fresh {
+		if got := upgraded[name]; got != want {
+			t.Errorf("%s after migration:\n%s\nfresh:\n%s", name, got, want)
+		}
+	}
+	for name := range upgraded {
+		if _, known := fresh[name]; !known {
+			t.Errorf("the migration leaves %s, which a fresh database does not have", name)
+		}
+	}
+}
 
 func openTestStore(t *testing.T) *SQLiteStore {
 	t.Helper()
@@ -519,8 +612,18 @@ func TestMigratesVersion7WithJobsInPlace(t *testing.T) {
 			VALUES (1, 'movies', 'file', 'film.mkv', 1, 'active', 1000, '` + now + `', '` + now + `', '` + now + `')`,
 		`INSERT INTO media_assets (id, source_id, relative_path, generation, role, status, size_bytes, first_seen_at, last_seen_at, updated_at)
 			VALUES (1, 1, 'film.mkv', 1, 'primary_video', 'active', 1000, '` + now + `', '` + now + `', '` + now + `')`,
-		`INSERT INTO jobs (id, slug, source_id, asset_id, library_name, state, created_at, updated_at)
-			VALUES (1, 'quiet-anvil', 1, 1, 'movies', 'pending', '` + now + `', '` + now + `')`,
+		`INSERT INTO media_sources (id, library_name, kind, relative_path, generation, status, size_bytes, first_seen_at, last_seen_at, updated_at)
+			VALUES (2, 'movies', 'file', 'second.mkv', 1, 'active', 2000, '` + now + `', '` + now + `', '` + now + `'),
+				(3, 'movies', 'file', 'third.mkv', 1, 'active', 3000, '` + now + `', '` + now + `', '` + now + `')`,
+		`INSERT INTO media_assets (id, source_id, relative_path, generation, role, status, size_bytes, first_seen_at, last_seen_at, updated_at)
+			VALUES (2, 2, 'second.mkv', 1, 'primary_video', 'active', 2000, '` + now + `', '` + now + `', '` + now + `'),
+				(3, 3, 'third.mkv', 1, 'primary_video', 'active', 3000, '` + now + `', '` + now + `', '` + now + `')`,
+		// The first job holds a checkpoint as the previous version wrote it,
+		// the second one that cannot be read, and the third none.
+		`INSERT INTO jobs (id, slug, source_id, asset_id, library_name, state, created_at, updated_at, pipeline_context_json)
+			VALUES (1, 'quiet-anvil', 1, 1, 'movies', 'pending', '` + now + `', '` + now + `', CAST('` + version7Checkpoint + `' AS BLOB)),
+				(2, 'loud-anvil', 2, 2, 'movies', 'failed', '` + now + `', '` + now + `', x'7b00ff'),
+				(3, 'plain-anvil', 3, 3, 'movies', 'pending', '` + now + `', '` + now + `', x'')`,
 		`INSERT INTO attempts (id, job_id, number, worker_id, state, resolved_library_json, resolved_profile_json, started_at)
 			VALUES (1, 1, 1, 'w', 'failed', '{"Name":"movies"}', '{"Name":"default-av1"}', '` + now + `')`,
 	}
@@ -555,6 +658,23 @@ func TestMigratesVersion7WithJobsInPlace(t *testing.T) {
 	if err != nil || job.LibraryName != "movies" || job.State != domain.JobStatePending || job.Slug != "quiet-anvil" {
 		t.Fatalf("job after migration = %+v, %v", job, err)
 	}
+	// The checkpoint came along unchanged, and the facts a file list shows
+	// were taken out of it: of the main video stream, not the cover art, and
+	// of the first audio track.
+	if checkpoint, found, err := state.GetJobPipelineContext(ctx, 1); err != nil || !found || checkpoint.Probe == nil || len(checkpoint.Probe.Streams) != 4 {
+		t.Fatalf("checkpoint after migration = %+v, %t, %v", checkpoint, found, err)
+	}
+	files, _, err := state.ListLibraryFiles(ctx, LibraryFileFilter{LibraryName: "movies"})
+	if err != nil || len(files) != 3 {
+		t.Fatalf("files after migration = %+v, %v", files, err)
+	}
+	wantFacts := ProbeFacts{FormatName: "matroska,webm", VideoCodec: "hevc", Width: 3840, Height: 1600, AudioCodec: "truehd", AudioChannels: 8}
+	if files[0].Probe != wantFacts {
+		t.Errorf("probe facts after migration = %+v, want %+v", files[0].Probe, wantFacts)
+	}
+	if files[1].Probe != (ProbeFacts{}) || files[2].Probe != (ProbeFacts{}) {
+		t.Errorf("jobs without a readable checkpoint got probe facts: %+v, %+v", files[1].Probe, files[2].Probe)
+	}
 	attempts, err := state.ListAttemptsForJob(ctx, 1)
 	if err != nil || len(attempts) != 1 || string(attempts[0].ResolvedProfile) != `{"Name":"default-av1"}` {
 		t.Fatalf("attempts after migration = %+v, %v", attempts, err)
@@ -573,7 +693,7 @@ func TestMigratesVersion7WithJobsInPlace(t *testing.T) {
 		t.Fatal(err)
 	}
 	overview := overviews["movies"]
-	if overview.Files != 1 || overview.TotalBytes != 1000 || overview.Jobs[domain.JobStatePending] != 1 || overview.LastScanAt == nil {
+	if overview.Files != 3 || overview.TotalBytes != 6000 || overview.Jobs[domain.JobStatePending] != 2 || overview.LastScanAt == nil {
 		t.Fatalf("overview = %+v", overview)
 	}
 }
@@ -766,8 +886,19 @@ func TestListLibraryFilesFiltersSortsAndPages(t *testing.T) {
 	if _, err := state.TransitionJob(ctx, jobs["gamma.mkv"].ID, domain.JobStateSkipped, now, "skipped by flow"); err != nil {
 		t.Fatal(err)
 	}
-	probe := domain.JobPipelineContext{Probe: &domain.ProbeResult{FormatName: "matroska,webm"}}
+	probe := domain.JobPipelineContext{Probe: &domain.ProbeResult{FormatName: "matroska,webm", Streams: []domain.MediaStream{
+		{Type: "video", Codec: "mjpeg", Width: 600, Height: 900, Disposition: map[string]bool{"attached_pic": true}},
+		{Type: "video", Codec: "hevc", Width: 1920, Height: 800},
+		{Type: "subtitle", Codec: "subrip"},
+		{Type: "audio", Codec: "eac3", Channels: 6},
+		{Type: "audio", Codec: "aac", Channels: 2},
+	}}}
 	if err := state.SaveJobPipelineContext(ctx, jobs["A/alpha.mkv"].ID, probe, now); err != nil {
+		t.Fatal(err)
+	}
+	// The list reads the probe facts from their own columns. A checkpoint it
+	// cannot even decode makes no difference to it.
+	if _, err := state.db.ExecContext(ctx, `UPDATE jobs SET pipeline_context_json = x'00ff' WHERE id = ?`, int64(jobs["A/alpha.mkv"].ID)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -775,8 +906,19 @@ func TestListLibraryFilesFiltersSortsAndPages(t *testing.T) {
 	if err != nil || total != 3 || filePaths(all) != "A/alpha.mkv B/beta_50%.mkv gamma.mkv" {
 		t.Fatalf("all = %q total %d, %v", filePaths(all), total, err)
 	}
-	if all[0].Probe == nil || all[0].Probe.FormatName != "matroska,webm" || all[1].Probe != nil {
-		t.Fatalf("probes = %+v, %+v", all[0].Probe, all[1].Probe)
+	wantFacts := ProbeFacts{FormatName: "matroska,webm", VideoCodec: "hevc", Width: 1920, Height: 800, AudioCodec: "eac3", AudioChannels: 6}
+	if all[0].Probe != wantFacts || all[1].Probe != (ProbeFacts{}) {
+		t.Fatalf("probes = %+v, %+v; want %+v and none", all[0].Probe, all[1].Probe, wantFacts)
+	}
+	// A checkpoint saved without a probe takes the facts away again.
+	if err := state.SaveJobPipelineContext(ctx, jobs["A/alpha.mkv"].ID, domain.JobPipelineContext{}, now); err != nil {
+		t.Fatal(err)
+	}
+	if cleared, _, err := state.ListLibraryFiles(ctx, LibraryFileFilter{LibraryName: "movies", Limit: 1}); err != nil || cleared[0].Probe != (ProbeFacts{}) {
+		t.Fatalf("probe after a checkpoint without one = %+v, %v", cleared[0].Probe, err)
+	}
+	if err := state.SaveJobPipelineContext(ctx, jobs["A/alpha.mkv"].ID, probe, now); err != nil {
+		t.Fatal(err)
 	}
 	if all[0].Status != FileStatusQueued || all[0].JobID == 0 || all[2].Status != FileStatusSkipped || all[2].LastError != "skipped by flow" {
 		t.Fatalf("statuses = %+v", all)

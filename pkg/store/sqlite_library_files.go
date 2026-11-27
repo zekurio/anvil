@@ -3,7 +3,6 @@ package store
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -129,33 +128,84 @@ type LibraryFile struct {
 	// after a replacement in place is the output.
 	InputSizeBytes  int64
 	OutputSizeBytes int64
-	// Probe is the job's checkpointed probe, when a probe has run.
-	Probe     *domain.ProbeResult
+	// Probe holds the facts of the job's last probe; it is zero until one
+	// has run.
+	Probe     ProbeFacts
 	UpdatedAt time.Time
+}
+
+// ProbeFacts are the facts of a probe that a file list shows. They are kept
+// in columns of their own beside the job's checkpoint, which holds the whole
+// probe and is far too large to read once per listed file.
+type ProbeFacts struct {
+	// FormatName is ffprobe's demuxer name, such as "matroska,webm".
+	FormatName string
+	// VideoCodec, Width, and Height describe the main video stream: the
+	// first one that is not an attached picture.
+	VideoCodec    string
+	Width, Height int
+	// AudioCodec and AudioChannels describe the first audio stream.
+	AudioCodec    string
+	AudioChannels int
+}
+
+// probeFactsOf reduces a probe to what a list shows. A nil probe has none.
+func probeFactsOf(probe *domain.ProbeResult) ProbeFacts {
+	if probe == nil {
+		return ProbeFacts{}
+	}
+	facts := ProbeFacts{FormatName: probe.FormatName}
+	if video, found := domain.PrimaryVideoStream(probe.Streams); found {
+		facts.VideoCodec, facts.Width, facts.Height = video.Codec, video.Width, video.Height
+	}
+	for _, stream := range probe.Streams {
+		if stream.Type == "audio" {
+			facts.AudioCodec, facts.AudioChannels = stream.Codec, stream.Channels
+			break
+		}
+	}
+	return facts
 }
 
 // ListLibraryFiles returns one page of a library's files and the number of
 // files matching the filter across all pages.
+//
+// The UI polls this every few seconds, and the store has one connection, so
+// the query stays narrow. It never selects pipeline_context_json: a
+// checkpoint of several kilobytes per file made this the daemon's most
+// expensive read. And it works in two steps, because filtering and sorting a
+// library means going through all of its rows. The first step picks the page
+// from what jobs_file_idx holds, the state and the last update of a job,
+// without touching a job row; only the files of the page then have their job
+// read.
 func (s *SQLiteStore) ListLibraryFiles(ctx context.Context, filter LibraryFileFilter) (files []LibraryFile, total int64, err error) {
 	if strings.TrimSpace(string(filter.LibraryName)) == "" {
 		return nil, 0, fmt.Errorf("library name is required")
 	}
-	from := `
+	const (
+		tables = `
 FROM media_sources s
 JOIN media_assets a ON a.source_id = s.id AND a.is_current = 1 AND a.status != 'missing'
-LEFT JOIN jobs j ON j.source_id = s.id AND j.asset_id = a.id
-WHERE s.library_name = ? AND s.is_current = 1 AND s.status != 'missing'
+`
+		jobs = `LEFT JOIN jobs j ON j.source_id = s.id AND j.asset_id = a.id
+`
+	)
+	where := `WHERE s.library_name = ? AND s.is_current = 1 AND s.status != 'missing'
 `
 	args := []any{string(filter.LibraryName)}
+	// An occurrence has at most one job (jobs_target_idx), so the jobs only
+	// change how many files match when the filter asks about them.
+	counted := tables
 	if filter.Status != "" {
-		from += " AND (" + fileStatusSQL + ") = ?\n"
+		counted += jobs
+		where += " AND (" + fileStatusSQL + ") = ?\n"
 		args = append(args, string(filter.Status))
 	}
 	if query := strings.TrimSpace(filter.Query); query != "" {
-		from += " AND (" + filePathSQL + `) LIKE ? ESCAPE '\'` + "\n"
+		where += " AND (" + filePathSQL + `) LIKE ? ESCAPE '\'` + "\n"
 		args = append(args, likeContains(query))
 	}
-	if err := s.db.QueryRowContext(ctx, "SELECT count(*)"+from, args...).Scan(&total); err != nil {
+	if err := s.db.QueryRowContext(ctx, "SELECT count(*)"+counted+where, args...).Scan(&total); err != nil {
 		return nil, 0, fmt.Errorf("count library files: %w", err)
 	}
 
@@ -163,36 +213,48 @@ WHERE s.library_name = ? AND s.is_current = 1 AND s.status != 'missing'
 	if filter.Descending {
 		direction = "DESC"
 	}
+	// The order is written in the column names of the page, which both
+	// steps use: the first to pick the page, the second to keep its order.
 	var order string
 	switch filter.Sort {
 	case LibraryFileSortSize:
-		order = "a.size_bytes " + direction + ", path ASC"
+		order = "file_size " + direction + ", file_path ASC"
 	case LibraryFileSortStatus:
-		order = "(" + fileStatusRankSQL + ") " + direction + ", path ASC"
+		order = "status_rank " + direction + ", file_path ASC"
 	case LibraryFileSortUpdated:
-		order = "updated " + direction + ", path ASC"
+		order = "file_updated " + direction + ", file_path ASC"
 	case LibraryFileSortPath, "":
-		order = "path " + direction
+		order = "file_path " + direction
 	default:
 		return nil, 0, fmt.Errorf("unknown file sort %q", filter.Sort)
 	}
-	query := `
-SELECT s.id, a.id, ` + filePathSQL + ` AS path, a.size_bytes,
-	j.id, j.state, j.last_error, j.input_size_bytes, j.output_size_bytes, j.pipeline_context_json,
-	COALESCE(j.updated_at, a.updated_at) AS updated` + from + "ORDER BY " + order + ", a.id ASC\n"
+	order += ", file_asset ASC\n"
+	page := `
+SELECT s.id AS file_source, a.id AS file_asset, ` + filePathSQL + ` AS file_path, a.size_bytes AS file_size,
+	j.id AS file_job, (` + fileStatusRankSQL + `) AS status_rank,
+	COALESCE(j.updated_at, a.updated_at) AS file_updated` + tables + jobs + where + "ORDER BY " + order
 	if filter.Limit > 0 {
-		query += "LIMIT ? OFFSET ?\n"
+		page += "LIMIT ? OFFSET ?\n"
 		args = append(args, filter.Limit, max(filter.Offset, 0))
 	}
+	query := `
+SELECT file_source, file_asset, file_path, file_size,
+	j.id, j.state, j.last_error, j.input_size_bytes, j.output_size_bytes,
+	j.probe_format, j.probe_video_codec, j.probe_width, j.probe_height, j.probe_audio_codec, j.probe_audio_channels,
+	file_updated
+FROM (` + page + `)
+LEFT JOIN jobs j ON j.id = file_job
+ORDER BY ` + order
 	files = []LibraryFile{}
 	err = s.eachRow(ctx, "library files", query, args, func(rows *sql.Rows) error {
 		var file LibraryFile
 		var jobID sql.NullInt64
 		var state, lastError, updated sql.NullString
-		var inputSize, outputSize sql.NullInt64
-		var pipelineContext []byte
+		var inputSize, outputSize, width, height, audioChannels sql.NullInt64
+		var format, videoCodec, audioCodec sql.NullString
 		if err := rows.Scan(&file.SourceID, &file.AssetID, &file.Path, &file.SizeBytes,
-			&jobID, &state, &lastError, &inputSize, &outputSize, &pipelineContext, &updated); err != nil {
+			&jobID, &state, &lastError, &inputSize, &outputSize,
+			&format, &videoCodec, &width, &height, &audioCodec, &audioChannels, &updated); err != nil {
 			return err
 		}
 		file.JobID = domain.JobID(jobID.Int64)
@@ -202,7 +264,11 @@ SELECT s.id, a.id, ` + filePathSQL + ` AS path, a.size_bytes,
 		file.InputSizeBytes = inputSize.Int64
 		file.OutputSizeBytes = outputSize.Int64
 		file.UpdatedAt = parseNullTime(updated)
-		file.Probe = checkpointedProbe(pipelineContext)
+		file.Probe = ProbeFacts{
+			FormatName: format.String,
+			VideoCodec: videoCodec.String, Width: int(width.Int64), Height: int(height.Int64),
+			AudioCodec: audioCodec.String, AudioChannels: int(audioChannels.Int64),
+		}
 		files = append(files, file)
 		return nil
 	})
@@ -210,21 +276,6 @@ SELECT s.id, a.id, ` + filePathSQL + ` AS path, a.size_bytes,
 		return nil, 0, err
 	}
 	return files, total, nil
-}
-
-// checkpointedProbe reads the probe out of a job's pipeline context. A
-// context that is absent or unreadable simply has no probe to show.
-func checkpointedProbe(pipelineContext []byte) *domain.ProbeResult {
-	if len(pipelineContext) == 0 {
-		return nil
-	}
-	var snapshot struct {
-		Probe *domain.ProbeResult `json:"probe"`
-	}
-	if err := json.Unmarshal(pipelineContext, &snapshot); err != nil {
-		return nil
-	}
-	return snapshot.Probe
 }
 
 // likeContains builds a LIKE pattern that matches text containing the query
