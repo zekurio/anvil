@@ -279,6 +279,10 @@ interface Analysis {
 
 const quote = (text: string) => JSON.stringify(text);
 
+/** The size limits of a graph: flow.MaxNodes and flow.MaxEdges. */
+const MAX_NODES = 500;
+const MAX_EDGES = 2000;
+
 function analyze(graph: Graph): Analysis {
   const a: Analysis = { issues: [], nodes: new Map(), options: new Map(), targets: new Map(), input: "" };
   const error = (nodeId: string, field: string, message: string) => a.issues.push({ severity: "error", ...(nodeId ? { node_id: nodeId } : {}), ...(field ? { field } : {}), message });
@@ -292,6 +296,16 @@ function analyze(graph: Graph): Analysis {
     const output = NODE_TYPE_BY_ID.get(a.nodes.get(id)?.type ?? "")?.outputs[index] ?? "";
     return output === "" ? `Output of ${name(id)}` : `${quote(output)} output of ${name(id)}`;
   };
+
+  // A graph over the size limits is not read at all.
+  if (graph.nodes.length > MAX_NODES) {
+    error("", "", `A flow can have at most ${MAX_NODES} nodes, and this one has ${graph.nodes.length}. Remove nodes until it fits.`);
+    return a;
+  }
+  if (graph.edges.length > MAX_EDGES) {
+    error("", "", `A flow can have at most ${MAX_EDGES} edges, and this one has ${graph.edges.length}. Remove edges until it fits.`);
+    return a;
+  }
 
   // Nodes and their options, as the graph lists them.
   const inputs: string[] = [];

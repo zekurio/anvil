@@ -52,7 +52,29 @@ func Summaries(g Graph) map[string]string {
 	return summaries
 }
 
+// MaxNodes and MaxEdges bound the size of a graph. A flow an operator draws
+// has a few dozen nodes; the bounds are there so that a graph sent to the web
+// API cannot make validation, which the editor asks for on every change,
+// arbitrarily expensive. A node has at most a handful of outputs and every
+// output takes one edge, so a graph within MaxNodes that needs more than
+// MaxEdges does not exist.
+const (
+	MaxNodes = 500
+	MaxEdges = 2000
+)
+
 func analyze(g Graph) analysis {
+	// A graph over the bounds is not read at all: its only issue is its size.
+	switch {
+	case len(g.Nodes) > MaxNodes:
+		a := analysis{}
+		a.errorf("", "", "A flow can have at most %d nodes, and this one has %d. Remove nodes until it fits.", MaxNodes, len(g.Nodes))
+		return a
+	case len(g.Edges) > MaxEdges:
+		a := analysis{}
+		a.errorf("", "", "A flow can have at most %d edges, and this one has %d. Remove edges until it fits.", MaxEdges, len(g.Edges))
+		return a
+	}
 	a := analysis{
 		nodes:   make(map[string]Node, len(g.Nodes)),
 		options: make(map[string]options, len(g.Nodes)),
@@ -214,45 +236,85 @@ func (a *analysis) findDanglingPorts() map[string]bool {
 }
 
 // findUselessCrops warns about crop nodes on a path that ends up copying the
-// video: cropping needs a re-encode, so such a path crops nothing. It walks
-// every combination of (node, video decision, last crop node) once, which
-// stays small even when branches multiply the number of paths.
+// video: cropping needs a re-encode, so such a path crops nothing. The last
+// crop node on a path is the one that counts.
+//
+// It only runs on a graph without errors, which has no loops. The work is
+// linear in the size of the graph: one pass forward finds the video decisions
+// a file can arrive at each node with, and one memoized pass backward finds
+// from where a copy can still be published without meeting another crop node.
+// Tracking the last crop node along every path instead costs the number of
+// crop nodes times the size of the graph.
 func (a *analysis) findUselessCrops(g Graph) {
 	type state struct {
 		node    string
 		encodes bool
-		crop    string
 	}
-	useless := make(map[string]bool)
-	seen := make(map[state]bool)
+	// after is the video decision once a node has been passed.
+	after := func(s state) bool {
+		switch a.nodes[s.node].Type {
+		case typeVideoEncode:
+			return true
+		case typeVideoCopy:
+			return false
+		}
+		return s.encodes
+	}
+	arrives := map[state]bool{{node: a.input}: true}
 	stack := []state{{node: a.input}}
 	for len(stack) > 0 {
 		current := stack[len(stack)-1]
 		stack = stack[:len(stack)-1]
-		if seen[current] {
-			continue
-		}
-		seen[current] = true
-		switch a.nodes[current.node].Type {
-		case typeVideoEncode:
-			current.encodes = true
-		case typeVideoCopy:
-			current.encodes = false
-		case typeVideoCrop:
-			current.crop = current.node
-		case typeOutputPublish:
-			if !current.encodes && current.crop != "" {
-				useless[current.crop] = true
+		for _, target := range a.targets[current.node] {
+			next := state{node: target, encodes: after(current)}
+			if !arrives[next] {
+				arrives[next] = true
+				stack = append(stack, next)
 			}
 		}
-		for _, target := range a.targets[current.node] {
-			stack = append(stack, state{node: target, encodes: current.encodes, crop: current.crop})
-		}
 	}
+	// publishesCopy reports whether a file arriving at a node with a video
+	// decision can be published as a copy before another crop node takes
+	// over. The recursion is as deep as the longest path, which maxNodes
+	// bounds.
+	known := make(map[state]bool)
+	var publishesCopy func(s state) bool
+	publishesCopy = func(s state) bool {
+		if result, done := known[s]; done {
+			return result
+		}
+		result := false
+		switch a.nodes[s.node].Type {
+		case typeVideoCrop:
+		case typeOutputPublish:
+			result = !s.encodes
+		default:
+			for _, target := range a.targets[s.node] {
+				if publishesCopy(state{node: target, encodes: after(s)}) {
+					result = true
+					break
+				}
+			}
+		}
+		known[s] = result
+		return result
+	}
+	reported := make(map[string]bool)
 	for _, node := range g.Nodes {
-		if useless[node.ID] {
-			useless[node.ID] = false
-			a.warnf(node.ID, "Cropping needs a re-encode, but a path through %s copies the video, so nothing is cropped there.", a.name(node.ID))
+		if a.nodes[node.ID].Type != typeVideoCrop || reported[node.ID] {
+			continue
+		}
+		for _, encodes := range []bool{false, true} {
+			if !arrives[state{node: node.ID, encodes: encodes}] || reported[node.ID] {
+				continue
+			}
+			for _, target := range a.targets[node.ID] {
+				if publishesCopy(state{node: target, encodes: encodes}) {
+					reported[node.ID] = true
+					a.warnf(node.ID, "Cropping needs a re-encode, but a path through %s copies the video, so nothing is cropped there.", a.name(node.ID))
+					break
+				}
+			}
 		}
 	}
 }

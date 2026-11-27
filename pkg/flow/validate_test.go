@@ -2,6 +2,8 @@ package flow
 
 import (
 	"encoding/json"
+	"fmt"
+	"math/rand"
 	"reflect"
 	"strings"
 	"testing"
@@ -668,5 +670,135 @@ func TestMessagesNameFieldsByLabel(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+// uselessCropsByPath is the crop analysis written the obvious way: it carries
+// the last crop node along every path. findUselessCrops must agree with it.
+func uselessCropsByPath(g Graph) map[string]bool {
+	a := analyze(g)
+	type state struct {
+		node    string
+		encodes bool
+		crop    string
+	}
+	useless := map[string]bool{}
+	seen := map[state]bool{}
+	stack := []state{{node: a.input}}
+	for len(stack) > 0 {
+		current := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
+		if seen[current] {
+			continue
+		}
+		seen[current] = true
+		switch a.nodes[current.node].Type {
+		case typeVideoEncode:
+			current.encodes = true
+		case typeVideoCopy:
+			current.encodes = false
+		case typeVideoCrop:
+			current.crop = current.node
+		case typeOutputPublish:
+			if !current.encodes && current.crop != "" {
+				useless[current.crop] = true
+			}
+		}
+		for _, target := range a.targets[current.node] {
+			stack = append(stack, state{node: target, encodes: current.encodes, crop: current.crop})
+		}
+	}
+	return useless
+}
+
+func TestCropAnalysisAgreesWithWalkingEveryPath(t *testing.T) {
+	random := rand.New(rand.NewSource(23))
+	// Crop, copy, and encode nodes are what the analysis is about, so they
+	// are drawn more often than their share of the catalog.
+	var middle []string
+	for _, def := range nodeDefs() {
+		if def.Kind != KindInput && def.Kind != KindOutput {
+			middle = append(middle, def.ID)
+		}
+	}
+	for range 4 {
+		middle = append(middle, typeVideoCrop, typeVideoCrop, typeVideoCopy, typeVideoEncode)
+	}
+	for range 500 {
+		count := 1 + random.Intn(20)
+		g := Graph{Nodes: []Node{newNode("n0", typeInput, nil)}}
+		for i := 1; i <= count; i++ {
+			g.Nodes = append(g.Nodes, newNode(fmt.Sprintf("n%d", i), middle[random.Intn(len(middle))], nil))
+		}
+		g.Nodes = append(g.Nodes, newNode("publish", typeOutputPublish, nil), newNode("skip", typeOutputSkip, nil))
+		for i, node := range g.Nodes[:count+1] {
+			for port := range nodeDefsByID[node.Type].Outputs {
+				target := i + 1 + random.Intn(len(g.Nodes)-i-1)
+				g.Edges = append(g.Edges, Edge{From: node.ID, Port: port, To: g.Nodes[target].ID})
+			}
+		}
+		issues := Validate(g)
+		if errs := errorIssues(issues); len(errs) != 0 {
+			t.Fatalf("a graph valid by construction has errors:\n%s", printIssues(errs))
+		}
+		got := map[string]bool{}
+		for _, issue := range issues {
+			if strings.HasPrefix(issue.Message, "Cropping needs a re-encode") {
+				if got[issue.NodeID] {
+					t.Fatalf("%s is warned about twice:\n%s", issue.NodeID, printIssues(issues))
+				}
+				got[issue.NodeID] = true
+			}
+		}
+		if want := uselessCropsByPath(g); !reflect.DeepEqual(got, want) {
+			t.Fatalf("useless crops = %v, want %v for %+v", got, want, g)
+		}
+	}
+}
+
+// A graph at the size limit validates, with as many crop nodes side by side
+// as fit: the shape that made tracking the last crop node per path expensive.
+func TestValidateBoundsTheSizeOfAGraph(t *testing.T) {
+	g := Graph{Nodes: []Node{newNode("in", typeInput, nil)}}
+	previous := "in"
+	for len(g.Nodes) < MaxNodes-1 {
+		id := fmt.Sprintf("crop%d", len(g.Nodes))
+		g.Nodes = append(g.Nodes, newNode(id, typeVideoCrop, nil))
+		g.Edges = append(g.Edges, Edge{From: previous, To: id})
+		previous = id
+	}
+	g.Nodes = append(g.Nodes, newNode("out", typeOutputPublish, nil))
+	g.Edges = append(g.Edges, Edge{From: previous, To: "out"})
+	issues := Validate(g)
+	if errs := errorIssues(issues); len(errs) != 0 {
+		t.Fatalf("a graph of %d nodes has errors:\n%s", len(g.Nodes), printIssues(errs))
+	}
+	// Only the last crop node on the path counts.
+	if want := []Issue{warning(previous, `Cropping needs a re-encode, but a path through "Crop black bars" copies the video, so nothing is cropped there.`)}; !reflect.DeepEqual(issues, want) {
+		t.Fatalf("Validate() =\n%s\nwant\n%s", printIssues(issues), printIssues(want))
+	}
+	if _, err := Canonical(g); err != nil {
+		t.Fatalf("Canonical() of a graph at the limit: %v", err)
+	}
+
+	tooManyNodes := Graph{Nodes: append(append([]Node{}, g.Nodes...), newNode("extra", typeOutputSkip, nil)), Edges: g.Edges}
+	want := []Issue{problem("", "", "A flow can have at most 500 nodes, and this one has 501. Remove nodes until it fits.")}
+	if got := Validate(tooManyNodes); !reflect.DeepEqual(got, want) {
+		t.Errorf("Validate() =\n%s\nwant\n%s", printIssues(got), printIssues(want))
+	}
+	if _, err := Evaluate(tooManyNodes, Facts{}); err == nil {
+		t.Error("Evaluate() accepted a graph over the node limit")
+	}
+	if _, err := Canonical(tooManyNodes); err == nil {
+		t.Error("Canonical() accepted a graph over the node limit")
+	}
+
+	tooManyEdges := Graph{Nodes: []Node{newNode("in", typeInput, nil), newNode("out", typeOutputPublish, nil)}}
+	for range MaxEdges + 1 {
+		tooManyEdges.Edges = append(tooManyEdges.Edges, Edge{From: "in", To: "out"})
+	}
+	want = []Issue{problem("", "", "A flow can have at most 2000 edges, and this one has 2001. Remove edges until it fits.")}
+	if got := Validate(tooManyEdges); !reflect.DeepEqual(got, want) {
+		t.Errorf("Validate() =\n%s\nwant\n%s", printIssues(got), printIssues(want))
 	}
 }
