@@ -58,7 +58,7 @@ export function JobBulkBar(props: JobBulkBarProps) {
     if (running() > 0) {
       const agreed = await confirm({
         title: `Cancel ${plural(ids.length, "job")}?`,
-        description: `${running() === 1 ? "1 of them is running: its encode stops" : `${formatCount(running())} of them are running: their encodes stop`} and what was done so far is discarded. Source files are not changed.`,
+        description: `${running() === 1 ? "1 is running and loses its progress" : `${formatCount(running())} are running and lose their progress`}. Source files are not changed.`,
         confirmLabel: `Cancel ${plural(ids.length, "job")}`,
         cancelLabel: "Keep them",
         danger: true,
@@ -74,7 +74,7 @@ export function JobBulkBar(props: JobBulkBarProps) {
     if (target.done > 0) {
       const agreed = await confirm({
         title: `Queue ${plural(target.paths.length, "file")} again?`,
-        description: `${target.done === 1 ? "1 of them was already processed" : `${formatCount(target.done)} of them were already processed`}. Queueing again starts a new job for every file and runs the whole flow on it once more, also for files that are done.`,
+        description: `${target.done === 1 ? "1 was already processed" : `${formatCount(target.done)} were already processed`}. Each file runs through the whole flow again.`,
         confirmLabel: `Queue ${plural(target.paths.length, "file")} again`,
       });
       if (!agreed) return;
@@ -88,7 +88,7 @@ export function JobBulkBar(props: JobBulkBarProps) {
       <span class="av-spacer" />
       <Show when={props.requeue && props.requeue.paths.length > 0 ? props.requeue : undefined}>
         {(target) => (
-          <Button size="sm" icon="play" title="Starts a new job for each file, also for files that are done" busy={busy() === "requeue"} disabled={busy() !== null} onClick={requeue}>
+          <Button size="sm" icon="play" title="Runs the flow again, also on finished files" busy={busy() === "requeue"} disabled={busy() !== null} onClick={requeue}>
             Queue {formatCount(target().paths.length)} again
           </Button>
         )}

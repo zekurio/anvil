@@ -74,7 +74,7 @@ function LoadedSheet(props: { detail: JobDetail; catalog: NodeCatalog; onClose: 
   const canRetry = () => retryable(props.detail.status, job().state, job().last_error);
 
   const cancel = async () => {
-    if (props.detail.status === "running" && !(await confirm({ title: "Cancel this job?", description: "The encode stops and what it has done so far is discarded. The source file is not changed.", confirmLabel: "Cancel job", cancelLabel: "Keep running", danger: true }))) return;
+    if (props.detail.status === "running" && !(await confirm({ title: "Cancel this job?", description: "The encode stops and its progress is lost. The source file is not changed.", confirmLabel: "Cancel job", cancelLabel: "Keep running", danger: true }))) return;
     setBusy("cancel");
     await cancelJobs([job().id]);
     setBusy(null);
@@ -153,7 +153,7 @@ function LoadedSheet(props: { detail: JobDetail; catalog: NodeCatalog; onClose: 
         </SheetSection>
       </Show>
       <SheetSection title={`Attempts (${formatCount(props.detail.attempts.length)})`} collapsible>
-        <Show when={props.detail.attempts.length > 0} fallback={<p class="av-note">{props.detail.status === "queued" ? `No attempt yet. The job starts when a worker is free${job().state === "pending" ? " and its library is not paused" : ""}.` : "No attempt: the job ended before a worker started it."}</p>}>
+        <Show when={props.detail.attempts.length > 0} fallback={<p class="av-note">{props.detail.status === "queued" ? `No attempts yet. It starts when a worker is free${job().state === "pending" ? " and the library is not paused" : ""}.` : "No attempts. The job ended before it started."}</p>}>
           <JobAttemptsSection attempts={props.detail.attempts} />
         </Show>
       </SheetSection>
@@ -273,8 +273,8 @@ function Facts(props: { file: FileFacts }) {
         <dt>Size</dt>
         <dd class="av-mono">{formatBytes(props.file.size_bytes)}</dd>
       </dl>
-      <Tracks title="Audio tracks" tracks={props.file.audio} none="No audio track." />
-      <Tracks title="Subtitle tracks" tracks={props.file.subtitles} none="No subtitle track." />
+      <Tracks title="Audio tracks" tracks={props.file.audio} none="No audio tracks." />
+      <Tracks title="Subtitle tracks" tracks={props.file.subtitles} none="No subtitle tracks." />
     </>
   );
 }

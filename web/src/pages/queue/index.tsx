@@ -32,12 +32,12 @@ const FILTERS: { value: Filter; label: string }[] = [
 ];
 
 // What each filter says when it matches nothing. Every line states what is true, then what leads to a row.
-const EMPTY: Record<Filter, { title: string; description: string }> = {
-  all: { title: "No jobs yet", description: "Files are queued when a scan finds them." },
-  queued: { title: "Nothing is queued", description: "Files are queued when a scan finds them." },
-  failed: { title: "No failed jobs", description: "A job fails after it has used up its attempts." },
-  done: { title: "No finished jobs yet", description: "A job is done once its encode is published." },
-  skipped: { title: "No skipped or canceled jobs", description: "A flow skips files it has nothing to do for." },
+const EMPTY: Record<Filter, string> = {
+  all: "No jobs",
+  queued: "Nothing queued",
+  failed: "No failed jobs",
+  done: "No finished jobs",
+  skipped: "No skipped or canceled jobs",
 };
 
 const fileName = (path: string) => path.slice(path.lastIndexOf("/") + 1);
@@ -61,7 +61,7 @@ export default function QueuePage() {
   const retryFailed = async () => {
     const agreed = await confirm({
       title: `Retry ${plural(failed(), "failed job")}?`,
-      description: "Every failed job in every library goes back into the queue and starts again from its first step.",
+      description: "Failed jobs in every library start again from the first step.",
       confirmLabel: `Retry ${plural(failed(), "failed job")}`,
     });
     if (!agreed) return;
@@ -73,7 +73,7 @@ export default function QueuePage() {
   const cancelQueued = async () => {
     const agreed = await confirm({
       title: `Cancel ${plural(queued(), "queued job")}?`,
-      description: "Every job that has not started yet is canceled, in every library. Running jobs keep running, and no file is changed. A canceled job can be retried later.",
+      description: "Queued jobs in every library are canceled. Running jobs continue, and no file is changed. Canceled jobs can be retried.",
       confirmLabel: `Cancel ${plural(queued(), "queued job")}`,
       cancelLabel: "Keep them",
       danger: true,
@@ -134,7 +134,7 @@ function RunningJobs(props: { queued: number; activeId?: number; onOpen: (id: nu
           keyed={(job) => job.job_id}
           fallback={
             <li class="av-running-empty">
-              {props.queued > 0 ? `Nothing is running. ${plural(props.queued, "job")} ${props.queued === 1 ? "waits" : "wait"}: a job starts when a worker is free and its library is not paused.` : "Nothing is running. Files are queued when a scan finds them."}
+              {props.queued > 0 ? `Nothing running. ${plural(props.queued, "job")} ${props.queued === 1 ? "waits" : "wait"} for a free worker or a resumed library.` : "Nothing running."}
             </li>
           }
         >
@@ -159,7 +159,7 @@ function RunningJobs(props: { queued: number; activeId?: number; onOpen: (id: nu
                 <span class="av-running-step">{job().step ? stepLabel(job().step) : interrupted(job()) ? "Interrupted" : "Starting"}</span>
                 <Show
                   when={job().step !== ""}
-                  fallback={<span class="av-step-open">{interrupted(job()) ? "Stopped with the daemon. It starts again when its lease runs out." : "Waiting for the first progress report"}</span>}
+                  fallback={<span class="av-step-open">{interrupted(job()) ? "Stopped with the daemon. Restarts when its lease expires." : "Waiting for progress"}</span>}
                 >
                   <StepProgress progress={job()} label={fileName(job().path)} />
                 </Show>
@@ -255,8 +255,8 @@ function JobsTable(props: { activeId?: number; onOpen: (id: number) => void }) {
               onRowClick={(job) => props.onOpen(job.id)}
               activeId={props.activeId}
               empty={
-                <Show when={filtered()} fallback={<EmptyState icon="list-video" title={EMPTY[filter()].title} description={EMPTY[filter()].description} />}>
-                  <EmptyState icon="search" title="No job matches these filters" description="Change the text or the library, or clear both.">
+                <Show when={filtered()} fallback={<EmptyState icon="list-video" title={EMPTY[filter()]} />}>
+                  <EmptyState icon="search" title="No job matches these filters">
                     <Button onClick={clearFilters}>Clear filters</Button>
                   </EmptyState>
                 </Show>

@@ -33,12 +33,12 @@ const FILTERS: { value: Filter; label: string }[] = [
 // "Pending" is the UI's word for the contract's "queued" status.
 const STATUS_OF_FILTER: Record<Exclude<Filter, "all">, FileStatus> = { pending: "queued", running: "running", failed: "failed", done: "done", skipped: "skipped" };
 
-const EMPTY: Record<Exclude<Filter, "all">, { title: string; description: string }> = {
-  pending: { title: "Nothing is pending", description: "A scan queues the files the rules allow." },
-  running: { title: "Nothing is running", description: "A pending file starts when a worker is free." },
-  failed: { title: "No failed files", description: "A file fails after its job has used up its attempts." },
-  done: { title: "No finished files yet", description: "A file is done once its encode is published." },
-  skipped: { title: "No skipped files", description: "The flow skips files it has nothing to do for, and canceled jobs count as skipped." },
+const EMPTY: Record<Exclude<Filter, "all">, string> = {
+  pending: "Nothing pending",
+  running: "Nothing running",
+  failed: "No failed files",
+  done: "No finished files",
+  skipped: "No skipped files",
 };
 
 const fileName = (path: string) => path.slice(path.lastIndexOf("/") + 1);
@@ -152,23 +152,23 @@ export function FilesTab(props: { name: string; library: Library | undefined }) 
                       <Show
                         when={props.library?.last_scan_at}
                         fallback={
-                          <EmptyState icon="file-video" title="No files yet" description="This library has never been scanned. A scan finds its media files and queues the ones the rules allow.">
+                          <EmptyState icon="file-video" title="Not scanned yet">
                             <Button variant="primary" icon="refresh-cw" busy={isScanning(name())} onClick={() => void scanLibrary(name())}>
                               Scan library
                             </Button>
                           </EmptyState>
                         }
                       >
-                        <EmptyState icon="file-video" title="No files found" description={`The last scan found no media file in ${props.library?.path ?? "the library folder"}.`} />
+                        <EmptyState icon="file-video" title="No media files found" />
                       </Show>
                     }
                   >
                     <Match when={search.settled() !== ""}>
-                      <EmptyState icon="search" title={`No file matches "${search.settled()}"`} description="The filter looks at the path below the library folder.">
-                        <Button onClick={() => refine(() => search.set(""))}>Clear the filter</Button>
+                      <EmptyState icon="search" title={`No file matches "${search.settled()}"`}>
+                        <Button onClick={() => refine(() => search.set(""))}>Clear filter</Button>
                       </EmptyState>
                     </Match>
-                    <Match when={filter() !== "all" ? EMPTY[filter() as Exclude<Filter, "all">] : undefined}>{(empty) => <EmptyState icon="file-video" title={empty().title} description={empty().description} />}</Match>
+                    <Match when={filter() !== "all" ? EMPTY[filter() as Exclude<Filter, "all">] : undefined}>{(empty) => <EmptyState icon="file-video" title={empty()} />}</Match>
                   </Switch>
                 }
               />
@@ -220,7 +220,6 @@ function FileSheet(props: { library: string; file: LibraryFile; onClose: () => v
               <dt>Size</dt>
               <dd class="av-mono">{formatBytes(props.file.size_bytes)}</dd>
             </dl>
-            <p class="av-note">A scan has seen this file, but it has no job. Queueing it starts one now.</p>
           </div>
         </SideSheet>
       }

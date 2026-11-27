@@ -59,7 +59,7 @@ export function HistoryTab(props: { name: string }) {
                 rowId={(job) => job.id}
                 onRowClick={setOpened}
                 activeId={opened()?.id}
-                empty={<EmptyState icon="list-video" title="No finished jobs yet" description="Jobs of this library show up here once they are done, failed, skipped or canceled." />}
+                empty={<EmptyState icon="list-video" title="No finished jobs" />}
               />
               <Pager page={list().page} pageSize={PAGE_SIZE} total={list().total} noun="job" pending={isPending(() => list())} onPage={setPage} />
             </div>

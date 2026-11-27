@@ -37,18 +37,18 @@ export function replacesInPlace(library: Pick<LibraryWrite, "kind" | "media">): 
 
 /** What resuming does, for the confirm dialog of a library that replaces files in place. */
 export function resumeConsequence(pending: number): string {
-  const start = pending > 0 ? `anvil starts on the ${formatCount(pending)} queued ${pending === 1 ? "file" : "files"} of this library` : "anvil starts every job a scan queues in this library";
-  return `${start}. Each file is encoded, and the encode then replaces the original in place. The original is gone once its encode is published.`;
+  const start = pending > 0 ? `${formatCount(pending)} queued ${pending === 1 ? "file starts" : "files start"}` : "Jobs start as scans queue files";
+  return `${start}. Each encode replaces its original file in place, deleting it.`;
 }
 
 /** "Scan finished · 12 queued · 3 ignored" */
 export function scanSummary(result: ScanResult): string {
   return joinDot(
     "Scan finished",
-    result.enqueued_jobs > 0 ? `${formatCount(result.enqueued_jobs)} queued` : "nothing new to queue",
+    result.enqueued_jobs > 0 ? `${formatCount(result.enqueued_jobs)} queued` : "nothing new",
     result.skipped_ignored > 0 && `${formatCount(result.skipped_ignored)} ignored`,
     result.skipped_unstable > 0 && `${formatCount(result.skipped_unstable)} still being written`,
-    result.denied_jobs > 0 && `${formatCount(result.denied_jobs)} taken off the queue by the rules`,
+    result.denied_jobs > 0 && `${formatCount(result.denied_jobs)} removed by rules`,
   );
 }
 

@@ -68,7 +68,7 @@ function SettingsForm(props: { library: Library; daemon: Settings; arrs: Arr[] }
   const [saving, setSaving] = createSignal(false);
   const [browsing, setBrowsing] = createSignal<"path" | "handoff_path" | null>(null);
   const [deleting, setDeleting] = createSignal(false);
-  useUnsavedChanges(draft.dirty, { title: "Discard the unsaved settings?", description: "The changes made to this library's settings since the last save are lost." });
+  useUnsavedChanges(draft.dirty, { title: "Discard unsaved settings?" });
 
   const form = () => draft.value();
   const download = () => form().download;
@@ -111,16 +111,16 @@ function SettingsForm(props: { library: Library; daemon: Settings; arrs: Arr[] }
   return (
     <>
       <div class="av-form">
-        <FormSection title="Library" description="What this library is. Name and kind are fixed when a library is created.">
+        <FormSection title="Library" description="Name and kind cannot be changed.">
           <div class="av-grid-2">
             <Field label="Name">
               <p class="av-readonly">{props.library.name}</p>
             </Field>
-            <Field label="Kind" hint={isDownload() ? "Finished downloads are encoded and handed to an importer." : "Files are encoded where they are."}>
+            <Field label="Kind" hint={isDownload() ? "Encodes are handed to an importer." : "Files are encoded in place."}>
               <p class="av-readonly">{props.library.kind}</p>
             </Field>
           </div>
-          <Field label="Folder" htmlFor="library-path" hint="The folder anvil scans." error={errors().path}>
+          <Field label="Folder" htmlFor="library-path" error={errors().path}>
             <div class="av-field-row">
               <Input id="library-path" mono autocomplete="off" spellcheck={false} invalid={!!errors().path} value={form().path} onInput={(event) => set({ path: event.currentTarget.value }, "path")} />
               <Button icon="folder" onClick={() => setBrowsing("path")}>
@@ -129,29 +129,29 @@ function SettingsForm(props: { library: Library; daemon: Settings; arrs: Arr[] }
             </div>
           </Field>
           <Show when={pathChanged()}>
-            <Banner tone="warning">Changing the folder makes anvil scan the new location from scratch. The job history of this library keeps pointing at the old paths. No file is moved.</Banner>
+            <Banner tone="warning">The new folder is scanned from scratch. The job history keeps the old paths. No file is moved.</Banner>
           </Show>
         </FormSection>
 
-        <FormSection title="Processing" description="Which flow the files run through, and how this library competes with the others for workers.">
-          <Field label="Flow" htmlFor="library-flow" hint="Every file of this library runs through this flow. Queued files use a new flow from their next attempt." error={errors().flow_id}>
+        <FormSection title="Processing">
+          <Field label="Flow" htmlFor="library-flow" hint="Queued files use a new flow from their next attempt." error={errors().flow_id}>
             <Select id="library-flow" value={String(form().flow_id)} invalid={!!errors().flow_id} options={flows().map((flow) => ({ value: String(flow.id), label: flow.name }))} onChange={(event) => set({ flow_id: Number(event.currentTarget.value) }, "flow_id")} />
           </Field>
-          <Field inline label="Paused" htmlFor="library-paused" hint="A paused library is still scanned and still queues files, but starts no new job." error={errors().paused}>
+          <Field inline label="Paused" htmlFor="library-paused" hint="Scans still queue files, but no new job starts." error={errors().paused}>
             <Switch id="library-paused" label="Paused" checked={form().paused} onChange={(paused) => set({ paused }, "paused")} />
           </Field>
           <div class="av-grid-2">
-            <Field label="Priority" htmlFor="library-priority" hint="Libraries with a higher number get free workers first. 0 is the default." error={errors().priority}>
+            <Field label="Priority" htmlFor="library-priority" hint="Higher numbers get free workers first." error={errors().priority}>
               <NumberInput id="library-priority" integer value={form().priority} invalid={!!errors().priority} onChange={(value) => set({ priority: value ?? 0 }, "priority")} />
             </Field>
-            <Field label="Concurrency limit" htmlFor="library-concurrency" hint="The most jobs of this library that run at once. 0 means no limit." error={errors().concurrency_limit}>
+            <Field label="Concurrency limit" htmlFor="library-concurrency" hint="0 means no limit." error={errors().concurrency_limit}>
               <NumberInput id="library-concurrency" integer min={0} suffix="jobs" value={form().concurrency_limit} invalid={!!errors().concurrency_limit} onChange={(value) => set({ concurrency_limit: value ?? 0 }, "concurrency_limit")} />
             </Field>
           </div>
         </FormSection>
 
-        <FormSection title="Scanning" description="anvil scans on a schedule and when the filesystem reports a change. The rules decide which of the files it finds are queued.">
-          <Field label="Scan interval" htmlFor="library-scan-interval" hint={`How often the whole library is scanned, as a duration such as 30m or 2h. Empty uses the daemon's default, ${scanDefault()}.`} error={errors().scan_interval}>
+        <FormSection title="Scanning" description="Changes on disk are also picked up as they happen.">
+          <Field label="Scan interval" htmlFor="library-scan-interval" hint={`Such as 30m or 2h. Empty uses the default, ${scanDefault()}.`} error={errors().scan_interval}>
             <div class="av-narrow">
               <Input id="library-scan-interval" mono autocomplete="off" spellcheck={false} placeholder={daemon().daemon.scan_interval} invalid={!!errors().scan_interval} value={form().scan_interval} onInput={(event) => set({ scan_interval: event.currentTarget.value.trim() }, "scan_interval")} />
             </div>
@@ -159,7 +159,7 @@ function SettingsForm(props: { library: Library; daemon: Settings; arrs: Arr[] }
           <Field
             label="Arr connection"
             htmlFor="library-arr"
-            hint={arrs().length > 0 ? "Used to look up the original language of a film or series, which the orig language token in a flow stands for. None turns the lookup off." : "No Arr connection is configured yet. Add one under Settings to look up original languages."}
+            hint={arrs().length > 0 ? "Looks up the original language for the orig token in flows." : "No connections. Add one in Settings."}
             error={errors().arr}
           >
             <Select id="library-arr" value={form().arr} invalid={!!errors().arr} options={[{ value: "", label: "None" }, ...arrs().map((arr) => ({ value: arr.name, label: `${arr.name} (${arr.type})` }))]} onChange={(event) => set({ arr: event.currentTarget.value }, "arr")} />
@@ -169,10 +169,10 @@ function SettingsForm(props: { library: Library; daemon: Settings; arrs: Arr[] }
         <Show
           when={isDownload()}
           fallback={
-            <FormSection title="Publishing" description="What happens to the original once its encode is ready.">
+            <FormSection title="Publishing">
               <Field
                 label="Replacement mode"
-                hint={form().media.replacement_mode === "replace" ? "The encode takes the place of the original. The original is gone once the encode is published." : "The encode is published beside the original. The original stays, so the library needs room for both."}
+                hint={form().media.replacement_mode === "replace" ? "The original is deleted once its encode is published." : "The encode is published beside the original. Needs room for both."}
                 error={errors()["media.replacement_mode"]}
               >
                 <div>
@@ -190,8 +190,8 @@ function SettingsForm(props: { library: Library; daemon: Settings; arrs: Arr[] }
             </FormSection>
           }
         >
-          <FormSection title="Handoff" description="How finished downloads are recognised, and how their encodes reach the importer.">
-            <Field label="Handoff folder" htmlFor="library-handoff" hint="The folder your importer (Sonarr, Radarr) watches. Encodes are handed off here." error={errors()["download.handoff_path"]}>
+          <FormSection title="Handoff">
+            <Field label="Handoff folder" htmlFor="library-handoff" hint="The folder Sonarr or Radarr imports from." error={errors()["download.handoff_path"]}>
               <div class="av-field-row">
                 <Input id="library-handoff" mono autocomplete="off" spellcheck={false} invalid={!!errors()["download.handoff_path"]} value={download().handoff_path} onInput={(event) => setDownload({ handoff_path: event.currentTarget.value }, "handoff_path")} />
                 <Button icon="folder" onClick={() => setBrowsing("handoff_path")}>
@@ -200,10 +200,10 @@ function SettingsForm(props: { library: Library; daemon: Settings; arrs: Arr[] }
               </div>
             </Field>
             <div class="av-grid-2">
-              <Field label="Stable for" htmlFor="library-stable-for" hint="How long a download must stay unchanged before it counts as complete when no completion event was seen. A duration such as 45s; empty uses the default." error={errors()["download.stable_for"]}>
+              <Field label="Stable for" htmlFor="library-stable-for" hint="Time without change before a download counts as complete, such as 45s. Empty uses the default." error={errors()["download.stable_for"]}>
                 <Input id="library-stable-for" mono autocomplete="off" spellcheck={false} invalid={!!errors()["download.stable_for"]} value={download().stable_for} onInput={(event) => setDownload({ stable_for: event.currentTarget.value.trim() }, "stable_for")} />
               </Field>
-              <Field label="Package mode" htmlFor="library-package-mode" hint="Whether a download is one file or a whole release folder. Auto decides per download." error={errors()["download.package_mode"]}>
+              <Field label="Package mode" htmlFor="library-package-mode" hint="One file or a release folder. Auto decides per download." error={errors()["download.package_mode"]}>
                 <Select
                   id="library-package-mode"
                   value={download().package_mode}
@@ -217,7 +217,7 @@ function SettingsForm(props: { library: Library; daemon: Settings; arrs: Arr[] }
                 />
               </Field>
             </div>
-            <Field label="Handoff mode" hint={download().handoff_mode === "move" ? "The encode is moved into the handoff folder. Use this when the downloader no longer needs the download." : "The encode is copied into the handoff folder, for example while the download is still seeding."} error={errors()["download.handoff_mode"]}>
+            <Field label="Handoff mode" hint={download().handoff_mode === "move" ? "For downloads the downloader no longer needs." : "For downloads that are still seeding."} error={errors()["download.handoff_mode"]}>
               <div>
                 <Segmented
                   label="Handoff mode"
@@ -230,22 +230,22 @@ function SettingsForm(props: { library: Library; daemon: Settings; arrs: Arr[] }
                 />
               </div>
             </Field>
-            <Field inline label="Preserve relative path" htmlFor="library-preserve-path" hint="Keeps the download's folder structure below the handoff folder.">
+            <Field inline label="Preserve relative path" htmlFor="library-preserve-path" hint="Keeps the download's folder structure.">
               <Switch id="library-preserve-path" label="Preserve relative path" checked={download().preserve_relative_path} onChange={(value) => setDownload({ preserve_relative_path: value }, "preserve_relative_path")} />
             </Field>
-            <Field inline label="Clean up source media" htmlFor="library-cleanup" hint="Deletes the downloaded media after a successful handoff, and only then.">
+            <Field inline label="Clean up source media" htmlFor="library-cleanup" hint="Deletes the downloaded media after a successful handoff.">
               <Switch id="library-cleanup" label="Clean up source media" checked={download().cleanup_source_media} onChange={(value) => setDownload({ cleanup_source_media: value }, "cleanup_source_media")} />
             </Field>
-            <Field inline label="Prune empty folders" htmlFor="library-prune" hint="Removes release folders the cleanup left empty. It has no effect without source cleanup.">
+            <Field inline label="Prune empty folders" htmlFor="library-prune" hint="Removes release folders that cleanup left empty.">
               <Switch id="library-prune" label="Prune empty folders" checked={download().prune_empty_dirs} onChange={(value) => setDownload({ prune_empty_dirs: value }, "prune_empty_dirs")} />
             </Field>
-            <Field label="Ignorable globs" htmlFor="library-globs" hint="Files matching these globs are not media and never hold a download back. With cleanup and pruning on, they may be deleted after a handoff. An empty list uses the built-in one." error={errors()["download.ignorable_globs"]}>
+            <Field label="Ignorable globs" htmlFor="library-globs" hint="Non-media files that never hold a download back. Cleanup may delete them. Empty uses the built-in list." error={errors()["download.ignorable_globs"]}>
               <TokenInput id="library-globs" mono placeholder="*.nfo" invalid={!!errors()["download.ignorable_globs"]} value={download().ignorable_globs} onChange={(globs) => setDownload({ ignorable_globs: globs }, "ignorable_globs")} />
             </Field>
           </FormSection>
         </Show>
 
-        <FormSection danger title="Delete library" description="anvil forgets this library, its rules, its queue and its job history. No media file is deleted or changed.">
+        <FormSection danger title="Delete library" description="Removes the library, its queue and its history. No media file is deleted or changed.">
           <div>
             <Button variant="danger" icon="trash-2" class="av-btn-danger-outline" onClick={() => setDeleting(true)}>
               Delete library
@@ -286,12 +286,9 @@ function SettingsForm(props: { library: Library; daemon: Settings; arrs: Arr[] }
  */
 function deleteConsequence(library: Library): string {
   const { files, pending, running } = library.stats;
-  const queue = pending > 0 ? ` ${pending === 1 ? "The 1 job that waits in its queue is deleted with it and never runs." : `The ${formatCount(pending)} jobs that wait in its queue are deleted with it and never run.`}` : "";
-  const refused =
-    running > 0
-      ? ` ${running === 1 ? "1 job is running: cancel it or wait until it has finished, or the daemon refuses the delete." : `${formatCount(running)} jobs are running: cancel them or wait until they have finished, or the daemon refuses the delete.`}`
-      : " The daemon refuses the delete while a job is running or has not finished publishing its result.";
-  return `anvil forgets this library: its rules, the ${plural(files, "file")} it tracks and its job history, along with the process logs and scratch files of its jobs under the daemon's temp dir.${queue} No media file is deleted or changed: everything in ${library.path} stays as it is.${refused}`;
+  const queue = pending > 0 ? ` ${pending === 1 ? "1 queued job is dropped." : `${formatCount(pending)} queued jobs are dropped.`}` : "";
+  const refused = running > 0 ? ` ${running === 1 ? "1 job is running. Cancel it or wait for it first." : `${formatCount(running)} jobs are running. Cancel them or wait for them first.`}` : "";
+  return `Removes the library, its rules and the job history of its ${plural(files, "file")}.${queue} No media file in ${library.path} is deleted or changed.${refused}`;
 }
 
 /** Asks for the library's name before deleting it, and keeps the daemon's refusal on screen. */
@@ -324,7 +321,7 @@ function DeleteLibraryDialog(props: { library: Library; onClose: () => void; onD
     if (next) navigate(next, { replace: true });
     await invalidate(keys.libraries, keys.flows, keys.arrs, keys.jobs, keys.status);
     if (!next) navigate("/", { replace: true });
-    toast.success(`Deleted the library ${deleted}. Its files were not touched.`);
+    toast.success(`Deleted ${deleted}. No media file was touched.`);
   };
 
   return (
@@ -333,7 +330,7 @@ function DeleteLibraryDialog(props: { library: Library; onClose: () => void; onD
       size="md"
       dismissible={!busy()}
       onClose={props.onClose}
-      title={`Delete the library ${name()}?`}
+      title={`Delete ${name()}?`}
       description={deleteConsequence(props.library)}
       footer={
         <>

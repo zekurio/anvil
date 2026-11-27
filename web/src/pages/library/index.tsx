@@ -65,7 +65,7 @@ function LibraryLoader(props: { name: string; tab: LibraryTab }) {
       fallback={
         <>
           <Topbar title={props.name} />
-          <ErrorState title="This library does not exist" error={new Error(`No library is named "${props.name}". It may have been deleted, or the address is mistyped.`)}>
+          <ErrorState title="This library does not exist" error={new Error(`No library is named "${props.name}". It may have been deleted.`)}>
             <LinkButton href="/">Open the first library</LinkButton>
           </ErrorState>
         </>
@@ -103,8 +103,8 @@ function LibraryView(props: { library: Library; tab: LibraryTab; children: JSX.E
     if (!flow || flow.id === library().flow_id) return;
     if (stats().pending > 0) {
       const agreed = await confirm({
-        title: `Use the flow "${flow.name}" for ${name()}?`,
-        description: `${plural(stats().pending, "file")} of this library ${stats().pending === 1 ? "is" : "are"} queued. Queued files use the new flow from their next attempt. Files that are done are not processed again.`,
+        title: `Use "${flow.name}" for ${name()}?`,
+        description: `${plural(stats().pending, "queued file")} ${stats().pending === 1 ? "uses" : "use"} it from the next attempt. Finished files are not processed again.`,
         confirmLabel: "Change flow",
       });
       if (!agreed) {
@@ -113,11 +113,11 @@ function LibraryView(props: { library: Library; tab: LibraryTab; children: JSX.E
         return;
       }
     }
-    await update("flow", { flow_id: flow.id }, `${name()} now uses the flow ${flow.name}.`, "The flow could not be changed.");
+    await update("flow", { flow_id: flow.id }, `${name()} now uses ${flow.name}.`, "The flow could not be changed.");
     select.value = String(library().flow_id);
   };
 
-  const pause = () => update("pause", { paused: true }, `Paused ${name()}. Running jobs finish; no new job starts.`, "The library could not be paused.");
+  const pause = () => update("pause", { paused: true }, `Paused ${name()}. Running jobs finish.`, "The library could not be paused.");
 
   const resume = async () => {
     if (replacesInPlace(library())) {
@@ -157,8 +157,7 @@ function LibraryView(props: { library: Library; tab: LibraryTab; children: JSX.E
       </Topbar>
       <Show when={library().paused}>
         <Banner tone="warning">
-          This library is paused. Scans still queue files, but no new job starts
-          {stats().pending > 0 ? `: ${plural(stats().pending, "file")} ${stats().pending === 1 ? "waits" : "wait"}.` : "."}
+          Paused. Scans still queue files, but no new job starts.
           {stats().running > 0 ? ` ${plural(stats().running, "running job")} ${stats().running === 1 ? "finishes" : "finish"} first.` : ""}
         </Banner>
       </Show>

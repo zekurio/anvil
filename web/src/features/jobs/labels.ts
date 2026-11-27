@@ -3,14 +3,14 @@
 // a job alone. Anything not listed here is shown as the daemon wrote it.
 
 import type { FileStatus, JobActionSkip, JobState, PipelineContextDetail, Progress, SkipReason, StreamDecision, StreamSelectionDecision } from "../../api";
-import { formatBitrate, formatCount, formatPercent, joinDot, plural } from "../../lib/format";
+import { formatBitrate, formatPercent, joinDot, plural } from "../../lib/format";
 import type { JobStatus } from "../../ui";
 
 /* ---------- pipeline steps (worker.DefaultPipeline) ---------- */
 
 const STEP_LABELS: Record<string, string> = {
   probe: "Probing",
-  flow: "Resolving the flow",
+  flow: "Resolving flow",
   "crop-detect": "Detecting crop",
   "audio-cleanup": "Selecting audio",
   "subtitle-cleanup": "Selecting subtitles",
@@ -31,7 +31,7 @@ export function stepLabel(step: string): string {
 
 const STATE_LABELS: Record<JobState, string> = {
   pending: "Pending",
-  leased: "Assigned to a worker",
+  leased: "Assigned",
   running: "Running",
   validating: "Validating",
   replacing: "Publishing",
@@ -243,13 +243,13 @@ const is = (count: number) => (count === 1 ? "is" : "are");
 const SKIP_SENTENCES: Record<Exclude<SkipReason, "error">, SkipSentence> = {
   not_found: (count, noun) => `${plural(count, noun)} no longer ${count === 1 ? "exists" : "exist"}.`,
   finished: (count) => `${plural(count, "job")} had already finished.`,
-  publishing: (count) => `${plural(count, "job")} ${is(count)} publishing ${count === 1 ? "its result" : "their results"}, which cannot be interrupted. ${count === 1 ? "It finishes" : "They finish"} first.`,
-  state_changed: (count) => `${plural(count, "job")} changed state before the action reached ${count === 1 ? "it" : "them"}.`,
-  not_retryable: (count) => `${plural(count, "job")} ${is(count)} queued, running or done. Only failed, skipped and canceled jobs can be retried.`,
-  input_changed: (count) => `The ${count === 1 ? "file of 1 job" : `files of ${formatCount(count)} jobs`} changed or ${count === 1 ? "is" : "are"} gone since the job was created. Queue ${count === 1 ? "the file" : "the files"} again from the library instead.`,
+  publishing: (count) => `${plural(count, "job")} ${is(count)} publishing, which cannot be interrupted.`,
+  state_changed: (count) => `${plural(count, "job")} changed state in the meantime.`,
+  not_retryable: (count) => `${plural(count, "job")} cannot be retried. Only failed, skipped and canceled jobs can.`,
+  input_changed: (count) => `${plural(count, "job")} ${count === 1 ? "has a changed or missing file" : "have changed or missing files"}. Queue ${count === 1 ? "it" : "them"} again from the library.`,
   active: (count) => `${plural(count, "file")} already ${count === 1 ? "has" : "have"} a queued or running job.`,
   denied: (count) => `${plural(count, "file")} ${is(count)} denied by the library's rules.`,
-  ignored: (count) => `${plural(count, "file")} ${is(count)} left out by every scan: a sample, download residue, or one of anvil's own outputs.`,
+  ignored: (count) => `${plural(count, "file")} ${is(count)} always ignored: samples, download residue or anvil's own output.`,
   unstable: (count) => `${plural(count, "file")} ${is(count)} still being written.`,
   invalid: (count) => `${plural(count, "path")} ${count === 1 ? "does" : "do"} not name a file of the library.`,
 };
@@ -271,15 +271,15 @@ export function skipSummary(skipped: JobActionSkip[], noun: "job" | "file"): str
   // Every failure has its own text; a few say enough, and the daemon's log has them all.
   const shown = others.slice(0, 3);
   const more = others.length - shown.length;
-  return [...worded, ...shown, more > 0 ? `${plural(more, "more failure")}: see the daemon's log.` : ""].filter(Boolean).join(" ");
+  return [...worded, ...shown, more > 0 ? `${plural(more, "more failure")} in the daemon's log.` : ""].filter(Boolean).join(" ");
 }
 
 /* ---------- publication (pkg/replace: the publish journal) ---------- */
 
 const PUBLISH_STAGES: Record<string, string> = {
-  prepared: "Publishing: the result is written and about to take its place.",
-  published: "Publishing: the result is in place, the source is not cleaned up yet.",
-  source_cleaned: "Publishing: the result is in place and the source cleaned up; the record is not closed yet.",
+  prepared: "Publishing: written, not in place yet.",
+  published: "Publishing: in place, source not cleaned up yet.",
+  source_cleaned: "Publishing: in place, source cleaned up.",
   conflict: "Not published: something else is at the destination.",
 };
 
@@ -290,7 +290,7 @@ const PUBLISH_STAGES: Record<string, string> = {
  */
 export function publishSentence(kind: string, mode: string, stage: string): string {
   if (stage !== "committed") return PUBLISH_STAGES[stage] ?? `Publishing: stage ${stage}.`;
-  if (kind === "handoff") return "Handed off to the folder the importer watches.";
-  return mode === "copy" ? "Published beside the original, which was kept." : "Published. It replaced the original.";
+  if (kind === "handoff") return "Handed off to the importer.";
+  return mode === "copy" ? "Published beside the original." : "Published in place of the original.";
 }
 

@@ -71,7 +71,7 @@ function Result(props: { result: FlowTest; stale: boolean; onRerun: () => void }
       <SheetSection title="Outcome">
         <div class="fe-outcome">
           <StatusBadge status={props.result.outcome === "process" ? "done" : "skipped"}>{props.result.outcome === "process" ? "Process" : "Skip"}</StatusBadge>
-          <span>{props.result.outcome === "process" ? "The file is processed and the result published." : "The file is left untouched."}</span>
+          <span>{props.result.outcome === "process" ? "The file is processed and published." : "The file is left untouched."}</span>
         </div>
         <Show when={props.result.decisions.length > 0}>
           <ol class="fe-lines" aria-label="Decisions">

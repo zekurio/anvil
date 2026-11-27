@@ -24,7 +24,7 @@ export function RulesTab(props: { library: Library }) {
   const [errors, setErrors] = createSignal<Record<number, string>>({});
   const [general, setGeneral] = createSignal<string | null>(null);
   const [saving, setSaving] = createSignal(false);
-  useUnsavedChanges(draft.dirty, { title: "Discard the unsaved rules?", description: "The rule changes made since the last save are lost." });
+  useUnsavedChanges(draft.dirty, { title: "Discard unsaved rule changes?" });
 
   const clearErrors = () => {
     setErrors({});
@@ -41,7 +41,7 @@ export function RulesTab(props: { library: Library }) {
     clearErrors();
     const saved = await run(() => api.libraries.update(props.library.name, { ...toWrite(props.library), ...draft.value() }), {
       invalidate: [keys.libraries],
-      success: `Saved the rules of ${props.library.name}. A scan with the new rules starts by itself.`,
+      success: `Saved the rules of ${props.library.name}. A scan starts now.`,
       failure: "The rules could not be saved.",
       onError: (error: ApiError) => {
         // The daemon names the rule at fault as "rules.<index>.<field>".
@@ -62,11 +62,8 @@ export function RulesTab(props: { library: Library }) {
   return (
     <div class="av-page-body av-surface">
       <div class="av-rulespage">
-        <p class="av-rules-intro">A scan checks every file against these rules, top to bottom. The first rule that matches decides whether the file is queued. Paths are relative to the library folder.</p>
-        <p class="av-rules-intro">
-          A denied file is never queued, and the Files tab does not list it unless anvil already knew the file. A file that was waiting in the queue when a rule denied it is skipped by the next scan, with the rule as its reason, and queued again by the scan
-          after the rules allow it. A path rule that denies a whole folder takes the files below it off the list. A job that has already started is not stopped.
-        </p>
+        <p class="av-rules-intro">The first matching rule decides whether a scan queues a file. Paths are relative to the library folder.</p>
+        <p class="av-rules-intro">The next scan skips queued files a rule now denies. Running jobs are not stopped.</p>
         <Show when={general()}>{(message) => <Banner tone="danger">{message()}</Banner>}</Show>
         <RuleList rules={draft.value().rules} fallback={fallback()} errors={errors()} disabled={saving()} onChange={(rules) => change({ rules })} />
         <div class="av-row">
@@ -94,8 +91,8 @@ export function RulesTab(props: { library: Library }) {
   );
 }
 
-/** States the outcome when nothing matches, and what that means with the rules there are. */
-function fallbackSentence(fallback: RuleAction, count: number): string {
-  if (fallback === "deny") return count === 0 ? "Files matching no rule are never queued. With no rule, nothing in this library is queued." : "Files matching no rule are never queued.";
-  return count === 0 ? "Files matching no rule are queued. With no rule, every file a scan finds is queued." : "Files matching no rule are queued.";
+/** What the fallback means when there is no rule at all; the options already say the rest. */
+function fallbackSentence(fallback: RuleAction, count: number): string | undefined {
+  if (count > 0) return undefined;
+  return fallback === "deny" ? "With no rules, nothing is queued." : "With no rules, every file is queued.";
 }

@@ -168,7 +168,7 @@ function NodeOptions(props: { editor: Editor; id: string; focus: FieldFocus | nu
 
       <section class="av-sec fe-about">
         <div class="fe-about-type">{type()?.label ?? node().type}</div>
-        <p class="fe-about-text">{type()?.description ?? "This version of anvil does not know this node type. Delete the node, or replace it with one from the palette."}</p>
+        <p class="fe-about-text">{type()?.description ?? "Unknown node type. Delete it or replace it with one from the palette."}</p>
         <Field label="Label" htmlFor={controlId(id, "label")}>
           <Input id={controlId(id, "label")} autocomplete="off" placeholder={type()?.label} value={node().label ?? ""} onInput={(event) => draft.setLabel(id, event.currentTarget.value)} />
         </Field>

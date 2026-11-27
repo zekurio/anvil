@@ -48,9 +48,9 @@ export function LoadingRows(props: { rows?: number; label?: string }) {
 
 export interface EmptyStateProps {
   icon?: IconName;
-  /** What is missing: "No libraries yet." */
+  /** What is missing: "No libraries". */
   title: string;
-  /** What to do next: "Add a folder to scan." */
+  /** Only what the title and the action do not already say. */
   description?: string;
   /** The action that fixes it. */
   children?: JSX.Element;

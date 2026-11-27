@@ -5,7 +5,6 @@ import { confirm, type ConfirmOptions } from "../ui";
 
 const DEFAULTS: ConfirmOptions = {
   title: "Discard unsaved changes?",
-  description: "The changes made since the last save are lost.",
   confirmLabel: "Discard changes",
   cancelLabel: "Keep editing",
   danger: true,

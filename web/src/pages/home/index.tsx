@@ -23,7 +23,7 @@ export default function Home() {
   return (
     <Show when={libraries().length === 0}>
       <Topbar title="Libraries" />
-      <EmptyState icon="library-big" title="No libraries yet" description="A library is a folder anvil scans. Add one to get started.">
+      <EmptyState icon="library-big" title="No libraries">
         <Button variant="primary" icon="plus" onClick={openAddLibrary}>
           Add library
         </Button>

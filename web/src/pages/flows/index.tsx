@@ -22,7 +22,7 @@ export default function FlowsPage() {
   /** Why a flow cannot be deleted. There is no way to force it: its libraries need another flow first. */
   const inUse = (flow: FlowSummary, libraries: string[]) =>
     toast.error(`"${flow.name}" is still in use`, {
-      description: `${libraries.length === 1 ? "The library" : "The libraries"} ${listNames(libraries)} ${libraries.length === 1 ? "uses" : "use"} this flow. Assign another flow to ${libraries.length === 1 ? "it" : "them"} first.`,
+      description: `${listNames(libraries)} ${libraries.length === 1 ? "uses" : "use"} it. Assign another flow first.`,
     });
 
   const duplicate = (flow: FlowSummary) =>
@@ -36,8 +36,8 @@ export default function FlowsPage() {
     // Known from the list already: say so instead of asking a question whose answer cannot be acted on.
     if (flow.libraries.length > 0) return void inUse(flow, flow.libraries);
     const agreed = await confirm({
-      title: `Delete the flow "${flow.name}"?`,
-      description: "The flow and its nodes are removed. No library uses it, and no file is touched.",
+      title: `Delete "${flow.name}"?`,
+      description: "No library uses it. No file is touched.",
       confirmLabel: "Delete flow",
       danger: true,
     });
@@ -102,7 +102,7 @@ export default function FlowsPage() {
           rowId={(flow) => flow.id}
           onRowClick={(flow) => navigate(`/flows/${flow.id}`)}
           empty={
-            <EmptyState icon="workflow" title="No flows yet" description="A flow decides what happens to each file of a library. Create one, then assign it to a library.">
+            <EmptyState icon="workflow" title="No flows">
               <LinkButton variant="primary" icon="plus" href="/flows/new">
                 New flow
               </LinkButton>

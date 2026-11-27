@@ -4,7 +4,6 @@ import { createMemo, createSignal, flush, isPending, onSettled, Show } from "sol
 import "./editor.css";
 
 import { api, createQuery, keys, type ApiError, type FlowWrite, type Issue } from "../../api";
-import { plural } from "../../lib/format";
 import { useUnsavedChanges } from "../../lib/guard";
 import { run } from "../../lib/mutate";
 import { useTitle } from "../../lib/title";
@@ -82,9 +81,7 @@ function Editor(props: { data: Loaded; onReload: () => void }) {
 
   useTitle(() => draft.name() || "Flow");
   // A new flow is unsaved from the start, but leaving it untouched loses nothing.
-  useUnsavedChanges(() => !leaving() && (isNew ? draft.touched() : draft.changes() > 0), {
-    description: isNew ? "The new flow has not been saved and is lost." : "The changes made to this flow since the last save are lost.",
-  });
+  useUnsavedChanges(() => !leaving() && (isNew ? draft.touched() : draft.changes() > 0));
 
   // The polled list knows about libraries assigned after the editor opened.
   const usedBy = createMemo(() => flows().find((flow) => flow.id === flowId)?.libraries ?? data.flow?.libraries ?? []);
@@ -103,7 +100,7 @@ function Editor(props: { data: Loaded; onReload: () => void }) {
   const askReload = async () => {
     const agreed = await confirm({
       title: "This flow was changed elsewhere",
-      description: "Someone saved it after you opened it, so your draft cannot be saved over their version. Reload to get their version and lose your unsaved changes, or keep editing and save your draft as a new flow.",
+      description: "Someone saved it after you opened it. Reload to get their version and lose your changes, or keep editing and save as a new flow.",
       confirmLabel: "Reload flow",
       cancelLabel: "Keep editing",
       danger: true,
@@ -141,7 +138,7 @@ function Editor(props: { data: Loaded; onReload: () => void }) {
     const users = usedBy();
     const flow = await run(() => (asNew || flowId === null ? api.flows.create(body) : api.flows.update(flowId, body)), {
       invalidate: [keys.flows],
-      success: (saved) => (users.length > 0 && !asNew ? `Saved "${saved.name}". Files queued from now on in ${users.join(", ")} go through it.` : `Saved "${saved.name}"`),
+      success: (saved) => (users.length > 0 && !asNew ? `Saved "${saved.name}". New jobs in ${users.join(", ")} use it.` : `Saved "${saved.name}"`),
       failure: "The flow could not be saved",
       onError: refused,
     });
@@ -171,7 +168,7 @@ function Editor(props: { data: Loaded; onReload: () => void }) {
   const discard = async () => {
     const agreed = await confirm({
       title: "Discard unsaved changes?",
-      description: isNew ? "The new flow is not created." : "The flow goes back to how it was last saved.",
+      description: isNew ? "The new flow is not created." : undefined,
       confirmLabel: "Discard changes",
       cancelLabel: "Keep editing",
       danger: true,
@@ -363,7 +360,6 @@ function Editor(props: { data: Loaded; onReload: () => void }) {
         open={detailsOpen()}
         onClose={() => setDetailsOpen(false)}
         title="Name and description"
-        description={usedBy().length > 0 ? `Used by ${plural(usedBy().length, "library", "libraries")}: ${usedBy().join(", ")}.` : "Not assigned to a library yet."}
         footer={
           <Button variant="primary" onClick={() => setDetailsOpen(false)}>
             Done
@@ -383,7 +379,7 @@ function Editor(props: { data: Loaded; onReload: () => void }) {
             }}
           />
         </Field>
-        <Field label="Description" htmlFor="fe-details-description" hint="Shown in the list of flows.">
+        <Field label="Description" htmlFor="fe-details-description">
           <Textarea id="fe-details-description" value={draft.description()} onInput={(event) => draft.setDescription(event.currentTarget.value)} />
         </Field>
       </Dialog>

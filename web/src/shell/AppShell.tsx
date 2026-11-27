@@ -11,7 +11,7 @@ import { AppSidebar } from "./AppSidebar";
 export function ConnectionBanner() {
   return (
     <Show when={unreachable()}>
-      <Banner tone="warning">The anvil daemon is not answering. What you see is the last known state.</Banner>
+      <Banner tone="warning">The daemon is not answering. Showing the last known state.</Banner>
     </Show>
   );
 }

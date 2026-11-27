@@ -101,12 +101,12 @@ export function EditorTopbar(props: EditorTopbarProps) {
   const blocked = () => editor.check.errors().length > 0;
   /** Why Save does nothing right now, as its tooltip. */
   const saveNote = () => {
-    if (blocked()) return `${attention(editor)}. Fix that before saving.`;
-    if (props.outdated) return "This flow was changed elsewhere. Reload it, or save the draft as a new flow.";
+    if (blocked()) return `${attention(editor)}.`;
+    if (props.outdated) return "Changed elsewhere. Reload it, or save as a new flow.";
     return undefined;
   };
   const state = () => {
-    if (props.isNew) return "Draft · not saved yet";
+    if (props.isNew) return "Draft · not saved";
     const changes = draft.changes();
     return changes > 0 ? `Draft · ${plural(changes, "unsaved change")}` : "No unsaved changes";
   };
@@ -146,7 +146,7 @@ export function EditorTopbar(props: EditorTopbarProps) {
               <>
                 <span class={{ "fe-draft": dirty() }}>{state()}</span>
                 <Show when={props.usedBy.length > 0}>
-                  <span class="fe-used" title="Saving changes what happens to files queued from now on in these libraries.">
+                  <span class="fe-used" title="Saving applies to files queued from now on.">
                     Used by {props.usedBy.join(", ")}
                   </span>
                 </Show>
@@ -161,7 +161,7 @@ export function EditorTopbar(props: EditorTopbarProps) {
         <Problems editor={editor} issuesOpen={props.issuesOpen} onIssuesOpen={props.onIssuesOpen} onIssue={props.onIssue} />
       </div>
       <div class="av-topbar-actions">
-        <Button variant="ghost" icon="play" disabled={blocked()} title={blocked() ? "A flow with errors cannot be tested. Fix them first." : undefined} onClick={() => props.onTest()}>
+        <Button variant="ghost" icon="play" disabled={blocked()} title={blocked() ? "Fix the errors first." : undefined} onClick={() => props.onTest()}>
           Test on a file
         </Button>
         <Show when={dirty()}>

@@ -104,13 +104,13 @@ export function Feedback() {
     <Section id="feedback" title="Feedback">
       <Item title="Banner" flush>
         <Banner>The library is paused. Scans still run; no new job starts.</Banner>
-        <Banner tone="warning">The anvil daemon is not answering. What you see is the last known state.</Banner>
+        <Banner tone="warning">The daemon is not answering. Showing the last known state.</Banner>
         <Banner tone="danger" action={<Button size="sm">Open the queue</Button>}>
           4 jobs failed in the last hour.
         </Banner>
       </Item>
       <Item title="EmptyState" flush>
-        <EmptyState icon="library-big" title="No libraries yet" description="Add a folder to scan.">
+        <EmptyState icon="library-big" title="No libraries">
           <Button variant="primary" icon="plus">
             Add library
           </Button>
