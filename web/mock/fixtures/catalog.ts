@@ -275,7 +275,7 @@ export const NODE_TYPES: NodeType[] = [
             key: "ffmpeg_args",
             label: "Extra encoder arguments",
             type: "string_list",
-            hint: "Option and value pairs, one per entry, used for the search and the final encode. Stream mapping, filters, timing, and rate control stay with Anvil.",
+            hint: "Option and value pairs, one per entry, used for the search and the final encode. Only encoder parameter bundles and value-only tuning options are accepted; files, URLs, devices, filters, mapping, timing, and rate control stay with Anvil.",
             default: [],
             mono: true,
             placeholder: "-svtav1-params",

@@ -51,6 +51,8 @@
 .av-formsec-wide { grid-template-columns: 220px minmax(0, 1fr); }
 .av-formsec-danger .av-formsec-title { color: var(--danger); }
 .av-formbar { position: sticky; bottom: 0; z-index: 2; display: flex; align-items: center; gap: var(--space-2); padding: var(--space-2) var(--space-4); border-top: 1px solid var(--line); background: var(--surface); }
+/* The bar is stuck over the bottom of the page: a field that Tab or a validation error scrolls to must stop above it, not under it. */
+.av-page-body:has(> .av-formbar, > * > .av-formbar) { scroll-padding-bottom: calc(var(--topbar) + var(--space-3)); }
 .av-formbar-state { font: var(--text-caption); color: var(--text-muted); }
 .av-formbar-dirty { color: var(--warn); }
 .av-field-row { display: flex; align-items: center; gap: var(--space-2); }

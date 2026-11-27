@@ -146,18 +146,30 @@ const blankEntries = (o: Options, key: string): Problem[] => (o.list(key).some((
 const cleanList = (entries: string[]) => entries.map((entry) => entry.trim().toLowerCase()).filter(Boolean);
 const listOr = (entries: string[], fallback: string) => (entries.length === 0 ? fallback : entries.join(", "));
 
-const MANAGED_ARGS = new Set(
-  "i f y n stdin nostdin vf af lavfi s video_size r vsync fps_mode t to ss sseof fs frames vframes stream_loop shortest copyts start_at_zero itsoffset itsscale c codec vcodec an vn sn dn crf qp q qscale global_quality rc qp_i qp_p qp_b b vb bit_rate pix_fmt pixel_format threads preset pass passlogfile progress stats_period".split(
-    " ",
-  ),
-);
+// pkg/ffmpeg ValidateEncoderArgs: an allow-list. Nothing that names a file, a
+// URL, a device, a stream selector or a filter graph gets through.
+const PARAM_BUNDLES = new Set(["svtav1-params", "x265-params", "x264-params"]);
+const TUNING_OPTIONS = new Set("tune profile level g keyint_min bf refs sc_threshold aq-mode aq-strength rc-lookahead b_strategy look_ahead look_ahead_depth extbrc low_power async_depth adaptive_i adaptive_b quality".split(" "));
+const MANAGED_PARAMS = new Set("crf qp qpmin qpmax rc bitrate bit_rate tbr mbr preset".split(" "));
+const ACCEPTED_ARGS =
+  "encoder parameter bundles (-svtav1-params, -x265-params, -x264-params) or value-only tuning options (-tune, -profile:v, -level, -g, -keyint_min, -bf, -refs, -sc_threshold, -aq-mode, -aq-strength, -rc-lookahead, -b_strategy, -look_ahead, -look_ahead_depth, -extbrc, -low_power, -async_depth, -adaptive_i, -adaptive_b, -quality)";
 
 function encoderArgsRule(args: string[]): string {
   for (let i = 0; i < args.length; i += 2) {
     const key = args[i] ?? "";
-    if (!key.startsWith("-") || key === "-" || i + 1 === args.length) return `Must contain encoder option/value pairs; invalid option "${key}".`;
+    if (!key.startsWith("-") || key === "-" || i + 1 === args.length) return `Must contain option/value pairs; invalid option "${key}"; accepted: ${ACCEPTED_ARGS}.`;
     const name = key.replace(/^-+/, "").split(":")[0] ?? "";
-    if (name.startsWith("filter") || name.startsWith("map") || MANAGED_ARGS.has(name)) return `Option "${key}" is managed by Anvil and cannot be used during CRF search.`;
+    const value = args[i + 1] ?? "";
+    if (value.startsWith("-")) return `Value "${value}" for option "${key}" must not begin with "-".`;
+    if (PARAM_BUNDLES.has(name)) {
+      const managed = value
+        .split(":")
+        .map((entry) => (entry.includes("=") ? (entry.split("=")[0] ?? "").trim() : ""))
+        .find((param) => MANAGED_PARAMS.has(param.toLowerCase()));
+      if (managed) return `Option "${key}": encoder param "${managed}" overrides a setting managed by Anvil.`;
+      continue;
+    }
+    if (!TUNING_OPTIONS.has(name)) return `Option "${key}" is not accepted; accepted: ${ACCEPTED_ARGS}.`;
   }
   return "";
 }
