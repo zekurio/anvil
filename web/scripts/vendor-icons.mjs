@@ -68,6 +68,9 @@ const ICONS = [
   "circle-alert",
   "clock",
   "info",
+  // Flow editor.
+  "undo-2",
+  "redo-2",
 ];
 
 const require = createRequire(import.meta.url);

@@ -89,7 +89,8 @@ export function NumberInput(props: NumberInputProps) {
       onValueCommit={(value) => props.onCommit?.(value)}
       min={props.min}
       max={props.max}
-      step={props.step ?? (props.integer ? 1 : undefined)}
+      // A committed value snaps to the step, and the step defaults to 1: without one of its own a decimal would lose its fraction.
+      step={props.step ?? (props.integer ? 1 : 0.001)}
       disabled={props.disabled}
       locale="en-US"
       format={{ useGrouping: false, maximumFractionDigits: props.integer ? 0 : 3 }}
