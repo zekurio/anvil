@@ -103,6 +103,33 @@ func TestLegacyRulesSelectLikeIncludeExcludeIgnore(t *testing.T) {
 	}
 }
 
+// A plan says which ignored files the rules keep out, as opposed to the ones
+// the scanner leaves alone on its own account: only the first kind takes a
+// queued job off the queue.
+func TestPlanMarksFilesTheRulesDeny(t *testing.T) {
+	root := t.TempDir()
+	writeLibraryFile(t, root, "film.mkv", 4000)
+	writeLibraryFile(t, root, "small.mkv", 100)
+	writeLibraryFile(t, root, "film-sample.mkv", 4000)
+	library := config.LibraryConfig{Name: "movies", Kind: "media", Path: root, Rules: []config.Rule{
+		{Action: config.RuleDeny, Field: config.RuleFieldSize, Op: config.RuleOpLess, Value: "1 KB"},
+	}}
+	plan, err := Scanner{}.PlanLibrary(context.Background(), library)
+	if err != nil {
+		t.Fatal(err)
+	}
+	denied := make(map[string]bool)
+	for _, candidate := range plan.Candidates {
+		if candidate.Denied && (!candidate.Ignored || candidate.IgnoreReason == "") {
+			t.Errorf("%s is denied without being ignored with a reason: %+v", candidate.LibraryRelativePath, candidate)
+		}
+		denied[candidate.LibraryRelativePath] = candidate.Denied
+	}
+	if len(denied) != 3 || denied["film.mkv"] || !denied["small.mkv"] || denied["film-sample.mkv"] {
+		t.Fatalf("denied = %v, want only small.mkv", denied)
+	}
+}
+
 func TestDiscoveryRejectsBrokenRules(t *testing.T) {
 	library := config.LibraryConfig{Kind: "media", Rules: []config.Rule{{Action: config.RuleDeny, Field: config.RuleFieldSize, Op: config.RuleOpLess, Value: "tiny"}}}
 	if _, _, _, err := discoverCandidates(context.Background(), t.TempDir(), library, nil); err == nil || !strings.Contains(err.Error(), "rule 1") {

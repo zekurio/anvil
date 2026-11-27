@@ -163,7 +163,7 @@ export function libraryRoutes(router: Router): void {
     const enqueued = fresh.slice(0, 12);
     enqueued.forEach(queue);
     advance();
-    return { sources: files.length, assets: files.length, enqueued_jobs: enqueued.length, existing_jobs: files.length - fresh.length, skipped_ignored: library.rules.length > 0 ? 3 : 0, skipped_unstable: 0 };
+    return { sources: files.length, assets: files.length, enqueued_jobs: enqueued.length, existing_jobs: files.length - fresh.length, skipped_ignored: library.rules.length > 0 ? 3 : 0, skipped_unstable: 0, denied_jobs: 0 };
   });
 
   router.on("GET", "/libraries/:name/files", (ctx): FileList => {

@@ -481,6 +481,7 @@ func logScanComplete(message string, library string, reason string, result scann
 		"existing_jobs", result.ExistingJobs,
 		"skipped_ignored", result.SkippedIgnored,
 		"skipped_unstable", result.SkippedUnstable,
+		"denied_jobs", result.DeniedJobs,
 	}
 	if library != "" {
 		args = append([]any{"library", library}, args...)

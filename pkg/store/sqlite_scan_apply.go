@@ -214,6 +214,9 @@ func (a *scanApplication) apply(ctx context.Context, groups map[string]*scanSour
 }
 
 func (a *scanApplication) applySource(ctx context.Context, group *scanSourceGroup) error {
+	if err := a.skipDeniedJobs(ctx, group); err != nil {
+		return err
+	}
 	if !group.persist {
 		return nil
 	}
@@ -306,6 +309,46 @@ WHERE id = ?
 		if _, err := a.tx.ExecContext(ctx, `UPDATE media_sources SET status = ?, updated_at = ? WHERE id = ?`, string(status), encodeTime(a.now), int64(source.ID)); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+// skipDeniedJobs takes files the rules now deny off the queue. A rule change
+// only reaches files the library already tracks through here: a denied file
+// is not persisted, so without this its job, queued while the rules still
+// allowed it, would be leased and its file replaced after the operator said
+// to leave it alone.
+//
+// Only a pending job that never started is skipped. A job with an attempt
+// behind it may own staging, a part file, or a publish journal, and a running
+// one is the worker's; both are left to finish or fail on their own terms.
+// The occurrence itself stays as it is, so the file keeps its place in the
+// listing with the rule as the reason, and allowing it again lets the job be
+// retried.
+func (a *scanApplication) skipDeniedJobs(ctx context.Context, group *scanSourceGroup) error {
+	source, tracked := a.snapshot.sources[group.path]
+	if !tracked {
+		return nil
+	}
+	for _, path := range slices.Sorted(maps.Keys(group.entries)) {
+		entry := group.entries[path]
+		asset, tracked := a.snapshot.assets[source.ID][path]
+		if entry.DeniedReason == "" || !tracked {
+			continue
+		}
+		result, err := a.tx.ExecContext(ctx, `
+UPDATE jobs
+SET state = ?, last_error = ?, updated_at = ?, completed_at = COALESCE(completed_at, ?)
+WHERE asset_id = ? AND state = ? AND attempt_count = 0
+`, string(domain.JobStateSkipped), entry.DeniedReason, encodeTime(a.now), encodeTime(a.now), int64(asset.ID), string(domain.JobStatePending))
+		if err != nil {
+			return fmt.Errorf("skip job of denied file %q: %w", path, err)
+		}
+		skipped, err := result.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("skip job of denied file %q: %w", path, err)
+		}
+		a.result.DeniedJobs += int(skipped)
 	}
 	return nil
 }

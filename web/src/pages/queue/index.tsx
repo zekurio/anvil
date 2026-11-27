@@ -208,7 +208,7 @@ function JobsTable(props: { activeId?: number; onOpen: (id: number) => void }) {
   const columns: DataTableColumn<Job>[] = [
     { key: "path", label: "File", sortable: false, render: (job) => <PathCell path={job.path} /> },
     { key: "library", label: "Library", width: 104, sortable: false },
-    { key: "status", label: "Status", width: 136, sortable: false, render: (job) => <JobBadge status={job.status} state={job.state} progress={status().running.find((live) => live.job_id === job.id) ?? job.progress} /> },
+    { key: "status", label: "Status", width: 148, sortable: false, render: (job) => <JobBadge status={job.status} state={job.state} progress={status().running.find((live) => live.job_id === job.id) ?? job.progress} message={job.last_error} /> },
     { key: "attempt_count", label: "Attempts", width: 76, align: "right", sortable: false },
     { key: "size", label: "Size", width: 160, mono: true, sortable: false, render: (job) => <SizeCell input={job.input_size_bytes} output={job.output_size_bytes} /> },
     { key: "updated_at", label: "Updated", width: 108, sortable: false, render: (job) => <TimeCell iso={job.updated_at} now={now()} /> },

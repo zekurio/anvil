@@ -471,3 +471,45 @@ func TestListsFilterSortAndPage(t *testing.T) {
 		t.Errorf("last page of jobs = %+v, want one row", last)
 	}
 }
+
+// TestRuleChangeTakesDeniedFilesOffTheQueue follows a rule change through to
+// what the Files tab shows: a file that was queued and is now denied is
+// skipped by the next scan with the rule as its reason, and a file below a
+// newly denied folder leaves the list.
+func TestRuleChangeTakesDeniedFilesOffTheQueue(t *testing.T) {
+	f := newFixture(t, "", nil)
+	f.writeMedia("film.mkv")
+	f.writeMedia("Extras/trailer.mkv")
+	library := f.mediaLibrary("movies", f.defaultFlow().ID).LibraryWrite
+	if scan := want[ScanResult](t, f.send(http.MethodPost, "/api/v1/libraries/movies/scan", nil), http.StatusOK); scan.EnqueuedJobs != 2 {
+		t.Fatalf("first scan = %+v", scan)
+	}
+
+	library.Rules = []Rule{
+		{Action: "deny", Field: "path", Op: "matches", Value: "Extras/**"},
+		{Action: "deny", Field: "size", Op: "lt", Value: "1 MB"},
+	}
+	want[Library](t, f.send(http.MethodPut, "/api/v1/libraries/movies", library), http.StatusOK)
+	scan := want[ScanResult](t, f.send(http.MethodPost, "/api/v1/libraries/movies/scan", nil), http.StatusOK)
+	if scan.DeniedJobs != 1 || scan.EnqueuedJobs != 0 || scan.SkippedIgnored != 1 {
+		t.Fatalf("scan after the rule change = %+v, want one job skipped and one file ignored", scan)
+	}
+
+	files := want[FileList](t, f.get("/api/v1/libraries/movies/files"), http.StatusOK)
+	if len(files.Files) != 1 || files.Files[0].Path != "film.mkv" || files.Files[0].Status != FileStatusSkipped ||
+		!strings.Contains(files.Files[0].LastError, `denied by rule 2 (size lt "1 MB")`) {
+		t.Fatalf("files = %+v, want film.mkv skipped with rule 2 as the reason and the Extras file gone", files.Files)
+	}
+	jobs := want[JobList](t, f.get("/api/v1/jobs?status=skipped"), http.StatusOK)
+	if jobs.Total != 2 {
+		t.Fatalf("skipped jobs = %+v, want both", jobs)
+	}
+	for _, job := range jobs.Jobs {
+		if job.Path == "Extras/trailer.mkv" && !strings.Contains(job.LastError, "a rule now denies its folder") {
+			t.Errorf("job of the file below the denied folder = %q", job.LastError)
+		}
+	}
+	if status := want[Status](t, f.get("/api/v1/status"), http.StatusOK); status.Queue["pending"] != 0 {
+		t.Fatalf("queue = %+v, want nothing pending", status.Queue)
+	}
+}

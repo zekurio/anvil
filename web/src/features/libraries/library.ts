@@ -48,6 +48,7 @@ export function scanSummary(result: ScanResult): string {
     result.enqueued_jobs > 0 ? `${formatCount(result.enqueued_jobs)} queued` : "nothing new to queue",
     result.skipped_ignored > 0 && `${formatCount(result.skipped_ignored)} ignored`,
     result.skipped_unstable > 0 && `${formatCount(result.skipped_unstable)} still being written`,
+    result.denied_jobs > 0 && `${formatCount(result.denied_jobs)} taken off the queue by the rules`,
   );
 }
 

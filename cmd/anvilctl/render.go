@@ -239,6 +239,9 @@ func writeScanResult(out io.Writer, response control.LibraryScanResponse) error 
 		w.Printf("  %d libraries  ·  %d sources  ·  %d assets\n", response.Libraries, response.Sources, response.Assets)
 		w.Printf("  %d jobs enqueued  ·  %d existing\n", response.EnqueuedJobs, response.ExistingJobs)
 		w.Printf("  Skipped: %d ignored, %d still changing\n", response.SkippedIgnored, response.SkippedUnstable)
+		if response.DeniedJobs > 0 {
+			w.Printf("  %d queued jobs skipped: the rules now deny their files\n", response.DeniedJobs)
+		}
 		if response.NextStableAt != nil {
 			w.Field("Next stable", response.NextStableAt.Format(timeFormat))
 		}

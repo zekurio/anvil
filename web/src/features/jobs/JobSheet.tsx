@@ -105,7 +105,7 @@ function LoadedSheet(props: { detail: JobDetail; onClose: () => void }) {
       }
     >
       <div class="av-jobhead">
-        <JobBadge status={props.detail.status} state={job().state} progress={progress()} />
+        <JobBadge status={props.detail.status} state={job().state} progress={progress()} message={job().last_error} />
         <span class="av-muted">in</span>
         <a class="av-link" href={`/libraries/${encodeURIComponent(job().library)}`}>
           {job().library}

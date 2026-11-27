@@ -87,6 +87,11 @@ type ScanEntry struct {
 	AssetFingerprint   domain.FileFingerprint
 	Persist            bool
 	Enqueue            bool
+	// DeniedReason is set when the library's rules keep the file out, and
+	// says which rule did. Such an entry is not persisted; if the file is
+	// already tracked, the job it was queued with is skipped with this
+	// reason, provided the job has not started yet.
+	DeniedReason string
 }
 
 type ApplyScanInput struct {
@@ -105,6 +110,9 @@ type ApplyScanResult struct {
 	Assets       int
 	EnqueuedJobs int
 	ExistingJobs int
+	// DeniedJobs counts queued jobs this scan skipped because the rules now
+	// deny their files.
+	DeniedJobs int
 }
 
 type ForceOccurrenceInput struct {

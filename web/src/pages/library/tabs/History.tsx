@@ -36,7 +36,7 @@ export function HistoryTab(props: { library: Library }) {
 
   const columns: DataTableColumn<Job>[] = [
     { key: "path", label: "File", sortable: false, render: (job) => <PathCell path={job.path} /> },
-    { key: "status", label: "Result", width: 116, sortable: false, render: (job) => <JobBadge status={job.status} state={job.state} /> },
+    { key: "status", label: "Result", width: 148, sortable: false, render: (job) => <JobBadge status={job.status} state={job.state} message={job.last_error} /> },
     { key: "size", label: "Size", width: 160, mono: true, sortable: false, render: (job) => <SizeCell input={job.input_size_bytes} output={job.output_size_bytes} /> },
     { key: "saved", label: "Change", width: 104, mono: true, sortable: false, render: (job) => savedLabel(job.input_size_bytes, job.output_size_bytes) || <span class="av-cell-muted">—</span> },
     { key: "attempt_count", label: "Attempts", width: 76, align: "right", sortable: false },

@@ -209,8 +209,14 @@ func retireAssetTx(ctx context.Context, tx *sql.Tx, assetID domain.MediaAssetID,
 	return nil
 }
 
+// retiredOccurrenceJobError is recorded on a job whose file a scan no longer
+// finds. Besides a removed or renamed file that is a file below a directory a
+// path rule now denies: a scan does not look inside such a directory, so it
+// cannot tell the two apart.
+const retiredOccurrenceJobError = "the file is no longer in the library: it was removed or renamed, or a rule now denies its folder"
+
 func skipPendingOccurrenceJobsTx(ctx context.Context, tx *sql.Tx, predicate string, predicateArgs []any, now time.Time) error {
-	args := []any{string(domain.JobStateSkipped), "input occurrence is no longer present", encodeTime(now), encodeTime(now)}
+	args := []any{string(domain.JobStateSkipped), retiredOccurrenceJobError, encodeTime(now), encodeTime(now)}
 	args = append(args, predicateArgs...)
 	args = append(args, string(domain.JobStatePending), string(domain.JobStateRetrying))
 	if _, err := tx.ExecContext(ctx, `

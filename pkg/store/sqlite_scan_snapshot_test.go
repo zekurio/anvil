@@ -286,3 +286,88 @@ func TestRetryTransitionSignalsWork(t *testing.T) {
 		t.Fatal("missing retry signal")
 	}
 }
+
+// A rule change reaches files the library already tracks: the next scan
+// reports them as denied, and a job that was queued while the rules still
+// allowed its file must not run. Only a job that never started is touched.
+func TestScanSkipsQueuedJobsOfDeniedFiles(t *testing.T) {
+	ctx := context.Background()
+	s := scanStore(t)
+	first := applyEntries(t, s, scanToken(t, s), nil, pathEntry("waiting.mkv", 1), pathEntry("started.mkv", 1), pathEntry("allowed.mkv", 1), pathEntry("unstable.mkv", 1))
+	if first.EnqueuedJobs != 4 || first.DeniedJobs != 0 {
+		t.Fatalf("first scan = %+v, want four queued jobs", first)
+	}
+	jobOf := func(path string) domain.Job {
+		t.Helper()
+		source, err := s.GetMediaSourceByPath(ctx, "test", path)
+		if err != nil {
+			t.Fatalf("%s: %v", path, err)
+		}
+		jobs, err := s.ListJobs(ctx, JobListFilter{LibraryName: "test"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, job := range jobs {
+			if job.Job.SourceID == source.ID {
+				return job.Job
+			}
+		}
+		t.Fatalf("%s has no job", path)
+		return domain.Job{}
+	}
+	// One job has an attempt behind it and waits in the queue again.
+	now := time.Unix(100, 0).UTC()
+	started := jobOf("started.mkv")
+	if _, err := s.db.ExecContext(ctx, `UPDATE jobs SET attempt_count = 1 WHERE id = ?`, int64(started.ID)); err != nil {
+		t.Fatal(err)
+	}
+
+	denied := func(path string) ScanEntry {
+		entry := pathEntry(path, 1)
+		entry.Persist, entry.Enqueue = false, false
+		entry.DeniedReason = `denied by rule 1 (size lt "5 MB")`
+		return entry
+	}
+	// A download that is still being written is not persisted either, and
+	// must not be mistaken for a denied file.
+	unstable := pathEntry("unstable.mkv", 1)
+	unstable.Persist, unstable.Enqueue = false, false
+	second, err := s.ApplyLibraryScan(ctx, scanToken(t, s), ApplyScanInput{
+		LibraryName: "test", RequeueExisting: true, CompletedAt: now,
+		Entries: []ScanEntry{denied("waiting.mkv"), denied("started.mkv"), denied("never-seen.mkv"), pathEntry("allowed.mkv", 1), unstable},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.DeniedJobs != 1 {
+		t.Fatalf("second scan = %+v, want exactly one job skipped", second)
+	}
+	waiting := jobOf("waiting.mkv")
+	if waiting.State != domain.JobStateSkipped || waiting.LastError != `denied by rule 1 (size lt "5 MB")` || waiting.CompletedAt == nil {
+		t.Fatalf("job of the denied file = %+v, want it skipped with the rule as its reason", waiting)
+	}
+	for _, path := range []string{"started.mkv", "allowed.mkv", "unstable.mkv"} {
+		if job := jobOf(path); job.State != domain.JobStatePending {
+			t.Errorf("job of %s = %s, want it left pending", path, job.State)
+		}
+	}
+	// The denied file keeps its occurrence, so it stays listed with its reason
+	// and its job can be retried once the rules allow the file again.
+	if source, err := s.GetMediaSourceByPath(ctx, "test", "waiting.mkv"); err != nil || !source.Current || source.Status != domain.MediaSourceActive {
+		t.Fatalf("occurrence of the denied file = %+v, %v", source, err)
+	}
+	if _, err := s.GetMediaSourceByPath(ctx, "test", "never-seen.mkv"); err == nil {
+		t.Fatal("a denied file the library never tracked was recorded")
+	}
+	if _, err := s.RetryJob(ctx, waiting.ID, now); err != nil {
+		t.Fatalf("retry of the skipped job: %v", err)
+	}
+	// A repeated scan skips it again: it never started.
+	third, err := s.ApplyLibraryScan(ctx, scanToken(t, s), ApplyScanInput{
+		LibraryName: "test", RequeueExisting: true, CompletedAt: now,
+		Entries: []ScanEntry{denied("waiting.mkv"), denied("started.mkv"), pathEntry("allowed.mkv", 1), unstable},
+	})
+	if err != nil || third.DeniedJobs != 1 {
+		t.Fatalf("third scan = %+v, %v", third, err)
+	}
+}

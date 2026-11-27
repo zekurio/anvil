@@ -64,8 +64,19 @@ export function retryable(status: FileStatus, state?: string): boolean {
   return status === "failed" || status === "skipped" || state === "retrying";
 }
 
-/** The badge for a file or job: the grouped status, with the exact state or the percentage as its word where that says more. */
-export function badgeOf(status: FileStatus, state?: string, progress?: Progress): { status: JobStatus; label?: string } {
+/**
+ * "Denied by rule 2" for the message a scan records on a job it took off the
+ * queue because a rule denies the file (pkg/config RuleDecision.Reason), or
+ * undefined for any other message.
+ */
+export function deniedLabel(message: string | undefined): string | undefined {
+  const rule = /^denied by rule (\d+)\b/.exec(message ?? "")?.[1];
+  if (rule) return `Denied by rule ${rule}`;
+  return message === "no rule allows it" ? "Denied: no rule allows it" : undefined;
+}
+
+/** The badge for a file or job: the grouped status, with the exact state, the percentage or the denying rule as its word where that says more. */
+export function badgeOf(status: FileStatus, state?: string, progress?: Progress, message?: string): { status: JobStatus; label?: string } {
   switch (status) {
     case "none":
       return { status: "skipped", label: "Not queued" };
@@ -74,7 +85,7 @@ export function badgeOf(status: FileStatus, state?: string, progress?: Progress)
     case "queued":
       return { status: "queued", label: state === "retrying" ? "Retrying" : undefined };
     case "skipped":
-      return { status: "skipped", label: state === "canceled" ? "Canceled" : undefined };
+      return { status: "skipped", label: state === "canceled" ? "Canceled" : deniedLabel(message) };
     default:
       return { status };
   }

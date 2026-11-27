@@ -415,12 +415,18 @@ type LibraryStats struct {
 
 // ScanResult reports one manual scan.
 type ScanResult struct {
-	Sources         int `json:"sources"`
-	Assets          int `json:"assets"`
-	EnqueuedJobs    int `json:"enqueued_jobs"`
-	ExistingJobs    int `json:"existing_jobs"`
+	Sources      int `json:"sources"`
+	Assets       int `json:"assets"`
+	EnqueuedJobs int `json:"enqueued_jobs"`
+	ExistingJobs int `json:"existing_jobs"`
+	// SkippedIgnored counts media files the scan saw and left out: those the
+	// rules deny, samples, download residue, and anvil's own outputs. Files
+	// below a directory a path rule denies are not looked at, and not counted.
 	SkippedIgnored  int `json:"skipped_ignored"`
 	SkippedUnstable int `json:"skipped_unstable"`
+	// DeniedJobs counts queued jobs the scan skipped because the rules now
+	// deny their files. Only a job that had not started is skipped.
+	DeniedJobs int `json:"denied_jobs"`
 }
 
 // File statuses, as the UI groups job states.

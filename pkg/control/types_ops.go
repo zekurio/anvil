@@ -75,16 +75,19 @@ type LibraryScanRequest struct {
 }
 
 type LibraryScanResponse struct {
-	APIVersion      string     `json:"api_version"`
-	ServerTime      time.Time  `json:"server_time"`
-	Libraries       int        `json:"libraries"`
-	Sources         int        `json:"sources"`
-	Assets          int        `json:"assets"`
-	EnqueuedJobs    int        `json:"enqueued_jobs"`
-	ExistingJobs    int        `json:"existing_jobs"`
-	SkippedIgnored  int        `json:"skipped_ignored"`
-	SkippedUnstable int        `json:"skipped_unstable"`
-	NextStableAt    *time.Time `json:"next_stable_at,omitempty"`
+	APIVersion      string    `json:"api_version"`
+	ServerTime      time.Time `json:"server_time"`
+	Libraries       int       `json:"libraries"`
+	Sources         int       `json:"sources"`
+	Assets          int       `json:"assets"`
+	EnqueuedJobs    int       `json:"enqueued_jobs"`
+	ExistingJobs    int       `json:"existing_jobs"`
+	SkippedIgnored  int       `json:"skipped_ignored"`
+	SkippedUnstable int       `json:"skipped_unstable"`
+	// DeniedJobs counts queued jobs the scan skipped because the rules now
+	// deny their files.
+	DeniedJobs   int        `json:"denied_jobs"`
+	NextStableAt *time.Time `json:"next_stable_at,omitempty"`
 }
 
 type LibraryStatsRequest struct {

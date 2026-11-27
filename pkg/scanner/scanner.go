@@ -38,7 +38,10 @@ type ScanResult struct {
 	ExistingJobs    int
 	SkippedIgnored  int
 	SkippedUnstable int
-	NextStableAt    time.Time
+	// DeniedJobs counts queued jobs the scan skipped because the rules now
+	// deny their files.
+	DeniedJobs   int
+	NextStableAt time.Time
 }
 
 type LibraryPlan struct {
@@ -193,14 +196,18 @@ func (s Scanner) applyPlan(ctx context.Context, plan LibraryPlan) (ScanResult, e
 	now := s.now()
 	entries := make([]store.ScanEntry, 0, len(plan.Candidates))
 	for _, candidate := range plan.Candidates {
-		entries = append(entries, store.ScanEntry{
+		entry := store.ScanEntry{
 			SourceKind: candidate.SourceKind, SourceRelativePath: candidate.SourceRelativePath,
 			SourceFingerprint: domain.FileFingerprint{SizeBytes: candidate.SourceSizeBytes, ModTime: candidate.SourceModTime},
 			AssetRelativePath: candidate.AssetRelativePath, AssetRole: candidate.Role,
 			AssetFingerprint: domain.FileFingerprint{SizeBytes: candidate.SizeBytes, ModTime: candidate.ModTime},
 			Persist:          !candidate.Ignored && !candidate.Unstable,
 			Enqueue:          candidate.Enqueueable,
-		})
+		}
+		if candidate.Denied {
+			entry.DeniedReason = candidate.IgnoreReason
+		}
+		entries = append(entries, entry)
 	}
 	applied, err := s.Store.ApplyLibraryScan(ctx, plan.ScanToken, store.ApplyScanInput{
 		SourcePaths: plan.SourcePaths, LibraryName: domain.LibraryName(plan.Library.Name), Priority: plan.Library.Priority,
@@ -213,6 +220,7 @@ func (s Scanner) applyPlan(ctx context.Context, plan LibraryPlan) (ScanResult, e
 	result.Assets = applied.Assets
 	result.EnqueuedJobs = applied.EnqueuedJobs
 	result.ExistingJobs = applied.ExistingJobs
+	result.DeniedJobs = applied.DeniedJobs
 
 	return result, nil
 }
@@ -231,6 +239,7 @@ func (r *ScanResult) add(other ScanResult) {
 	r.EnqueuedJobs += other.EnqueuedJobs
 	r.ExistingJobs += other.ExistingJobs
 	r.SkippedIgnored += other.SkippedIgnored
+	r.DeniedJobs += other.DeniedJobs
 	r.SkippedUnstable += other.SkippedUnstable
 	if !other.NextStableAt.IsZero() && (r.NextStableAt.IsZero() || other.NextStableAt.Before(r.NextStableAt)) {
 		r.NextStableAt = other.NextStableAt

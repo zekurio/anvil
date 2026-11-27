@@ -7,9 +7,9 @@ import { badgeOf } from "./labels";
 
 /* ---------- JobBadge ---------- */
 
-/** The StatusBadge of a file or job: its grouped status, worded by the exact state or the live percentage. */
-export function JobBadge(props: { status: FileStatus; state?: string; progress?: LiveProgress }) {
-  const badge = () => badgeOf(props.status, props.state, props.progress);
+/** The StatusBadge of a file or job: its grouped status, worded by the exact state, the live percentage, or the rule that denied the file. `message` is the job's last error. */
+export function JobBadge(props: { status: FileStatus; state?: string; progress?: LiveProgress; message?: string }) {
+  const badge = () => badgeOf(props.status, props.state, props.progress, props.message);
   return <StatusBadge status={badge().status}>{badge().label}</StatusBadge>;
 }
 

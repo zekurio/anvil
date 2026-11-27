@@ -160,6 +160,7 @@ func (s Service) ScanLibraries(ctx context.Context, request control.LibraryScanR
 		Libraries: result.Libraries, Sources: result.Sources, Assets: result.Assets,
 		EnqueuedJobs: result.EnqueuedJobs, ExistingJobs: result.ExistingJobs,
 		SkippedIgnored: result.SkippedIgnored, SkippedUnstable: result.SkippedUnstable,
+		DeniedJobs: result.DeniedJobs,
 	}
 	if !result.NextStableAt.IsZero() {
 		nextStableAt := result.NextStableAt

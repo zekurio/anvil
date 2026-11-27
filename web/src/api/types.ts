@@ -653,8 +653,15 @@ export interface ScanResult {
   assets: number;
   enqueued_jobs: number;
   existing_jobs: number;
+  /**
+   * Media files the scan saw and left out: those the rules deny, samples,
+   * download residue, and anvil's own outputs. Files below a directory a path
+   * rule denies are not looked at, and not counted.
+   */
   skipped_ignored: number;
   skipped_unstable: number;
+  /** Queued jobs the scan skipped because the rules now deny their files. Only a job that had not started is skipped. */
+  denied_jobs: number;
 }
 
 /**

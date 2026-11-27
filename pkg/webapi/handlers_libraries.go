@@ -253,6 +253,7 @@ func (s *Server) scanLibrary(_ http.ResponseWriter, r *http.Request) (int, any, 
 		ExistingJobs:    scanned.ExistingJobs,
 		SkippedIgnored:  scanned.SkippedIgnored,
 		SkippedUnstable: scanned.SkippedUnstable,
+		DeniedJobs:      scanned.DeniedJobs,
 	})
 }
 
