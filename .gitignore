@@ -27,3 +27,8 @@ coverage.out
 # OS files
 .DS_Store
 Thumbs.db
+
+# Web UI dependencies and build output; dist keeps only its placeholder
+/web/node_modules/
+/web/dist/*
+!/web/dist/.gitkeep

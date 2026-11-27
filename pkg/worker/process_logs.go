@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -28,6 +29,7 @@ type processLogRecorder struct {
 	attemptID domain.AttemptID
 	attempt   int
 	events    processLogStore
+	tracker   *ProgressTracker
 	now       func() time.Time
 	mu        sync.Mutex
 	names     map[string]int
@@ -243,6 +245,25 @@ func (r *processLogRecorder) logProgress(ctx context.Context, frame, fps, outTim
 		"media_time", outTime,
 		"speed", speed,
 	)
+	r.tracker.Update(domain.JobProgress{
+		JobID:      r.jobID,
+		Step:       process.Step(ctx),
+		Percent:    -1,
+		FPS:        parseProgressNumber(fps),
+		Speed:      parseProgressNumber(strings.TrimSuffix(speed, "x")),
+		ETASeconds: -1,
+		UpdatedAt:  r.timestamp(),
+	})
+}
+
+// parseProgressNumber reads an ffmpeg progress figure; "N/A" and other
+// non-numeric values report 0.
+func parseProgressNumber(value string) float64 {
+	number, err := strconv.ParseFloat(strings.TrimSpace(value), 64)
+	if err != nil {
+		return 0
+	}
+	return number
 }
 
 func (r *processLogRecorder) jobLabel() string {

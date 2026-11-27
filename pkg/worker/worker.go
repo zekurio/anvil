@@ -60,6 +60,8 @@ type Runner struct {
 	MetadataResolver  MetadataResolver
 	VerifyFingerprint func(string, domain.FileFingerprint) error
 	Pipeline          pipeline.Runner
+	// Progress receives live progress of running jobs; nil disables tracking.
+	Progress          *ProgressTracker
 	TempDir           string
 	MaxAttempts       int
 	LeaseDuration     time.Duration
@@ -86,6 +88,7 @@ func (r Runner) Run(ctx context.Context, assignment scheduler.Assignment) error 
 	slog.Info("worker attempt started", "worker", assignment.WorkerID, "job", assignment.Job.Label(), "attempt", attempt.Number, "library", string(assignment.Job.LibraryName), "threads", assignment.Resources.Threads)
 	stopHeartbeat := r.startHeartbeat(ctx, assignment.Job.ID, assignment.WorkerID, cfg)
 	defer stopHeartbeat()
+	defer r.Progress.Clear(assignment.Job.ID)
 
 	if resolveErr != nil {
 		return r.fail(ctx, assignment.Job, attempt, cfg, resolveErr)
@@ -141,6 +144,7 @@ func (r Runner) Run(ctx context.Context, assignment scheduler.Assignment) error 
 		attemptID: attempt.ID,
 		attempt:   attempt.Number,
 		events:    r.Store,
+		tracker:   r.Progress,
 		now:       r.now,
 	})
 	if err := pipelineRunner.Run(pipelineCtx, jobContext); err != nil {
