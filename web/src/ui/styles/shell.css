@@ -1,0 +1,43 @@
+/* anvil: sidebar, top bar and page layouts. Colours, spacing and radii come from tokens. */
+
+/* sidebar */
+.av-sidebar { display: flex; flex-direction: column; width: var(--sidebar); height: 100%; box-sizing: border-box; background: var(--bg); border-right: 1px solid var(--line); }
+.av-sidebar-brand { display: flex; align-items: center; height: var(--topbar); padding: 0 var(--space-4); color: var(--text); border-bottom: 1px solid var(--line); }
+.av-sidebar-home { display: flex; color: inherit; border-radius: var(--radius-sm); }
+.av-sidebar-actions { display: flex; align-items: center; gap: 2px; margin-left: auto; margin-right: calc(-1 * var(--space-2)); }
+.av-sidebar-nav { display: flex; flex-direction: column; gap: 2px; padding: var(--space-2); flex: 1; min-height: 0; overflow-y: auto; }
+a.av-nav-item { text-decoration: none; }
+.av-nav-item { flex: none; }
+.av-nav-section { padding: var(--space-3) var(--space-2) var(--space-1); font: 500 12px/16px var(--font-sans); color: var(--text-muted); }
+.av-nav-item { position: relative; display: flex; align-items: center; gap: var(--space-2); height: var(--row); padding: 0 var(--space-2); border: 0; border-radius: var(--radius-md); background: none; color: var(--text-muted); font: 400 14px/20px var(--font-sans); cursor: pointer; text-align: left; }
+.av-nav-item:hover { background: var(--surface-hover); color: var(--text); }
+.av-nav-item[aria-current="page"] { background: var(--accent-soft); color: var(--text); font-weight: 500; }
+.av-nav-item[aria-current="page"] .av-icon { color: var(--accent); }
+.av-nav-item .av-nav-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.av-nav-count { font: 400 12px/16px var(--font-mono); color: var(--text-muted); }
+.av-sidebar-foot { margin-top: auto; padding: var(--space-3) var(--space-4); border-top: 1px solid var(--line); font: 400 12px/16px var(--font-mono); color: var(--text-muted); }
+
+/* top bar */
+.av-topbar { display: flex; align-items: center; gap: var(--space-4); height: var(--topbar); padding: 0 var(--space-4); box-sizing: border-box; background: var(--surface); border-bottom: 1px solid var(--line); }
+.av-topbar-titles { display: flex; align-items: baseline; gap: var(--space-3); min-width: 0; flex: 1; }
+.av-topbar-title { margin: 0; font: 600 20px/28px var(--font-sans); white-space: nowrap; }
+.av-topbar-meta { font: 400 12px/16px var(--font-mono); color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.av-topbar-actions { display: flex; align-items: center; gap: var(--space-2); }
+.av-topbar-back { margin-left: calc(-1 * var(--space-2)); margin-right: calc(-1 * var(--space-2)); }
+
+/* page layouts used by the showcase pages */
+.av-app { display: grid; grid-template-columns: var(--sidebar) minmax(0, 1fr); height: 100%; }
+.av-main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.av-main-full { height: 100%; }
+/* A navigation in flight: the old view stays, a static accent line says the next one is loading. */
+.av-main[aria-busy="true"] { position: relative; }
+.av-main[aria-busy="true"]::after { content: ""; position: absolute; top: 0; left: 0; right: 0; height: 2px; background: var(--accent); z-index: 6; }
+.av-workspace { position: relative; flex: 1; display: flex; min-height: 0; }
+.av-toolbar { display: flex; align-items: center; gap: var(--space-2); padding: var(--space-2) var(--space-4); background: var(--surface); border-bottom: 1px solid var(--line); }
+.av-bulk { display: flex; align-items: center; gap: var(--space-2); padding: var(--space-2) var(--space-4); background: var(--accent-soft); border-bottom: 1px solid var(--line); font: 500 13px/18px var(--font-sans); }
+
+/* regions of a page under the top bar */
+.av-page-stats { padding: var(--space-4) var(--space-4) 0; background: var(--surface); }
+.av-page-tabs { padding-top: var(--space-2); background: var(--surface); }
+/* Positioned so nothing absolutely positioned inside can escape the scroller. */
+.av-page-body { position: relative; flex: 1; min-height: 0; overflow: auto; display: flex; flex-direction: column; }

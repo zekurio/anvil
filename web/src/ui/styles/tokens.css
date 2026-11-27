@@ -1,0 +1,189 @@
+/* anvil — generated from tokens.json */
+:root, [data-theme="dark"] {
+  --bg: #111214; /* App background behind panels: the area around the library table, the top bar and the sidebar. */
+  --surface: #17181b; /* Panels, tables, the side sheet and the node palette. The default ground for text. */
+  --surface-raised: #1e2023; /* Inputs, selects, flow nodes, menus. In light it matches surface and is set apart by line-control. */
+  --surface-sunken: #0c0d0e; /* The flow canvas, command previews and code blocks. */
+  --surface-hover: #24262a; /* Hover fill for table rows, nav items, ghost buttons and palette entries. */
+  --line: #2a2c30; /* Dividers, table row rules, panel and sheet edges. Decorative only, never the only thing that marks a control. */
+  --line-control: #6b6f76; /* Borders of inputs, selects, checkboxes, switches (off) and flow nodes. At least 3:1 on bg, surface, surface-raised and surface-sunken in both themes. */
+  --text: #e7e8ea; /* Body text and values on bg, surface, surface-raised, surface-sunken, surface-hover and every *-soft fill. */
+  --text-muted: #a2a6ad; /* Secondary text: captions, column headers, hints, file paths, node summaries. 4.5:1 on every surface and *-soft fill in both themes. */
+  --text-disabled: #5c6067; /* Disabled controls only. Fails 4.5:1 on purpose (WCAG exempts inactive controls); never use for information. */
+  --accent: #f0883e; /* Hot iron. The primary button, the selected node outline, the running state, active edges, links, the active nav marker. As text: 4.5:1 on bg, surface, surface-raised and accent-soft in both themes. */
+  --accent-hover: #f59a55; /* Hover and pressed fill of the primary button. */
+  --on-accent: #1a0e04; /* Text and icons on an accent or accent-hover fill. Never white in dark. */
+  --accent-soft: #3a2516; /* Selected rows, the active nav item, the selected palette entry. Takes text and text-muted. */
+  --focus-ring: var(--accent); /* Keyboard focus: 2px solid ring, 2px offset in the ground colour. 6.4:1 or more on every dark surface, 4.8:1 or more in light. */
+  --ok: #5ea8e8; /* Done / transcoded / allowed. Blue, not green, so it never relies on hue alone against danger. Text on surface and ok-soft. */
+  --ok-soft: #16273a; /* Badge fill behind ok text. */
+  --danger: #f2646a; /* Failed jobs, invalid options, Deny rules, destructive actions. Text on surface and danger-soft. */
+  --danger-soft: #3a1a1c; /* Badge fill behind danger text; the fill of a node with a config error. */
+  --warn: #e6c04f; /* Warnings: larger output than input, missing stream, flow has unsaved changes. Text on surface and warn-soft. */
+  --warn-soft: #332a12; /* Badge fill behind warn text. */
+  --neutral-soft: #26282c; /* Badge fill for queued and skipped; behind text-muted. */
+  --canvas-dot: #2c2e33; /* Dot grid on surface-sunken, one dot per grid step. */
+  --edge: var(--line-control); /* Flow edges between ports at rest. */
+  --edge-active: var(--accent); /* Edges on the path of the selected or running node. */
+  --scrim: rgba(0, 0, 0, 0.6); /* Behind confirm dialogs only. The side sheet never has a scrim. */
+  --shadow-overlay: 0 8px 24px rgba(0, 0, 0, 0.5); /* Menus, dialogs and the side sheet. Nothing resting on the page gets a shadow. */
+  --shadow-drag: 0 4px 12px rgba(0, 0, 0, 0.45); /* A node or rule row while it is being dragged. */
+}
+[data-theme="light"] {
+  --bg: #f2f3f4;
+  --surface: #ffffff;
+  --surface-raised: #ffffff;
+  --surface-sunken: #e9ebed;
+  --surface-hover: #f0f1f3;
+  --line: #dcdfe3;
+  --line-control: #7d828a;
+  --text: #1a1c1f;
+  --text-muted: #555a62;
+  --text-disabled: #a3a8af;
+  --accent: #a84a0a;
+  --accent-hover: #8f3f08;
+  --on-accent: #ffffff;
+  --accent-soft: #fbeadd;
+  --focus-ring: var(--accent);
+  --ok: #1f68ad;
+  --ok-soft: #e1ecf8;
+  --danger: #c22a31;
+  --danger-soft: #fbe4e5;
+  --warn: #7d5e00;
+  --warn-soft: #f8efcf;
+  --neutral-soft: #e8eaed;
+  --canvas-dot: #c4c8cd;
+  --edge: var(--line-control);
+  --edge-active: var(--accent);
+  --scrim: rgba(16, 18, 20, 0.4);
+  --shadow-overlay: 0 8px 24px rgba(16, 18, 20, 0.12);
+  --shadow-drag: 0 4px 12px rgba(16, 18, 20, 0.16);
+}
+:root {
+  --space-1: 4px; /* Icon-to-label gap, badge padding, gap between a label and its control. */
+  --space-2: 8px; /* Gap between buttons, cell padding block, field-to-hint gap. */
+  --space-3: 12px; /* Table cell padding inline, node padding, input padding inline. */
+  --space-4: 16px; /* Panel and sheet padding, gap between fields, canvas grid step. */
+  --space-5: 24px; /* Gap between sheet sections and page regions. */
+  --space-6: 32px; /* Page gutters on wide screens, empty-state padding. */
+  --radius-sm: 2px; /* Badges, checkboxes, ports' hit areas, progress bars. */
+  --radius-md: 4px; /* Buttons, inputs, selects, segmented controls, flow nodes, menus. */
+  --radius-lg: 6px; /* Dialogs and the canvas toolbar. The side sheet and panels are square, flush to the edge. */
+  --control-sm: 28px; /* Compact buttons and inputs: table toolbars, rule rows, canvas toolbar. */
+  --control-md: 32px; /* Default height of buttons, inputs, selects, tabs. */
+  --row: 32px; /* Table row and nav item height. */
+  --topbar: 48px; /* Top bar height in every view. */
+  --sidebar: 220px; /* App navigation and the node palette width. */
+  --sheet: 400px; /* Side sheet width for node options and file details. */
+  --node-width: 240px; /* Flow node width; nodes never resize to fit text, titles truncate. */
+  --grid: 16px; /* Canvas dot pitch and the snap step for node positions. */
+  --font-sans: "IBM Plex Sans", system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, monospace;
+  --text-heading: 600 20px/28px var(--font-sans); /* Page title in the top bar area: the library or flow name. One per view. */
+  --text-title: 600 16px/24px var(--font-sans); /* Side sheet title, dialog title, empty-state headline. */
+  --text-body: 400 14px/20px var(--font-sans); /* Default text: descriptions, buttons, inputs, nav. */
+  --text-body-strong: 500 14px/20px var(--font-sans); /* Button labels, node titles, the selected tab, emphasis inside body. */
+  --text-small: 400 13px/18px var(--font-sans); /* Table cells, palette entries, sheet section content where density matters. */
+  --text-label: 500 12px/16px var(--font-sans); /* Form labels, table column headers, sheet section headings. Sentence case, never all caps. */
+  --text-caption: 400 12px/16px var(--font-sans); /* Hints under fields, timestamps, the node type under a node title. Set in text-muted. */
+  --text-mono: 400 13px/18px var(--font-mono); /* Paths, glob patterns, codec ids, ffmpeg arguments, sizes and durations in tables. Tabular figures. */
+  --text-mono-small: 400 12px/16px var(--font-mono); /* Node summaries on the canvas, the command preview, fps and ETA next to progress bars. */
+}
+.heading {
+  font-family: var(--font-sans);
+  font-size: 20px;
+  line-height: 28px;
+  font-weight: 600;
+  letter-spacing: 0;
+}
+.title {
+  font-family: var(--font-sans);
+  font-size: 16px;
+  line-height: 24px;
+  font-weight: 600;
+  letter-spacing: 0;
+}
+.body {
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 20px;
+  font-weight: 400;
+  letter-spacing: 0;
+}
+.body-strong {
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 20px;
+  font-weight: 500;
+  letter-spacing: 0;
+}
+.small {
+  font-family: var(--font-sans);
+  font-size: 13px;
+  line-height: 18px;
+  font-weight: 400;
+  letter-spacing: 0;
+}
+.label {
+  font-family: var(--font-sans);
+  font-size: 12px;
+  line-height: 16px;
+  font-weight: 500;
+  letter-spacing: 0;
+}
+.caption {
+  font-family: var(--font-sans);
+  font-size: 12px;
+  line-height: 16px;
+  font-weight: 400;
+  letter-spacing: 0;
+}
+.mono {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 18px;
+  font-weight: 400;
+  letter-spacing: 0;
+}
+.mono-small {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 16px;
+  font-weight: 400;
+  letter-spacing: 0;
+}
+@font-face {
+  font-family: "IBM Plex Sans";
+  src: url("../fonts/ibm-plex-sans-latin-400-normal.woff2") format("woff2");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "IBM Plex Sans";
+  src: url("../fonts/ibm-plex-sans-latin-500-normal.woff2") format("woff2");
+  font-weight: 500;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "IBM Plex Sans";
+  src: url("../fonts/ibm-plex-sans-latin-600-normal.woff2") format("woff2");
+  font-weight: 600;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "IBM Plex Mono";
+  src: url("../fonts/ibm-plex-mono-latin-400-normal.woff2") format("woff2");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "IBM Plex Mono";
+  src: url("../fonts/ibm-plex-mono-latin-500-normal.woff2") format("woff2");
+  font-weight: 500;
+  font-style: normal;
+  font-display: swap;
+}

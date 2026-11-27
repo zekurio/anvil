@@ -1,0 +1,65 @@
+/* anvil: flow node, canvas, side sheet, command preview, palette. Colours, spacing and radii come from tokens. */
+
+/* flow node */
+.av-node { position: absolute; box-sizing: border-box; width: var(--node-width); height: 64px; border: 1px solid var(--line-control); border-radius: var(--radius-md); background: var(--surface-raised); color: var(--text); cursor: pointer; text-align: left; padding: 0; font: inherit; }
+.av-node-static { position: relative; }
+.av-node:hover { border-color: var(--text-muted); }
+.av-node[aria-pressed="true"] { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.av-node-invalid { border-color: var(--danger); }
+.av-node-invalid .av-node-head { background: var(--danger-soft); }
+.av-node-running { border-color: var(--accent); }
+.av-node-head { display: flex; align-items: center; gap: var(--space-2); height: 32px; padding: 0 var(--space-3); border-bottom: 1px solid var(--line); border-radius: var(--radius-md) var(--radius-md) 0 0; }
+.av-node-head .av-icon { color: var(--text-muted); }
+.av-node-title { flex: 1; min-width: 0; font: 500 13px/18px var(--font-sans); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.av-node-body { height: 31px; display: flex; align-items: center; padding: 0 var(--space-3); font: 400 12px/16px var(--font-mono); color: var(--text-muted); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.av-node-body span { overflow: hidden; text-overflow: ellipsis; }
+.av-port { position: absolute; width: 10px; height: 10px; margin: -6px 0 0 -6px; border: 1px solid var(--line-control); border-radius: 50%; background: var(--surface-raised); }
+.av-port-on { background: var(--edge); border-color: var(--edge); }
+.av-port-label { position: absolute; margin-left: 8px; font: 400 12px/16px var(--font-mono); color: var(--text-muted); white-space: nowrap; }
+.av-node-state { flex: none; display: inline-flex; }
+.av-node-state.is-running { color: var(--accent); }
+.av-node-state.is-done { color: var(--ok); }
+.av-node-state.is-failed, .av-node-state.is-invalid { color: var(--danger); }
+
+/* canvas */
+.av-canvas { position: relative; overflow: hidden; background-color: var(--surface-sunken); background-image: radial-gradient(var(--canvas-dot) 1px, transparent 1.5px); background-size: var(--grid) var(--grid); background-position: -8px -8px; }
+.av-canvas-layer { position: absolute; left: 0; top: 0; transform-origin: 0 0; }
+.av-canvas-edges { position: absolute; left: 0; top: 0; overflow: visible; pointer-events: none; }
+.av-edge { fill: none; stroke: var(--edge); stroke-width: 1.5; }
+.av-edge-active { stroke: var(--edge-active); stroke-width: 2; }
+.av-canvas-tools { position: absolute; left: var(--space-3); bottom: var(--space-3); display: flex; align-items: center; gap: 2px; padding: 2px; border: 1px solid var(--line); border-radius: var(--radius-lg); background: var(--surface); }
+.av-canvas-zoom { min-width: 44px; text-align: center; font: 400 12px/16px var(--font-mono); color: var(--text-muted); }
+
+/* side sheet */
+.av-sheet { position: absolute; top: 0; right: 0; bottom: 0; width: var(--sheet); max-width: 100%; display: flex; flex-direction: column; background: var(--surface); border-left: 1px solid var(--line); box-shadow: var(--shadow-overlay); z-index: 5; }
+.av-sheet-head { display: flex; align-items: flex-start; gap: var(--space-3); padding: var(--space-3) var(--space-3) var(--space-3) var(--space-4); border-bottom: 1px solid var(--line); }
+.av-sheet-head > .av-icon { margin-top: 4px; color: var(--text-muted); }
+.av-sheet-titles { flex: 1; min-width: 0; }
+.av-sheet-title { margin: 0; font: 600 16px/24px var(--font-sans); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.av-sheet-sub { font: 400 12px/16px var(--font-sans); color: var(--text-muted); }
+.av-sheet-x { display: inline-flex; }
+.av-sheet-body { flex: 1; overflow: auto; }
+.av-sheet-foot { display: flex; align-items: center; gap: var(--space-2); padding: var(--space-2) var(--space-3); border-top: 1px solid var(--line); }
+.av-sheet-foot .av-spacer { flex: 1; }
+.av-sec { border-bottom: 1px solid var(--line); }
+.av-sec-head { display: flex; align-items: center; justify-content: space-between; width: 100%; height: 40px; padding: 0 var(--space-4); border: 0; background: none; color: var(--text); font: 500 12px/16px var(--font-sans); cursor: pointer; text-align: left; }
+.av-sec-head .av-icon { color: var(--text-muted); }
+.av-sec-heading { margin: 0; }
+h3.av-sec-head { box-sizing: border-box; margin: 0; cursor: default; }
+.av-sec-body { display: flex; flex-direction: column; gap: var(--space-4); padding: 0 var(--space-4) var(--space-4); }
+.av-grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-3); }
+
+/* command preview */
+.av-code { margin: 0; padding: var(--space-3); border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--surface-sunken); color: var(--text); font: 400 12px/18px var(--font-mono); white-space: pre-wrap; word-break: break-all; }
+.av-code .av-code-flag { color: var(--accent); }
+.av-code .av-code-dim { color: var(--text-muted); }
+
+/* palette */
+.av-palette { display: flex; flex-direction: column; width: var(--sidebar); background: var(--surface); border-right: 1px solid var(--line); height: 100%; box-sizing: border-box; }
+.av-palette-search { padding: var(--space-3); border-bottom: 1px solid var(--line); }
+.av-palette-list { flex: 1; overflow: auto; padding: var(--space-2) 0; }
+.av-pal-group { padding: var(--space-2) var(--space-4) var(--space-1); font: 500 12px/16px var(--font-sans); color: var(--text-muted); }
+.av-pal-item { display: flex; align-items: center; gap: var(--space-2); width: 100%; height: var(--control-sm); padding: 0 var(--space-4); border: 0; background: none; color: var(--text); font: 400 13px/18px var(--font-sans); cursor: grab; text-align: left; }
+.av-pal-item:hover { background: var(--surface-hover); }
+.av-pal-item .av-icon { color: var(--text-muted); }
+.av-pal-empty { padding: var(--space-2) var(--space-4); font: 400 13px/18px var(--font-sans); color: var(--text-muted); }
