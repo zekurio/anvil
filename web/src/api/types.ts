@@ -128,6 +128,9 @@ export type StreamKind = "audio" | "subtitle";
 export type StreamSelectionRule =
   | "no_streams"
   | "cleanup_disabled"
+  | "keep_all"
+  | "remove_all"
+  | "bitmap_only"
   | "language_filter"
   | "fallback_keep_all"
   | "fallback_keep_first"
@@ -138,12 +141,15 @@ export type StreamDecisionReason =
   | "original_language"
   | "unknown_as_original"
   | "cleanup_disabled"
+  | "keep_all"
   | "fallback_keep_all"
   | "fallback_keep_first"
   | "language_not_requested"
   | "commentary"
   | "forced"
-  | "sdh";
+  | "sdh"
+  | "remove_all"
+  | "bitmap";
 
 export interface StreamDecision {
   index: number;

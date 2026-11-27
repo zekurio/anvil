@@ -1,0 +1,8 @@
+/* anvil: the Settings page. Colours, spacing and radii come from tokens. */
+
+/* A definition list whose terms are config keys, as anvil.toml spells them. */
+.av-dl-keys dt { font: var(--text-mono-small); padding-top: 1px; }
+/* A table inside a form section gets an edge of its own. */
+.av-boxed { border: 1px solid var(--line); border-radius: var(--radius-md); overflow: hidden; }
+.av-row-actions { display: inline-flex; }
+.av-check-row { display: flex; align-items: center; gap: var(--space-2); font: var(--text-small); color: var(--text); cursor: pointer; }

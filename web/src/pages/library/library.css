@@ -1,0 +1,16 @@
+/* anvil: the Library page. Colours, spacing and radii come from tokens. */
+
+.av-topbar-select { width: 200px; flex: none; }
+
+/* rules tab */
+.av-rulespage { box-sizing: border-box; display: flex; flex-direction: column; gap: var(--space-4); flex: 1; width: 100%; max-width: 960px; padding: var(--space-4); }
+.av-rules-intro { margin: 0; max-width: 640px; font: var(--text-small); color: var(--text-muted); }
+/* The problem the daemon found with one rule, under its value. */
+.av-rule-error { grid-column: 3 / -1; padding-bottom: var(--space-1); }
+/* Room for the longest operator, "matches regex". */
+.av-rulespage .av-rule { grid-template-columns: 16px 24px 140px 132px 144px minmax(0, 1fr) var(--control-sm); }
+
+@media (max-width: 1100px) {
+  .av-topbar-select { width: 160px; }
+  .av-rulespage .av-rule { grid-template-columns: 16px 20px 132px 104px 136px minmax(0, 1fr) var(--control-sm); }
+}

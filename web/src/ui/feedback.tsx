@@ -80,6 +80,8 @@ export interface ErrorStateProps {
   /** The thrown value. Its message is shown as the detail. */
   error: unknown;
   onRetry?: () => void;
+  /** Another way out, next to Retry: a link to somewhere that works. */
+  children?: JSX.Element;
 }
 
 /** A failed load: what failed, the daemon's message, and Retry. */
@@ -89,11 +91,14 @@ export function ErrorState(props: ErrorStateProps) {
       <Icon class="av-state-icon av-state-danger" name="circle-alert" size={24} strokeWidth={1.5} />
       <h2 class="av-state-title">{props.title ?? "This could not be loaded"}</h2>
       <p class="av-state-text">{errorMessage(props.error)}</p>
-      <Show when={props.onRetry}>
+      <Show when={props.onRetry || props.children}>
         <div class="av-state-actions">
-          <Button icon="rotate-ccw" onClick={() => props.onRetry?.()}>
-            Retry
-          </Button>
+          <Show when={props.onRetry}>
+            <Button icon="rotate-ccw" onClick={() => props.onRetry?.()}>
+              Retry
+            </Button>
+          </Show>
+          {props.children}
         </div>
       </Show>
     </div>

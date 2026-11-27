@@ -19,8 +19,12 @@ Node 22.12 or newer. On a Nix machine: `nix shell nixpkgs#nodejs -c npm <command
 | `npm run icons` | Regenerate `src/ui/icon-data.ts` after editing the icon list in `scripts/vendor-icons.mjs`. |
 
 `VITE_MOCK_AUTH=1 npm run dev:mock` turns on the sign-in screen; the password
-is `anvil`. The mock keeps its state in memory and resets when the dev server
-restarts.
+is `anvil`. `VITE_MOCK_LISTEN=0.0.0.0:8484 npm run dev:mock` makes the mock
+report an open listen address, which the Settings page warns about. The mock
+keeps its state in memory and resets when the dev server restarts.
+`POST /api/v1/_mock/jobs/{id}/step` with `{"step": "publish"}` is a mock-only
+route that moves a running job to the start of a step, for looking at the
+short ones.
 
 `/_dev/components` shows every component in both themes. It exists in dev
 builds only.
@@ -38,6 +42,8 @@ src/
   lib/        format, theme, document title, mutation helper, unsaved-changes guard
   ui/         the design system: components, styles/, fonts/, vendored icons
   shell/      app frame: sidebar, connection banner, sign-in, shared polled data
+  features/   what several pages share: jobs/ (job sheet, bulk bar, the words for steps and reasons),
+              libraries/ (scan, the PUT body), layout/ (pager, form sections, row selection, form bar)
   pages/      one directory per route; index.tsx default-exports the page
   routes.tsx  the route table
 mock/         dev-only fake API (Vite plugin); never part of a build
@@ -58,6 +64,11 @@ scripts/      vendor-icons.mjs
   from `lib/mutate`. It refetches, then toasts.
 - **Feedback.** `toast.success(...)`, `await confirm({ ... })`,
   `<Dialog open onClose>`, all from `ui`.
+- **Forms over polled data.** `createDraft(() => saved)` from `lib/draft`: the
+  form follows the server until the first edit, and no poll resets a draft.
+  Pair it with `<FormBar>` and `useUnsavedChanges(draft.dirty)`.
+- **Paged tables.** One page of rows is loaded at a time (`<Pager>`), with
+  `createSelection` keeping a selection across pages and polls.
 - **API types.** Change `src/api/types.ts` only together with the Go type it
   mirrors; every block names its source.
 - **Mock.** Routes live in `mock/handlers/*.ts`, state in `mock/db.ts`, seed

@@ -1,4 +1,4 @@
-import { createSignal, For } from "solid-js";
+import { createSignal, For, Show } from "solid-js";
 
 import type { Rule, RuleAction, RuleField, RuleOp } from "../api/types";
 import { Button } from "./button";
@@ -20,6 +20,8 @@ export interface RuleListProps {
   onChange: (rules: Rule[]) => void;
   /** What happens to a file no rule matches. */
   fallback?: RuleAction;
+  /** Problems the daemon found, keyed by the rule's index. Each shows under its row. */
+  errors?: Record<number, string>;
   disabled?: boolean;
 }
 
@@ -123,10 +125,17 @@ export function RuleList(props: RuleListProps) {
               aria-label="Value"
               value={rule().value}
               placeholder={fieldOf(rule().field).placeholder}
+              invalid={!!props.errors?.[index]}
               disabled={props.disabled}
               onInput={(event) => update(index, { value: event.currentTarget.value })}
             />
             <Button size="sm" variant="ghost" icon="trash-2" label={`Remove rule ${index + 1}`} disabled={props.disabled} onClick={() => props.onChange(props.rules.filter((_, i) => i !== index))} />
+            <Show when={props.errors?.[index]}>
+              <div class="av-rule-error av-field-error" role="alert">
+                <Icon name="triangle-alert" size={12} />
+                {props.errors?.[index]}
+              </div>
+            </Show>
           </div>
         )}
       </For>
