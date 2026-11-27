@@ -122,11 +122,14 @@ export function createQuery<T>(key: () => QueryKey, fetcher: () => Promise<T>, o
         if (!options.poll || document.hidden) return;
         timer = setInterval(poll, options.poll);
       };
+      // Only a polled query catches up on what it missed while hidden. One
+      // without a poll answered once on purpose: a fresh answer there would
+      // be pushed over what the page built on the first one.
       const onVisibility = () => {
         if (!document.hidden) poll();
         watch();
       };
-      document.addEventListener("visibilitychange", onVisibility);
+      if (options.poll) document.addEventListener("visibilitychange", onVisibility);
       watch();
       void ask(first);
 

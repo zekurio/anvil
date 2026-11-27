@@ -191,6 +191,8 @@ type call struct {
 	header map[string]string
 	// plain leaves the JSON content type off a mutating request.
 	plain bool
+	// remote is the peer address; empty keeps httptest's.
+	remote string
 }
 
 func (f *fixture) do(c call) *httptest.ResponseRecorder {
@@ -209,6 +211,9 @@ func (f *fixture) do(c call) *httptest.ResponseRecorder {
 	request.Host = testHost
 	if c.host != "" {
 		request.Host = c.host
+	}
+	if c.remote != "" {
+		request.RemoteAddr = c.remote
 	}
 	if mutating(c.method) && !c.plain {
 		request.Header.Set("Content-Type", "application/json")

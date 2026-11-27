@@ -349,3 +349,25 @@ ffmpeg_args = ["-svtav1-params", "tune=0"]
 		t.Fatalf("migration error = %v", err)
 	}
 }
+
+// With neither store_path nor temp_dir set the store lands under /tmp, and it
+// is the only copy of the libraries and flows, so the daemon warns.
+func TestStoreOnScratch(t *testing.T) {
+	scratch := t.TempDir()
+	t.Setenv("TMPDIR", scratch)
+	for _, test := range []struct {
+		name   string
+		daemon DaemonConfig
+		want   bool
+	}{
+		{name: "default", daemon: Default().Daemon, want: true},
+		{name: "inside temp_dir", daemon: DaemonConfig{TempDir: "/var/cache/anvil", StorePath: "/var/cache/anvil/state/anvil.db"}, want: true},
+		{name: "under the system temp", daemon: DaemonConfig{TempDir: "/var/cache/anvil", StorePath: filepath.Join(scratch, "anvil.db")}, want: true},
+		{name: "persistent", daemon: DaemonConfig{TempDir: "/var/cache/anvil", StorePath: "/var/lib/anvil/anvil.db"}, want: false},
+		{name: "sibling with a shared prefix", daemon: DaemonConfig{TempDir: "/var/cache/anvil", StorePath: "/var/cache/anvil-state/anvil.db"}, want: false},
+	} {
+		if got := test.daemon.StoreOnScratch(); got != test.want {
+			t.Errorf("%s: StoreOnScratch() = %v for %q, want %v", test.name, got, test.daemon.StorePath, test.want)
+		}
+	}
+}

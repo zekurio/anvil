@@ -36,7 +36,7 @@ func (s *SQLiteStore) BeginLibraryScan(ctx context.Context, libraryName domain.L
 		return ScanToken{}, fmt.Errorf("begin library scan: %w", err)
 	}
 	defer rollback(tx)
-	if err := requireLibraryTx(ctx, tx, libraryName); err != nil {
+	if _, err := requireLibraryTx(ctx, tx, libraryName); err != nil {
 		return ScanToken{}, fmt.Errorf("begin library scan: %w", err)
 	}
 	token, err := issueScanToken(ctx, tx, libraryName)
@@ -50,19 +50,21 @@ func (s *SQLiteStore) BeginLibraryScan(ctx context.Context, libraryName domain.L
 }
 
 // requireLibraryTx refuses to record anything for a library that is not in
-// the store. A scan or requeue can be in flight, working from a snapshot of
-// the libraries, at the moment its library is deleted; without this check it
-// would write sources and jobs back that nothing owns and nothing removes.
-func requireLibraryTx(ctx context.Context, tx *sql.Tx, libraryName domain.LibraryName) error {
-	var exists int
-	err := tx.QueryRowContext(ctx, `SELECT 1 FROM libraries WHERE name = ?`, string(libraryName)).Scan(&exists)
-	if errors.Is(err, sql.ErrNoRows) {
-		return fmt.Errorf("library %q: %w", libraryName, ErrNotFound)
+// the store, and returns the row otherwise. A scan or requeue can be in
+// flight, working from a snapshot of the libraries, at the moment its library
+// is deleted; without this check it would write sources and jobs back that
+// nothing owns and nothing removes. The same snapshot can carry a priority
+// the operator has changed since, which is why a new job takes the priority
+// of the row read here, never the caller's.
+func requireLibraryTx(ctx context.Context, tx *sql.Tx, libraryName domain.LibraryName) (Library, error) {
+	library, err := getLibrary(ctx, tx, string(libraryName))
+	if errors.Is(err, ErrNotFound) {
+		return Library{}, fmt.Errorf("library %q: %w", libraryName, ErrNotFound)
 	}
 	if err != nil {
-		return fmt.Errorf("look up library %q: %w", libraryName, err)
+		return Library{}, fmt.Errorf("look up library %q: %w", libraryName, err)
 	}
-	return nil
+	return library, nil
 }
 
 // issueScanToken hands out the next scan sequence for a library. A scan only
@@ -107,7 +109,8 @@ func (s *SQLiteStore) ApplyLibraryScan(ctx context.Context, token ScanToken, inp
 	}
 	defer rollback(tx)
 
-	if err := requireLibraryTx(ctx, tx, input.LibraryName); err != nil {
+	library, err := requireLibraryTx(ctx, tx, input.LibraryName)
+	if err != nil {
 		return ApplyScanResult{}, fmt.Errorf("apply library scan: %w", err)
 	}
 	superseded, err := scanSupersededTx(ctx, tx, token)
@@ -128,6 +131,7 @@ func (s *SQLiteStore) ApplyLibraryScan(ctx context.Context, token ScanToken, inp
 	app := &scanApplication{
 		tx:       tx,
 		input:    input,
+		priority: library.Priority,
 		token:    token,
 		now:      defaultNow(input.CompletedAt),
 		snapshot: snapshot,
@@ -167,8 +171,11 @@ SELECT next_token, applied_token FROM library_scans WHERE library_name = ?
 // scanApplication reconciles one scan's observations with the current
 // occurrences inside a single transaction.
 type scanApplication struct {
-	tx       *sql.Tx
-	input    ApplyScanInput
+	tx    *sql.Tx
+	input ApplyScanInput
+	// priority is the library's as stored when the scan applies, not the
+	// one the scan was planned with.
+	priority int
 	token    ScanToken
 	now      time.Time
 	snapshot scanSnapshot
@@ -459,7 +466,7 @@ func (a *scanApplication) enqueue(ctx context.Context, sourceID domain.MediaSour
 	}
 	_, inserted, err := enqueueJobTx(ctx, a.tx, EnqueueJobInput{
 		SourceID: sourceID, AssetID: assetID, LibraryName: a.input.LibraryName,
-		Priority: a.input.Priority, Now: a.now,
+		Priority: a.priority, Now: a.now,
 	})
 	if err != nil {
 		return err

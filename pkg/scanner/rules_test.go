@@ -130,6 +130,26 @@ func TestPlanMarksFilesTheRulesDeny(t *testing.T) {
 	}
 }
 
+// A file a path rule prunes is still reported with the rule that denies it,
+// judged with its real size: a size rule above the path rule names only the
+// files of that size.
+func TestPrunedFileReasonUsesItsSize(t *testing.T) {
+	root := t.TempDir()
+	writeLibraryFile(t, root, "Film/Extras-scene.mkv", 4000)
+	writeLibraryFile(t, root, "Film/Extras-tiny.mkv", 100)
+	library := config.LibraryConfig{Kind: "media", Rules: []config.Rule{
+		{Action: config.RuleDeny, Field: config.RuleFieldSize, Op: config.RuleOpLess, Value: "1 KB"},
+		{Action: config.RuleDeny, Field: config.RuleFieldPath, Op: config.RuleOpRegex, Value: `Extras`},
+	}}
+	_, ignored := discovered(t, root, library)
+	if reason := ignored["Film/Extras-scene.mkv"]; !strings.HasPrefix(reason, "denied by rule 2 ") {
+		t.Errorf("Extras-scene.mkv reason = %q, want rule 2", reason)
+	}
+	if reason := ignored["Film/Extras-tiny.mkv"]; !strings.HasPrefix(reason, "denied by rule 1 ") {
+		t.Errorf("Extras-tiny.mkv reason = %q, want rule 1", reason)
+	}
+}
+
 func TestDiscoveryRejectsBrokenRules(t *testing.T) {
 	library := config.LibraryConfig{Kind: "media", Rules: []config.Rule{{Action: config.RuleDeny, Field: config.RuleFieldSize, Op: config.RuleOpLess, Value: "tiny"}}}
 	if _, _, _, err := discoverCandidates(context.Background(), t.TempDir(), library, nil); err == nil || !strings.Contains(err.Error(), "rule 1") {

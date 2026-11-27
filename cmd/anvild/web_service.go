@@ -51,7 +51,24 @@ func claimWeb(ctx context.Context, cfg config.Config) (webClaim, error) {
 	if err != nil {
 		return webClaim{}, fmt.Errorf("the web UI cannot listen on %s (web.listen): %w", cfg.Web.Listen, err)
 	}
+	if err := checkBoundLoopback(cfg.Web, password, listener.Addr()); err != nil {
+		return webClaim{}, errors.Join(err, listener.Close())
+	}
 	return webClaim{listener: listener, password: password}, nil
+}
+
+// checkBoundLoopback holds a web UI without a password to the address it
+// really bound. Validate decides loopback by how web.listen is spelled, and
+// takes "localhost" at its word; the listener resolved it through the hosts
+// file or DNS, which can name any interface.
+func checkBoundLoopback(web config.WebConfig, password string, addr net.Addr) error {
+	if password != "" || web.AllowUnauthenticated {
+		return nil
+	}
+	if tcp, ok := addr.(*net.TCPAddr); ok && tcp.IP.IsLoopback() {
+		return nil
+	}
+	return fmt.Errorf("web.listen %q bound %s, which is reachable from other machines, but no password is set; set web.password_file (or web.password), or set web.allow_unauthenticated = true to serve the UI without sign-in", web.Listen, addr)
 }
 
 // release gives the address back. After startWebService the server owns the

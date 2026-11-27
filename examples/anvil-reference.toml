@@ -69,19 +69,19 @@ preset = "6" # Trade speed for compression to match the selected encoder; any en
 bit_depth = 10 # Preserve more tonal detail when the encoder supports it; 8 or 10.
 crf_min = 18 # Lowest search CRF; integer no greater than crf_max.
 crf_max = 40 # Highest search CRF; integer no lower than crf_min.
-samples = 0 # Fixed sample count per CRF; 0 uses one per 12 minutes, rounded up. Short inputs use one whole-file sample.
+samples = 0 # Fixed sample count per CRF; 0 uses one per 12 minutes, rounded up; integer from 0 through 100. Short inputs use one whole-file sample.
 sample_duration = "20s" # Length of each search sample; positive Go duration, default "20s".
 metric = "vmaf" # Quality metric measured by FFmpeg; "vmaf" or "xpsnr".
 target = 95.0 # Minimum score for metric; number from 0 through 100. Required when metric is "xpsnr" (typical XPSNR target: 35-50).
 min_savings_percent = 20.0 # Minimum estimated video-only savings from sample sizes, including container overhead; number from 0 through 100.
 force_encode_on_no_fit = false # On no fit, use the best measured quality within the size limit, or the best measured quality overall if no candidate fits the size limit.
 skip_encode = false # Copy video instead of searching and encoding when policy requires it.
-ffmpeg_args = [] # Encoder parameter bundles and value-only tuning option/value pairs shared by search and final encoding. Files, URLs, devices, filters, mapping, timing, and rate control are not accepted.
+ffmpeg_args = [] # Encoder parameter bundles of allow-listed value-only keys and value-only tuning option/value pairs shared by search and final encoding. Files, URLs, devices, filters, mapping, timing, and rate control are not accepted.
 
 [profiles.default-av1.crop]
-seek_offsets = [] # Sample crop candidates at these input offsets; an empty list spreads windows across the input instead; non-negative Go duration strings.
-samples = 0 # Crop windows spread across the input, one per sample slice; 0 uses one per 3 minutes of runtime, clamped to 4-24 windows; 0 or integer >= 2.
-frame_count = 300 # Frames analyzed at each seek offset; integer >= 1.
+seek_offsets = [] # Sample crop candidates at these input offsets; an empty list spreads windows across the input instead; at most 100 non-negative Go duration strings.
+samples = 0 # Crop windows spread across the input, one per sample slice; 0 uses one per 3 minutes of runtime, clamped to 4-24 windows; 0 or integer from 2 through 100.
+frame_count = 300 # Frames analyzed at each seek offset; integer from 1 through 10000.
 limit = 64 # ffmpeg cropdetect black threshold; integer from 1 through 255.
 round = 16 # Round crop width and height to this multiple during detection; integer >= 1.
 reset_count = 0 # Reset cropdetect's largest-area history after this many frames; 0 disables reset; integer >= 0.

@@ -10,6 +10,8 @@ import type { FlowDraft } from "./draft";
 import { sameGraph, type Doc } from "./graph";
 
 const DEBOUNCE_MS = 250;
+/** How long a failed check waits before it asks again. */
+const RETRY_MS = 3_000;
 
 export type LiveCheck = ReturnType<typeof createLiveCheck>;
 
@@ -28,6 +30,7 @@ export function createLiveCheck(draft: FlowDraft, seed: LiveCheckSeed) {
   let checked: Doc = draft.current();
   let pending: { doc: Doc; controller: AbortController } | undefined;
   let timer: ReturnType<typeof setTimeout> | undefined;
+  let disposed = false;
 
   const send = (doc: Doc) => {
     const controller = new AbortController();
@@ -42,7 +45,18 @@ export function createLiveCheck(draft: FlowDraft, seed: LiveCheckSeed) {
       },
       () => {
         // A failed check keeps the last answer. The shell reports an unreachable daemon.
-        if (pending?.controller === controller) pending = undefined;
+        // An aborted one was replaced or disposed of, and is not pending any more.
+        if (pending?.controller !== controller) return;
+        pending = undefined;
+        // The answer on screen describes an older graph, and its errors may block Save and Test
+        // although the draft has fixed them. Ask again until the daemon answers; an edit
+        // meanwhile clears this timer and schedules its own check.
+        if (disposed) return;
+        clearTimeout(timer);
+        timer = setTimeout(() => {
+          const current = draft.current();
+          if (!pending && !sameGraph(current, checked)) send(current);
+        }, RETRY_MS);
       },
     );
   };
@@ -61,6 +75,7 @@ export function createLiveCheck(draft: FlowDraft, seed: LiveCheckSeed) {
     },
   );
   onSettled(() => () => {
+    disposed = true;
     clearTimeout(timer);
     pending?.controller.abort();
   });

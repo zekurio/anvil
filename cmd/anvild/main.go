@@ -274,6 +274,9 @@ func runDaemon(ctx context.Context, cfg config.Config, opts options) error {
 		}()
 	}
 
+	if cfg.Daemon.StoreOnScratch() {
+		slog.Warn(config.StoreOnScratchWarning, "store_path", cfg.Daemon.StorePath)
+	}
 	state, err := openStore(serviceCtx, cfg)
 	if err != nil {
 		return err

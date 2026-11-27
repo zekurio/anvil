@@ -176,11 +176,14 @@ func (crop CropConfig) validate(p *problems, profile string) {
 // lists them.
 func (crop CropConfig) Problems() []Problem {
 	var found []Problem
-	if crop.Samples < 0 || crop.Samples == 1 {
-		found = append(found, problemf("samples", "must be 0 (automatic) or at least 2", "crop.samples must be 0 (automatic) or at least 2"))
+	if crop.Samples < 0 || crop.Samples == 1 || crop.Samples > MaxCropWindows {
+		found = append(found, problemf("samples", fmt.Sprintf("must be 0 (automatic) or between 2 and %d", MaxCropWindows), "crop.samples must be 0 (automatic) or between 2 and %d", MaxCropWindows))
 	}
-	if crop.FrameCount < 1 {
-		found = append(found, problemf("frame_count", "must be at least 1", "crop.frame_count must be at least 1"))
+	if crop.FrameCount < 1 || crop.FrameCount > MaxCropFrameCount {
+		found = append(found, problemf("frame_count", fmt.Sprintf("must be between 1 and %d", MaxCropFrameCount), "crop.frame_count must be between 1 and %d", MaxCropFrameCount))
+	}
+	if len(crop.SeekOffsets) > MaxCropWindows {
+		found = append(found, problemf("seek_offsets", fmt.Sprintf("must not hold more than %d offsets", MaxCropWindows), "crop.seek_offsets must not hold more than %d offsets", MaxCropWindows))
 	}
 	// An empty list selects spread sampling, so only explicit offsets are checked.
 	for i, offset := range crop.SeekOffsets {
@@ -250,8 +253,8 @@ func (v VideoConfig) Problems() []Problem {
 	if err := ffmpeg.ValidateEncoderArgs(v.FFmpegArgs); err != nil {
 		found = append(found, problemf("ffmpeg_args", strings.TrimPrefix(err.Error(), "ffmpeg_args "), "video.%s", err))
 	}
-	if v.Samples < 0 {
-		found = append(found, problemf("samples", "must be non-negative", "video.samples must be non-negative"))
+	if v.Samples < 0 || v.Samples > MaxVideoSamples {
+		found = append(found, problemf("samples", fmt.Sprintf("must be between 0 and %d", MaxVideoSamples), "video.samples must be between 0 and %d", MaxVideoSamples))
 	}
 	switch {
 	case !slices.Contains(qualityMetrics, v.Metric):

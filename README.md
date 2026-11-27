@@ -314,23 +314,33 @@ hardware AV1 encoders count to 255.
 
 ### Encoder arguments and crop
 
-Extra encoder arguments are option and value pairs, one per entry, such as
-`-svtav1-params` followed by `tune=0:film-grain=8`. They apply to both the
-search and the final encode. Only an allow-list is accepted, and everything
-else is rejected:
+Extra encoder arguments are option and value pairs, and the option and its
+value are separate entries, such as `-svtav1-params` followed by
+`tune=0:film-grain=8`. They apply to both the search and the final encode.
+Only an allow-list is accepted, and everything else is rejected:
 
 - The parameter bundles `-svtav1-params`, `-x265-params`, and `-x264-params`.
-  Inside them, the keys `crf`, `qp`, `qpmin`, `qpmax`, `rc`, `bitrate`,
-  `bit_rate`, `tbr`, `mbr`, and `preset` are refused, because Anvil sets
-  quality, rate control, and speed itself.
+  Each takes `key=value` entries separated by `:`, and only keys whose value
+  is a number, an enum, or a colour description are accepted: tuning such as
+  `tune`, `film-grain`, `aq-mode`, `psy-rd`, `deblock`, `keyint`, `bframes`,
+  and `ref`, and HDR signalling such as `mastering-display`, `content-light`,
+  `master-display`, and `max-cll`. x265 and x264 also take `no-<key>=1`. Keys
+  that read or write a file (`stats`, `csv`, `analysis-save`, `dump-yuv`,
+  `fgs-table`, `cqmfile`, x265's `film-grain`) are refused, and so are
+  quality, rate control, and speed (`crf`, `qp`, `rc`, `bitrate`, `pass`,
+  `preset`, and the like), because Anvil sets those itself. A key or value
+  may only contain letters, digits, and `. , + - _ ( )`, so a quote, a
+  backslash, a space, or a `/` is refused; the error lists the keys the
+  bundle accepts.
 - The tuning options `-tune`, `-profile`, `-level`, `-g`, `-keyint_min`,
   `-bf`, `-refs`, `-sc_threshold`, `-aq-mode`, `-aq-strength`,
   `-rc-lookahead`, `-b_strategy`, `-look_ahead`, `-look_ahead_depth`,
   `-extbrc`, `-low_power`, `-async_depth`, `-adaptive_i`, `-adaptive_b`, and
   `-quality`. A stream specifier such as `-profile:v` is allowed.
 
-A value may not start with `-`. Nothing that names a file, a URL, a device, a
-filter, a stream mapping, or timing gets through.
+A value may not start with `-` unless it is a negative number, as in `-g`
+followed by `-1`. Nothing that names a file, a URL, a device, a filter, a
+stream mapping, or timing gets through.
 
 Cropping is opt-in per flow and happens in the encoder. A path that copies the
 video crops nothing, and the editor warns about a crop node on such a path. A

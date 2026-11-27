@@ -96,9 +96,9 @@ func TestEveryRoute(t *testing.T) {
 		t.Fatalf("the Arr response carries the key: %s", arrCreated.Body.String())
 	}
 	kept := want[Arr](t, f.send(http.MethodPut, "/api/v1/arrs/radarr", ArrWrite{
-		Name: "radarr", Type: "radarr", BaseURL: "http://localhost:7879",
+		Name: "radarr", Type: "radarr", BaseURL: "http://localhost:7878/radarr",
 	}), http.StatusOK)
-	if !kept.APIKeySet || kept.BaseURL != "http://localhost:7879" {
+	if !kept.APIKeySet || kept.BaseURL != "http://localhost:7878/radarr" {
 		t.Fatalf("an update without api_key must keep the key: %+v", kept)
 	}
 	if stored, err := f.state.GetArr(context.Background(), "radarr"); err != nil || stored.APIKey != "s3cret-key" {

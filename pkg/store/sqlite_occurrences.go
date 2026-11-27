@@ -25,7 +25,8 @@ func (s *SQLiteStore) ForceOccurrence(ctx context.Context, input ForceOccurrence
 	}
 	defer rollback(tx)
 
-	if err := requireLibraryTx(ctx, tx, input.LibraryName); err != nil {
+	library, err := requireLibraryTx(ctx, tx, input.LibraryName)
+	if err != nil {
 		return ForceOccurrenceResult{}, err
 	}
 	active, err := activeWorkForOccurrencePathTx(ctx, tx, input.LibraryName, input.SourceRelativePath, input.AssetRelativePath)
@@ -76,7 +77,7 @@ func (s *SQLiteStore) ForceOccurrence(ctx context.Context, input ForceOccurrence
 		return ForceOccurrenceResult{}, err
 	}
 	job, _, err := enqueueJobTx(ctx, tx, EnqueueJobInput{
-		SourceID: source.ID, AssetID: asset.ID, LibraryName: input.LibraryName, Priority: input.Priority, Now: now,
+		SourceID: source.ID, AssetID: asset.ID, LibraryName: input.LibraryName, Priority: library.Priority, Now: now,
 	})
 	if err != nil {
 		return ForceOccurrenceResult{}, err

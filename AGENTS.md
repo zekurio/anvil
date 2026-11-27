@@ -353,10 +353,11 @@ const typeSubtitlesDropImage = "subtitles.drop_image"
   further, so every analysis may assume the bound. Keep new analyses linear
   in the size of the graph.
 - `video.encode`'s `ffmpeg_args` is an allow-list
-  (`ffmpeg.ValidateEncoderArgs`): the three encoder parameter bundles and a
-  fixed set of value-only tuning options. Add an option only when its value
-  cannot name a file, URL, device, stream, or filter. Do not turn the list
-  into a deny-list.
+  (`ffmpeg.ValidateEncoderArgs`): the three encoder parameter bundles, each
+  limited to its own list of value-only keys (`encoderParams`), and a fixed
+  set of value-only tuning options. Add an option or a key only when its
+  value cannot name a file, URL, device, stream, or filter. Do not turn
+  either list into a deny-list.
 - `flow.Canonical` fingerprints checkpoints and tells flows apart. A change in
   what a graph does must change its canonical form. Position, label, node and
   edge order, and spelling out a default must not.

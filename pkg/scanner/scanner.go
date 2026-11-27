@@ -210,7 +210,7 @@ func (s Scanner) applyPlan(ctx context.Context, plan LibraryPlan) (ScanResult, e
 		entries = append(entries, entry)
 	}
 	applied, err := s.Store.ApplyLibraryScan(ctx, plan.ScanToken, store.ApplyScanInput{
-		SourcePaths: plan.SourcePaths, LibraryName: domain.LibraryName(plan.Library.Name), Priority: plan.Library.Priority,
+		SourcePaths: plan.SourcePaths, LibraryName: domain.LibraryName(plan.Library.Name),
 		RequeueExisting: plan.Library.IsDownload(), Entries: entries, CompletedAt: now,
 	})
 	if err != nil {
@@ -401,7 +401,11 @@ func (d *discovery) visitFile(absPath, rel string, entry fs.DirEntry) error {
 		if err != nil {
 			return err
 		}
-		d.deny(absPath, rel, info, d.rules.Decide(config.RuleFile{Path: rel}).Reason)
+		// Prunes only looks at the rules up to the first allow, all deny
+		// rules, so with the real size Decide still denies, and names the
+		// rule that matches first: a size rule above the path rule only when
+		// the file is that size.
+		d.deny(absPath, rel, info, d.rules.Decide(config.RuleFile{Path: rel, SizeBytes: info.Size()}).Reason)
 		return nil
 	}
 	ignorable, err := matchesAny(d.ignorable, rel)

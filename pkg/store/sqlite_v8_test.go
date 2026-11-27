@@ -1212,6 +1212,60 @@ func TestUpdateLibraryPriorityReachesItsQueuedJobs(t *testing.T) {
 	}
 }
 
+// A scan or requeue works from the runtime snapshot it started with. When the
+// operator changes the priority while it runs, the jobs it then enqueues must
+// still carry the library's new priority, or they would stay behind (or
+// ahead) for good: nothing rewrites them later.
+func TestEnqueueTakesThePriorityOfTheStoredLibrary(t *testing.T) {
+	ctx := context.Background()
+	state := openTestStore(t)
+	flowID := defaultFlowID(t, state)
+	library := testLibrary("movies", flowID)
+	library.Priority = 1
+	if _, err := state.CreateLibrary(ctx, library, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	token, err := state.BeginLibraryScan(ctx, "movies")
+	if err != nil {
+		t.Fatal(err)
+	}
+	library.Priority = 7
+	if _, err := state.UpdateLibrary(ctx, library, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	fingerprint := domain.FileFingerprint{SizeBytes: 10}
+	if _, err := state.ApplyLibraryScan(ctx, token, ApplyScanInput{
+		LibraryName: "movies", CompletedAt: time.Now(),
+		Entries: []ScanEntry{{
+			SourceKind: domain.SourceKindFile, SourceRelativePath: "scanned.mkv", SourceFingerprint: fingerprint,
+			AssetRelativePath: "scanned.mkv", AssetRole: domain.MediaAssetRolePrimaryVideo, AssetFingerprint: fingerprint,
+			Persist: true, Enqueue: true,
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	forced, err := state.ForceOccurrence(ctx, ForceOccurrenceInput{
+		LibraryName: "movies", SourceKind: domain.SourceKindFile,
+		SourceRelativePath: "forced.mkv", SourceFingerprint: fingerprint,
+		AssetRelativePath: "forced.mkv", AssetRole: domain.MediaAssetRolePrimaryVideo, AssetFingerprint: fingerprint,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if forced.Job.Priority != 7 {
+		t.Errorf("forced job has priority %d, want the library's 7", forced.Job.Priority)
+	}
+	summaries, err := state.ListJobs(ctx, JobListFilter{LibraryName: "movies"})
+	if err != nil || len(summaries) != 2 {
+		t.Fatalf("ListJobs = %+v, %v", summaries, err)
+	}
+	for _, summary := range summaries {
+		if summary.Job.Priority != 7 {
+			t.Errorf("job %s has priority %d, want the library's 7", summary.SourcePath, summary.Job.Priority)
+		}
+	}
+}
+
 // The TOML never compared directories. A library that overlaps another one or
 // the daemon's temp_dir still comes over, because its sources and jobs belong
 // to it, but paused and with the reason.

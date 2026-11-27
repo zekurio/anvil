@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/netip"
 	"strings"
 	"sync"
 	"time"
@@ -202,10 +203,21 @@ func sessionCookieFor(r *http.Request, value string) *http.Cookie {
 // clientKey identifies who is signing in, for the throttle: the address the
 // connection came from. Behind a proxy that is the proxy, which throttles
 // everyone together; that errs on the safe side for a single shared password.
+// An IPv6 peer is keyed by its /64, the block one site is routinely given, or
+// it could take five free attempts from each of its addresses. IPv4, and IPv4
+// mapped into IPv6, stays the full address.
 func clientKey(r *http.Request) string {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
-		return r.RemoteAddr
+		host = r.RemoteAddr
 	}
-	return host
+	addr, err := netip.ParseAddr(host)
+	if err != nil {
+		return host
+	}
+	addr = addr.Unmap()
+	if addr.Is4() {
+		return addr.String()
+	}
+	return netip.PrefixFrom(addr.WithZone(""), 64).Masked().String()
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -132,6 +133,37 @@ func TestFailedSignInsAreThrottled(t *testing.T) {
 	wantError(t, f.send(http.MethodPost, "/api/v1/session", LoginRequest{Password: "guess"}), http.StatusTooManyRequests, CodeUnauthenticated)
 	f.advance(loginDelay + time.Millisecond)
 	want[Session](t, f.send(http.MethodPost, "/api/v1/session", LoginRequest{Password: "open sesame"}), http.StatusOK)
+}
+
+// An IPv6 peer holds a whole /64. Throttling each address on its own would
+// give it five free attempts per address.
+func TestSignInThrottleKeysIPv6ByPrefix(t *testing.T) {
+	for remote, want := range map[string]string{
+		"192.0.2.7:4242":                  "192.0.2.7",
+		"[::ffff:192.0.2.7]:4242":         "192.0.2.7",
+		"[2001:db8:1:2:aaaa::1]:4242":     "2001:db8:1:2::/64",
+		"[2001:db8:1:2:ffff::9%eth0]:443": "2001:db8:1:2::/64",
+		"[::1]:4242":                      "::/64",
+	} {
+		request := httptest.NewRequest(http.MethodPost, "/api/v1/session", nil)
+		request.RemoteAddr = remote
+		if got := clientKey(request); got != want {
+			t.Errorf("clientKey(%q) = %q, want %q", remote, got, want)
+		}
+	}
+
+	f := newFixture(t, "open sesame", nil)
+	signIn := func(remote, password string) *httptest.ResponseRecorder {
+		return f.do(call{method: http.MethodPost, path: "/api/v1/session", body: LoginRequest{Password: password}, remote: remote})
+	}
+	for attempt := 1; attempt < freeAttempts; attempt++ {
+		wantError(t, signIn(fmt.Sprintf("[2001:db8:1:2::%x]:4242", attempt), "guess"), http.StatusUnauthorized, CodeUnauthenticated)
+	}
+	wantError(t, signIn("[2001:db8:1:2::ff]:4242", "guess"), http.StatusTooManyRequests, CodeUnauthenticated)
+	// Another address of the same /64 is held off too, before the password
+	// is looked at; another network is not.
+	wantError(t, signIn("[2001:db8:1:2::100]:4242", "open sesame"), http.StatusTooManyRequests, CodeUnauthenticated)
+	want[Session](t, signIn("[2001:db8:1:3::1]:4242", "open sesame"), http.StatusOK)
 }
 
 func TestRequestsFromOtherOriginsAreRefused(t *testing.T) {

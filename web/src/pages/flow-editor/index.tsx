@@ -38,16 +38,27 @@ function Session(props: { id: number | null }) {
   const [attempt, setAttempt] = createSignal(0);
   const loaded = createQuery(
     () => ["flow-editor", id, attempt()],
-    () => loadEditor(id),
+    async () => {
+      // Read before the await, so it is tracked: each answer says which reload it belongs to.
+      const asked = attempt();
+      return { attempt: asked, data: await loadEditor(id) };
+    },
   );
+  // The first answer of each reload, kept for as long as that reload lasts. A refetch of the same
+  // question (an invalidation that reaches its key) pushes a new object, and must never rebuild an
+  // editor that holds unsaved edits; only a reload the page asked for does. Another flow id is another Session.
+  const opened = createMemo<{ attempt: number; data: Loaded }>((previous) => {
+    const next = loaded();
+    return previous && previous.attempt === next.attempt ? previous : next;
+  });
   return (
     <>
       {/* A reload keeps the old editor on screen until the flow has arrived; this line says it is on its way. */}
       <Show when={isPending(() => loaded())}>
         <div class="fe-reloading" role="status" aria-label="Reloading the flow" />
       </Show>
-      <Show when={loaded()} keyed>
-        {(data) => <Editor data={data} onReload={() => setAttempt((n) => n + 1)} />}
+      <Show when={opened()} keyed>
+        {(state) => <Editor data={state.data} onReload={() => setAttempt((n) => n + 1)} />}
       </Show>
     </>
   );

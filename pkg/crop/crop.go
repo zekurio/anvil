@@ -33,6 +33,10 @@ const (
 	spreadSampleInterval = 3 * time.Minute
 	minSpreadSamples     = 4
 	maxSpreadSamples     = 24
+	// maxSamples is the ceiling config.MaxCropWindows puts on a configured
+	// count. Validation enforces it; the clamp keeps a profile that bypassed
+	// validation from allocating without bound.
+	maxSamples = 100
 )
 
 // CropSelectionArtifact is the attempt-event name used for crop decisions.
@@ -187,6 +191,7 @@ func spreadOffsets(durationSeconds float64, samples int) []time.Duration {
 		samples = int(math.Ceil(durationSeconds / spreadSampleInterval.Seconds()))
 		samples = min(max(samples, minSpreadSamples), maxSpreadSamples)
 	}
+	samples = min(samples, maxSamples)
 	duration := time.Duration(durationSeconds * float64(time.Second))
 	offsets := make([]time.Duration, samples)
 	for i := range offsets {

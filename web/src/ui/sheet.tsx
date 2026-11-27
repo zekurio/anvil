@@ -1,6 +1,7 @@
 import type { JSX } from "@solidjs/web";
 import { createSignal, For, Show } from "solid-js";
 
+import { shellQuote } from "../lib/shell";
 import { Button } from "./button";
 import { Icon, type IconName } from "./icon";
 
@@ -93,18 +94,18 @@ export interface CommandPreviewProps {
   label?: string;
 }
 
-/** Read-only block showing the ffmpeg arguments anvil will run. */
+/** Read-only block showing the ffmpeg arguments anvil will run, shell-quoted the way "copy" would put them. */
 export function CommandPreview(props: CommandPreviewProps) {
   return (
     <pre class="av-code" aria-label={props.label ?? "Command preview"}>
       <Show when={props.prefix}>
-        <span class="av-code-dim">{props.prefix} </span>
+        <span class="av-code-dim">{shellQuote(props.prefix ?? "")} </span>
       </Show>
       <For each={props.args} keyed={false}>
         {(arg, index) => (
           <>
             {index > 0 ? " " : ""}
-            <span class={{ "av-code-flag": arg().startsWith("-"), "av-code-dim": /^\{.*\}$/.test(arg()) }}>{arg()}</span>
+            <span class={{ "av-code-flag": arg().startsWith("-"), "av-code-dim": /^\{.*\}$/.test(arg()) }}>{shellQuote(arg())}</span>
           </>
         )}
       </For>

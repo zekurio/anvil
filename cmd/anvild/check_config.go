@@ -17,6 +17,9 @@ const redacted = "********"
 
 func runCheckConfig(cfg config.Config, opts options) error {
 	slog.Info("config ok", "config", configPathLabel(opts.configPath), "control_socket", cfg.Daemon.ControlSocket, "web_enabled", cfg.Web.Enabled, "web_listen", cfg.Web.Listen, "web_auth", cfg.Web.AuthRequired(), "log_level", cfg.Daemon.LogLevel, "legacy_sections", strings.Join(cfg.Legacy.Sections, ","))
+	if cfg.Daemon.StoreOnScratch() {
+		slog.Warn(config.StoreOnScratchWarning, "store_path", cfg.Daemon.StorePath)
+	}
 	if !opts.showConfig {
 		return nil
 	}

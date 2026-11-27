@@ -28,7 +28,7 @@ function Gate() {
         <Router>{(route) => <AppDataProvider session={session}>{route.children}</AppDataProvider>}</Router>
       </Loading>
       <Show when={locked()}>
-        <SignIn />
+        <SignIn session={session} />
       </Show>
     </>
   );

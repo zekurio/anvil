@@ -21,7 +21,21 @@ let
     store_path = "/var/lib/anvil/anvil.db";
     control_socket = "/run/anvil/anvild.sock";
   };
-  declaredMediaRoots = map (path: lib.removePrefix "-" path) cfg.mediaPaths;
+  # The daemon refuses a media root that is not absolute, cleaned, and unique,
+  # and would crash-loop on one. A trailing slash and the same path with and
+  # without "-" are normalised away here; anything else unclean fails an
+  # assertion below.
+  stripTrailingSlashes = path: if path != "/" && lib.hasSuffix "/" path then stripTrailingSlashes (lib.removeSuffix "/" path) else path;
+  declaredMediaRoots = lib.unique (map (path: stripTrailingSlashes (lib.removePrefix "-" path)) cfg.mediaPaths);
+  uncleanMediaRoots = lib.filter (
+    path:
+    !lib.hasPrefix "/" path
+    || lib.hasInfix "//" path
+    || lib.hasInfix "/./" path
+    || lib.hasInfix "/../" path
+    || lib.hasSuffix "/." path
+    || lib.hasSuffix "/.." path
+  ) declaredMediaRoots;
   daemon = daemonDefaults
     // optionalAttrs (!((cfg.settings.daemon or { }) ? media_roots)) {
       media_roots = declaredMediaRoots;
@@ -249,7 +263,8 @@ in
         service.
 
         The list is also rendered as daemon.media_roots, without the "-"
-        prefix, unless settings.daemon.media_roots is set. The web UI then
+        prefix, without a trailing slash, and with duplicates dropped, unless
+        settings.daemon.media_roots is set. The web UI then
         refuses a library or handoff directory outside these paths, and its
         folder picker shows nothing else. With media_roots set to [ ] a
         library outside these paths can be added and scanned, but its jobs
@@ -379,6 +394,14 @@ in
           the libraries, flows, and Arr connections made in the web UI. Keep store_path on
           persistent storage and temp_dir separate from it. The defaults are
           ${daemonDefaults.store_path} and ${daemonDefaults.temp_dir}.
+        '';
+      }
+      {
+        assertion = (cfg.settings.daemon or { }) ? media_roots || uncleanMediaRoots == [ ];
+        message = ''
+          services.anvil.mediaPaths has ${lib.concatMapStringsSep ", " (path: "\"${path}\"") uncleanMediaRoots},
+          which the daemon refuses as daemon.media_roots. Write each path absolute and
+          cleaned, without "//", "." or ".." components, such as "/srv/media".
         '';
       }
       {

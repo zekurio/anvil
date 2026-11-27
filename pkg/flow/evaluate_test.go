@@ -86,6 +86,7 @@ func TestEvaluateConditions(t *testing.T) {
 		{"file size above", typeCheckFileSize, map[string]any{"op": "above", "megabytes": 1024}, probeOf(hevc), true, "file is 8192 MiB"},
 		{"file size not above", typeCheckFileSize, map[string]any{"op": "above", "megabytes": 8192}, probeOf(hevc), false, "file is 8192 MiB"},
 		{"file size below", typeCheckFileSize, map[string]any{"op": "below", "megabytes": 9000}, probeOf(hevc), true, "file is 8192 MiB"},
+		{"file size below the largest size", typeCheckFileSize, map[string]any{"op": "below", "megabytes": 1 << 24}, probeOf(hevc), true, "file is 8192 MiB"},
 		{"file size not below", typeCheckFileSize, map[string]any{"op": "below", "megabytes": 700}, probeOf(hevc), false, "file is 8192 MiB"},
 		{"file size unknown", typeCheckFileSize, map[string]any{"op": "below", "megabytes": 700}, noSize, false, "file size is unknown"},
 

@@ -75,7 +75,7 @@ export function Primitives() {
   const id = createUniqueId();
   const [quality, setQuality] = createSignal<number | null>(22);
   const [languages, setLanguages] = createSignal(["eng", "jpn"]);
-  const [args, setArgs] = createSignal(["-g 240", "-svtav1-params tune=0"]);
+  const [args, setArgs] = createSignal(["-g", "240", "-svtav1-params", "tune=0"]);
   const [tab, setTab] = createSignal("files");
   const [checked, setChecked] = createSignal(true);
 

@@ -92,3 +92,41 @@ func TestClaimWebBindsWithoutServing(t *testing.T) {
 		t.Errorf("second release = %v", err)
 	}
 }
+
+// Validate trusts the spelling of web.listen. What the listener bound is
+// what other machines can reach, so a UI without a password is held to that.
+func TestClaimWebRefusesANonLoopbackBindWithoutAPassword(t *testing.T) {
+	open := config.WebConfig{Enabled: true, Listen: "localhost:8484"}
+	for _, test := range []struct {
+		name string
+		web  config.WebConfig
+		pass string
+		addr net.Addr
+		ok   bool
+	}{
+		{name: "loopback v4", web: open, addr: &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 8484}, ok: true},
+		{name: "loopback v6", web: open, addr: &net.TCPAddr{IP: net.IPv6loopback, Port: 8484}, ok: true},
+		{name: "resolved elsewhere", web: open, addr: &net.TCPAddr{IP: net.IPv4(192, 0, 2, 7), Port: 8484}},
+		{name: "every interface", web: open, addr: &net.TCPAddr{IP: net.IPv4zero, Port: 8484}},
+		{name: "with a password", web: open, pass: "secret", addr: &net.TCPAddr{IP: net.IPv4(192, 0, 2, 7), Port: 8484}, ok: true},
+		{name: "allowed", web: config.WebConfig{Enabled: true, Listen: "localhost:8484", AllowUnauthenticated: true}, addr: &net.TCPAddr{IP: net.IPv4(192, 0, 2, 7), Port: 8484}, ok: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			err := checkBoundLoopback(test.web, test.pass, test.addr)
+			if test.ok != (err == nil) {
+				t.Fatalf("checkBoundLoopback = %v, want ok %v", err, test.ok)
+			}
+			if err != nil && !strings.Contains(err.Error(), "web.listen") {
+				t.Errorf("error %q does not name web.listen", err)
+			}
+		})
+	}
+	// A loopback bind without a password claims the address as before.
+	claim, err := claimWeb(context.Background(), config.Config{Web: config.WebConfig{Enabled: true, Listen: "127.0.0.1:0"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := claim.release(); err != nil {
+		t.Fatal(err)
+	}
+}

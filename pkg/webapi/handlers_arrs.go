@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strings"
 
@@ -58,13 +59,20 @@ func (s *Server) arrResponse(ctx context.Context, stored store.Arr) (Arr, error)
 // arrConfig builds the connection a write describes. An API write cannot add
 // a key file, but it preserves one imported from configuration until a literal
 // key replaces it.
+//
+// The stored key, or key file, only follows the connection while it points
+// at the same origin. Otherwise anyone who can reach the API could move the
+// address to a host of their own and receive the real key with the next job's
+// request, so a new origin needs the key in the same write.
 func arrConfig(write ArrWrite, current config.ArrConfig) (config.ArrConfig, error) {
 	arr := config.ArrConfig{
-		Name:       write.Name,
-		Type:       strings.TrimSpace(write.Type),
-		BaseURL:    strings.TrimRight(strings.TrimSpace(write.BaseURL), "/"),
-		APIKey:     current.APIKey,
-		APIKeyFile: current.APIKeyFile,
+		Name:    write.Name,
+		Type:    strings.TrimSpace(write.Type),
+		BaseURL: strings.TrimRight(strings.TrimSpace(write.BaseURL), "/"),
+	}
+	moved := current.BaseURL != "" && !sameOrigin(arr.BaseURL, current.BaseURL)
+	if !moved {
+		arr.APIKey, arr.APIKeyFile = current.APIKey, current.APIKeyFile
 	}
 	if write.APIKey != nil {
 		arr.APIKey = strings.TrimSpace(*write.APIKey)
@@ -72,7 +80,41 @@ func arrConfig(write ArrWrite, current config.ArrConfig) (config.ArrConfig, erro
 			arr.APIKeyFile = ""
 		}
 	}
-	return arr, fieldProblem(arr.Problems())
+	problems := arr.Problems()
+	if moved && len(problems) > 0 && problems[0].Field == "api_key" {
+		return arr, invalidf("api_key", "The address points at another server now. Enter the API key again for it.")
+	}
+	return arr, fieldProblem(problems)
+}
+
+// sameOrigin reports whether two base URLs name the same scheme, host, and
+// port. The host compares case-insensitively and a missing port counts as the
+// scheme's default. A URL that does not parse matches nothing.
+func sameOrigin(a, b string) bool {
+	left, err := url.Parse(a)
+	if err != nil || left.Host == "" {
+		return false
+	}
+	right, err := url.Parse(b)
+	if err != nil || right.Host == "" {
+		return false
+	}
+	return strings.EqualFold(left.Scheme, right.Scheme) &&
+		strings.EqualFold(left.Hostname(), right.Hostname()) &&
+		originPort(left) == originPort(right)
+}
+
+func originPort(u *url.URL) string {
+	if port := u.Port(); port != "" {
+		return port
+	}
+	switch strings.ToLower(u.Scheme) {
+	case "http":
+		return "80"
+	case "https":
+		return "443"
+	}
+	return ""
 }
 
 func (s *Server) createArr(_ http.ResponseWriter, r *http.Request) (int, any, error) {

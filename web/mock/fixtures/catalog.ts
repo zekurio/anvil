@@ -153,7 +153,7 @@ export const NODE_TYPES: NodeType[] = [
   ]),
   condition("check.file_size", "Check file size", "Branches on the size of the file.", [
     comparison("above", "Above", "below", "Below"),
-    { key: "megabytes", label: "Size", type: "int", default: 1024, min: 1, suffix: "MiB", mono: true, half: true },
+    { key: "megabytes", label: "Size", type: "int", default: 1024, min: 1, max: 16777216, suffix: "MiB", mono: true, half: true },
   ]),
   condition("check.audio_language", "Check audio language", "Branches on the languages of the audio tracks.", [
     {
@@ -265,13 +265,13 @@ export const NODE_TYPES: NodeType[] = [
       section(
         "Advanced",
         [
-          { key: "samples", label: "Samples per CRF", type: "int", hint: "0 uses one sample per 12 minutes of runtime.", default: 0, min: 0, mono: true, half: true, visible_when: search() },
+          { key: "samples", label: "Samples per CRF", type: "int", hint: "0 uses one sample per 12 minutes of runtime.", default: 0, min: 0, max: 100, mono: true, half: true, visible_when: search() },
           { key: "sample_duration", label: "Sample length", type: "duration", default: "20s", mono: true, half: true, visible_when: search() },
           {
             key: "ffmpeg_args",
             label: "Extra encoder arguments",
             type: "string_list",
-            hint: "One option and its value per entry. Only encoder parameters and value-only tuning options are allowed.",
+            hint: "An option and its value are separate entries, such as -g then 240. Only encoder parameter bundles and value-only tuning options are allowed.",
             default: [],
             mono: true,
             placeholder: "-svtav1-params",
@@ -315,8 +315,8 @@ export const NODE_TYPES: NodeType[] = [
       section(
         "Advanced",
         [
-          { key: "samples", label: "Sample windows", type: "int", hint: "0 uses one window per 3 minutes of runtime, between 4 and 24.", default: 0, min: 0, mono: true, half: true },
-          { key: "frame_count", label: "Frames per window", type: "int", default: 300, min: 1, mono: true, half: true },
+          { key: "samples", label: "Sample windows", type: "int", hint: "0 uses one window per 3 minutes of runtime, between 4 and 24.", default: 0, min: 0, max: 100, mono: true, half: true },
+          { key: "frame_count", label: "Frames per window", type: "int", default: 300, min: 1, max: 10000, mono: true, half: true },
           {
             key: "seek_offsets",
             label: "Sample at these offsets",

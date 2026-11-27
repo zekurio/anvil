@@ -2,6 +2,7 @@ package config
 
 import (
 	"math"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -38,8 +39,8 @@ func TestProfileProblemsKeepCheckConfigWording(t *testing.T) {
 	}
 	want := strings.Join([]string{
 		"invalid config:",
-		`profile "default-av1" crop.samples must be 0 (automatic) or at least 2`,
-		`profile "default-av1" crop.frame_count must be at least 1`,
+		`profile "default-av1" crop.samples must be 0 (automatic) or between 2 and 100`,
+		`profile "default-av1" crop.frame_count must be between 1 and 10000`,
 		`profile "default-av1" crop.seek_offsets[1] must be non-negative`,
 		`profile "default-av1" crop.limit must be between 1 and 255`,
 		`profile "default-av1" crop.round must be at least 1`,
@@ -54,8 +55,8 @@ func TestProfileProblemsKeepCheckConfigWording(t *testing.T) {
 		`profile "default-av1" CRF values must be non-negative`,
 		`profile "default-av1" crf_min must be less than or equal to crf_max`,
 		`profile "default-av1" video.sample_duration must be positive`,
-		`profile "default-av1" video.ffmpeg_args option "-crf" is not accepted; accepted: encoder parameter bundles (-svtav1-params, -x265-params, -x264-params) or value-only tuning options (-tune, -profile:v, -level, -g, -keyint_min, -bf, -refs, -sc_threshold, -aq-mode, -aq-strength, -rc-lookahead, -b_strategy, -look_ahead, -look_ahead_depth, -extbrc, -low_power, -async_depth, -adaptive_i, -adaptive_b, -quality)`,
-		`profile "default-av1" video.samples must be non-negative`,
+		`profile "default-av1" video.ffmpeg_args option "-crf" is not accepted; accepted: encoder parameter bundles (-svtav1-params, -x265-params, -x264-params) of value-only keys, or value-only tuning options (-tune, -profile:v, -level, -g, -keyint_min, -bf, -refs, -sc_threshold, -aq-mode, -aq-strength, -rc-lookahead, -b_strategy, -look_ahead, -look_ahead_depth, -extbrc, -low_power, -async_depth, -adaptive_i, -adaptive_b, -quality)`,
+		`profile "default-av1" video.samples must be between 0 and 100`,
 		`profile "default-av1" video.target must be set when metric is "xpsnr" (typical targets are 35-50)`,
 		`profile "default-av1" min_savings_percent must be between 0 and 100`,
 	}, "\n- ")
@@ -85,4 +86,41 @@ func TestProblemsNameFieldAndRule(t *testing.T) {
 	if problems := Default().Legacy.Profiles[DefaultProfileName].Crop.Problems(); len(problems) != 0 {
 		t.Fatalf("default crop Problems() = %+v", problems)
 	}
+}
+
+// Each crop window and search sample is an ffmpeg run, and spread crop
+// windows are allocated up front, so the counts have a ceiling.
+func TestProblemsBoundTheWorkOfAJob(t *testing.T) {
+	profile := Default().Legacy.Profiles[DefaultProfileName]
+	crop := profile.Crop
+	crop.Samples = MaxCropWindows + 1
+	crop.FrameCount = MaxCropFrameCount + 1
+	crop.SeekOffsets = make([]Duration, MaxCropWindows+1)
+	want := []Problem{
+		{Field: "samples", Rule: "must be 0 (automatic) or between 2 and 100"},
+		{Field: "frame_count", Rule: "must be between 1 and 10000"},
+		{Field: "seek_offsets", Rule: "must not hold more than 100 offsets"},
+	}
+	if got := crop.Problems(); !slices.EqualFunc(got, want, sameProblem) {
+		t.Fatalf("crop Problems() = %+v, want %+v", got, want)
+	}
+	crop.Samples, crop.FrameCount, crop.SeekOffsets = MaxCropWindows, MaxCropFrameCount, make([]Duration, MaxCropWindows)
+	if got := crop.Problems(); len(got) != 0 {
+		t.Fatalf("crop Problems() at the bounds = %+v", got)
+	}
+
+	video := profile.Video
+	video.Samples = MaxVideoSamples + 1
+	want = []Problem{{Field: "samples", Rule: "must be between 0 and 100"}}
+	if got := video.Problems(); !slices.EqualFunc(got, want, sameProblem) {
+		t.Fatalf("video Problems() = %+v, want %+v", got, want)
+	}
+	video.Samples = MaxVideoSamples
+	if got := video.Problems(); len(got) != 0 {
+		t.Fatalf("video Problems() at the bound = %+v", got)
+	}
+}
+
+func sameProblem(a, b Problem) bool {
+	return a.Field == b.Field && a.Rule == b.Rule
 }

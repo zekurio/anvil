@@ -5,6 +5,7 @@ import { For, Show } from "solid-js";
 
 import type { FileFacts, FlowTest, StreamFacts } from "../../api";
 import { formatBitrate, formatBytes, formatDuration, joinDot } from "../../lib/format";
+import { shellCommand } from "../../lib/shell";
 import { Banner, Button, CommandPreview, Icon, LoadingState, PathCell, SheetSection, SideSheet, StatusBadge, toast } from "../../ui";
 import type { Editor } from "./editor";
 
@@ -56,7 +57,8 @@ function Facts(props: { file: FileFacts }) {
 
 function Result(props: { result: FlowTest; stale: boolean; onRerun: () => void }) {
   const copy = () => {
-    navigator.clipboard.writeText(["ffmpeg", ...props.result.command].join(" ")).then(
+    // Quoted: the path is the tested file's name, which whoever put the file there chose.
+    navigator.clipboard.writeText(shellCommand(["ffmpeg", ...props.result.command])).then(
       () => toast.success("Command copied"),
       () => toast.error("The command could not be copied", { description: "The browser refused access to the clipboard." }),
     );

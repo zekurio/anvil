@@ -345,8 +345,7 @@ func (s Service) forcePlannedOccurrence(ctx context.Context, library config.Libr
 			SizeBytes: candidate.SizeBytes,
 			ModTime:   candidate.ModTime,
 		},
-		Priority: library.Priority,
-		Now:      s.now(),
+		Now: s.now(),
 	})
 	if errors.Is(err, store.ErrActiveWork) {
 		// Active work is an operator-fixable state, not a daemon failure: the

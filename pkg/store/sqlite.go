@@ -102,7 +102,6 @@ type ApplyScanInput struct {
 	// SourcePaths limits replacement to these exact paths. Nil selects the full library.
 	SourcePaths     []string
 	LibraryName     domain.LibraryName
-	Priority        int
 	RequeueExisting bool
 	Entries         []ScanEntry
 	CompletedAt     time.Time
@@ -129,7 +128,6 @@ type ForceOccurrenceInput struct {
 	AssetRelativePath  string
 	AssetRole          domain.MediaAssetRole
 	AssetFingerprint   domain.FileFingerprint
-	Priority           int
 	Now                time.Time
 }
 

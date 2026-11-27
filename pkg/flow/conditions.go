@@ -219,6 +219,9 @@ func checkBitrateNode() nodeDef {
 
 func checkFileSizeNode() nodeDef {
 	const mebibyte = 1 << 20
+	// 16 TiB is larger than any media file, and keeps megabytes * mebibyte
+	// far from overflowing an int64.
+	const maxMegabytes = 1 << 24
 	return nodeDef{
 		NodeType: NodeType{
 			ID:          typeCheckFileSize,
@@ -235,6 +238,7 @@ func checkFileSizeNode() nodeDef {
 					Type:    FieldInt,
 					Default: 1024,
 					Min:     bound(1),
+					Max:     bound(maxMegabytes),
 					Suffix:  "MiB",
 					Mono:    true,
 					Half:    true,

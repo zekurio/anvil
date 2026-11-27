@@ -83,6 +83,35 @@ func resolve(raw rawConfig) (Config, error) {
 	return cfg, nil
 }
 
+// StoreOnScratch reports whether the store lies under the system's temporary
+// directory or inside temp_dir, which is where it ends up when neither
+// store_path nor temp_dir is set. Either may be cleared at boot or by a
+// cleanup job, and the store is the only copy of the libraries, flows, Arr
+// connections, and daemon settings, so the daemon warns about it.
+func (d DaemonConfig) StoreOnScratch() bool {
+	store, err := filepath.Abs(d.StorePath)
+	if err != nil {
+		return false
+	}
+	for _, dir := range []string{os.TempDir(), d.TempDir} {
+		if strings.TrimSpace(dir) == "" {
+			continue
+		}
+		dir, err := filepath.Abs(dir)
+		if err != nil {
+			continue
+		}
+		if rel, err := filepath.Rel(dir, store); err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			return true
+		}
+	}
+	return false
+}
+
+// StoreOnScratchWarning is the warning the daemon and check-config give when
+// StoreOnScratch holds.
+const StoreOnScratchWarning = "the store holds the libraries, flows, Arr connections, and daemon settings, but lies in a temporary directory; set daemon.store_path to a file on persistent storage"
+
 func resolveDaemon(raw rawDaemonConfig) DaemonConfig {
 	tempDir := strings.TrimSpace(raw.TempDir)
 	if tempDir == "" {

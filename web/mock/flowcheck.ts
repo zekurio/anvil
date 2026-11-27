@@ -146,13 +146,69 @@ const blankEntries = (o: Options, key: string): Problem[] => (o.list(key).some((
 const cleanList = (entries: string[]) => entries.map((entry) => entry.trim().toLowerCase()).filter(Boolean);
 const listOr = (entries: string[], fallback: string) => (entries.length === 0 ? fallback : entries.join(", "));
 
-// pkg/ffmpeg ValidateEncoderArgs: an allow-list. Nothing that names a file, a
-// URL, a device, a stream selector or a filter graph gets through.
-const PARAM_BUNDLES = new Set(["svtav1-params", "x265-params", "x264-params"]);
+// pkg/ffmpeg ValidateEncoderArgs: an allow-list, down to the keys inside a
+// parameter bundle. Nothing that names a file, a URL, a device, a stream
+// selector or a filter graph gets through.
+const keySet = (keys: string) => new Set(keys.trim().split(/\s+/));
+const PARAM_BUNDLES: Record<string, Set<string>> = {
+  "svtav1-params": keySet(`
+    tune film-grain film-grain-denoise adaptive-film-grain
+    enable-qm qm-min qm-max chroma-qm-min chroma-qm-max
+    aq-mode sharpness ac-bias luminance-qp-bias qp-scale-compress-strength
+    enable-variance-boost variance-boost-strength variance-octile variance-boost-curve
+    enable-overlays scd lookahead keyint irefresh-type hierarchical-levels
+    enable-tf tf-strength scm fast-decode max-tx-size
+    enable-restoration enable-cdef enable-dlf enable-mfmv enable-dg
+    tile-rows tile-columns lp pin
+    color-primaries transfer-characteristics matrix-coefficients color-range
+    chroma-sample-position mastering-display content-light`),
+  "x265-params": keySet(`
+    aq-mode aq-strength aq-motion hevc-aq qg-size cutree
+    psy-rd psy-rdoq rd rdoq-level rd-refine dynamic-rd ssim-rd
+    rskip rskip-edge-threshold deblock sao sao-non-deblock limit-sao selective-sao
+    strong-intra-smoothing constrained-intra b-intra fast-intra rdpenalty
+    ctu min-cu-size max-tu-size tu-intra-depth tu-inter-depth limit-tu
+    ref limit-refs limit-modes rect amp max-merge me subme merange
+    temporal-mvp early-skip tskip tskip-fast signhide weightp weightb
+    bframes b-adapt b-pyramid bframe-bias rc-lookahead lookahead-slices
+    keyint min-keyint scenecut scenecut-bias hist-scenecut fades radl
+    gop-lookahead open-gop rc-grain nr-intra nr-inter ipratio pbratio
+    qcomp cbqpoffs crqpoffs frame-threads wpp info log-level
+    hdr10 hdr10-opt repeat-headers aud hrd high-tier level-idc
+    colorprim transfer colormatrix range chromaloc master-display max-cll cll`),
+  "x264-params": keySet(`
+    aq-mode aq-strength psy-rd psy trellis deblock nr
+    deadzone-inter deadzone-intra ipratio pbratio qcomp chroma-qp-offset mbtree
+    bframes b-adapt b-bias b-pyramid open-gop ref me subme merange
+    rc-lookahead keyint min-keyint scenecut cabac weightb weightp direct
+    partitions 8x8dct mixed-refs chroma-me fast-pskip dct-decimate
+    constrained-intra aud
+    colorprim transfer colormatrix chromaloc mastering-display cll`),
+};
+const NEGATABLE_PARAMS = new Set(["x265-params", "x264-params"]);
 const TUNING_OPTIONS = new Set("tune profile level g keyint_min bf refs sc_threshold aq-mode aq-strength rc-lookahead b_strategy look_ahead look_ahead_depth extbrc low_power async_depth adaptive_i adaptive_b quality".split(" "));
-const MANAGED_PARAMS = new Set("crf qp qpmin qpmax rc bitrate bit_rate tbr mbr preset".split(" "));
+const MANAGED_PARAMS = keySet("crf crf-min crf-max qp qpmin qpmax min-qp max-qp rc bitrate bit-rate tbr mbr vbv-maxrate vbv-bufsize pass passes lossless preset");
 const ACCEPTED_ARGS =
-  "encoder parameter bundles (-svtav1-params, -x265-params, -x264-params) or value-only tuning options (-tune, -profile:v, -level, -g, -keyint_min, -bf, -refs, -sc_threshold, -aq-mode, -aq-strength, -rc-lookahead, -b_strategy, -look_ahead, -look_ahead_depth, -extbrc, -low_power, -async_depth, -adaptive_i, -adaptive_b, -quality)";
+  "encoder parameter bundles (-svtav1-params, -x265-params, -x264-params) of value-only keys, or value-only tuning options (-tune, -profile:v, -level, -g, -keyint_min, -bf, -refs, -sc_threshold, -aq-mode, -aq-strength, -rc-lookahead, -b_strategy, -look_ahead, -look_ahead_depth, -extbrc, -low_power, -async_depth, -adaptive_i, -adaptive_b, -quality)";
+const PARAM_TEXT = /^[A-Za-z0-9.,+\-_()]*$/;
+const NEGATIVE_NUMBER = /^-[0-9]+(\.[0-9]+)?$/;
+
+function encoderParamsRule(option: string, value: string): string {
+  const keys = PARAM_BUNDLES[option] ?? new Set<string>();
+  for (const entry of value.split(":")) {
+    const cut = entry.indexOf("=");
+    const key = cut < 0 ? entry : entry.slice(0, cut);
+    const setting = cut < 0 ? "" : entry.slice(cut + 1);
+    const negated = key.startsWith("no-") ? key.slice(3) : "";
+    if (entry === "") return 'encoder params must not contain an empty entry; separate key=value entries with one ":"';
+    if (!PARAM_TEXT.test(key) || !PARAM_TEXT.test(setting)) return `encoder param "${entry}" may only contain letters, digits, and . , + - _ ( )`;
+    if (MANAGED_PARAMS.has(key.toLowerCase().replaceAll("_", "-"))) return `encoder param "${key}" overrides a setting managed by Anvil`;
+    if (!keys.has(key) && !(negated !== "" && NEGATABLE_PARAMS.has(option) && keys.has(negated)))
+      return `encoder param "${key}" is not accepted in -${option}; accepted: ${[...keys].sort().join(", ")}`;
+    if (cut < 0 || setting === "") return `encoder param "${key}" needs a value, such as ${key}=1`;
+  }
+  return "";
+}
 
 function encoderArgsRule(args: string[]): string {
   for (let i = 0; i < args.length; i += 2) {
@@ -160,13 +216,10 @@ function encoderArgsRule(args: string[]): string {
     if (!key.startsWith("-") || key === "-" || i + 1 === args.length) return `Must contain option/value pairs; invalid option "${key}"; accepted: ${ACCEPTED_ARGS}.`;
     const name = key.replace(/^-+/, "").split(":")[0] ?? "";
     const value = args[i + 1] ?? "";
-    if (value.startsWith("-")) return `Value "${value}" for option "${key}" must not begin with "-".`;
-    if (PARAM_BUNDLES.has(name)) {
-      const managed = value
-        .split(":")
-        .map((entry) => (entry.includes("=") ? (entry.split("=")[0] ?? "").trim() : ""))
-        .find((param) => MANAGED_PARAMS.has(param.toLowerCase()));
-      if (managed) return `Option "${key}": encoder param "${managed}" overrides a setting managed by Anvil.`;
+    if (value.startsWith("-") && !NEGATIVE_NUMBER.test(value)) return `Value "${value}" for option "${key}" must not begin with "-" unless it is a negative number.`;
+    if (name in PARAM_BUNDLES) {
+      const problem = encoderParamsRule(name, value);
+      if (problem) return `Option "${key}": ${problem}.`;
       continue;
     }
     if (!TUNING_OPTIONS.has(name)) return `Option "${key}" is not accepted; accepted: ${ACCEPTED_ARGS}.`;
@@ -202,7 +255,8 @@ const CHECKS: Record<string, (o: Options) => Problem[]> = {
     const offsets = o.list("seek_offsets").map((entry) => ({ entry, seconds: parseDuration(entry) }));
     const bad = offsets.find((offset) => offset.seconds === undefined);
     if (bad) problems.push({ field: "seek_offsets", message: `Entries must be durations such as 5m or 1h10m. "${bad.entry}" is not one.` });
-    if (o.number("samples") === 1) problems.push({ field: "samples", message: "Must be 0 (automatic) or at least 2." });
+    if (o.number("samples") === 1) problems.push({ field: "samples", message: "Must be 0 (automatic) or between 2 and 100." });
+    if (offsets.length > 100) problems.push({ field: "seek_offsets", message: "Must not hold more than 100 offsets." });
     if (offsets.some((offset) => (offset.seconds ?? 0) < 0)) problems.push({ field: "seek_offsets", message: "Must not contain negative durations." });
     return problems;
   },

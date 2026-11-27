@@ -12,15 +12,31 @@ function find(ctx: Context): StoredArr {
   return arr;
 }
 
+// sameOrigin compares scheme, host, and port the way the daemon does: the
+// host case-insensitively and a missing port as the scheme's default.
+function sameOrigin(a: string, b: string): boolean {
+  try {
+    return new URL(a).origin === new URL(b).origin;
+  } catch {
+    return false;
+  }
+}
+
 function parse(write: Partial<ArrWrite>, existing?: StoredArr): StoredArr {
   const name = existing?.name ?? write.name;
   if (typeof name !== "string" || !/^[a-z0-9_-]{1,64}$/.test(name)) throw invalid('Must be 1 to 64 characters of a-z, 0-9, "-" and "_".', "name");
   if (write.type !== "radarr" && write.type !== "sonarr") throw invalid("Must be radarr or sonarr.", "type");
   if (typeof write.base_url !== "string" || !/^https?:\/\/\S+$/.test(write.base_url)) throw invalid("Must be a URL starting with http:// or https://.", "base_url");
-  const api_key_file = existing?.api_key_file ?? "";
+  // The stored key only follows the connection while it stays on the same
+  // server; a new one needs the key in the same write.
+  const kept = existing && sameOrigin(write.base_url, existing.base_url) ? existing : undefined;
+  const api_key_file = kept?.api_key_file ?? "";
   // null keeps the stored key, "" clears it, anything else replaces it.
-  const api_key_set = write.api_key === null || write.api_key === undefined ? (existing?.api_key_set ?? false) : write.api_key !== "";
-  if (!api_key_set && api_key_file === "") throw invalid("An API key is required. Enter the key of the Radarr or Sonarr server.", "api_key");
+  const api_key_set = write.api_key === null || write.api_key === undefined ? (kept?.api_key_set ?? false) : write.api_key !== "";
+  if (!api_key_set && api_key_file === "") {
+    if (existing && !kept) throw invalid("The address points at another server now. Enter the API key again for it.", "api_key");
+    throw invalid("An API key is required. Enter the key of the Radarr or Sonarr server.", "api_key");
+  }
   return { name, type: write.type, base_url: write.base_url.replace(/\/+$/, ""), api_key_file: api_key_set && write.api_key ? "" : api_key_file, api_key_set };
 }
 

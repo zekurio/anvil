@@ -16,6 +16,15 @@ interface Draft {
 
 const NAME = /^[a-z0-9_-]{1,64}$/;
 
+/** Scheme, host and port of a URL, the way the daemon compares them; the text itself when it is not a URL. */
+function origin(url: string): string {
+  try {
+    return new URL(url.trim()).origin;
+  } catch {
+    return url.trim();
+  }
+}
+
 /**
  * Adds an Arr connection, or edits `arr`. The key is write-only: the daemon
  * never returns it, so an empty field keeps what is stored, and removing the
@@ -34,6 +43,9 @@ export function ArrDialog(props: { arr?: Arr; onClose: () => void }) {
     setErrors((current) => void (current[field] = undefined));
     setGeneral(null);
   };
+
+  // The daemon keeps a stored key only for the server it was entered for: a new scheme, host or port needs it again.
+  const keyNeeded = () => !!editing && (editing.api_key_set || editing.api_key_file !== "") && !draft.remove_key && draft.api_key === "" && origin(draft.base_url) !== origin(editing.base_url);
 
   const validate = (): boolean => {
     const next: Record<string, string | undefined> = {
@@ -108,7 +120,7 @@ export function ArrDialog(props: { arr?: Arr; onClose: () => void }) {
         <Field
           label="API key"
           htmlFor="arr-key"
-          hint={draft.remove_key ? "Removed on save." : editing?.api_key_set ? "Leave empty to keep the stored key." : editing?.api_key_file ? "Replaces the key file below." : undefined}
+          hint={draft.remove_key ? "Removed on save." : keyNeeded() ? "The address changed. Enter the key again." : editing?.api_key_set ? "Leave empty to keep the stored key." : editing?.api_key_file ? "Replaces the key file below." : undefined}
           error={errors.api_key}
         >
           <Input id="arr-key" mono type="password" autocomplete="new-password" spellcheck={false} disabled={draft.remove_key} invalid={!!errors.api_key} value={draft.api_key} onInput={(event) => edit("api_key", (d) => void (d.api_key = event.currentTarget.value))} />

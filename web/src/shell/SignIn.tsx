@@ -1,6 +1,6 @@
-import { createSignal, onSettled } from "solid-js";
+import { createSignal, flush, onSettled, type Accessor } from "solid-js";
 
-import { api, ApiError, errorMessage, invalidate, keys } from "../api";
+import { api, ApiError, errorMessage, invalidate, keys, type Session } from "../api";
 import { markAuthenticated } from "../api/client";
 import { useTitle } from "../lib/title";
 import { Button, Field, Input, Logo } from "../ui";
@@ -14,7 +14,7 @@ import { Button, Field, Input, Logo } from "../ui";
  * below the newest modal, so the password field can always be reached and
  * the work in progress is intact after signing in.
  */
-export function SignIn() {
+export function SignIn(props: { session: Accessor<Session> }) {
   let dialog: HTMLDialogElement | undefined;
   const [password, setPassword] = createSignal("");
   const [error, setError] = createSignal<string | null>(null);
@@ -37,9 +37,16 @@ export function SignIn() {
     try {
       await api.session.login(password());
       markAuthenticated();
+      // Resolves whether or not the refetch answered: a failed one leaves the old session on screen.
       await invalidate(keys.session);
+      flush();
+      const session = props.session();
+      if (session.auth_required && !session.authenticated) setError("The password was accepted, but the session could not be read. Try again.");
     } catch (err) {
       setError(err instanceof ApiError && err.status === 401 ? "That password is not correct." : errorMessage(err));
+    } finally {
+      // The password stays in memory no longer than the request needs it.
+      setPassword("");
       setBusy(false);
     }
   };

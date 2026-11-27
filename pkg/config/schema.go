@@ -29,6 +29,15 @@ const (
 	DefaultCropRequiredAlignment  = 2
 )
 
+// Upper bounds on settings that set how much work one job does. Each crop
+// window and each search sample is an ffmpeg run, and cropdetect logs a line
+// per frame that has to fit the process output capture.
+const (
+	MaxCropWindows    = 100
+	MaxCropFrameCount = 10000
+	MaxVideoSamples   = 100
+)
+
 const (
 	DefaultScanInterval    = 30 * time.Minute
 	DefaultFSDebounce      = 2 * time.Second
@@ -178,12 +187,14 @@ type ProfileConfig struct {
 // CropConfig controls crop sampling and the safety policy applied to candidates.
 type CropConfig struct {
 	// Sample crop candidates at these input offsets; an empty list spreads
-	// windows across the input instead; non-negative Go duration strings.
+	// windows across the input instead; at most 100 non-negative Go duration
+	// strings.
 	SeekOffsets []Duration `toml:"seek_offsets"`
 	// Crop windows spread across the input, one per sample slice; 0 uses one
-	// per 3 minutes of runtime, clamped to 4-24 windows; 0 or integer >= 2.
+	// per 3 minutes of runtime, clamped to 4-24 windows; 0 or integer from 2
+	// through 100.
 	Samples int `toml:"samples"`
-	// Frames analyzed at each seek offset; integer >= 1.
+	// Frames analyzed at each seek offset; integer from 1 through 10000.
 	FrameCount int `toml:"frame_count"`
 	// ffmpeg cropdetect black threshold; integer from 1 through 255.
 	Limit int `toml:"limit"`
@@ -219,8 +230,8 @@ type VideoConfig struct {
 	CRFMin int `toml:"crf_min"`
 	// Highest search CRF; integer no lower than crf_min.
 	CRFMax int `toml:"crf_max"`
-	// Fixed sample count per CRF; 0 uses one per 12 minutes, rounded up.
-	// Short inputs use one whole-file sample.
+	// Fixed sample count per CRF; 0 uses one per 12 minutes, rounded up;
+	// integer from 0 through 100. Short inputs use one whole-file sample.
 	Samples int `toml:"samples"`
 	// Length of each search sample; positive Go duration, default "20s".
 	SampleDuration Duration `toml:"sample_duration"`
@@ -237,9 +248,10 @@ type VideoConfig struct {
 	ForceEncodeOnNoFit bool `toml:"force_encode_on_no_fit"`
 	// Copy video instead of searching and encoding when policy requires it.
 	SkipEncode bool `toml:"skip_encode"`
-	// Encoder parameter bundles and value-only tuning option/value pairs shared
-	// by search and final encoding. Files, URLs, devices, filters, mapping,
-	// timing, and rate control are not accepted.
+	// Encoder parameter bundles of allow-listed value-only keys and value-only
+	// tuning option/value pairs shared by search and final encoding. Files,
+	// URLs, devices, filters, mapping, timing, and rate control are not
+	// accepted.
 	FFmpegArgs []string `toml:"ffmpeg_args"`
 	// Per-source-codec adjustments; see VideoOverrideConfig.
 	Overrides map[string]VideoOverrideConfig `toml:"overrides"`
