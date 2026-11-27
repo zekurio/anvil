@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"reflect"
 	"sort"
 	"strings"
 	"sync"
@@ -41,16 +42,42 @@ type EventSource interface {
 }
 
 type Monitor struct {
-	pending           map[domain.LibraryName]ScanTrigger
-	fullDue           map[domain.LibraryName]time.Time
-	Scanner           LibraryScanner
-	ConfigProvider    ConfigProvider
-	EventSource       EventSource
+	pending map[domain.LibraryName]ScanTrigger
+	fullDue map[domain.LibraryName]time.Time
+	// known is what the monitor last saw of every library, so it can tell a
+	// library that was added or changed at runtime from one it already scans.
+	known          map[domain.LibraryName]scanIdentity
+	Scanner        LibraryScanner
+	ConfigProvider ConfigProvider
+	EventSource    EventSource
+	// Reconfigured wakes the monitor as soon as the set of libraries changed,
+	// instead of at its next reconcile tick. A nil channel never fires.
+	Reconfigured      <-chan struct{}
 	Debounce          time.Duration
 	ReconcileInterval time.Duration
 	Now               func() time.Time
 	OnScan            func(config.LibraryConfig, string, ScanResult, error)
 	OnEventError      func(error)
+}
+
+// scanIdentity is everything about a library that decides what a scan finds.
+// Pausing a library or reassigning its flow changes none of it.
+type scanIdentity struct {
+	Kind         string
+	Path         string
+	Rules        []config.Rule
+	RuleFallback string
+	Download     config.DownloadLibraryConfig
+}
+
+func scanIdentityOf(library config.LibraryConfig) scanIdentity {
+	return scanIdentity{
+		Kind:         library.Kind,
+		Path:         library.Path,
+		Rules:        library.Rules,
+		RuleFallback: config.NormalizeRuleFallback(library.RuleFallback),
+		Download:     library.Download,
+	}
 }
 
 func (m *Monitor) Run(ctx context.Context) error {
@@ -82,6 +109,7 @@ func (m *Monitor) Run(ctx context.Context) error {
 
 	m.pending = make(map[domain.LibraryName]ScanTrigger)
 	m.fullDue = make(map[domain.LibraryName]time.Time)
+	m.known = nil
 	schedules := make(map[domain.LibraryName]time.Time)
 	reasons := make(map[domain.LibraryName]string)
 	cfg := m.reconcileSchedules(schedules, reasons)
@@ -109,6 +137,10 @@ func (m *Monitor) Run(ctx context.Context) error {
 		case <-reconcileTimer.C:
 			stopTimer(scanTimer)
 			cfg = m.reconcileSchedules(schedules, reasons)
+		case <-m.Reconfigured:
+			stopTimer(scanTimer)
+			stopTimer(reconcileTimer)
+			cfg = m.reconcileSchedules(schedules, reasons)
 		case <-scanC:
 			stopTimer(reconcileTimer)
 			cfg = m.reconcileSchedules(schedules, reasons)
@@ -123,8 +155,14 @@ func (m *Monitor) reconcileSchedules(schedules map[domain.LibraryName]time.Time,
 	cfg := m.ConfigProvider()
 	now := m.now()
 	seen := make(map[domain.LibraryName]struct{}, len(cfg.Libraries))
+	// The first reconcile only records what exists: whoever started the
+	// monitor has already scanned those libraries.
+	seeded := m.known != nil
+	if !seeded {
+		m.known = make(map[domain.LibraryName]scanIdentity, len(cfg.Libraries))
+	}
 
-	for name := range cfg.Libraries {
+	for name, library := range cfg.Libraries {
 		libraryName := domain.LibraryName(name)
 		seen[libraryName] = struct{}{}
 		next := now.Add(cfg.ScanIntervalForLibrary(libraryName))
@@ -138,6 +176,17 @@ func (m *Monitor) reconcileSchedules(schedules map[domain.LibraryName]time.Time,
 		if !exists || current.IsZero() || current.After(next) {
 			schedules[libraryName] = next
 		}
+
+		identity := scanIdentityOf(library)
+		previous, known := m.known[libraryName]
+		m.known[libraryName] = identity
+		switch {
+		case !seeded:
+		case !known:
+			m.scheduleFullScan(cfg, schedules, reasons, libraryName, "library-added")
+		case !reflect.DeepEqual(previous, identity):
+			m.scheduleFullScan(cfg, schedules, reasons, libraryName, "library-changed")
+		}
 	}
 	for name := range schedules {
 		if _, ok := seen[name]; !ok {
@@ -147,8 +196,30 @@ func (m *Monitor) reconcileSchedules(schedules map[domain.LibraryName]time.Time,
 			delete(m.fullDue, name)
 		}
 	}
+	for name := range m.known {
+		if _, ok := seen[name]; !ok {
+			delete(m.known, name)
+		}
+	}
 
 	return cfg
+}
+
+// scheduleFullScan brings a library's next scan forward to one debounce from
+// now and makes it a full one. A library that was just created has never been
+// scanned, and one whose path or rules changed needs every file judged again;
+// neither can wait for the scan interval.
+func (m *Monitor) scheduleFullScan(cfg config.Config, schedules map[domain.LibraryName]time.Time, reasons map[domain.LibraryName]string, name domain.LibraryName, reason string) {
+	due := m.now().Add(m.debounce(cfg))
+	if current, exists := schedules[name]; !exists || current.After(due) {
+		schedules[name] = due
+	}
+	if m.fullDue != nil {
+		m.fullDue[name] = due
+	}
+	// Paths collected for a targeted scan are covered by the full one.
+	delete(m.pending, name)
+	reasons[name] = reason
 }
 
 func (m *Monitor) scheduleTrigger(cfg config.Config, schedules map[domain.LibraryName]time.Time, reasons map[domain.LibraryName]string, trigger ScanTrigger) {
@@ -341,6 +412,11 @@ func (m *Monitor) eventError(err error) {
 type FilesystemEventSource struct {
 	ReconcileInterval time.Duration
 	Completion        *CompletionTracker
+	// Reconfigured makes the source re-read the libraries at once, so the
+	// root of a new library is watched and the watches of a deleted one are
+	// dropped without waiting for the reconcile tick. A nil channel never
+	// fires.
+	Reconfigured <-chan struct{}
 }
 
 func nextScheduledScan(schedules map[domain.LibraryName]time.Time) (time.Time, bool) {

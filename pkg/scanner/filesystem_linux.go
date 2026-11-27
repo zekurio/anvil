@@ -12,7 +12,6 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
-	"regexp"
 	"slices"
 	"sort"
 	"strings"
@@ -45,10 +44,10 @@ const filesystemTriggerMask = unix.IN_CREATE |
 	unix.IN_MOVE_SELF
 
 type filesystemLibrary struct {
-	name    domain.LibraryName
-	root    string
-	config  config.LibraryConfig
-	ignores []*regexp.Regexp
+	name   domain.LibraryName
+	root   string
+	config config.LibraryConfig
+	rules  config.RuleSet
 }
 
 type filesystemWatchAlias struct {
@@ -170,6 +169,10 @@ func (s FilesystemEventSource) Run(ctx context.Context, cfgProvider ConfigProvid
 			}
 			return errors.Join(readErr, closeFilesystemInotifyFD(fd))
 		case <-reconcileRequests:
+			stopTimer(reconcileTimer)
+			watcher.reconcile(runCtx, cfgProvider(), false)
+			reconcileTimer.Reset(interval)
+		case <-s.Reconfigured:
 			stopTimer(reconcileTimer)
 			watcher.reconcile(runCtx, cfgProvider(), false)
 			reconcileTimer.Reset(interval)
@@ -497,10 +500,12 @@ func configuredFilesystemLibraries(cfg config.Config) ([]string, map[domain.Libr
 				configured.root = filepath.Clean(absRoot)
 			}
 		}
+		// Rules that do not compile fail every scan with the reason; the
+		// watcher just stops filtering events by them.
 		var err error
-		configured.ignores, err = compileIgnoreRegexps(library.IgnoreRegex)
+		configured.rules, err = config.CompileRules(library.Rules, library.RuleFallback)
 		if err != nil {
-			slog.Warn("compile filesystem ignore patterns", "library", name, "error", err)
+			slog.Warn("compile library rules for filesystem events", "library", name, "error", err)
 		}
 		libraries[configured.name] = configured
 	}
@@ -1004,14 +1009,13 @@ func filesystemPathRelevant(library filesystemLibrary, path string, isDir bool) 
 	if strings.HasSuffix(rel, ".anvil-part") {
 		return false
 	}
-	// Check ancestors too, since their descendants can still have old watches.
-	for current := rel; current != "."; current = filepath.ToSlash(filepath.Dir(current)) {
-		if ignoredByRegex(library.ignores, current, isDir || current != rel) {
-			return false
-		}
-		if excluded, err := matchesExcludedPath(effectiveExcludeGlobs(library.config), current, isDir || current != rel); err == nil && excluded {
-			return false
-		}
+	// Both checks look at the directories above the path too, since their
+	// descendants can still have old watches.
+	if library.rules.Prunes(rel, isDir) {
+		return false
+	}
+	if ignorable, err := ignorablePath(ignorableGlobs(library.config), rel, isDir); err == nil && ignorable {
+		return false
 	}
 	if isDir {
 		return true

@@ -8,13 +8,11 @@ import (
 	"os"
 	"path"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strings"
 	"syscall"
 	"time"
 
-	"github.com/bmatcuk/doublestar/v4"
 	"github.com/zekurio/anvil/pkg/config"
 	"github.com/zekurio/anvil/pkg/domain"
 	replacepkg "github.com/zekurio/anvil/pkg/replace"
@@ -263,8 +261,10 @@ type discovery struct {
 	root       string
 	library    config.LibraryConfig
 	completion *CompletionTracker
-	exclude    []string
-	ignore     []*regexp.Regexp
+	rules      config.RuleSet
+	// ignorable holds the residue globs of a download library, which are
+	// never part of a package whatever the rules say.
+	ignorable []string
 
 	candidates []candidate
 	stats      map[string]sourceStat
@@ -272,7 +272,7 @@ type discovery struct {
 }
 
 func discoverPaths(ctx context.Context, root string, library config.LibraryConfig, completion *CompletionTracker, paths []string) ([]candidate, map[string]sourceStat, int, error) {
-	ignore, err := compileIgnoreRegexps(library.IgnoreRegex)
+	rules, err := config.CompileRules(library.Rules, library.RuleFallback)
 	if err != nil {
 		return nil, nil, 0, err
 	}
@@ -281,8 +281,8 @@ func discoverPaths(ctx context.Context, root string, library config.LibraryConfi
 		root:       root,
 		library:    library,
 		completion: completion,
-		exclude:    effectiveExcludeGlobs(library),
-		ignore:     ignore,
+		rules:      rules,
+		ignorable:  ignorableGlobs(library),
 		stats:      make(map[string]sourceStat),
 	}
 	if paths == nil {
@@ -308,21 +308,17 @@ func discoverPaths(ctx context.Context, root string, library config.LibraryConfi
 }
 
 // skipScopedRoot reports whether a scoped walk root must not be walked: it
-// sits below an excluded or ignored directory a full walk would have pruned,
-// or it no longer exists.
+// sits below a pruned directory a full walk would never have entered, or it
+// no longer exists.
 func (d *discovery) skipScopedRoot(walkRoot string) (bool, error) {
-	for parent := filepath.Dir(walkRoot); parent != d.root && parent != filepath.Dir(parent); parent = filepath.Dir(parent) {
+	if parent := filepath.Dir(walkRoot); parent != d.root && parent != filepath.Dir(parent) {
 		rel, err := filepath.Rel(d.root, parent)
 		if err != nil {
 			return false, err
 		}
-		rel = filepath.ToSlash(rel)
-		excluded, err := matchesExcludedPath(d.exclude, rel, true)
-		if err != nil {
-			return false, err
-		}
-		if excluded || ignoredByRegex(d.ignore, rel, true) {
-			return true, nil
+		pruned, err := d.pruned(filepath.ToSlash(rel), true)
+		if pruned || err != nil {
+			return pruned, err
 		}
 	}
 	if _, err := os.Lstat(walkRoot); errors.Is(err, fs.ErrNotExist) {
@@ -331,6 +327,15 @@ func (d *discovery) skipScopedRoot(walkRoot string) (bool, error) {
 		return false, err
 	}
 	return false, nil
+}
+
+// pruned reports whether a path, or a directory above it, is out of the
+// library: the rules prune it or it is ignorable download residue.
+func (d *discovery) pruned(rel string, dir bool) (bool, error) {
+	if d.rules.Prunes(rel, dir) {
+		return true, nil
+	}
+	return ignorablePath(d.ignorable, rel, dir)
 }
 
 func (d *discovery) visit(absPath string, entry fs.DirEntry, walkErr error) error {
@@ -355,15 +360,14 @@ func (d *discovery) visit(absPath string, entry fs.DirEntry, walkErr error) erro
 }
 
 func (d *discovery) visitDir(rel string) error {
-	if ignoredByRegex(d.ignore, rel, true) {
-		d.skipped++
+	if d.rules.Prunes(rel, true) {
 		return filepath.SkipDir
 	}
-	excluded, err := matchesExcludedPath(d.exclude, rel, true)
+	ignorable, err := matchesExcludedPath(d.ignorable, rel, true)
 	if err != nil {
 		return err
 	}
-	if excluded {
+	if ignorable {
 		return filepath.SkipDir
 	}
 	return nil
@@ -371,23 +375,24 @@ func (d *discovery) visitDir(rel string) error {
 
 func (d *discovery) visitFile(absPath, rel string, entry fs.DirEntry) error {
 	media := likelyMediaFile(rel)
-	if ignoredByRegex(d.ignore, rel, false) {
+	// A pruned file is not part of the library: it is neither a candidate's
+	// residue nor counted towards a package. Pruned media is still reported,
+	// so a scan says what the rules kept out.
+	if d.rules.Prunes(rel, false) {
 		if !media {
-			// Ignored non-media still counts as skipped, unlike excluded files.
-			d.skipped++
 			return nil
 		}
-		return d.skipEntry(absPath, rel, entry, "ignore_regex")
+		return d.skipEntry(absPath, rel, entry, d.rules.Decide(config.RuleFile{Path: rel}).Reason)
 	}
-	excluded, err := matchesAny(d.exclude, rel)
+	ignorable, err := matchesAny(d.ignorable, rel)
 	if err != nil {
 		return err
 	}
-	if excluded {
+	if ignorable {
 		if !media {
 			return nil
 		}
-		return d.skipEntry(absPath, rel, entry, "excluded")
+		return d.skipEntry(absPath, rel, entry, "ignorable")
 	}
 	if entry.Type()&fs.ModeType != 0 {
 		return nil
@@ -417,12 +422,8 @@ func (d *discovery) visitFile(absPath, rel string, entry fs.DirEntry) error {
 		return nil
 	}
 	recordSourceStat(d.stats, d.library, absPath, rel, info, d.completion)
-	included, err := includedBy(d.library.Include, rel)
-	if err != nil {
-		return err
-	}
-	if !included {
-		d.skip(absPath, rel, info, "not_included")
+	if decision := d.rules.Decide(config.RuleFile{Path: rel, SizeBytes: info.Size()}); !decision.Allowed {
+		d.skip(absPath, rel, info, decision.Reason)
 		return nil
 	}
 	if classifyMediaAsset(rel) == domain.MediaAssetRoleSample {
@@ -449,38 +450,6 @@ func (d *discovery) skip(absPath, rel string, info fs.FileInfo, reason string) {
 	d.skipped++
 }
 
-func compileIgnoreRegexps(patterns []string) ([]*regexp.Regexp, error) {
-	if len(patterns) == 0 {
-		return nil, nil
-	}
-
-	regexps := make([]*regexp.Regexp, 0, len(patterns))
-	for i, pattern := range patterns {
-		pattern = strings.TrimSpace(pattern)
-		if pattern == "" {
-			return nil, fmt.Errorf("ignore_regex[%d] must not be empty", i)
-		}
-		compiled, err := regexp.Compile(pattern)
-		if err != nil {
-			return nil, fmt.Errorf("ignore_regex[%d] is invalid: %w", i, err)
-		}
-		regexps = append(regexps, compiled)
-	}
-	return regexps, nil
-}
-
-func ignoredByRegex(patterns []*regexp.Regexp, rel string, isDir bool) bool {
-	for _, pattern := range patterns {
-		if pattern.MatchString(rel) {
-			return true
-		}
-		if isDir && pattern.MatchString(rel+"/") {
-			return true
-		}
-	}
-	return false
-}
-
 func buildCandidate(library config.LibraryConfig, absPath string, rel string, info fs.FileInfo, ignored bool, ignoreReason string) candidate {
 	sourceRel, assetRel, sourceKind := sourceFor(library, rel)
 	return candidate{
@@ -496,12 +465,29 @@ func buildCandidate(library config.LibraryConfig, absPath string, rel string, in
 	}
 }
 
-func effectiveExcludeGlobs(library config.LibraryConfig) []string {
-	exclude := append([]string(nil), library.Exclude...)
-	if library.IsDownload() {
-		exclude = append(exclude, library.Download.IgnorableGlobs...)
+// ignorableGlobs are the residue patterns of a download library. Media
+// libraries have none.
+func ignorableGlobs(library config.LibraryConfig) []string {
+	if !library.IsDownload() {
+		return nil
 	}
-	return exclude
+	return library.Download.IgnorableGlobs
+}
+
+// ignorablePath reports whether a path, or a directory above it, matches an
+// ignorable glob.
+func ignorablePath(patterns []string, rel string, dir bool) (bool, error) {
+	if len(patterns) == 0 {
+		return false, nil
+	}
+	rel = path.Clean(rel)
+	for current := rel; current != "." && current != "/"; current = path.Dir(current) {
+		matched, err := matchesExcludedPath(patterns, current, dir || current != rel)
+		if matched || err != nil {
+			return matched, err
+		}
+	}
+	return false, nil
 }
 
 func recordSourceStat(stats map[string]sourceStat, library config.LibraryConfig, absPath string, rel string, info fs.FileInfo, completion *CompletionTracker) {
@@ -541,46 +527,13 @@ func sourceFor(library config.LibraryConfig, rel string) (string, string, domain
 	return first, rest, domain.SourceKindPackage
 }
 
-func includedBy(patterns []string, rel string) (bool, error) {
-	if len(patterns) == 0 {
-		return true, nil
-	}
-	return matchesAny(patterns, rel)
-}
-
 func matchesAny(patterns []string, rel string) (bool, error) {
-	directory := strings.HasSuffix(filepath.ToSlash(rel), "/")
-	rel = path.Clean(filepath.ToSlash(rel))
-	if directory {
-		rel += "/"
-	}
-	base := path.Base(rel)
-
 	for _, pattern := range patterns {
-		pattern = strings.TrimSpace(filepath.ToSlash(pattern))
-		if pattern == "" {
-			continue
-		}
-
-		matched, err := doublestar.PathMatch(pattern, rel)
-		if err != nil {
-			return false, fmt.Errorf("invalid glob %q: %w", pattern, err)
-		}
-		if matched {
-			return true, nil
-		}
-
-		if !strings.Contains(pattern, "/") {
-			matched, err = doublestar.PathMatch(pattern, base)
-			if err != nil {
-				return false, fmt.Errorf("invalid glob %q: %w", pattern, err)
-			}
-			if matched {
-				return true, nil
-			}
+		matched, err := config.GlobMatches(pattern, rel)
+		if matched || err != nil {
+			return matched, err
 		}
 	}
-
 	return false, nil
 }
 

@@ -15,7 +15,7 @@ import (
 )
 
 func TestFilesystemEventsFilterArtifactsAndOrderDirectoryCompletion(t *testing.T) {
-	library := filesystemLibrary{name: "download", root: "/library", config: config.LibraryConfig{Kind: "download", Exclude: []string{"excluded/**"}}}
+	library := filesystemLibrary{name: "download", root: "/library", config: config.LibraryConfig{Kind: "download", Download: config.DownloadLibraryConfig{IgnorableGlobs: []string{"residue/**"}}}}
 	w := &inotifyFilesystemWatcher{completion: &CompletionTracker{}, libraries: map[domain.LibraryName]filesystemLibrary{"download": library}, wdToWatch: map[int]*filesystemWatch{1: {aliases: map[string]filesystemWatchAlias{"/library": {path: "/library"}}}}, reconcileRequests: make(chan struct{}, 1)}
 	batch := make(filesystemTriggerBatch)
 	w.handleEvent(context.Background(), 1, unix.IN_MODIFY, "film.job-1.anvil-part", batch)
@@ -38,12 +38,27 @@ func TestFilesystemEventsFilterArtifactsAndOrderDirectoryCompletion(t *testing.T
 	if w.completion.completeDirectory("/library/package", pending.at, pending.generation) {
 		t.Fatal("mutation did not fence delayed repair")
 	}
-	library.config.Exclude = append(library.config.Exclude, "ignored/")
+	rules, err := config.CompileRules([]config.Rule{
+		{Action: config.RuleDeny, Field: config.RuleFieldPath, Op: config.RuleOpMatches, Value: "ignored/"},
+		{Action: config.RuleDeny, Field: config.RuleFieldPath, Op: config.RuleOpMatches, Value: "excluded/**"},
+		{Action: config.RuleAllow, Field: config.RuleFieldPath, Op: config.RuleOpMatches, Value: "kept/film.mkv"},
+		{Action: config.RuleDeny, Field: config.RuleFieldPath, Op: config.RuleOpMatches, Value: "kept/**"},
+	}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	library.rules = rules
 	if filesystemPathRelevant(library, "/library/ignored/film.mkv", false) {
 		t.Fatal("directory-only exclusion allowed child")
 	}
 	if filesystemPathRelevant(library, "/library/excluded/film.mkv", false) {
 		t.Fatal("excluded file caused scan")
+	}
+	if filesystemPathRelevant(library, "/library/residue/deep/film.mkv", false) {
+		t.Fatal("ignorable residue caused scan")
+	}
+	if !filesystemPathRelevant(library, "/library/kept/film.mkv", false) {
+		t.Fatal("a deny rule behind an allow rule hid an event the allow rule may want")
 	}
 	w.handleEvent(context.Background(), -1, unix.IN_Q_OVERFLOW, "", batch)
 	if batch["download"].Completed || len(triggerPaths(batch["download"])) != 0 {
