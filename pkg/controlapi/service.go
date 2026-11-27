@@ -42,7 +42,7 @@ type Store interface {
 	ListAttemptEvents(context.Context, domain.AttemptID) ([]domain.AttemptEvent, error)
 	GetJobPipelineContext(context.Context, domain.JobID) (domain.JobPipelineContext, bool, error)
 	RetryJobs(context.Context, store.RetryJobsInput) (store.RetryJobsResult, error)
-	RecoverStaleJobs(context.Context, int, time.Time) (int64, error)
+	RecoverStaleJobs(context.Context, int, time.Time) (store.StaleRecovery, error)
 	ListLibraryStats(context.Context, store.LibraryStatsFilter) ([]store.LibraryStats, error)
 	PruneMissingSourceJobs(context.Context, store.PruneMissingSourceJobsOptions) (store.PruneMissingSourceJobsResult, error)
 	ForceOccurrence(context.Context, store.ForceOccurrenceInput) (store.ForceOccurrenceResult, error)
@@ -351,15 +351,16 @@ func (s Service) CancelJobs(ctx context.Context, request control.JobCancelReques
 	return response, nil
 }
 
-// cleanupOrphanedPart removes a canceled job's unpublished artifact beside
-// its destination. A canceled job never runs another attempt, so without this
-// a part left by a crashed attempt would sit in the library forever. The job
-// must have no publish journal: cancel only refuses jobs whose publish is in
-// flight, while a conflicted publish leaves its residue for the operator on
+// cleanupOrphanedPart removes the unpublished artifact of a job that ended
+// without a worker: one an operator canceled, or one stale-lease recovery
+// failed or skipped. Such a job never runs another attempt, so without this a
+// part left by a crashed attempt would sit in the library forever. The job
+// must have no publish journal: an interrupted publish still needs its
+// artifact, and a conflicted one leaves its residue for the operator on
 // purpose — both keep their part file.
 func (s Service) cleanupOrphanedPart(ctx context.Context, jobID domain.JobID) {
 	log := func(reason string, err error) {
-		slog.Warn("canceled job part cleanup skipped", "job", jobID, "reason", reason, "error", err)
+		slog.Warn("part cleanup of an ended job skipped", "job", jobID, "reason", reason, "error", err)
 	}
 	if _, found, err := s.Store.GetPublishOperation(ctx, jobID); err != nil || found {
 		log("publish journal present", err)

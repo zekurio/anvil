@@ -76,14 +76,37 @@ func (s Service) RetryJobs(ctx context.Context, request control.JobRetryRequest)
 // RecoverJobs releases stale leases the same way the daemon's own recovery loop
 // does, using the daemon's live max-attempts policy.
 func (s Service) RecoverJobs(ctx context.Context) (control.JobRecoverResponse, error) {
-	if err := s.requireStore(); err != nil {
-		return control.JobRecoverResponse{}, err
-	}
-	recovered, err := s.Store.RecoverStaleJobs(ctx, s.runtimeConfig().Daemon.MaxAttempts, s.now())
+	recovered, err := s.RecoverStaleJobs(ctx)
 	if err != nil {
 		return control.JobRecoverResponse{}, err
 	}
 	return control.JobRecoverResponse{APIVersion: control.Version, ServerTime: s.now(), RecoveredJobs: recovered}, nil
+}
+
+// RecoverStaleJobs releases every lease whose deadline has passed and returns
+// how many jobs that touched. A job with attempts left goes back to the
+// queue. One that has none, or whose input is gone, becomes terminal here,
+// without a worker to clean up after it, so its part file is reclaimed the
+// way a canceled job's is: only its own part, and never while a publish
+// journal exists for it.
+//
+// The daemon's start-up recovery, its recovery loop, and the control command
+// all go through here.
+func (s Service) RecoverStaleJobs(ctx context.Context) (int64, error) {
+	if err := s.requireStore(); err != nil {
+		return 0, err
+	}
+	recovery, err := s.Store.RecoverStaleJobs(ctx, s.runtimeConfig().Daemon.MaxAttempts, s.now())
+	if err != nil {
+		return 0, err
+	}
+	for _, jobID := range recovery.Ended {
+		// The jobs are already terminal, so this is the only chance to
+		// reclaim their parts: it must not stop with a daemon shutdown or a
+		// control client that hung up.
+		s.cleanupOrphanedPart(context.WithoutCancel(ctx), jobID)
+	}
+	return recovery.Recovered, nil
 }
 
 // PruneJobs deletes terminal jobs whose source occurrence is already missing.

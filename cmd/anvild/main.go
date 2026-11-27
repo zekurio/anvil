@@ -262,7 +262,10 @@ func runDaemon(ctx context.Context, cfg config.Config, opts options) error {
 	}
 	defer closeStore(state)
 
-	recovered, err := state.RecoverStaleJobs(serviceCtx, cfg.Daemon.MaxAttempts, time.Now())
+	// Recovery goes through the job service even this early, so a job it ends
+	// has its part file reclaimed like one the recovery loop ends later. It
+	// needs nothing of the service but the store and the attempt limit.
+	recovered, err := controlapi.Service{Store: state, Config: func() config.Config { return cfg }}.RecoverStaleJobs(serviceCtx)
 	if err != nil {
 		return err
 	}
@@ -334,7 +337,7 @@ func runDaemon(ctx context.Context, cfg config.Config, opts options) error {
 	control := startControlService(serviceCtx, &wg, listener, jobs)
 	startReloadLoop(serviceCtx, &wg, opts, runtimeCfg, webServer, reloadSignals)
 	runInitialScan(serviceCtx, runtimeCfg.Get(), state, completion)
-	startRecoveryLoop(serviceCtx, &wg, runtimeCfg.Get, state)
+	startRecoveryLoop(serviceCtx, &wg, runtimeCfg.Get, jobs)
 	planner := startSchedulerLoop(serviceCtx, workerCtx, &wg, runtimeCfg.Get, state, progress, schedulerReconfigured)
 	plannerRef.Store(planner)
 	startScannerLoop(serviceCtx, &wg, runtimeCfg.Get, state, completion, planner.ActiveCount, monitorReconfigured, watcherReconfigured)
@@ -608,7 +611,7 @@ func startScannerLoop(ctx context.Context, wg *sync.WaitGroup, cfgProvider func(
 	})
 }
 
-func startRecoveryLoop(ctx context.Context, wg *sync.WaitGroup, cfgProvider func() config.Config, state *store.SQLiteStore) {
+func startRecoveryLoop(ctx context.Context, wg *sync.WaitGroup, cfgProvider func() config.Config, jobs controlapi.Service) {
 	wg.Go(func() {
 		for {
 			cfg := cfgProvider()
@@ -618,8 +621,7 @@ func startRecoveryLoop(ctx context.Context, wg *sync.WaitGroup, cfgProvider func
 				timer.Stop()
 				return
 			case <-timer.C:
-				cfg = cfgProvider()
-				recovered, err := state.RecoverStaleJobs(ctx, cfg.Daemon.MaxAttempts, time.Now())
+				recovered, err := jobs.RecoverStaleJobs(ctx)
 				if err != nil {
 					slog.Error("stale job recovery failed", "error", err)
 					continue

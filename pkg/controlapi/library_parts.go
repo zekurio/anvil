@@ -25,10 +25,17 @@ type JobParts struct {
 // LibraryParts lists, ahead of deleting a library, the part files its jobs
 // would leave behind. It reads and changes nothing on disk.
 //
-// A job whose publish stopped in conflict is one of them: the conflict keeps
-// the artifact for an operator to look at, and deleting the library is the
-// operator letting go of it. Jobs with any other unfinished publish are left
-// out; the store refuses to delete their library.
+// Every job that ran an attempt and did not complete can have left one: a
+// failed or skipped job that stale-lease recovery ended, or a job waiting to
+// retry after a crash. Normally the next attempt, a cancel, or the recovery
+// that ends the job reclaims it, but all of those need the job row, and the
+// rows go with the library.
+//
+// A job whose publish stopped in conflict is included as well: the conflict
+// keeps the artifact for an operator to look at, and deleting the library is
+// the operator letting go of it. Jobs with any other publish journal are left
+// out. A committed publish has removed its artifact, and for an interrupted
+// one the store refuses to delete the library.
 func (s Service) LibraryParts(ctx context.Context, library string) ([]JobParts, error) {
 	if err := s.requireStore(); err != nil {
 		return nil, err
@@ -55,7 +62,7 @@ func (s Service) LibraryParts(ctx context.Context, library string) ([]JobParts, 
 		if err != nil {
 			return nil, fmt.Errorf("read publish journal of job %d: %w", job.ID, err)
 		}
-		if !journaled || operation.Stage != replacepkg.PublishStageConflict {
+		if journaled && operation.Stage != replacepkg.PublishStageConflict {
 			continue
 		}
 		source, asset, err := s.jobOccurrence(ctx, job)
@@ -68,7 +75,11 @@ func (s Service) LibraryParts(ctx context.Context, library string) ([]JobParts, 
 			// cannot be read must not keep the library from being deleted.
 			slog.Warn("some staged destinations of a job could not be resolved; its part files there stay", "job", job.ID, "error", err)
 		}
-		parts = append(parts, JobParts{JobID: job.ID, destinations: destinations, conflict: &operation})
+		entry := JobParts{JobID: job.ID, destinations: destinations}
+		if journaled {
+			entry.conflict = &operation
+		}
+		parts = append(parts, entry)
 	}
 	return parts, nil
 }
