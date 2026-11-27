@@ -10,7 +10,7 @@
 # and CPU counts use stable examples.
 
 [daemon]
-media_roots = [] # Absolute roots the web API may browse and assign to libraries. Empty leaves browsing and library locations unrestricted. Re-read on SIGHUP.
+media_roots = [] # Absolute directory roots the web API may browse and assign to libraries. Empty leaves filesystem browsing and library locations unrestricted. Re-read on SIGHUP.
 temp_dir = "/var/lib/anvil/tmp" # Scratch directory for search samples and process logs. Encode artifacts are written on the destination filesystem as <name>.job-<id>.anvil-part: beside the destination for media libraries, under <handoff_path>/.anvil-work for download libraries. store_path and control_socket default to locations inside this directory.
 store_path = "/var/lib/anvil/anvil.db" # SQLite state path. Defaults to anvil.db inside temp_dir; any non-empty path.
 control_socket = "/run/anvil/anvild.sock" # Daemon Unix socket. Defaults to anvild.sock inside temp_dir; must be absolute.
@@ -43,7 +43,10 @@ allow_unauthenticated = false # Accept a listen address other machines can reach
 # a library uses becomes a flow that resolves to the same settings, and
 # include, exclude, and ignore_regex become the library's rules. After that
 # import the daemon ignores them and says so in its log at every start. Do not
-# add them to a new installation.
+# add them to a new installation. A library whose imported flow does not
+# validate, or whose folders overlap another library's or temp_dir, is
+# imported paused. An Arr connection made in the web UI takes a literal key
+# only; api_key_file exists for this import.
 #
 # Names after profiles, arrs, and libraries are your own non-empty names. The
 # default profile section shows defaults; arr, library, and override sections
@@ -67,7 +70,7 @@ target = 95.0 # Minimum score for metric; number from 0 through 100. Required wh
 min_savings_percent = 20.0 # Minimum estimated video-only savings from sample sizes, including container overhead; number from 0 through 100.
 force_encode_on_no_fit = false # On no fit, use the best measured quality within the size limit, or the best measured quality overall if no candidate fits the size limit.
 skip_encode = false # Copy video instead of searching and encoding when policy requires it.
-ffmpeg_args = [] # Encoder parameter bundles and value-only tuning option/value pairs; files, URLs, devices, filters, mapping, timing, and rate control are rejected.
+ffmpeg_args = [] # Encoder parameter bundles and value-only tuning option/value pairs shared by search and final encoding. Files, URLs, devices, filters, mapping, timing, and rate control are not accepted.
 
 [profiles.default-av1.crop]
 seek_offsets = [] # Sample crop candidates at these input offsets; an empty list spreads windows across the input instead; non-negative Go duration strings.

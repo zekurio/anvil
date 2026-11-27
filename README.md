@@ -109,7 +109,10 @@ download as complete when Anvil saw no completion event.
 
 Library folders must not contain each other, and a handoff folder must sit
 outside every library folder. Anvil refuses a library that breaks this, because
-a file under two libraries would be queued twice.
+a file under two libraries would be queued twice. Neither folder may overlap
+`daemon.temp_dir`, where Anvil keeps its own working files. When
+`daemon.media_roots` is set, both folders must also lie inside one of those
+roots.
 
 The scanner picks up `.mkv`, `.mp4`, `.m4v`, `.mov`, `.avi`, `.webm`, `.ts`,
 and `.m2ts` files. It does not queue files with more than one hard link, files
@@ -124,11 +127,16 @@ start paused unless you say otherwise.
 Each library also has a priority, an optional cap on simultaneous jobs, an
 optional scan interval of its own, and an optional Arr connection. Anvil asks
 that Radarr or Sonarr instance for a title's original language, which is what
-the `orig` language token in a flow refers to.
+the `orig` language token in a flow refers to. A new priority also applies to
+the jobs the library already has in the queue.
 
 Deleting a library removes it, its rules, and its job history from the store.
-No media file is touched. Anvil refuses while the library has queued or
-running jobs or a publish that has not finished.
+No media file is touched. Jobs that only wait in the queue are deleted with
+it. Anvil refuses while a worker holds one of the library's jobs, or while a
+publish that was interrupted part-way still has to be finished by the job's
+next run. A publish that stopped in `conflict` does not block the delete.
+Anvil then removes the job's own part file and leaves everything else the
+conflict put on disk where it is.
 
 ### Rules
 
@@ -167,7 +175,8 @@ Publish result is a remux to MKV. It copies video, audio, and subtitles, and
 keeps every track, title, attachment, and chapter.
 
 Every output of every node on a path has to be connected, and a flow cannot
-loop. The editor will not save a flow with errors. Saving changes what the
+loop. A flow can have at most 500 nodes and 2000 edges. The editor will not
+save a flow with errors. Saving changes what the
 next attempt of every job in the assigned libraries does. Attempts that are
 already running keep the flow they started with.
 
@@ -231,6 +240,10 @@ A retry does not start from nothing. Anvil checkpoints the probe, the audio
 track selection, the crop, and a finished CRF search, and reuses them when the
 input file and what the flow does to it are unchanged. Moving nodes around or
 relabeling them does not count as a change.
+
+While a job encodes, its percent, speed, and time left follow the count of
+video frames written wherever that is ahead of FFmpeg's output timestamp. The
+timestamp alone stalls when a sparse subtitle track ends early in the file.
 
 The job view shows how the flow resolved, which tracks were kept and why, the
 quality result, and every attempt with the commands it ran. `anvilctl show
@@ -303,10 +316,21 @@ hardware AV1 encoders count to 255.
 
 Extra encoder arguments are option and value pairs, one per entry, such as
 `-svtav1-params` followed by `tune=0:film-grain=8`. They apply to both the
-search and the final encode. Anvil owns codec, preset, CRF, pixel format,
-threads, stream mapping, filters, and timing, and rejects arguments for any of
-them. That includes `crf=`, `qp=`, `preset=`, and `rc=` keys inside
-`-svtav1-params`, `-x265-params`, or `-x264-params`.
+search and the final encode. Only an allow-list is accepted, and everything
+else is rejected:
+
+- The parameter bundles `-svtav1-params`, `-x265-params`, and `-x264-params`.
+  Inside them, the keys `crf`, `qp`, `qpmin`, `qpmax`, `rc`, `bitrate`,
+  `bit_rate`, `tbr`, `mbr`, and `preset` are refused, because Anvil sets
+  quality, rate control, and speed itself.
+- The tuning options `-tune`, `-profile`, `-level`, `-g`, `-keyint_min`,
+  `-bf`, `-refs`, `-sc_threshold`, `-aq-mode`, `-aq-strength`,
+  `-rc-lookahead`, `-b_strategy`, `-look_ahead`, `-look_ahead_depth`,
+  `-extbrc`, `-low_power`, `-async_depth`, `-adaptive_i`, `-adaptive_b`, and
+  `-quality`. A stream specifier such as `-profile:v` is allowed.
+
+A value may not start with `-`. Nothing that names a file, a URL, a device, a
+filter, a stream mapping, or timing gets through.
 
 Cropping is opt-in per flow and happens in the encoder. A path that copies the
 video crops nothing, and the editor warns about a crop node on such a path. A
@@ -418,16 +442,19 @@ password_file = "/run/secrets/anvil-web"
 There is one shared password and no user accounts. `password_file` is
 preferred over a literal `password`, and its trailing newline is ignored. The
 daemon refuses to start with a password file it cannot read or that is empty.
-It never falls back to an open UI. It also refuses to start on an address
+It never falls back to an open UI. The password is read and the address bound
+before the store is opened, so a start that fails on either leaves the
+database unmigrated. It also refuses to start on an address
 other machines can reach without a password, unless you set
 `allow_unauthenticated = true`. With that set, everyone who can reach the port
 controls Anvil, and the daemon logs a warning at every start.
 
 A sign-in sets a session cookie that is `HttpOnly` and `SameSite=Strict` and
 lasts 30 days. Sessions live in memory, so a restart signs everyone out.
-Changing the password does too. After five failed sign-ins from one address
-the daemon makes that address wait, starting at 5 seconds and doubling up to
-15 minutes.
+Changing the password does too. From the fifth failed sign-in in a row from
+one address, each failure makes that address wait 2 seconds. Attempts made
+during the wait are refused without looking at the password and do not
+lengthen it.
 
 The API refuses requests a browser marks as coming from another site, and
 every request that changes something must send
@@ -449,13 +476,30 @@ Anvil does not speak TLS. Put a reverse proxy in front for HTTPS:
   must send a loopback `Host` such as `127.0.0.1:8484` together with
   `X-Forwarded-Host`.
 
-Someone who is signed in can point a library at any directory the service user
-can write, and Anvil will then replace files there. The folder picker lists
-directories and media file names anywhere the service user can read. Arr API
-keys entered in the UI are stored in the database, and the daemon calls
-whatever base URL an Arr connection names. Treat the password like write
-access to your media. Outside the NixOS module, run the daemon with a umask
-that keeps the database private.
+Without `daemon.media_roots`, someone who is signed in can point a library at
+any directory the service user can write, and Anvil will then replace files
+there. The folder picker then lists directories and media file names anywhere
+the service user can read. Set `media_roots` to confine both:
+
+```toml
+[daemon]
+media_roots = ["/srv/media", "/srv/downloads"]
+```
+
+Library and handoff folders must then resolve, symlinks included, to a path
+inside one of the roots, and the folder picker shows nothing outside them. The
+NixOS module fills `media_roots` from `mediaPaths`.
+
+Arr API keys are entered in the UI and stored in the database. The API never
+returns a key, and it cannot point a connection at a key file. The daemon
+calls whatever base URL an Arr connection names. It follows no redirects and
+reads at most 4 MiB of a response. Treat the password like write access to
+your media.
+
+The daemon sets the database and its `-wal` and `-shm` files to mode `0600`
+on every start, and creates a missing store directory with mode `0700`. A
+directory that already exists keeps its mode. `anvilctl backup` writes its
+snapshot with mode `0600` too.
 
 The control socket is the other way in. The daemon creates it with mode
 `0660`, and whoever may open it can run every `anvilctl` command.
@@ -463,7 +507,8 @@ The control socket is the other way in. The daemon creates it with mode
 ## Configuration
 
 `anvil.toml` holds the process settings and nothing else. `[daemon]` has the
-paths, worker and thread counts, intervals, shutdown behavior, and log level.
+paths, the media roots, worker and thread counts, intervals, shutdown
+behavior, and log level.
 `[web]` has `enabled`, `listen`, `password_file`, `password`, and
 `allow_unauthenticated`. Libraries, flows, and Arr connections live in the
 SQLite store and are edited in the web UI.
@@ -553,14 +598,20 @@ access. Installing `anvilctl` grants nothing.
 `8484`. The service user must be able to read the password file. Keep it out
 of `/tmp`, `/var/tmp`, and the Nix store. A non-loopback address without a
 password fails at evaluation time, the same way the daemon would refuse it.
+So does a port below 1024, which the unit cannot bind because it runs without
+`CAP_NET_BIND_SERVICE`. Use a reverse proxy to serve the UI on port 80 or 443.
 
 `services.anvil.mediaPaths` lists the directories the daemon may write. The
 unit runs with `ProtectSystem=strict`, and the module cannot see what you add
 in the web UI. List every library folder and every handoff folder, or a
-parent of them. A library outside these paths can be added and scanned, but
-its jobs fail with a read-only file system error as soon as Anvil writes the
-encode. Each path must exist when the service starts unless you prefix it
-with `-`. The service user also needs ordinary write permission.
+parent of them. The module also renders the list as `daemon.media_roots`, so
+the web UI refuses a library or handoff folder outside these paths and the
+folder picker shows nothing else. Setting `settings.daemon.media_roots`
+yourself replaces that list. With it set to `[]` a library outside
+`mediaPaths` can be added and scanned, but its jobs fail with a read-only
+file system error as soon as Anvil writes the encode. Each path must exist
+when the service starts unless you prefix it with `-`. The service user also
+needs ordinary write permission.
 
 `services.anvil.settings` takes the same snake_case keys as the reference
 TOML. Keys under `settings.web` override the `web` options one by one.
@@ -667,8 +718,12 @@ On that first start the daemon imports the `[libraries]`, `[profiles]`, and
 - `ignore_regex` and `exclude` become deny rules at the top of the library's
   rule list. `include` becomes allow rules below them with a deny fallback.
 - Libraries keep their names, so their job history stays attached. They are
-  not paused, because they were already running. Relative paths are resolved
-  to absolute ones.
+  not paused, because they were already running. There are two exceptions. A
+  library whose imported flow does not validate is imported paused, and so is
+  one whose folders overlap another library's or `temp_dir`. Fix the flow or
+  the folders, then resume it. Relative paths are resolved to absolute ones.
+- Arr connections keep their `api_key` or `api_key_file`. A connection that
+  reads its key from a file keeps doing so until you enter a key in the UI.
 - `validation.duration_tolerance_seconds` has no node, so flows use the
   default. Crop settings are dropped on paths that copy the video.
 
@@ -689,7 +744,9 @@ Afterwards:
 4. On NixOS, list your library and handoff folders in
    `services.anvil.mediaPaths`. The module still grants write access to the
    paths of legacy `settings.libraries` entries, but not to anything you add
-   in the web UI.
+   in the web UI. Those legacy paths are not part of `media_roots`, so an
+   imported library outside `mediaPaths` cannot be saved again in the UI
+   until its folder is listed.
 
 ## Development
 
@@ -731,10 +788,9 @@ make web-dev    # against a running daemon
 ```
 
 `web-dev` proxies `/api` to `http://127.0.0.1:8484`. Set `ANVIL_API` to point
-at another daemon. Through this proxy the daemon answers reads but refuses
-changes, sign-in included, as coming from another origin, because the proxy
-rewrites `Host` and sends no `X-Forwarded-Host`. Use `web-mock` to work on
-forms and actions, and `make all` to try them against a real daemon.
+at another daemon. The proxy sends the browser's host on as
+`X-Forwarded-Host`, so sign-in and changes work through it. Use `web-mock` to
+work on the UI without a daemon.
 [`web/README.md`](web/README.md) covers the frontend layout and conventions.
 
 The flake exposes `packages.default` with both binaries, `packages.anvild`

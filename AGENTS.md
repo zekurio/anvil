@@ -202,7 +202,14 @@ process output goes to per-attempt log files plus artifact events
   and video or crop settings must meet (`LibraryConfig.Problems`,
   `LibraryPathConflicts`, `ValidateRules`, `VideoConfig.Problems`,
   `CropConfig.Problems`). The web API and flow validation call these. Do not
-  restate a rule in a handler, a node, or the frontend.
+  restate a rule in a handler, a node, or the frontend. `LibraryPathConflicts`
+  also keeps library and handoff folders out of `temp_dir`, and the legacy
+  import goes through it too: a conflicting library is imported paused.
+- `[daemon] media_roots` confines what a browser can name. When it is not
+  empty, `GET /fs` lists nothing outside the roots and `checkLibrary` refuses
+  a library or handoff path that does not resolve inside one
+  (`pathWithinMediaRoots`, symlinks resolved). Empty means unrestricted. The
+  Nix module fills it from `mediaPaths`.
 - Pipeline step order is fixed in `worker.DefaultPipeline`. A block's `Name()`
   is its event and checkpoint name. The publish block selects replace or
   handoff from the library kind. Staging, validation, and the journaled
@@ -217,16 +224,32 @@ process output goes to per-attempt log files plus artifact events
   records one-time actions (the seeded `Default AV1` flow, the legacy import)
   so they never run twice: a deleted default flow stays deleted, and a TOML
   file edited later is never imported again. Flows carry a revision, and
-  `UpdateFlow` refuses a stale one with `ErrRevisionConflict`. `DeleteLibrary` removes the library with its
-  jobs, sources, and scan records in one transaction and refuses with
-  `ErrActiveWork` while a job is not terminal or owns an unresolved publish
-  journal. A flow or Arr connection still assigned to a library is not
+  `UpdateFlow` refuses a stale one with `ErrRevisionConflict`. `DeleteLibrary`
+  removes the library with its jobs, sources, and scan records in one
+  transaction. Jobs that only wait go with it. It refuses with a
+  `LibraryBusyError` (`ErrActiveWork`) in two cases: a worker holds a job
+  (`leased`, `running`, `validating`, `replacing`), or a publish journal is at
+  `prepared`, `published`, or `source_cleaned`. A journal in `conflict` does
+  not refuse it. The web API reads the part files of the library's jobs
+  before the delete (`controlapi.Service.LibraryParts`) and removes them
+  after it. A flow or Arr connection still assigned to a library is not
   deleted (`InUseError`).
+- `UpdateLibrary` writes a changed priority to the library's jobs in the same
+  transaction. The scheduler leases by `jobs.priority`, so the two must not
+  drift.
 - `pkg/store/protection.go` defines the jobs maintenance must not disturb: any
   job that is not terminal, and any job whose publish journal has not reached
-  `committed`. Staging cleanup, job pruning, and library deletion all depend
-  on it. Deleting such a job row would cascade its journal away and strand the
-  files it names.
+  `committed`. Staging cleanup and job pruning depend on it. Deleting such a
+  job row would cascade its journal away and strand the files it names.
+  Library deletion is the operator's decision and uses the narrower
+  `publishInFlightCondition`, which lets a `conflict` journal go.
+- The store sets its database, `-wal`, and `-shm` files to `0600` on every
+  open and creates a missing parent directory `0700`. It can hold Arr API
+  keys; do not loosen either mode.
+- A list query never reads or decodes `pipeline_context_json`. The probe
+  facts the library file list shows live in the `probe_*` columns of `jobs`,
+  which `SaveJobPipelineContext` writes in the same statement as the
+  checkpoint. A new fact for a list gets a column there.
 - `pkg/worker/resume.go` checkpoints only reusable steps (`probe`,
   `audio-cleanup`, `crop-detect`, `crf-search`) as JSON in
   `jobs.pipeline_context_json`. Two guards protect reuse. The checkpoint is
@@ -266,7 +289,11 @@ process output goes to per-attempt log files plus artifact events
   snapshot it serves from exists.
 - Live progress (`domain.JobProgress`) is in memory only. The worker writes it
   to `worker.ProgressTracker` and the web API reads it from there; it is never
-  persisted and never read from the store.
+  persisted and never read from the store. Encode progress follows ffmpeg's
+  frame counter wherever it is ahead of the output timestamp, which stalls at
+  the end of a sparse subtitle track. A step that knows its input sets
+  `process.WithMediaFrames` under the same condition as
+  `process.WithMediaDuration`.
 - Operator output goes through `internal/textout` (error-carrying writer,
   tables, JSON, byte/percent formatting) so both binaries stay consistent.
 - Filesystem mutation is conservative by default: explicit safety checks and
@@ -304,6 +331,15 @@ const typeSubtitlesDropImage = "subtitles.drop_image"
   Add a `check` only for what field definitions and those rules cannot
   express, and a `warn` for options that are valid but will not do what they
   say.
+- A graph has at most `flow.MaxNodes` (500) nodes and `flow.MaxEdges` (2000)
+  edges. `Validate` reports a larger one with a single issue and reads no
+  further, so every analysis may assume the bound. Keep new analyses linear
+  in the size of the graph.
+- `video.encode`'s `ffmpeg_args` is an allow-list
+  (`ffmpeg.ValidateEncoderArgs`): the three encoder parameter bundles and a
+  fixed set of value-only tuning options. Add an option only when its value
+  cannot name a file, URL, device, stream, or filter. Do not turn the list
+  into a deny-list.
 - `flow.Canonical` fingerprints checkpoints and tells flows apart. A change in
   what a graph does must change its canonical form. Position, label, node and
   edge order, and spelling out a default must not.
@@ -374,9 +410,20 @@ func (s *Server) getLibrary(w http.ResponseWriter, r *http.Request) {
   injects style elements.
 - A sign-in failure must never fall back to an open UI: an unreadable or empty
   password file is an error at start and on reload.
+- Sign-in is throttled per remote address (`auth.login`): from the fifth
+  failure, each one earns a fixed `loginDelay`. An attempt during the delay is
+  refused before the password is compared and must not extend the delay, or a
+  peer could lock the operator out. `X-Forwarded-For` is not read.
+- An Arr API key enters through `ArrWrite.APIKey` only. No response carries a
+  key (`api_key_set` says whether there is one), and the API cannot set
+  `api_key_file`; an imported key file stays until a literal key replaces it.
+  `metadata.Resolver` refuses redirects and reads at most `maxResponseBytes`
+  of a response.
 - Paths that come from a browser are untrusted. The flow dry run only probes a
-  regular file inside a library root, with symlinks resolved. Keep any new
-  route that makes the daemon open a path as strict.
+  regular file inside a library root, with symlinks resolved, and checks the
+  library before it asks the filesystem, so a path outside every library gets
+  one answer whatever is there. Keep any new route that makes the daemon open
+  a path as strict.
 - Changes to flows, libraries, and Arr connections hold `Server.mutations`,
   validate against the stored state, write, call `refresh`, and only then
   answer.

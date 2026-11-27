@@ -12,7 +12,7 @@ Node 22.12 or newer. On a Nix machine: `nix shell nixpkgs#nodejs -c npm <command
 | --- | --- |
 | `npm ci` | Install the pinned dependencies. |
 | `npm run dev:mock` | Dev server on <http://localhost:5173> with an in-memory fake API. No daemon needed. |
-| `npm run dev` | Dev server that proxies `/api` to a running daemon at `http://127.0.0.1:8484`. Set `ANVIL_API` to point elsewhere. |
+| `npm run dev` | Dev server that proxies `/api` to a running daemon at `http://127.0.0.1:8484`. Set `ANVIL_API` to point elsewhere. The proxy sends the browser's host as `X-Forwarded-Host`, so sign-in and changes work through it. |
 | `npm run typecheck` | `tsc --noEmit`. |
 | `npm run build` | Production bundle in `dist/`. `dist/.gitkeep` is kept. |
 | `npm run preview` | Serve the built bundle. |
