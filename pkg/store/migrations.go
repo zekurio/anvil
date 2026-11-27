@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-const currentSchemaVersion = 7
+const currentSchemaVersion = 8
 
 // minUpgradableSchemaVersion is the oldest schema version schemaMigrations can
 // still upgrade in place. Anything older predates the migration chain and is
@@ -21,13 +21,59 @@ const minUpgradableSchemaVersion = 5
 // query. Bump it whenever a migration changes a table or column this package
 // reads, so preflight fails with ErrIncompatibleSchema instead of a raw SQL
 // error from deep inside a query.
-const minReadOnlySchemaVersion = 5
+//
+// It is 8 because preflight reads the libraries it plans against from the
+// libraries table, which version 8 added. A database the daemon has not
+// migrated yet has no libraries to plan against; starting the daemon once
+// migrates it and imports the libraries of anvil.toml.
+const minReadOnlySchemaVersion = 8
 
 const currentSchema = `
 CREATE TABLE schema_migrations (
 	version INTEGER PRIMARY KEY,
 	applied_at TEXT NOT NULL
 );
+
+CREATE TABLE meta (
+	key TEXT PRIMARY KEY,
+	value TEXT NOT NULL
+);
+
+CREATE TABLE flows (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	name TEXT NOT NULL UNIQUE,
+	description TEXT NOT NULL DEFAULT '',
+	revision INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 1),
+	graph_json BLOB NOT NULL,
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL
+);
+
+CREATE TABLE arrs (
+	name TEXT PRIMARY KEY,
+	type TEXT NOT NULL CHECK (type IN ('radarr', 'sonarr')),
+	base_url TEXT NOT NULL,
+	api_key TEXT NOT NULL DEFAULT '',
+	api_key_file TEXT NOT NULL DEFAULT '',
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL
+);
+
+CREATE TABLE libraries (
+	name TEXT PRIMARY KEY,
+	kind TEXT NOT NULL CHECK (kind IN ('media', 'download')),
+	path TEXT NOT NULL,
+	flow_id INTEGER NOT NULL REFERENCES flows(id) ON DELETE RESTRICT,
+	arr_name TEXT REFERENCES arrs(name) ON DELETE RESTRICT,
+	paused INTEGER NOT NULL DEFAULT 0 CHECK (paused IN (0, 1)),
+	settings_json BLOB NOT NULL,
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL
+);
+
+CREATE INDEX libraries_flow_idx ON libraries(flow_id);
+
+CREATE INDEX libraries_arr_idx ON libraries(arr_name) WHERE arr_name IS NOT NULL;
 
 CREATE TABLE library_scans (
 	library_name TEXT PRIMARY KEY,
@@ -207,6 +253,7 @@ type schemaMigration struct {
 var schemaMigrations = []schemaMigration{
 	{version: 6, apply: addCanceledJobState},
 	{version: 7, apply: addSourceScans},
+	{version: 8, apply: addFlowsLibrariesArrs},
 }
 
 func (s *SQLiteStore) migrate(ctx context.Context) error {
@@ -460,4 +507,56 @@ func addSourceScans(ctx context.Context, tx *sql.Tx) error {
  PRIMARY KEY (library_name, relative_path)
 );`)
 	return err
+}
+
+// addFlowsLibrariesArrs moves flows, libraries, and Arr connections into the
+// store. It only creates the tables: the libraries of an existing
+// installation still live in anvil.toml at this point and are imported after
+// the store is open (see ImportLegacyConfig), and the default flow is seeded
+// by Open, so the frozen migration never depends on what the default flow
+// currently looks like.
+func addFlowsLibrariesArrs(ctx context.Context, tx *sql.Tx) error {
+	statements := []string{`
+CREATE TABLE meta (
+	key TEXT PRIMARY KEY,
+	value TEXT NOT NULL
+)`, `
+CREATE TABLE flows (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	name TEXT NOT NULL UNIQUE,
+	description TEXT NOT NULL DEFAULT '',
+	revision INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 1),
+	graph_json BLOB NOT NULL,
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL
+)`, `
+CREATE TABLE arrs (
+	name TEXT PRIMARY KEY,
+	type TEXT NOT NULL CHECK (type IN ('radarr', 'sonarr')),
+	base_url TEXT NOT NULL,
+	api_key TEXT NOT NULL DEFAULT '',
+	api_key_file TEXT NOT NULL DEFAULT '',
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL
+)`, `
+CREATE TABLE libraries (
+	name TEXT PRIMARY KEY,
+	kind TEXT NOT NULL CHECK (kind IN ('media', 'download')),
+	path TEXT NOT NULL,
+	flow_id INTEGER NOT NULL REFERENCES flows(id) ON DELETE RESTRICT,
+	arr_name TEXT REFERENCES arrs(name) ON DELETE RESTRICT,
+	paused INTEGER NOT NULL DEFAULT 0 CHECK (paused IN (0, 1)),
+	settings_json BLOB NOT NULL,
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL
+)`, `
+CREATE INDEX libraries_flow_idx ON libraries(flow_id)`, `
+CREATE INDEX libraries_arr_idx ON libraries(arr_name) WHERE arr_name IS NOT NULL`,
+	}
+	for _, statement := range statements {
+		if _, err := tx.ExecContext(ctx, statement); err != nil {
+			return fmt.Errorf("create flows, libraries, and arrs: %w", err)
+		}
+	}
+	return nil
 }

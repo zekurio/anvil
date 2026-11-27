@@ -346,14 +346,7 @@ func (r compiledRule) matchesPath(rel string, dir bool) bool {
 	if r.regex != nil {
 		return r.regex.MatchString(rel) || dir && r.regex.MatchString(rel+"/")
 	}
-	if matched, _ := GlobMatches(r.glob, rel); matched {
-		return true
-	}
-	if !dir {
-		return false
-	}
-	matched, _ := GlobMatches(r.glob, rel+"/")
-	return matched
+	return globMatches(r.glob, rel) || dir && globMatches(r.glob, rel+"/")
 }
 
 // GlobMatches reports whether a doublestar glob matches a slash-separated
@@ -365,24 +358,24 @@ func GlobMatches(pattern, rel string) (bool, error) {
 	if pattern == "" {
 		return false, nil
 	}
+	if !doublestar.ValidatePattern(pattern) {
+		return false, fmt.Errorf("invalid glob %q", pattern)
+	}
+	return globMatches(pattern, rel), nil
+}
+
+// globMatches is GlobMatches for a pattern already known to be valid.
+func globMatches(pattern, rel string) bool {
 	directory := strings.HasSuffix(filepath.ToSlash(rel), "/")
 	rel = path.Clean(filepath.ToSlash(rel))
 	base := path.Base(rel)
 	if directory {
 		rel += "/"
 	}
-	matched, err := doublestar.PathMatch(pattern, rel)
-	if err != nil {
-		return false, fmt.Errorf("invalid glob %q: %w", pattern, err)
+	if doublestar.MatchUnvalidated(pattern, rel) {
+		return true
 	}
-	if matched || strings.Contains(pattern, "/") {
-		return matched, nil
-	}
-	matched, err = doublestar.PathMatch(pattern, base)
-	if err != nil {
-		return false, fmt.Errorf("invalid glob %q: %w", pattern, err)
-	}
-	return matched, nil
+	return !strings.Contains(pattern, "/") && doublestar.MatchUnvalidated(pattern, base)
 }
 
 // LegacyRules converts the include, exclude, and ignore_regex settings of a

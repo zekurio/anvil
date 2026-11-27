@@ -96,6 +96,26 @@ WHERE id = ? AND state = ?
 	return s.GetAttempt(ctx, attemptID)
 }
 
+// SaveAttemptProfile records the profile an attempt resolved to. The profile
+// is only known once the flow has been evaluated against the probe, which is
+// after the attempt row exists.
+func (s *SQLiteStore) SaveAttemptProfile(ctx context.Context, attemptID domain.AttemptID, resolvedProfile []byte) error {
+	result, err := s.db.ExecContext(ctx, `
+UPDATE attempts SET resolved_profile_json = ? WHERE id = ?
+`, emptyBytesIfNil(resolvedProfile), int64(attemptID))
+	if err != nil {
+		return fmt.Errorf("save attempt profile: %w", err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("save attempt profile rows affected: %w", err)
+	}
+	if rows == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 func (s *SQLiteStore) RecordAttemptEvent(ctx context.Context, event domain.AttemptEvent) (domain.AttemptEvent, error) {
 	if event.CreatedAt.IsZero() {
 		event.CreatedAt = time.Now().UTC()

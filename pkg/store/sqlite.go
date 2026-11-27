@@ -138,7 +138,14 @@ type CompleteJobOccurrenceInput struct {
 type JobListFilter struct {
 	LibraryName domain.LibraryName
 	States      []domain.JobState
-	Limit       int
+	// Query keeps jobs whose source or asset path contains it, ignoring
+	// ASCII case.
+	Query string
+	// NewestActivityFirst orders by the last update instead of by creation.
+	NewestActivityFirst bool
+	Limit               int
+	// Offset skips that many jobs of the ordered result; it needs a Limit.
+	Offset int
 }
 
 type LibraryStatsFilter struct {
@@ -181,6 +188,9 @@ func Open(ctx context.Context, path string) (*SQLiteStore, error) {
 		return nil, closeDBOnError(db, err)
 	}
 	if err := store.migrate(ctx); err != nil {
+		return nil, closeDBOnError(db, err)
+	}
+	if err := store.seedDefaultFlow(ctx); err != nil {
 		return nil, closeDBOnError(db, err)
 	}
 

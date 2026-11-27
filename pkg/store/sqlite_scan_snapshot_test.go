@@ -217,9 +217,9 @@ func TestUpgradeSchemaSixToSeven(t *testing.T) {
 	}
 	// Version 7 adds only source_scans. Remove that addition to build the
 	// previous schema, including its existing full-scan watermark.
-	start := strings.Index(currentSchema, "CREATE TABLE source_scans (")
-	end := start + strings.Index(currentSchema[start:], "CREATE TABLE media_sources (")
-	schemaSix := currentSchema[:start] + currentSchema[end:]
+	start := strings.Index(schemaVersion7, "CREATE TABLE source_scans (")
+	end := start + strings.Index(schemaVersion7[start:], "CREATE TABLE media_sources (")
+	schemaSix := schemaVersion7[:start] + schemaVersion7[end:]
 	_, setupErr := db.ExecContext(ctx, schemaSix+`INSERT INTO schema_migrations VALUES (6, '2026-09-05T00:00:00Z'); INSERT INTO library_scans VALUES ('test', 4, 3, NULL);`)
 	closeErr := db.Close()
 	if setupErr != nil {
@@ -241,7 +241,7 @@ func TestUpgradeSchemaSixToSeven(t *testing.T) {
 	if err := s.db.QueryRow(`SELECT max(version) FROM schema_migrations`).Scan(&version); err != nil {
 		t.Fatal(err)
 	}
-	if version != 7 {
+	if version != currentSchemaVersion {
 		t.Fatalf("schema version %d", version)
 	}
 	if result := applyEntries(t, s, ScanToken{LibraryName: "test", Sequence: 2}, []string{"a"}, pathEntry("a", 1)); result.Applied {
