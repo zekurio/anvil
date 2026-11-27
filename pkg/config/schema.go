@@ -64,12 +64,20 @@ const DefaultWebListen = "127.0.0.1:8484"
 // runtime snapshot of what the store holds: flows, libraries, and Arr
 // connections are created and edited in the web UI, and the daemon copies
 // the latter two in here so that every loop reads one consistent value. Load
-// leaves both empty.
+// leaves both empty. The [daemon] keys of DaemonKeys that anvil.toml does not
+// set may also be saved in the web UI; WithDaemonOverrides merges those in.
 type Config struct {
-	Daemon    DaemonConfig             `toml:"daemon"`
-	Web       WebConfig                `toml:"web"`
-	Arrs      map[string]ArrConfig     `toml:"-"`
-	Libraries map[string]LibraryConfig `toml:"-"`
+	Daemon DaemonConfig `toml:"daemon"`
+	// DaemonSources records where the value of each DaemonKeys key comes
+	// from, when not from its default: SourceFile for a key anvil.toml sets
+	// (Load), SourceFlag for one an anvild option overrides, and SourceStore
+	// for one saved in the web UI (WithDaemonOverrides). Read it through
+	// DaemonSource. Replace the map rather than writing to it: copies of a
+	// Config share it.
+	DaemonSources map[string]string        `toml:"-"`
+	Web           WebConfig                `toml:"web"`
+	Arrs          map[string]ArrConfig     `toml:"-"`
+	Libraries     map[string]LibraryConfig `toml:"-"`
 	// Legacy holds the [arrs], [profiles], and [libraries] tables of
 	// anvil.toml. They are read once, by the import that moves them into the
 	// store, and nothing at runtime looks at them.
@@ -105,7 +113,10 @@ type WebConfig struct {
 	AllowUnauthenticated bool `toml:"allow_unauthenticated"`
 }
 
-// DaemonConfig contains process-wide runtime settings.
+// DaemonConfig contains process-wide runtime settings. The keys from
+// worker_count through log_level can also be changed in the web UI, unless
+// this file sets them: a key written here pins it. media_roots and the paths
+// are file-only.
 type DaemonConfig struct {
 	// Absolute directory roots the web API may browse and assign to libraries.
 	// Empty leaves filesystem browsing and library locations unrestricted.
@@ -141,7 +152,8 @@ type DaemonConfig struct {
 	ShutdownPolicy string `toml:"shutdown_policy"`
 	// Force cancellation after this graceful wait; "0s" waits indefinitely; duration >= 0.
 	ShutdownTimeout Duration `toml:"shutdown_timeout"`
-	// Remove abandoned staging older than this; "0s" disables cleanup; duration >= 0.
+	// Remove abandoned staging older than this when the daemon starts, and by
+	// default in anvilctl staging cleanup; "0s" disables cleanup; duration >= 0.
 	StagingCleanupAge Duration `toml:"staging_cleanup_age"`
 	// Keep logs useful without excessive detail; "debug", "info", "warn", or "error".
 	LogLevel string `toml:"log_level"`

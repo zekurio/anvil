@@ -13,13 +13,30 @@ import (
 
 // snapshotStore is what building the runtime snapshot reads.
 type snapshotStore interface {
+	DaemonSettings(context.Context) (config.DaemonOverrides, error)
 	ListLibraries(context.Context) ([]store.Library, error)
 	ListArrs(context.Context) ([]store.Arr, error)
 }
 
-// withStoreSnapshot returns cfg with its libraries and Arr connections
-// replaced by what the store holds. The process settings stay as they are.
-func withStoreSnapshot(ctx context.Context, cfg config.Config, state snapshotStore) (config.Config, error) {
+// withStoredDaemonSettings returns loaded with the [daemon] values saved in
+// the web UI merged in, for every key anvil.toml and the command line leave
+// alone.
+func withStoredDaemonSettings(ctx context.Context, loaded config.Config, state snapshotStore) (config.Config, error) {
+	overrides, err := state.DaemonSettings(ctx)
+	if err != nil {
+		return config.Config{}, fmt.Errorf("load daemon settings: %w", err)
+	}
+	return loaded.WithDaemonOverrides(overrides)
+}
+
+// withStoreSnapshot returns loaded, the process settings of anvil.toml and
+// the command line, with everything the store adds: the daemon settings saved
+// in the web UI, the libraries, and the Arr connections.
+func withStoreSnapshot(ctx context.Context, loaded config.Config, state snapshotStore) (config.Config, error) {
+	cfg, err := withStoredDaemonSettings(ctx, loaded, state)
+	if err != nil {
+		return config.Config{}, err
+	}
 	libraries, err := state.ListLibraries(ctx)
 	if err != nil {
 		return config.Config{}, fmt.Errorf("load libraries: %w", err)
@@ -40,25 +57,33 @@ func withStoreSnapshot(ctx context.Context, cfg config.Config, state snapshotSto
 }
 
 // runtimeConfig is the snapshot every loop of the daemon reads: the process
-// settings of anvil.toml plus the libraries and Arr connections of the store.
-// Each half has one writer path. SIGHUP replaces the process settings; a
-// change made through the web API re-reads the store half. Both end in
-// libraryChanged, which is how the scan monitor and the filesystem watcher
-// learn of a new, changed, or deleted library without waiting for a tick.
+// settings of anvil.toml, the daemon settings saved in the web UI where the
+// file leaves a key alone, and the libraries and Arr connections of the
+// store. Every rebuild merges the same way, from the file as last loaded:
+// SIGHUP loads the file again first, and a change made through the web API
+// only re-reads the store. Both end in changed, which is how the scan
+// monitor, the filesystem watcher, and the scheduler learn of the change
+// without waiting for a tick.
 type runtimeConfig struct {
 	mu  sync.RWMutex
 	cfg config.Config
 
-	// refreshMu serializes store reads, so an older read can never overwrite
-	// the result of a newer one.
+	// refreshMu serializes rebuilds, so an older read can never overwrite
+	// the result of a newer one. It also guards loaded.
 	refreshMu sync.Mutex
-	state     snapshotStore
+	// loaded is anvil.toml with the command-line options as last loaded,
+	// before anything of the store is merged in.
+	loaded config.Config
+	state  snapshotStore
+	// logLevel follows daemon.log_level of every snapshot; nil leaves the
+	// log level alone.
+	logLevel *slog.LevelVar
 	// reconfigured holds one coalescing wake-up channel per listener.
 	reconfigured []chan struct{}
 }
 
-func newRuntimeConfig(cfg config.Config, state snapshotStore) *runtimeConfig {
-	return &runtimeConfig{cfg: cfg, state: state}
+func newRuntimeConfig(state snapshotStore, logLevel *slog.LevelVar) *runtimeConfig {
+	return &runtimeConfig{state: state, logLevel: logLevel}
 }
 
 func (r *runtimeConfig) Get() config.Config {
@@ -67,7 +92,7 @@ func (r *runtimeConfig) Get() config.Config {
 	return r.cfg
 }
 
-// Reconfigured returns a channel that fires after the libraries changed.
+// Reconfigured returns a channel that fires after the snapshot changed.
 // Every caller gets its own, so no listener can swallow another's wake-up.
 // It must be called before the loops that use it start.
 func (r *runtimeConfig) Reconfigured() <-chan struct{} {
@@ -76,40 +101,49 @@ func (r *runtimeConfig) Reconfigured() <-chan struct{} {
 	return listener
 }
 
-// Refresh re-reads the libraries and Arr connections from the store. The web
-// API calls it after every change it persists and before it answers, so the
-// next request, scan, and lease already see the change.
+// Refresh re-reads the store half of the snapshot: the daemon settings, the
+// libraries, and the Arr connections. The web API calls it after every
+// change it persists and before it answers, so the next request, scan, and
+// lease already see the change.
 func (r *runtimeConfig) Refresh(ctx context.Context) error {
 	r.refreshMu.Lock()
 	defer r.refreshMu.Unlock()
-	next, err := withStoreSnapshot(ctx, config.Config{}, r.state)
-	if err != nil {
-		return err
-	}
-	r.mu.Lock()
-	r.cfg.Libraries, r.cfg.Arrs = next.Libraries, next.Arrs
-	r.mu.Unlock()
-	r.libraryChanged()
-	return nil
+	return r.rebuild(ctx, r.loaded)
 }
 
 // Reload takes the process settings of a freshly loaded anvil.toml and
-// re-reads the store half as well.
+// re-reads the store half as well. On an error the snapshot and the file it
+// merges from stay as they were.
 func (r *runtimeConfig) Reload(ctx context.Context, loaded config.Config) error {
 	r.refreshMu.Lock()
 	defer r.refreshMu.Unlock()
+	if err := r.rebuild(ctx, loaded); err != nil {
+		return err
+	}
+	r.loaded = loaded
+	return nil
+}
+
+func (r *runtimeConfig) rebuild(ctx context.Context, loaded config.Config) error {
 	next, err := withStoreSnapshot(ctx, loaded, r.state)
+	if err != nil {
+		return err
+	}
+	level, _, err := parseLogLevel(next.Daemon.LogLevel)
 	if err != nil {
 		return err
 	}
 	r.mu.Lock()
 	r.cfg = next
 	r.mu.Unlock()
-	r.libraryChanged()
+	if r.logLevel != nil {
+		r.logLevel.Set(level)
+	}
+	r.changed()
 	return nil
 }
 
-func (r *runtimeConfig) libraryChanged() {
+func (r *runtimeConfig) changed() {
 	for _, listener := range r.reconfigured {
 		select {
 		case listener <- struct{}{}:

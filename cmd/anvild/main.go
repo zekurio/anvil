@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"os"
 	"os/signal"
 	"sync"
@@ -279,6 +280,17 @@ func runDaemon(ctx context.Context, cfg config.Config, opts options) error {
 	}
 	defer closeStore(state)
 
+	// loaded is what anvil.toml and the command line say. The daemon settings
+	// saved in the web UI apply from here on, before recovery reads
+	// max_attempts and the sweep reads staging_cleanup_age.
+	loaded := cfg
+	if cfg, err = withStoredDaemonSettings(serviceCtx, loaded, state); err != nil {
+		return err
+	}
+	if _, err := applyLogLevel(&activeLogLevel, cfg.Daemon.LogLevel); err != nil {
+		return err
+	}
+
 	// Recovery goes through the job service even this early, so a job it ends
 	// has its part file reclaimed like one the recovery loop ends later. It
 	// needs nothing of the service but the store and the attempt limit.
@@ -296,11 +308,11 @@ func runDaemon(ctx context.Context, cfg config.Config, opts options) error {
 		return err
 	}
 	warnLegacySections(cfg)
-	cfg, err = withStoreSnapshot(serviceCtx, cfg, state)
-	if err != nil {
+	runtimeCfg := newRuntimeConfig(state, &activeLogLevel)
+	if err := runtimeCfg.Reload(serviceCtx, loaded); err != nil {
 		return err
 	}
-	runtimeCfg := newRuntimeConfig(cfg, state)
+	cfg = runtimeCfg.Get()
 	monitorReconfigured, watcherReconfigured, schedulerReconfigured := runtimeCfg.Reconfigured(), runtimeCfg.Reconfigured(), runtimeCfg.Reconfigured()
 
 	slog.Info("starting anvild", "mode", mode, "config", configPathLabel(opts.configPath), "temp_dir", cfg.Daemon.TempDir, "store", cfg.Daemon.StorePath, "control_socket", cfg.Daemon.ControlSocket, "workers", cfg.Daemon.WorkerCount, "threads", cfg.Daemon.TotalThreads, "filesystem_event_debounce", cfg.FilesystemEventDebounce(), "shutdown_policy", cfg.Daemon.ShutdownPolicy, "shutdown_timeout", cfg.Daemon.ShutdownTimeout, "log_level", cfg.Daemon.LogLevel, "recovered_jobs", recovered)
@@ -535,12 +547,11 @@ func startReloadLoop(ctx context.Context, wg *sync.WaitGroup, opts options, runt
 						continue
 					}
 				}
-				if err := configureLogging(next.Daemon.LogLevel); err != nil {
-					slog.Error("config reload rejected", "error", err)
-					continue
-				}
 				// SIGHUP re-reads both halves: the process settings from
-				// anvil.toml and the libraries from the store.
+				// anvil.toml and, merged into them, the daemon settings, the
+				// libraries, and the Arr connections from the store. A value
+				// saved in the web UI therefore survives a reload, and the
+				// merged log level is the one that applies.
 				if err := runtimeCfg.Reload(ctx, next); err != nil {
 					slog.Error("config reload failed", "error", err)
 					continue
@@ -550,7 +561,7 @@ func startReloadLoop(ctx context.Context, wg *sync.WaitGroup, opts options, runt
 				}
 				warnLegacySections(next)
 				reloaded := runtimeCfg.Get()
-				slog.Info("config reloaded", "config", configPathLabel(opts.configPath), "libraries", len(reloaded.Libraries), "workers", next.Daemon.WorkerCount, "threads", next.Daemon.TotalThreads, "filesystem_event_debounce", next.FilesystemEventDebounce(), "log_level", next.Daemon.LogLevel)
+				slog.Info("config reloaded", "config", configPathLabel(opts.configPath), "libraries", len(reloaded.Libraries), "workers", reloaded.Daemon.WorkerCount, "threads", reloaded.Daemon.TotalThreads, "filesystem_event_debounce", reloaded.FilesystemEventDebounce(), "log_level", reloaded.Daemon.LogLevel)
 			}
 		}
 	})
@@ -674,8 +685,15 @@ func loadRuntimeConfig(path string, opts options) (config.Config, error) {
 	if err != nil {
 		return config.Config{}, err
 	}
+	// An option pins its key like the file does, and wins over it: a value
+	// saved in the web UI must not override what the operator started with.
+	sources := maps.Clone(cfg.DaemonSources)
+	if sources == nil {
+		sources = map[string]string{}
+	}
 	if opts.shutdownPolicy != "" {
 		cfg.Daemon.ShutdownPolicy = opts.shutdownPolicy
+		sources["shutdown_policy"] = config.SourceFlag
 	}
 	if opts.shutdownTimeout != "" {
 		timeout, err := time.ParseDuration(opts.shutdownTimeout)
@@ -683,7 +701,9 @@ func loadRuntimeConfig(path string, opts options) (config.Config, error) {
 			return config.Config{}, fmt.Errorf("parse --shutdown-timeout: %w", err)
 		}
 		cfg.Daemon.ShutdownTimeout = config.Duration{Duration: timeout}
+		sources["shutdown_timeout"] = config.SourceFlag
 	}
+	cfg.DaemonSources = sources
 	if err := cfg.Validate(); err != nil {
 		return config.Config{}, err
 	}

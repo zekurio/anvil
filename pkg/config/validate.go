@@ -116,29 +116,8 @@ func (d DaemonConfig) validate(p *problems) {
 	case !filepath.IsAbs(d.ControlSocket):
 		p.addf("daemon.control_socket must be an absolute path")
 	}
-	if d.WorkerCount < 1 {
-		p.addf("daemon.worker_count must be at least 1")
-	}
-	if d.TotalThreads < 0 {
-		p.addf("daemon.total_threads must be non-negative")
-	}
-	if d.MaxThreadsPerJob < 0 {
-		p.addf("daemon.max_threads_per_job must be non-negative")
-	}
-	if d.MaxAttempts < 1 {
-		p.addf("daemon.max_attempts must be at least 1")
-	}
-	validatePositiveDuration(p, "daemon.scan_interval", d.ScanInterval)
-	validateNonNegativeDuration(p, "daemon.filesystem_event_debounce", d.FSDebounce)
-	validatePositiveDuration(p, "daemon.scheduler_interval", d.SchedulerInterval)
-	validatePositiveDuration(p, "daemon.lease_duration", d.LeaseDuration)
-	validateNonNegativeDuration(p, "daemon.shutdown_timeout", d.ShutdownTimeout)
-	validateNonNegativeDuration(p, "daemon.staging_cleanup_age", d.StagingCleanupAge)
-	if !slices.Contains(shutdownPolicies, d.ShutdownPolicy) {
-		p.addf("daemon.shutdown_policy %q is invalid", d.ShutdownPolicy)
-	}
-	if _, ok := NormalizeLogLevel(d.LogLevel); !ok {
-		p.addf("daemon.log_level %q is invalid (must be debug, info, warn, or error)", d.LogLevel)
+	for _, problem := range d.tunableProblems() {
+		p.addf("daemon.%s", problem.text)
 	}
 }
 
@@ -432,18 +411,6 @@ func canonicalVideoOverrideKey(key string) string {
 		return key
 	}
 	return video.CanonicalCodec(key)
-}
-
-func validatePositiveDuration(p *problems, name string, value Duration) {
-	if value.Duration <= 0 {
-		p.addf("%s must be greater than zero", name)
-	}
-}
-
-func validateNonNegativeDuration(p *problems, name string, value Duration) {
-	if value.Duration < 0 {
-		p.addf("%s must be non-negative", name)
-	}
 }
 
 func validateRegexps(p *problems, name string, values []string) {

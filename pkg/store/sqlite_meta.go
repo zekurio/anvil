@@ -3,8 +3,11 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
+
+	"github.com/zekurio/anvil/pkg/config"
 )
 
 // Keys of the meta table.
@@ -17,7 +20,44 @@ const (
 	// there was nothing to import, so a TOML file edited later is never
 	// imported silently.
 	metaLegacyConfigImported = "legacy_config_imported_at"
+	// metaDaemonSettings holds the [daemon] values saved in the web UI, as the
+	// JSON of config.DaemonOverrides. It is the one meta key that is a
+	// setting rather than a record of something done once.
+	metaDaemonSettings = "daemon_settings"
 )
+
+// DaemonSettings returns the [daemon] values saved in the web UI. Nothing
+// saved is the zero value. A key this version does not know, saved by a newer
+// one, is ignored, so going back a version does not keep the daemon from
+// starting.
+func (s *SQLiteStore) DaemonSettings(ctx context.Context) (config.DaemonOverrides, error) {
+	value, found, err := getMeta(ctx, s.db, metaDaemonSettings)
+	if err != nil || !found {
+		return config.DaemonOverrides{}, err
+	}
+	var overrides config.DaemonOverrides
+	if err := json.Unmarshal([]byte(value), &overrides); err != nil {
+		return config.DaemonOverrides{}, fmt.Errorf("decode daemon settings: %w", err)
+	}
+	return overrides, nil
+}
+
+// SetDaemonSettings replaces the [daemon] values saved in the web UI. Saving
+// none removes the record, so every key is back to anvil.toml or its default.
+// The caller validates: the store keeps what it is given.
+func (s *SQLiteStore) SetDaemonSettings(ctx context.Context, overrides config.DaemonOverrides) error {
+	if len(overrides.Keys()) == 0 {
+		if _, err := s.db.ExecContext(ctx, `DELETE FROM meta WHERE key = ?`, metaDaemonSettings); err != nil {
+			return fmt.Errorf("clear daemon settings: %w", err)
+		}
+		return nil
+	}
+	data, err := json.Marshal(overrides)
+	if err != nil {
+		return fmt.Errorf("encode daemon settings: %w", err)
+	}
+	return setMeta(ctx, s.db, metaDaemonSettings, string(data))
+}
 
 // queryer is satisfied by both *sql.DB and *sql.Tx.
 type queryer interface {

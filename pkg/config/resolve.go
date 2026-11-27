@@ -29,7 +29,8 @@ func Default() Config {
 // zero in the file survives while an omitted key gets the default.
 func resolve(raw rawConfig) (Config, error) {
 	cfg := Config{
-		Daemon: resolveDaemon(raw.Daemon),
+		Daemon:        resolveDaemon(raw.Daemon),
+		DaemonSources: fileDaemonSources(raw.Daemon),
 		Web: WebConfig{
 			Enabled:              valueOr(raw.Web.Enabled, true),
 			Listen:               orDefault(raw.Web.Listen, DefaultWebListen),
