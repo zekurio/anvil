@@ -16,6 +16,10 @@ import (
 var (
 	ErrNotFound           = errors.New("store: not found")
 	ErrIncompatibleSchema = errors.New("store: incompatible database schema; reset the database before starting Anvil")
+	// ErrNotMigrated is what a read-only open answers for a store that an
+	// older anvil wrote and the daemon has not upgraded yet. Nothing is wrong
+	// with such a store: the next daemon start migrates it.
+	ErrNotMigrated = errors.New("store: the store has not been migrated yet")
 	// ErrJobCanceled reports that a job row is already terminally canceled, so
 	// the requested work must not start. It is authoritative even before the
 	// worker's own context observes the cancellation.
@@ -252,7 +256,15 @@ func OpenReadOnly(ctx context.Context, path string) (*SQLiteStore, error) {
 	if err != nil {
 		return nil, closeDBOnError(db, err)
 	}
-	if !exists || version < minReadOnlySchemaVersion || version > currentSchemaVersion {
+	switch {
+	case exists && version >= minUpgradableSchemaVersion && version < minReadOnlySchemaVersion:
+		// The daemon would upgrade this store in place. Telling the operator
+		// to reset it, as ErrIncompatibleSchema does, would cost them their
+		// job history for nothing.
+		return nil, closeDBOnError(db, fmt.Errorf("%w: %q is at schema version %d and this anvil reads version %d; start anvild once to migrate it, then run the command again", ErrNotMigrated, path, version, currentSchemaVersion))
+	case exists && version > currentSchemaVersion:
+		return nil, closeDBOnError(db, fmt.Errorf("%w: schema version %d was written by a newer anvil than this one, which reads version %d", ErrIncompatibleSchema, version, currentSchemaVersion))
+	case !exists || version < minReadOnlySchemaVersion:
 		return nil, closeDBOnError(db, fmt.Errorf("%w: read-only schema version %d is outside the supported range %d-%d", ErrIncompatibleSchema, version, minReadOnlySchemaVersion, currentSchemaVersion))
 	}
 	if err := store.requireCoreTables(ctx); err != nil {

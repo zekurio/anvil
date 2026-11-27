@@ -638,8 +638,11 @@ func TestMigratesVersion7WithJobsInPlace(t *testing.T) {
 
 	// A read-only handle cannot migrate, and says so instead of failing on a
 	// missing table.
-	if _, err := OpenReadOnly(ctx, path); !errors.Is(err, ErrIncompatibleSchema) {
-		t.Fatalf("OpenReadOnly on version 7 = %v, want ErrIncompatibleSchema", err)
+	// A store the daemon would migrate is not broken, and the message must
+	// not tell the operator to reset it.
+	if _, err := OpenReadOnly(ctx, path); !errors.Is(err, ErrNotMigrated) || errors.Is(err, ErrIncompatibleSchema) ||
+		!strings.Contains(err.Error(), "start anvild once to migrate it") || strings.Contains(err.Error(), "reset") {
+		t.Fatalf("OpenReadOnly on version 7 = %v, want ErrNotMigrated with the way forward", err)
 	}
 
 	state, err := Open(ctx, path)
