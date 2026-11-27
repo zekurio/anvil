@@ -1,10 +1,5 @@
 /* anvil: layouts shared by the Library, Queue and Settings pages. Colours, spacing and radii come from tokens. */
 
-/* Toasts sit bottom right, where these views keep their actions: the pager, the
-   form bar and the job sheet's footer. Lifted by one control row, a toast about
-   an action no longer covers the button for the next one. */
-body:has(.av-tablefoot, .av-formbar, .av-jobhead) .av-toasts { bottom: calc(var(--space-4) + var(--topbar)); }
-
 /* a table region: toolbar or bulk bar, the scrolling table, a footer */
 .av-tablearea { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; background: var(--surface); }
 .av-tablearea > .av-table-wrap { flex: 1; min-height: 0; }

@@ -31,7 +31,14 @@
 .av-tip-target { display: inline-flex; align-items: center; max-width: 100%; margin: 0; padding: 0; border: 0; border-radius: var(--radius-sm); background: none; color: inherit; font: inherit; text-align: inherit; cursor: help; }
 
 /* toast */
-.av-toasts { box-sizing: border-box; position: fixed; inset: auto var(--space-4) var(--space-4) auto; display: flex; flex-direction: column; gap: var(--space-2); width: 360px; max-width: calc(100vw - var(--space-6)); margin: 0; padding: 0; overflow: visible; border: 0; background: transparent; list-style: none; }
+/* Bottom right, above the last row of the view. That row is where every view
+   keeps its next action: the pager of a table, the bar of a form, the footer
+   of a side sheet, the tools of the canvas. None is taller than the top bar,
+   so a toast lifted by that much reports an action without covering the
+   button for the next one, on every page and without knowing which it is. */
+.av-toasts { box-sizing: border-box; position: fixed; inset: auto var(--space-4) calc(var(--topbar) + var(--space-3)) auto; width: 360px; max-width: calc(100vw - var(--space-6)); margin: 0; padding: 0; overflow: visible; border: 0; background: transparent; }
+/* The region wraps its toasts in one list. */
+.av-toasts > ol { display: flex; flex-direction: column; gap: var(--space-2); margin: 0; padding: 0; list-style: none; }
 .av-toast { box-sizing: border-box; display: flex; align-items: flex-start; gap: var(--space-2); margin: 0; padding: var(--space-2) var(--space-2) var(--space-2) var(--space-3); border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--surface-raised); color: var(--text); box-shadow: var(--shadow-overlay); font: var(--text-small); list-style: none; transition: opacity 100ms ease-out; }
 .av-toast[data-starting-style], .av-toast[data-ending-style] { opacity: 0; }
 .av-toast-icon { margin-top: 5px; color: var(--text-muted); }

@@ -1,7 +1,10 @@
 import { createMemo, createSignal, For, Loading, onSettled, Show } from "solid-js";
 
-import { api, createQuery, keys, type JobFlow, type NodeType } from "../../api";
+import type { JobFlow, NodeType } from "../../api";
 import { FlowCanvas, NODE_HEIGHT, NODE_WIDTH, type FlowCanvasNode, type NodeKind } from "../../ui";
+
+/** The node types of the daemon by id. */
+export type NodeCatalog = Map<string, NodeType>;
 
 const PAD = 12;
 // Room under the lowest node for its port labels.
@@ -12,7 +15,7 @@ const PORT_LABELS = 20;
  * the plan, and a map of the graph with the file's path drawn in the active
  * edge colour.
  */
-export function JobFlowSection(props: { flow: JobFlow }) {
+export function JobFlowSection(props: { flow: JobFlow; catalog: NodeCatalog }) {
   return (
     <>
       <dl class="av-dl av-dl-sheet">
@@ -30,7 +33,7 @@ export function JobFlowSection(props: { flow: JobFlow }) {
       <Lines title="Plan" lines={props.flow.plan} />
       {/* The node catalog names the nodes; the map waits for it without holding the rest of the sheet. */}
       <Loading fallback={<div class="av-flowmap av-flowmap-loading" />}>
-        <FlowMap flow={props.flow} />
+        <Show when={props.catalog}>{(catalog) => <FlowMap flow={props.flow} catalog={catalog()} />}</Show>
       </Loading>
     </>
   );
@@ -49,11 +52,7 @@ function Lines(props: { title: string; lines: string[] }) {
   );
 }
 
-function FlowMap(props: { flow: JobFlow }) {
-  const catalog = createQuery(
-    () => keys.nodeTypes,
-    async () => new Map((await api.nodeTypes()).node_types.map((type): [string, NodeType] => [type.id, type])),
-  );
+function FlowMap(props: { flow: JobFlow; catalog: NodeCatalog }) {
   const [width, setWidth] = createSignal(0);
   let host: HTMLDivElement | undefined;
 
@@ -67,7 +66,7 @@ function FlowMap(props: { flow: JobFlow }) {
 
   const nodes = createMemo((): FlowCanvasNode[] =>
     props.flow.graph.nodes.map((node) => {
-      const type = catalog().get(node.type);
+      const type = props.catalog.get(node.type);
       // A type the catalog no longer has still draws, as a plain command node under its raw name.
       const kind: NodeKind = type?.kind ?? "command";
       return { id: node.id, x: node.x, y: node.y, kind, title: node.label || type?.label || node.type, outputs: type?.outputs };

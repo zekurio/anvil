@@ -6,7 +6,7 @@ import { useAppData } from "../../shell/data";
 import { Button, confirm, ErrorState, LoadingState, SheetSection, SideSheet } from "../../ui";
 import { cancelJobs, retryJobs } from "./actions";
 import { JobAttemptsSection } from "./JobAttempts";
-import { JobFlowSection } from "./JobFlow";
+import { JobFlowSection, type NodeCatalog } from "./JobFlow";
 import { hasQuality, hasStreams, JobQualitySection, JobStreamsSection } from "./JobStreams";
 import { cancelable, channelLayout, retryable, savedLabel, stateLabel, stepLabel } from "./labels";
 import { Copyable, copyText, JobBadge, StepProgress } from "./parts";
@@ -34,6 +34,12 @@ export function JobSheet(props: JobSheetProps) {
     () => api.jobs.get(props.jobId),
     { poll: POLL_LIST },
   );
+  // Asked for with the job, not after it: the map of the flow needs the node
+  // catalog for its node names, and the sheet does not wait for it.
+  const catalog = createQuery(
+    () => keys.nodeTypes,
+    async (): Promise<NodeCatalog> => new Map((await api.nodeTypes()).node_types.map((type) => [type.id, type])),
+  );
   const placeholder = () => props.title ?? `Job ${props.jobId}`;
   return (
     <Errored
@@ -52,13 +58,13 @@ export function JobSheet(props: JobSheetProps) {
           </SideSheet>
         }
       >
-        <LoadedSheet detail={detail()} onClose={props.onClose} />
+        <LoadedSheet detail={detail()} catalog={catalog()} onClose={props.onClose} />
       </Loading>
     </Errored>
   );
 }
 
-function LoadedSheet(props: { detail: JobDetail; onClose: () => void }) {
+function LoadedSheet(props: { detail: JobDetail; catalog: NodeCatalog; onClose: () => void }) {
   const { status } = useAppData();
   const [busy, setBusy] = createSignal<"cancel" | "retry" | null>(null);
   const job = () => props.detail.job;
@@ -132,7 +138,7 @@ function LoadedSheet(props: { detail: JobDetail; onClose: () => void }) {
       <Show when={props.detail.flow}>
         {(flow) => (
           <SheetSection title="Flow" collapsible>
-            <JobFlowSection flow={flow()} />
+            <JobFlowSection flow={flow()} catalog={props.catalog} />
           </SheetSection>
         )}
       </Show>
