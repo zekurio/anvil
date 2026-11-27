@@ -159,7 +159,7 @@ func (s *Server) createLibrary(_ http.ResponseWriter, r *http.Request) (int, any
 	s.mutations.Lock()
 	defer s.mutations.Unlock()
 	if _, err := s.Store.GetLibrary(r.Context(), library.Name); err == nil {
-		return fail(conflictf("A library named %q already exists.", library.Name))
+		return fail(nameTakenf("A library named %q already exists. Library names are unique: choose a different one.", library.Name))
 	} else if !errors.Is(err, store.ErrNotFound) {
 		return fail(err)
 	}

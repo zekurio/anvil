@@ -223,7 +223,7 @@ func TestLibraryProblemsAndPathConflicts(t *testing.T) {
 	for _, problem := range broken.Problems() {
 		fields[problem.Field] = problem.Message
 	}
-	for _, field := range []string{"path", "flow_id", "concurrency_limit", "rules[0].value", "download.handoff_path", "download.handoff_mode", "download.ignorable_globs[0]"} {
+	for _, field := range []string{"path", "flow_id", "concurrency_limit", "rules.0.value", "download.handoff_path", "download.handoff_mode", "download.ignorable_globs.0"} {
 		if fields[field] == "" {
 			t.Errorf("no problem reported for %s: %+v", field, fields)
 		}

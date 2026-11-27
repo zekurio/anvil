@@ -47,6 +47,13 @@ func conflictf(format string, args ...any) *apiError {
 	return &apiError{status: http.StatusConflict, code: CodeConflict, message: fmt.Sprintf(format, args...)}
 }
 
+// nameTakenf is the conflict of a name that is already in use. It always
+// names the field, which is how a client tells it from the other conflicts: a
+// stale revision or something still in use carries no field.
+func nameTakenf(format string, args ...any) *apiError {
+	return &apiError{status: http.StatusConflict, code: CodeConflict, field: "name", message: fmt.Sprintf(format, args...)}
+}
+
 // handler is an API route: it returns what to send, or the error to report.
 // A nil body with status 204 sends no content.
 type handler func(w http.ResponseWriter, r *http.Request) (status int, body any, err error)
@@ -130,7 +137,9 @@ func classify(ctx context.Context, err error) *apiError {
 		return &apiError{status: http.StatusRequestEntityTooLarge, code: CodeInvalid, message: fmt.Sprintf("The request body is larger than %d bytes.", maxBodyBytes)}
 	case errors.Is(err, store.ErrNotFound):
 		return &apiError{status: http.StatusNotFound, code: CodeNotFound, message: sentence(err.Error())}
-	case errors.Is(err, store.ErrRevisionConflict), errors.Is(err, store.ErrNameTaken), errors.Is(err, store.ErrInUse), errors.Is(err, store.ErrActiveWork):
+	case errors.Is(err, store.ErrNameTaken):
+		return &apiError{status: http.StatusConflict, code: CodeConflict, field: "name", message: sentence(trimSentinel(err.Error()))}
+	case errors.Is(err, store.ErrRevisionConflict), errors.Is(err, store.ErrInUse), errors.Is(err, store.ErrActiveWork):
 		return &apiError{status: http.StatusConflict, code: CodeConflict, message: sentence(trimSentinel(err.Error()))}
 	case ctx.Err() != nil:
 		return &apiError{status: http.StatusServiceUnavailable, code: CodeUnavailable, message: "The daemon is shutting down, or the request was abandoned."}

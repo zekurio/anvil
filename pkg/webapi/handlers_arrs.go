@@ -87,7 +87,7 @@ func (s *Server) createArr(_ http.ResponseWriter, r *http.Request) (int, any, er
 	defer s.mutations.Unlock()
 	stored, err := s.Store.CreateArr(r.Context(), arr, s.now())
 	if errors.Is(err, store.ErrNameTaken) {
-		return fail(conflictf("An Arr connection named %q already exists.", arr.Name))
+		return fail(nameTakenf("An Arr connection named %q already exists. Connection names are unique: choose a different one.", arr.Name))
 	}
 	if err != nil {
 		return fail(err)

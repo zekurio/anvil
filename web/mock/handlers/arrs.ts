@@ -30,7 +30,7 @@ export function arrRoutes(router: Router): void {
 
   router.on("POST", "/arrs", (ctx) => {
     const arr = parse(objectBody<Partial<ArrWrite>>(ctx));
-    if (db.arrs.some((a) => a.name === arr.name)) throw conflict(`An Arr connection named "${arr.name}" already exists.`, "name");
+    if (db.arrs.some((a) => a.name === arr.name)) throw conflict(`An Arr connection named "${arr.name}" already exists. Connection names are unique: choose a different one.`, "name");
     db.arrs.push(arr);
     return created(view(arr));
   });

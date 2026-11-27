@@ -20,6 +20,23 @@ function toDraft(library: Library): SettingsDraft {
   return rest;
 }
 
+/** The fields this form can show an error on, by the path the daemon reports (webapi.Error.Field). */
+const SHOWN_FIELDS = new Set([
+  "path",
+  "flow_id",
+  "paused",
+  "priority",
+  "concurrency_limit",
+  "scan_interval",
+  "arr",
+  "media.replacement_mode",
+  "download.handoff_path",
+  "download.stable_for",
+  "download.package_mode",
+  "download.handoff_mode",
+  "download.ignorable_globs",
+]);
+
 /** The Settings tab: everything about the library except its rules, and deleting it. */
 export function SettingsTab(props: { library: Library }) {
   return (
@@ -70,8 +87,11 @@ function SettingsForm(props: { library: Library }) {
       success: `Saved the settings of ${props.library.name}.`,
       failure: "The settings could not be saved.",
       onError: (error: ApiError) => {
-        if (!error.field) return false;
-        setErrors({ [error.field]: error.message });
+        // A list entry ("download.ignorable_globs.2") is reported on its list.
+        const field = error.field?.replace(/\.\d+$/, "");
+        // Anything this form has no field for (the rules, the name) goes to the toast.
+        if (!field || !SHOWN_FIELDS.has(field)) return false;
+        setErrors({ [field]: error.message });
         return true;
       },
     });

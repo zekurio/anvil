@@ -67,7 +67,7 @@ function parse(write: Partial<LibraryWrite>, existing?: StoredLibrary): LibraryW
   if (existing && kind !== existing.kind) throw invalid("The kind cannot change after creation.", "kind");
   const path = absolute(write.path, "path");
   const clash = db.libraries.find((l) => l !== existing && (l.path === path || path.startsWith(`${l.path}/`) || l.path.startsWith(`${path}/`)));
-  if (clash) throw conflict(`This folder overlaps the library "${clash.name}" (${clash.path}).`, "path");
+  if (clash) throw invalid(`${path} overlaps the library "${clash.name}" at ${clash.path}. Library folders must not contain each other.`, "path");
   if (!db.flows.some((f) => f.id === write.flow_id)) throw invalid("Choose a flow that exists.", "flow_id");
   const arr = write.arr ?? "";
   if (arr !== "" && !db.arrs.some((a) => a.name === arr)) throw invalid(`No Arr connection is named "${arr}".`, "arr");
@@ -126,7 +126,7 @@ export function libraryRoutes(router: Router): void {
 
   router.on("POST", "/libraries", (ctx) => {
     const write = parse(objectBody<Partial<LibraryWrite>>(ctx));
-    if (findLibrary(write.name)) throw conflict(`A library named "${write.name}" already exists.`, "name");
+    if (findLibrary(write.name)) throw conflict(`A library named "${write.name}" already exists. Library names are unique: choose a different one.`, "name");
     const at = new Date().toISOString();
     const library: StoredLibrary = { ...write, created_at: at, updated_at: at };
     db.libraries.push(library);

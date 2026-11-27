@@ -56,7 +56,7 @@ const (
 	CodeInvalid         = "invalid"         // 400: malformed or failing validation
 	CodeUnauthenticated = "unauthenticated" // 401: sign in first
 	CodeNotFound        = "not_found"       // 404
-	CodeConflict        = "conflict"        // 409: stale revision, name taken, or still in use
+	CodeConflict        = "conflict"        // 409: stale revision, name taken (Field is "name"), or still in use
 	CodeInvalidFlow     = "invalid_flow"    // 422: the graph has error issues; see Issues
 	CodeInternal        = "internal"        // 500
 	CodeUnavailable     = "unavailable"     // 503: daemon is shutting down
@@ -71,7 +71,13 @@ type ErrorResponse struct {
 type Error struct {
 	Code    string `json:"code"`
 	Message string `json:"message"`
-	// Field names the request field at fault, when there is exactly one.
+	// Field names the request field at fault, when there is exactly one. It
+	// is the path of the field in the request body: object keys and 0-based
+	// list indexes joined by dots, as in "name", "flow_id",
+	// "media.replacement_mode", "download.handoff_path", "rules.2.value", or
+	// "download.ignorable_globs.0". For a query parameter it is the
+	// parameter's name. A name that is already taken answers CodeConflict
+	// with Field "name"; every other conflict carries no field.
 	Field string `json:"field,omitempty"`
 	// Issues lists graph problems when Code is CodeInvalidFlow.
 	Issues []flow.Issue `json:"issues,omitempty"`

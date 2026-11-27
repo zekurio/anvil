@@ -344,7 +344,7 @@ export type ErrorCode =
   | "invalid" // 400: malformed or failing validation
   | "unauthenticated" // 401: sign in first
   | "not_found" // 404
-  | "conflict" // 409: stale revision, name taken, or still in use
+  | "conflict" // 409: stale revision, name taken (field is "name"), or still in use
   | "invalid_flow" // 422: the graph has error issues; see issues
   | "internal" // 500
   | "unavailable"; // 503: daemon is shutting down
@@ -358,7 +358,14 @@ export interface ErrorResponse {
 export interface ErrorBody {
   code: ErrorCode;
   message: string;
-  /** Names the request field at fault, when there is exactly one. */
+  /**
+   * Names the request field at fault, when there is exactly one: the path of
+   * the field in the request body, object keys and 0-based list indexes joined
+   * by dots ("name", "flow_id", "media.replacement_mode",
+   * "download.handoff_path", "rules.2.value", "download.ignorable_globs.0"),
+   * or the name of a query parameter. A taken name answers "conflict" with
+   * field "name"; every other conflict carries no field.
+   */
   field?: string;
   /** Graph problems when code is "invalid_flow". */
   issues?: Issue[];

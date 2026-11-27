@@ -122,6 +122,9 @@ func (s *Server) createFlow(_ http.ResponseWriter, r *http.Request) (int, any, e
 	s.mutations.Lock()
 	defer s.mutations.Unlock()
 	stored, err := s.Store.CreateFlow(r.Context(), input, s.now())
+	if errors.Is(err, store.ErrNameTaken) {
+		return fail(flowNameTaken(input.Name))
+	}
 	if err != nil {
 		return fail(err)
 	}
@@ -130,6 +133,10 @@ func (s *Server) createFlow(_ http.ResponseWriter, r *http.Request) (int, any, e
 		return fail(err)
 	}
 	return created(response)
+}
+
+func flowNameTaken(name string) error {
+	return nameTakenf("Another flow is already named %q. Flow names are unique: choose a different one.", name)
 }
 
 func (s *Server) updateFlow(_ http.ResponseWriter, r *http.Request) (int, any, error) {
@@ -153,6 +160,8 @@ func (s *Server) updateFlow(_ http.ResponseWriter, r *http.Request) (int, any, e
 		return fail(notFoundf("There is no flow %d.", id))
 	case errors.Is(err, store.ErrRevisionConflict):
 		return fail(conflictf("This flow was changed somewhere else since you opened it. Reload it to see the current version, then apply your changes again."))
+	case errors.Is(err, store.ErrNameTaken):
+		return fail(flowNameTaken(input.Name))
 	case err != nil:
 		return fail(err)
 	}

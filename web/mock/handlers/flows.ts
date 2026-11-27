@@ -38,7 +38,7 @@ function graphOf(value: unknown): Graph {
 function validate(write: FlowWrite, self?: StoredFlow): string {
   const name = typeof write.name === "string" ? write.name.trim() : "";
   if (name.length < 1 || name.length > 80) throw invalid("Must be between 1 and 80 characters.", "name");
-  if (db.flows.some((f) => f !== self && f.name.toLowerCase() === name.toLowerCase())) throw conflict(`A flow named "${name}" already exists.`, "name");
+  if (db.flows.some((f) => f !== self && f.name.toLowerCase() === name.toLowerCase())) throw conflict(`Another flow is already named "${name}". Flow names are unique: choose a different one.`, "name");
   const check = checkGraph(graphOf(write.graph));
   if (!check.valid) {
     const count = Object.values(check.nodes).filter((n) => n.invalid).length;
@@ -88,7 +88,7 @@ export function flowRoutes(router: Router): void {
   router.on("PUT", "/flows/:id", (ctx) => {
     const flow = find(ctx);
     const write = objectBody<FlowWrite>(ctx);
-    if (write.revision !== flow.revision) throw conflict(`The flow changed since it was opened (revision ${flow.revision}). Reload it and apply the changes again.`, "revision");
+    if (write.revision !== flow.revision) throw conflict("This flow was changed somewhere else since you opened it. Reload it to see the current version, then apply your changes again.");
     flow.name = validate(write, flow);
     flow.description = write.description ?? "";
     flow.graph = write.graph;

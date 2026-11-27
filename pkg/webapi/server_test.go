@@ -267,14 +267,24 @@ func TestErrorShapes(t *testing.T) {
 		t.Fatalf("flow without a name = %+v", named)
 	}
 
-	// Conflicts: a taken name, a stale revision.
-	wantError(t, f.send(http.MethodPost, "/api/v1/flows", FlowWrite{Name: seeded.Name, Graph: skipHEVC()}), http.StatusConflict, CodeConflict)
+	// Conflicts: a taken name, which names its field on a create and on a
+	// rename alike, and a stale revision, which names none. The field is how
+	// the editor tells the two apart.
+	if taken := wantError(t, f.send(http.MethodPost, "/api/v1/flows", FlowWrite{Name: seeded.Name, Graph: skipHEVC()}), http.StatusConflict, CodeConflict); taken.Field != "name" {
+		t.Fatalf("taken flow name on create = %+v, want field name", taken)
+	}
 	flowPath := fmt.Sprintf("/api/v1/flows/%d", seeded.ID)
 	want[Flow](t, f.send(http.MethodPut, flowPath, FlowWrite{Name: seeded.Name, Graph: skipHEVC(), Revision: seeded.Revision}), http.StatusOK)
 	stale := wantError(t, f.send(http.MethodPut, flowPath, FlowWrite{Name: seeded.Name, Graph: skipHEVC(), Revision: seeded.Revision}), http.StatusConflict, CodeConflict)
-	if !strings.Contains(stale.Message, "Reload") {
-		t.Fatalf("stale revision = %+v, want it to say what to do", stale)
+	if !strings.Contains(stale.Message, "Reload") || stale.Field != "" {
+		t.Fatalf("stale revision = %+v, want it to say what to do and to name no field", stale)
 	}
+	other := want[Flow](t, f.send(http.MethodPost, "/api/v1/flows", FlowWrite{Name: "Other", Graph: skipHEVC()}), http.StatusCreated)
+	nameClash := wantError(t, f.send(http.MethodPut, fmt.Sprintf("/api/v1/flows/%d", other.ID), FlowWrite{Name: seeded.Name, Graph: skipHEVC(), Revision: other.Revision}), http.StatusConflict, CodeConflict)
+	if nameClash.Field != "name" || !strings.Contains(nameClash.Message, seeded.Name) {
+		t.Fatalf("taken flow name on rename = %+v, want field name and the name", nameClash)
+	}
+	wantNoContent(t, f.send(http.MethodDelete, fmt.Sprintf("/api/v1/flows/%d", other.ID), nil))
 
 	// Library validation names the field at fault.
 	library := func(change func(*LibraryWrite)) LibraryWrite {
@@ -291,8 +301,8 @@ func TestErrorShapes(t *testing.T) {
 		"scan_interval":     library(func(w *LibraryWrite) { w.ScanInterval = "soon" }),
 		"concurrency_limit": library(func(w *LibraryWrite) { w.ConcurrencyLimit = -1 }),
 		"rule_fallback":     library(func(w *LibraryWrite) { w.RuleFallback = "maybe" }),
-		"rules[0].value":    library(func(w *LibraryWrite) { w.Rules = []Rule{{Action: "deny", Field: "size", Op: "lt", Value: "200"}} }),
-		"rules[1].op": library(func(w *LibraryWrite) {
+		"rules.0.value":     library(func(w *LibraryWrite) { w.Rules = []Rule{{Action: "deny", Field: "size", Op: "lt", Value: "200"}} }),
+		"rules.1.op": library(func(w *LibraryWrite) {
 			w.Rules = []Rule{{Action: "allow", Field: "path", Op: "matches", Value: "**"}, {Action: "deny", Field: "size", Op: "is", Value: "1 GB"}}
 		}),
 		"media.replacement_mode": library(func(w *LibraryWrite) { w.Media.ReplacementMode = "shred" }),
@@ -320,7 +330,9 @@ func TestErrorShapes(t *testing.T) {
 	if parent := wantError(t, f.send(http.MethodPost, "/api/v1/libraries", library(func(w *LibraryWrite) { w.Path = filepath.Dir(f.media) })), http.StatusBadRequest, CodeInvalid); parent.Field != "path" {
 		t.Errorf("a root above another library: %+v", parent)
 	}
-	wantError(t, f.send(http.MethodPost, "/api/v1/libraries", LibraryWrite{Name: "movies", Kind: "media", Path: "/srv/other", FlowID: seeded.ID}), http.StatusConflict, CodeConflict)
+	if taken := wantError(t, f.send(http.MethodPost, "/api/v1/libraries", LibraryWrite{Name: "movies", Kind: "media", Path: "/srv/other", FlowID: seeded.ID}), http.StatusConflict, CodeConflict); taken.Field != "name" {
+		t.Errorf("taken library name = %+v, want field name", taken)
+	}
 
 	// An update cannot rename a library or change its kind.
 	current := want[Library](t, f.get("/api/v1/libraries/movies"), http.StatusOK).LibraryWrite
@@ -347,7 +359,9 @@ func TestErrorShapes(t *testing.T) {
 		}
 	}
 	want[Arr](t, f.send(http.MethodPost, "/api/v1/arrs", ArrWrite{Name: "arr", Type: "radarr", BaseURL: "http://localhost:7878", APIKey: pointer("k")}), http.StatusCreated)
-	wantError(t, f.send(http.MethodPost, "/api/v1/arrs", ArrWrite{Name: "arr", Type: "sonarr", BaseURL: "http://localhost:8989", APIKey: pointer("k")}), http.StatusConflict, CodeConflict)
+	if taken := wantError(t, f.send(http.MethodPost, "/api/v1/arrs", ArrWrite{Name: "arr", Type: "sonarr", BaseURL: "http://localhost:8989", APIKey: pointer("k")}), http.StatusConflict, CodeConflict); taken.Field != "name" {
+		t.Errorf("taken Arr name = %+v, want field name", taken)
+	}
 }
 
 func TestPanicBecomesAnInternalError(t *testing.T) {
