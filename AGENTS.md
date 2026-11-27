@@ -508,6 +508,10 @@ createEffect(() => {
   Class names carry the `av-` prefix; the flow editor's page styles use `fe-`.
   Colors exist only in the token file: no raw color anywhere else, and no new
   ones. Spacing, radii, and type come from the tokens. Both themes must work.
+  The accent is Go's gopher blue. The favicon and app icons are the one
+  exception to the colour rule: static files in `web/public`, rendered once
+  from the SVG sources described in `web/icons/README.md`, never at build
+  time.
 - Copy: the product is `anvil`, lowercase, in the UI. Labels are sentence
   case, never all caps. Say a thing once, in as few words as do the job: no
   hint that restates its label, no section description that restates its
