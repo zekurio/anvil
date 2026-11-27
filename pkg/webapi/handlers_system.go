@@ -145,7 +145,8 @@ func (s *Server) settings(http.ResponseWriter, *http.Request) (int, any, error) 
 		Version:    s.Version,
 		ConfigPath: s.ConfigPath,
 		Daemon: DaemonSettings{
-			MediaRoots:        slices.Clone(cfg.Daemon.MediaRoots),
+			// Never null: the UI lists them.
+			MediaRoots:        append([]string{}, cfg.Daemon.MediaRoots...),
 			TempDir:           cfg.Daemon.TempDir,
 			StorePath:         cfg.Daemon.StorePath,
 			ControlSocket:     cfg.Daemon.ControlSocket,

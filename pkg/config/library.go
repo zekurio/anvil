@@ -191,7 +191,7 @@ func (arr ArrConfig) Problems() []FieldProblem {
 		found = append(found, FieldProblem{Field: "base_url", Message: fmt.Sprintf("%q is not an http or https address. Enter one such as http://localhost:7878.", arr.BaseURL)})
 	}
 	if strings.TrimSpace(arr.APIKey) == "" && strings.TrimSpace(arr.APIKeyFile) == "" {
-		found = append(found, FieldProblem{Field: "api_key", Message: "An API key is required. Enter the key, or the path of a file that holds it."})
+		found = append(found, FieldProblem{Field: "api_key", Message: "An API key is required. Enter the key of the Radarr or Sonarr server."})
 	}
 	if file := strings.TrimSpace(arr.APIKeyFile); file != "" && !filepath.IsAbs(file) {
 		found = append(found, FieldProblem{Field: "api_key_file", Message: fmt.Sprintf("%q is not an absolute path. Enter one that starts with /, such as /run/secrets/radarr-api-key.", arr.APIKeyFile)})

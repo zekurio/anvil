@@ -440,6 +440,7 @@ export interface Settings {
 }
 
 export interface DaemonSettings {
+  /** Confines GET /fs and library paths when it is not empty. Empty, never null, when the daemon sets none. */
   media_roots: string[];
   temp_dir: string;
   store_path: string;

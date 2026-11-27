@@ -155,6 +155,8 @@ type Settings struct {
 
 // DaemonSettings mirrors the [daemon] table with defaults filled in.
 type DaemonSettings struct {
+	// MediaRoots confines GET /fs and library paths when it is not empty.
+	// It is an empty list, never null, when the daemon sets none.
 	MediaRoots        []string `json:"media_roots"`
 	TempDir           string   `json:"temp_dir"`
 	StorePath         string   `json:"store_path"`

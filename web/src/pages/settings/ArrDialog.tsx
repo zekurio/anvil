@@ -109,7 +109,15 @@ export function ArrDialog(props: { arr?: Arr; onClose: () => void }) {
         <Field
           label="API key"
           htmlFor="arr-key"
-          hint={draft.remove_key ? "The stored key is removed when you save." : editing?.api_key_set ? "A key is stored. Leave this empty to keep it; the key is never shown." : "Stored by the daemon and never shown again. Leave it empty when the key comes from a file."}
+          hint={
+            draft.remove_key
+              ? "The stored key is removed when you save."
+              : editing?.api_key_set
+                ? "A key is stored. Leave this empty to keep it; the key is never shown."
+                : editing?.api_key_file
+                  ? "The key is read from the file below. A key entered here is stored and used instead of the file."
+                  : "Stored by the daemon and never shown again."
+          }
           error={errors.api_key}
         >
           <Input id="arr-key" mono type="password" autocomplete="new-password" spellcheck={false} disabled={draft.remove_key} invalid={!!errors.api_key} value={draft.api_key} onInput={(event) => edit("api_key", (d) => void (d.api_key = event.currentTarget.value))} />
@@ -130,7 +138,7 @@ export function ArrDialog(props: { arr?: Arr; onClose: () => void }) {
         </Show>
         <Show when={editing?.api_key_file}>
           {(path) => (
-            <Field label="API key file" hint="This read-only path comes from the administrator's imported configuration.">
+            <Field label="API key file" hint="Imported from the configuration file. The daemon reads the key from it; the path cannot be changed here.">
               <p class="av-readonly">{path()}</p>
             </Field>
           )}

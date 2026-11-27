@@ -276,7 +276,7 @@ func TestMediaRootsConfineBrowsingAndLibraryWrites(t *testing.T) {
 // that maps over a list must never meet null.
 func TestListsAreNeverNull(t *testing.T) {
 	f := newFixture(t, "", nil)
-	for _, path := range []string{"/api/v1/status", "/api/v1/libraries", "/api/v1/arrs", "/api/v1/jobs", "/api/v1/flows", "/api/v1/node-types"} {
+	for _, path := range []string{"/api/v1/status", "/api/v1/settings", "/api/v1/libraries", "/api/v1/arrs", "/api/v1/jobs", "/api/v1/flows", "/api/v1/node-types"} {
 		recorder := f.get(path)
 		if recorder.Code != http.StatusOK || strings.Contains(recorder.Body.String(), "null") {
 			t.Errorf("GET %s = %d %s, want no null", path, recorder.Code, recorder.Body.String())

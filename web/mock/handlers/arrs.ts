@@ -20,7 +20,7 @@ function parse(write: Partial<ArrWrite>, existing?: StoredArr): StoredArr {
   const api_key_file = existing?.api_key_file ?? "";
   // null keeps the stored key, "" clears it, anything else replaces it.
   const api_key_set = write.api_key === null || write.api_key === undefined ? (existing?.api_key_set ?? false) : write.api_key !== "";
-  if (!api_key_set && api_key_file === "") throw invalid("Give an API key or the path of a file that holds it.", "api_key");
+  if (!api_key_set && api_key_file === "") throw invalid("An API key is required. Enter the key of the Radarr or Sonarr server.", "api_key");
   return { name, type: write.type, base_url: write.base_url.replace(/\/+$/, ""), api_key_file: api_key_set && write.api_key ? "" : api_key_file, api_key_set };
 }
 
