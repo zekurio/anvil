@@ -85,7 +85,7 @@ func TestValidateStructure(t *testing.T) {
 				Nodes: []Node{newNode("in", typeInput, nil), newNode("out", typeOutputPublish, nil), newNode("out", typeOutputSkip, nil)},
 				Edges: []Edge{{From: "in", To: "out"}},
 			},
-			want: []Issue{problem("out", "", `Node ID "out" is used more than once. Every node needs its own ID.`)},
+			want: []Issue{problem("out", "", `Node ID "out" is used more than once.`)},
 		},
 		{
 			name:  "unknown node type",
@@ -166,7 +166,7 @@ func TestValidateStructure(t *testing.T) {
 				Edges: []Edge{{From: "in", To: "copy"}, {From: "copy", To: "in"}},
 			},
 			want: []Issue{
-				problem("in", "", `The input node starts the flow, so no edge can lead into it. Remove the edge from "Copy video".`),
+				problem("in", "", `No edge can lead into the input node. Remove the edge from "Copy video".`),
 				problem("copy", "", `Output of "Copy video" is not connected.`),
 			},
 		},
@@ -181,12 +181,12 @@ func TestValidateStructure(t *testing.T) {
 					{From: "copy", To: "check"},
 				},
 			},
-			want: []Issue{problem("check", "", `The flow loops back to "Video is hevc?". Every path has to end at an output without repeating a node.`)},
+			want: []Issue{problem("check", "", `The flow loops back to "Video is hevc?". Every path must end at an output.`)},
 		},
 		{
 			name:  "node looping to itself",
 			graph: Graph{Nodes: []Node{newNode("in", typeInput, nil), newNode("copy", typeVideoCopy, nil)}, Edges: []Edge{{From: "in", To: "copy"}, {From: "copy", To: "copy"}}},
-			want:  []Issue{problem("copy", "", `The flow loops back to "Copy video". Every path has to end at an output without repeating a node.`)},
+			want:  []Issue{problem("copy", "", `The flow loops back to "Copy video". Every path must end at an output.`)},
 		},
 		{
 			name: "dangling labeled output",
@@ -232,12 +232,12 @@ func TestValidateStructure(t *testing.T) {
 					{From: "encode", To: "out"},
 				},
 			},
-			want: []Issue{warning("crop", `Cropping needs a re-encode, but a path through "Crop black bars" copies the video, so nothing is cropped there.`)},
+			want: []Issue{warning("crop", `A path through "Crop black bars" copies the video, so nothing is cropped there.`)},
 		},
 		{
 			name:  "crop without any video node",
 			graph: simple(newNode("crop", typeVideoCrop, nil)),
-			want:  []Issue{warning("crop", `Cropping needs a re-encode, but a path through "Crop black bars" copies the video, so nothing is cropped there.`)},
+			want:  []Issue{warning("crop", `A path through "Crop black bars" copies the video, so nothing is cropped there.`)},
 		},
 	}
 	for _, test := range tests {
@@ -474,7 +474,7 @@ func TestValidateOptions(t *testing.T) {
 			options:  `{"metric": "xpsnr", "target": 95}`,
 			want: []Issue{{
 				Severity: SeverityWarning, NodeID: "n", Field: "target",
-				Message: "An XPSNR target of 95 dB is higher than encodes reach, so no CRF will meet it. Typical targets are 35 to 50.",
+				Message: "No encode reaches an XPSNR of 95 dB. Typical targets are 35 to 50.",
 			}},
 		},
 		{
@@ -743,7 +743,7 @@ func TestCropAnalysisAgreesWithWalkingEveryPath(t *testing.T) {
 		}
 		got := map[string]bool{}
 		for _, issue := range issues {
-			if strings.HasPrefix(issue.Message, "Cropping needs a re-encode") {
+			if strings.HasSuffix(issue.Message, "copies the video, so nothing is cropped there.") {
 				if got[issue.NodeID] {
 					t.Fatalf("%s is warned about twice:\n%s", issue.NodeID, printIssues(issues))
 				}
@@ -774,7 +774,7 @@ func TestValidateBoundsTheSizeOfAGraph(t *testing.T) {
 		t.Fatalf("a graph of %d nodes has errors:\n%s", len(g.Nodes), printIssues(errs))
 	}
 	// Only the last crop node on the path counts.
-	if want := []Issue{warning(previous, `Cropping needs a re-encode, but a path through "Crop black bars" copies the video, so nothing is cropped there.`)}; !reflect.DeepEqual(issues, want) {
+	if want := []Issue{warning(previous, `A path through "Crop black bars" copies the video, so nothing is cropped there.`)}; !reflect.DeepEqual(issues, want) {
 		t.Fatalf("Validate() =\n%s\nwant\n%s", printIssues(issues), printIssues(want))
 	}
 	if _, err := Canonical(g); err != nil {
@@ -782,7 +782,7 @@ func TestValidateBoundsTheSizeOfAGraph(t *testing.T) {
 	}
 
 	tooManyNodes := Graph{Nodes: append(append([]Node{}, g.Nodes...), newNode("extra", typeOutputSkip, nil)), Edges: g.Edges}
-	want := []Issue{problem("", "", "A flow can have at most 500 nodes, and this one has 501. Remove nodes until it fits.")}
+	want := []Issue{problem("", "", "A flow can have at most 500 nodes, and this one has 501.")}
 	if got := Validate(tooManyNodes); !reflect.DeepEqual(got, want) {
 		t.Errorf("Validate() =\n%s\nwant\n%s", printIssues(got), printIssues(want))
 	}
@@ -797,7 +797,7 @@ func TestValidateBoundsTheSizeOfAGraph(t *testing.T) {
 	for range MaxEdges + 1 {
 		tooManyEdges.Edges = append(tooManyEdges.Edges, Edge{From: "in", To: "out"})
 	}
-	want = []Issue{problem("", "", "A flow can have at most 2000 edges, and this one has 2001. Remove edges until it fits.")}
+	want = []Issue{problem("", "", "A flow can have at most 2000 edges, and this one has 2001.")}
 	if got := Validate(tooManyEdges); !reflect.DeepEqual(got, want) {
 		t.Errorf("Validate() =\n%s\nwant\n%s", printIssues(got), printIssues(want))
 	}

@@ -122,7 +122,7 @@ func inputNode() nodeDef {
 			Kind:        KindInput,
 			Group:       groupInput,
 			Label:       "Input file",
-			Description: "Where every queued file of the library enters the flow. A flow has exactly one input.",
+			Description: "Where each queued file enters. A flow has one input.",
 			Outputs:     []string{""},
 			Sections:    []Section{},
 		},
@@ -133,14 +133,13 @@ func inputNode() nodeDef {
 func outputPublishNode() nodeDef {
 	return nodeDef{
 		NodeType: NodeType{
-			ID:    typeOutputPublish,
-			Kind:  KindOutput,
-			Group: groupOutput,
-			Label: "Publish result",
-			Description: "Ends the flow and publishes the processed file. The library decides how: " +
-				"a media library replaces the source in place, a download library hands the file off to its importer.",
-			Outputs:  []string{},
-			Sections: []Section{},
+			ID:          typeOutputPublish,
+			Kind:        KindOutput,
+			Group:       groupOutput,
+			Label:       "Publish result",
+			Description: "Publishes the result as the library is set up, in place or by handoff.",
+			Outputs:     []string{},
+			Sections:    []Section{},
 		},
 		// Short enough to fit a node at full size: the description above has
 		// the rest.
@@ -156,7 +155,7 @@ func outputSkipNode() nodeDef {
 			Kind:        KindOutput,
 			Group:       groupOutput,
 			Label:       "Skip file",
-			Description: "Ends the flow without touching the file. The job is marked skipped.",
+			Description: "Leaves the file untouched and marks the job skipped.",
 			Outputs:     []string{},
 			Sections:    []Section{},
 		},

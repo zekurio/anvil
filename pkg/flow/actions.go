@@ -23,13 +23,12 @@ func videoEncodeNode() nodeDef {
 	}
 	return nodeDef{
 		NodeType: NodeType{
-			ID:    typeVideoEncode,
-			Kind:  KindVideo,
-			Group: groupVideo,
-			Label: "Encode video",
-			Description: "Re-encodes the video stream. With a quality target, anvil measures samples of each file " +
-				"and picks the highest CRF that still meets it.",
-			Outputs: []string{""},
+			ID:          typeVideoEncode,
+			Kind:        KindVideo,
+			Group:       groupVideo,
+			Label:       "Encode video",
+			Description: "Re-encodes the video. With a quality target, anvil picks the highest CRF whose samples still meet it.",
+			Outputs:     []string{""},
 			Sections: []Section{
 				{Title: "Encoder", Fields: []Field{
 					{
@@ -61,7 +60,7 @@ func videoEncodeNode() nodeDef {
 						Key:     "preset",
 						Label:   "Preset",
 						Type:    FieldString,
-						Hint:    "Passed to the encoder as written. libsvtav1 takes 0 to 13, and lower is slower and smaller.",
+						Hint:    "libsvtav1 takes 0 to 13. Lower is slower and smaller.",
 						Default: "6",
 						Mono:    true,
 						Half:    true,
@@ -92,7 +91,7 @@ func videoEncodeNode() nodeDef {
 						Key:         "crf",
 						Label:       "CRF",
 						Type:        FieldInt,
-						Hint:        "Lower is better quality and a larger file. No samples are measured and no savings are required.",
+						Hint:        "Lower is better quality and a larger file.",
 						Default:     28,
 						Min:         bound(0),
 						Max:         bound(255),
@@ -112,7 +111,7 @@ func videoEncodeNode() nodeDef {
 						Key:         "target",
 						Label:       "Target",
 						Type:        FieldFloat,
-						Hint:        "Lowest score to accept. VMAF targets are usually 93 to 96, XPSNR targets 35 to 50.",
+						Hint:        "Lowest score to accept. VMAF is usually 93 to 96, XPSNR 35 to 50.",
 						Default:     float64(config.DefaultTargetVMAF),
 						Min:         bound(0),
 						Max:         bound(100),
@@ -146,7 +145,7 @@ func videoEncodeNode() nodeDef {
 						Key:         "min_savings_percent",
 						Label:       "Smallest saving worth encoding",
 						Type:        FieldFloat,
-						Hint:        "Estimated from the samples, for the video stream only.",
+						Hint:        "Video stream only, estimated from the samples.",
 						Default:     float64(config.DefaultMinSavingsPct),
 						Min:         bound(0),
 						Max:         bound(100),
@@ -158,7 +157,7 @@ func videoEncodeNode() nodeDef {
 						Key:     "on_no_fit",
 						Label:   "When no CRF fits",
 						Type:    FieldEnum,
-						Hint:    "What happens when no CRF in the range meets both the target and the saving.",
+						Hint:    "A CRF fits when it meets both the target and the saving.",
 						Default: "copy",
 						Choices: []Choice{
 							{Value: "copy", Label: "Copy the video"},
@@ -190,11 +189,10 @@ func videoEncodeNode() nodeDef {
 						VisibleWhen: search(),
 					},
 					{
-						Key:   "ffmpeg_args",
-						Label: "Extra encoder arguments",
-						Type:  FieldStringList,
-						Hint: "Option and value pairs, one per entry, used for the search and the final encode. " +
-							"Only encoder parameter bundles and value-only tuning options are accepted; files, URLs, devices, filters, mapping, timing, and rate control stay with anvil.",
+						Key:         "ffmpeg_args",
+						Label:       "Extra encoder arguments",
+						Type:        FieldStringList,
+						Hint:        "One option and its value per entry. Only encoder parameters and value-only tuning options are allowed.",
 						Default:     []string{},
 						Mono:        true,
 						Placeholder: "-svtav1-params",
@@ -227,7 +225,7 @@ func videoEncodeNode() nodeDef {
 			}
 			return []optionProblem{{
 				Field: "target",
-				Message: fmt.Sprintf("An XPSNR target of %s dB is higher than encodes reach, so no CRF will meet it. Typical targets are 35 to 50.",
+				Message: fmt.Sprintf("No encode reaches an XPSNR of %s dB. Typical targets are 35 to 50.",
 					formatNumber(settings.Target)),
 			}}
 		},
@@ -321,7 +319,7 @@ func videoCopyNode() nodeDef {
 			Kind:        KindVideo,
 			Group:       groupVideo,
 			Label:       "Copy video",
-			Description: "Keeps the source video stream as it is. Put it on a branch that must not re-encode.",
+			Description: "Keeps the source video as it is.",
 			Outputs:     []string{""},
 			Sections:    []Section{},
 		},
@@ -335,19 +333,18 @@ func videoCopyNode() nodeDef {
 func videoCropNode() nodeDef {
 	return nodeDef{
 		NodeType: NodeType{
-			ID:    typeVideoCrop,
-			Kind:  KindVideo,
-			Group: groupVideo,
-			Label: "Crop black bars",
-			Description: "Detects black bars and crops them away during the encode. " +
-				"Cropping needs a re-encode, so nothing is cropped where the video is copied.",
-			Outputs: []string{""},
+			ID:          typeVideoCrop,
+			Kind:        KindVideo,
+			Group:       groupVideo,
+			Label:       "Crop black bars",
+			Description: "Crops black bars during the encode. Copied video is never cropped.",
+			Outputs:     []string{""},
 			Sections: []Section{
 				{Title: "Safety", Fields: []Field{{
 					Key:     "min_retained_area_percent",
 					Label:   "Smallest picture to keep",
 					Type:    FieldFloat,
-					Hint:    "A detected crop that keeps less of the frame is discarded and the file is encoded uncropped.",
+					Hint:    "A crop that keeps less is ignored, and the file is encoded uncropped.",
 					Default: float64(config.DefaultCropMinRetainedAreaPct),
 					// Keeping none of the picture is not a crop: 0 is out.
 					Min:          bound(0),
@@ -381,7 +378,7 @@ func videoCropNode() nodeDef {
 						Label:       "Sample at these offsets",
 						Type:        FieldStringList,
 						Tokens:      true,
-						Hint:        "Durations such as 5m or 1h10m. Leave empty to spread the windows across the file.",
+						Hint:        "Such as 5m or 1h10m. Empty spreads the windows across the file.",
 						Default:     []string{},
 						Mono:        true,
 						Placeholder: "5m",
@@ -519,7 +516,7 @@ func languagesField() Field {
 		Label:       "Languages to keep",
 		Type:        FieldStringList,
 		Tokens:      true,
-		Hint:        "Language tags such as eng or jpn, or orig for the original language. Leave empty to keep every track.",
+		Hint:        "Tags such as eng or jpn, or orig for the original language. Empty keeps every track.",
 		Default:     []string{},
 		Mono:        true,
 		Placeholder: "eng",
@@ -531,7 +528,6 @@ func fallbackField() Field {
 		Key:     "fallback",
 		Label:   "When no track matches",
 		Type:    FieldEnum,
-		Hint:    "What to keep when no track is in one of the languages.",
 		Default: config.DefaultStreamFallback,
 		Choices: []Choice{
 			{Value: string(domain.StreamFallbackKeepAll), Label: "Keep every track"},
@@ -577,7 +573,7 @@ func audioKeepNode() nodeDef {
 			Kind:        KindAudio,
 			Group:       groupAudio,
 			Label:       "Keep audio tracks",
-			Description: "Chooses which audio tracks stay in the file. Tracks in other languages are removed.",
+			Description: "Keeps audio tracks by language and removes the rest.",
 			Outputs:     []string{""},
 			Sections: []Section{
 				{Title: "Languages", Fields: []Field{
@@ -655,13 +651,12 @@ func audioTarget(o options) (codec string, bitrateKbpsPerChannel int) {
 func audioEncodeNode() nodeDef {
 	return nodeDef{
 		NodeType: NodeType{
-			ID:    typeAudioEncode,
-			Kind:  KindAudio,
-			Group: groupAudio,
-			Label: "Encode audio",
-			Description: "Re-encodes kept audio tracks to one codec. " +
-				"A track already in that codec is copied, and tracks no rule claims are copied too.",
-			Outputs: []string{""},
+			ID:          typeAudioEncode,
+			Kind:        KindAudio,
+			Group:       groupAudio,
+			Label:       "Encode audio",
+			Description: "Re-encodes kept audio tracks to one codec. Tracks already in it are copied.",
+			Outputs:     []string{""},
 			Sections: []Section{
 				{Title: "Target", Fields: []Field{audioCodecField(), audioBitrateField()}},
 				{Title: "Filter", Fields: []Field{{
@@ -669,7 +664,7 @@ func audioEncodeNode() nodeDef {
 					Label:       "Only these source codecs",
 					Type:        FieldStringList,
 					Tokens:      true,
-					Hint:        "Codec names as ffprobe prints them, such as truehd, dts, flac, or pcm_s24le. Leave empty to encode every kept track.",
+					Hint:        "ffprobe names, such as truehd, dts or flac. Empty encodes every kept track.",
 					Default:     []string{"truehd", "dts"},
 					Mono:        true,
 					Placeholder: "truehd",
@@ -705,19 +700,17 @@ func audioEncodeNode() nodeDef {
 func audioDownmixNode() nodeDef {
 	return nodeDef{
 		NodeType: NodeType{
-			ID:    typeAudioDownmix,
-			Kind:  KindAudio,
-			Group: groupAudio,
-			Label: "Downmix audio",
-			Description: "Reduces tracks that have more channels than a layout down to that layout. " +
-				"Tracks at or below it are left alone.",
-			Outputs: []string{""},
+			ID:          typeAudioDownmix,
+			Kind:        KindAudio,
+			Group:       groupAudio,
+			Label:       "Downmix audio",
+			Description: "Downmixes tracks that have more channels than the chosen layout.",
+			Outputs:     []string{""},
 			Sections: []Section{
 				{Title: "Layout", Fields: []Field{{
 					Key:       "max_channels",
 					Label:     "Largest layout to keep",
 					Type:      FieldEnum,
-					Hint:      "Tracks with more channels are downmixed to this layout.",
 					Default:   "6",
 					Choices:   []Choice{{Value: "6", Label: "5.1"}, {Value: "2", Label: "Stereo"}},
 					Segmented: true,
@@ -747,7 +740,7 @@ func subtitlesKeepNode() nodeDef {
 			Kind:        KindSubtitles,
 			Group:       groupSubtitles,
 			Label:       "Keep subtitles",
-			Description: "Chooses which subtitle tracks stay in the file. Subtitles are always copied, never converted.",
+			Description: "Keeps subtitle tracks by language. Subtitles are copied, never converted.",
 			Outputs:     []string{""},
 			Sections: []Section{
 				{Title: "Languages", Fields: []Field{
@@ -796,14 +789,13 @@ func subtitlesKeepNode() nodeDef {
 func subtitlesDropImageNode() nodeDef {
 	return nodeDef{
 		NodeType: NodeType{
-			ID:    typeSubtitlesDropImage,
-			Kind:  KindSubtitles,
-			Group: groupSubtitles,
-			Label: "Remove image subtitles",
-			Description: "Removes image-based subtitle tracks (PGS, VobSub, DVB) before the language rules run. " +
-				"Text subtitles stay.",
-			Outputs:  []string{""},
-			Sections: []Section{},
+			ID:          typeSubtitlesDropImage,
+			Kind:        KindSubtitles,
+			Group:       groupSubtitles,
+			Label:       "Remove image subtitles",
+			Description: "Removes PGS, VobSub and DVB subtitles. Text subtitles stay.",
+			Outputs:     []string{""},
+			Sections:    []Section{},
 		},
 		summary: fixedSummary("hdmv_pgs_subtitle, dvd_subtitle, dvb_subtitle"),
 		apply: func(_ options, profile *domain.Profile) {
@@ -819,7 +811,7 @@ func subtitlesRemoveAllNode() nodeDef {
 			Kind:        KindSubtitles,
 			Group:       groupSubtitles,
 			Label:       "Remove all subtitles",
-			Description: "Removes every subtitle track, whatever a Keep subtitles node on the same path says.",
+			Description: "Removes every subtitle track, overriding Keep subtitles.",
 			Outputs:     []string{""},
 			Sections:    []Section{},
 		},
@@ -859,7 +851,7 @@ func containerMetadataNode() nodeDef {
 			Kind:        KindContainer,
 			Group:       groupContainer,
 			Label:       "Clean metadata",
-			Description: "Decides what happens to container metadata, track titles, attachments, and chapters.",
+			Description: "Keeps or strips metadata, track titles, attachments and chapters.",
 			Outputs:     []string{""},
 			Sections: []Section{{Title: "Metadata", Fields: []Field{
 				// Three choices need the full row of the sheet, so the two

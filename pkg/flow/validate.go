@@ -68,11 +68,11 @@ func analyze(g Graph) analysis {
 	switch {
 	case len(g.Nodes) > MaxNodes:
 		a := analysis{}
-		a.errorf("", "", "A flow can have at most %d nodes, and this one has %d. Remove nodes until it fits.", MaxNodes, len(g.Nodes))
+		a.errorf("", "", "A flow can have at most %d nodes, and this one has %d.", MaxNodes, len(g.Nodes))
 		return a
 	case len(g.Edges) > MaxEdges:
 		a := analysis{}
-		a.errorf("", "", "A flow can have at most %d edges, and this one has %d. Remove edges until it fits.", MaxEdges, len(g.Edges))
+		a.errorf("", "", "A flow can have at most %d edges, and this one has %d.", MaxEdges, len(g.Edges))
 		return a
 	}
 	a := analysis{
@@ -108,7 +108,7 @@ func (a *analysis) readNodes(g Graph) {
 			continue
 		}
 		if _, duplicate := a.nodes[node.ID]; duplicate {
-			a.errorf(node.ID, "", "Node ID %q is used more than once. Every node needs its own ID.", node.ID)
+			a.errorf(node.ID, "", "Node ID %q is used more than once.", node.ID)
 			continue
 		}
 		a.nodes[node.ID] = node
@@ -169,7 +169,7 @@ func (a *analysis) readEdges(g Graph) {
 		case edge.Port < 0 || edge.Port >= len(ports):
 			a.errorf(edge.From, "", "%s has outputs 0 to %d, and an edge uses output %d. Remove the edge.", a.name(edge.From), len(ports)-1, edge.Port)
 		case target.Type == typeInput:
-			a.errorf(edge.To, "", "The input node starts the flow, so no edge can lead into it. Remove the edge from %s.", a.name(edge.From))
+			a.errorf(edge.To, "", "No edge can lead into the input node. Remove the edge from %s.", a.name(edge.From))
 		case ports[edge.Port] != "":
 			a.errorf(edge.From, "", "%s has more than one edge. An output leads to exactly one node.", a.port(edge.From, edge.Port))
 		default:
@@ -195,7 +195,7 @@ func (a *analysis) findCycles(g Graph) {
 			case target == "":
 			case state[target] == visiting && !reported[target]:
 				reported[target] = true
-				a.errorf(target, "", "The flow loops back to %s. Every path has to end at an output without repeating a node.", a.name(target))
+				a.errorf(target, "", "The flow loops back to %s. Every path must end at an output.", a.name(target))
 			case state[target] == 0:
 				visit(target)
 			}
@@ -311,7 +311,7 @@ func (a *analysis) findUselessCrops(g Graph) {
 			for _, target := range a.targets[node.ID] {
 				if publishesCopy(state{node: target, encodes: encodes}) {
 					reported[node.ID] = true
-					a.warnf(node.ID, "Cropping needs a re-encode, but a path through %s copies the video, so nothing is cropped there.", a.name(node.ID))
+					a.warnf(node.ID, "A path through %s copies the video, so nothing is cropped there.", a.name(node.ID))
 					break
 				}
 			}

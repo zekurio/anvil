@@ -299,11 +299,11 @@ function analyze(graph: Graph): Analysis {
 
   // A graph over the size limits is not read at all.
   if (graph.nodes.length > MAX_NODES) {
-    error("", "", `A flow can have at most ${MAX_NODES} nodes, and this one has ${graph.nodes.length}. Remove nodes until it fits.`);
+    error("", "", `A flow can have at most ${MAX_NODES} nodes, and this one has ${graph.nodes.length}.`);
     return a;
   }
   if (graph.edges.length > MAX_EDGES) {
-    error("", "", `A flow can have at most ${MAX_EDGES} edges, and this one has ${graph.edges.length}. Remove edges until it fits.`);
+    error("", "", `A flow can have at most ${MAX_EDGES} edges, and this one has ${graph.edges.length}.`);
     return a;
   }
 
@@ -315,7 +315,7 @@ function analyze(graph: Graph): Analysis {
       continue;
     }
     if (a.nodes.has(node.id)) {
-      error(node.id, "", `Node ID ${quote(node.id)} is used more than once. Every node needs its own ID.`);
+      error(node.id, "", `Node ID ${quote(node.id)} is used more than once.`);
       continue;
     }
     a.nodes.set(node.id, node);
@@ -358,7 +358,7 @@ function analyze(graph: Graph): Analysis {
     const ports = a.targets.get(edge.from) ?? [];
     if (ports.length === 0) error(edge.from, "", `${name(edge.from)} ends the flow and has no outputs. Remove the edge that leaves it.`);
     else if (edge.port < 0 || edge.port >= ports.length) error(edge.from, "", `${name(edge.from)} has outputs 0 to ${ports.length - 1}, and an edge uses output ${edge.port}. Remove the edge.`);
-    else if (NODE_TYPE_BY_ID.get(target.type)?.kind === "input") error(edge.to, "", `The input node starts the flow, so no edge can lead into it. Remove the edge from ${name(edge.from)}.`);
+    else if (NODE_TYPE_BY_ID.get(target.type)?.kind === "input") error(edge.to, "", `No edge can lead into the input node. Remove the edge from ${name(edge.from)}.`);
     else if (ports[edge.port] !== "") error(edge.from, "", `${port(edge.from, edge.port)} has more than one edge. An output leads to exactly one node.`);
     else ports[edge.port] = edge.to;
   }
@@ -372,7 +372,7 @@ function analyze(graph: Graph): Analysis {
       if (target === "") continue;
       if (state.get(target) === 1 && !reported.has(target)) {
         reported.add(target);
-        error(target, "", `The flow loops back to ${name(target)}. Every path has to end at an output without repeating a node.`);
+        error(target, "", `The flow loops back to ${name(target)}. Every path must end at an output.`);
       } else if (!state.has(target)) visit(target);
     }
     state.set(id, 2);
@@ -416,7 +416,7 @@ function analyze(graph: Graph): Analysis {
       for (const target of a.targets.get(current.node) ?? []) stack.push({ node: target, encodes: current.encodes, crop: current.crop });
     }
     for (const node of graph.nodes) {
-      if (useless.delete(node.id)) warn(node.id, `Cropping needs a re-encode, but a path through ${name(node.id)} copies the video, so nothing is cropped there.`);
+      if (useless.delete(node.id)) warn(node.id, `A path through ${name(node.id)} copies the video, so nothing is cropped there.`);
     }
   }
   return a;
@@ -540,7 +540,7 @@ function planLines(plan: Plan): string[] {
     video = `Video: ${parts.join(", ")}`;
     if (!fixed && o.text("on_no_fit") === "encode") video += "; encode anyway when no CRF fits";
     if (plan.crop) video += "; crop black bars";
-  } else if (plan.crop) video = "Video: copy; black bars are not cropped, because cropping needs a re-encode";
+  } else if (plan.crop) video = "Video: copy; not cropped without a re-encode";
 
   const audio = [`keep ${listOr(cleanList(plan.audioKeep?.list("languages") ?? []), "every track")}`];
   if (!plan.audioEncode && !plan.audioDownmix) audio.push("copy");

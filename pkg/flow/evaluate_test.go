@@ -463,17 +463,17 @@ func TestEvaluateCropNeedsAnEncode(t *testing.T) {
 		{
 			name:      "crop with an explicit copy",
 			nodes:     []Node{crop, newNode("copy", typeVideoCopy, nil)},
-			wantVideo: "Video: copy; black bars are not cropped, because cropping needs a re-encode",
+			wantVideo: "Video: copy; not cropped without a re-encode",
 		},
 		{
 			name:      "crop with a copy that wins over an encode",
 			nodes:     []Node{newNode("encode", typeVideoEncode, nil), crop, newNode("copy", typeVideoCopy, nil)},
-			wantVideo: "Video: copy; black bars are not cropped, because cropping needs a re-encode",
+			wantVideo: "Video: copy; not cropped without a re-encode",
 		},
 		{
 			name:      "crop without any video node",
 			nodes:     []Node{crop},
-			wantVideo: "Video: copy; black bars are not cropped, because cropping needs a re-encode",
+			wantVideo: "Video: copy; not cropped without a re-encode",
 		},
 		{
 			name:      "an encode without a crop node",

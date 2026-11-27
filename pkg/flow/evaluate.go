@@ -111,7 +111,7 @@ func videoPlan(profile domain.Profile, cropWanted bool) string {
 	settings := profile.Video
 	if settings.SkipEncode {
 		if cropWanted {
-			return "Video: copy; black bars are not cropped, because cropping needs a re-encode"
+			return "Video: copy; not cropped without a re-encode"
 		}
 		return "Video: copy"
 	}
