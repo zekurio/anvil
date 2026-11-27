@@ -60,12 +60,12 @@ preset = "6" # Trade speed for compression to match the selected encoder; any en
 bit_depth = 10 # Preserve more tonal detail when the encoder supports it; 8 or 10.
 crf_min = 18 # Lowest search CRF; integer no greater than crf_max.
 crf_max = 40 # Highest search CRF; integer no lower than crf_min.
-samples = 0 # Samples per CRF; 0 uses one per 12 minutes, rounded up; short inputs use one whole-file sample.
-sample_duration = "20s" # Length of each search sample; positive Go duration.
+samples = 0 # Fixed sample count per CRF; 0 uses one per 12 minutes, rounded up. Short inputs use one whole-file sample.
+sample_duration = "20s" # Length of each search sample; positive Go duration, default "20s".
 metric = "vmaf" # Quality metric measured by FFmpeg; "vmaf" or "xpsnr".
 target = 95.0 # Minimum score for metric; number from 0 through 100. Required when metric is "xpsnr" (typical XPSNR target: 35-50).
 min_savings_percent = 20.0 # Minimum estimated video-only savings from sample sizes, including container overhead; number from 0 through 100.
-force_encode_on_no_fit = false # On no fit, use best measured quality within the size limit, or best measured quality overall when no size fits.
+force_encode_on_no_fit = false # On no fit, use the best measured quality within the size limit, or the best measured quality overall if no candidate fits the size limit.
 skip_encode = false # Copy video instead of searching and encoding when policy requires it.
 ffmpeg_args = [] # Encoder parameter bundles and value-only tuning option/value pairs; files, URLs, devices, filters, mapping, timing, and rate control are rejected.
 
@@ -171,7 +171,7 @@ concurrency_limit = 1 # Cap active jobs from this library; 0 means no per-librar
 arr = "tv" # Use this Arr instance for metadata; omit to disable lookup; existing arr name.
 
 [libraries.downloads.download]
-handoff_path = "/srv/imports/tv" # Destination watched by the importer; non-empty path for download libraries. Anvil encodes into <handoff_path>/.anvil-work and only creates the package directory at publish time.
+handoff_path = "/srv/imports/tv" # Destination watched by the importer; non-empty path for download libraries.
 stable_for = "5m" # Fallback quiet period when no completion event is observed; close-write and moved-in transfers enqueue after debounce; duration >= 0.
 package_mode = "auto" # Treat a download as a file or directory; "auto", "directory", or "file".
 handoff_mode = "move" # Copy for safety or move when the downloader no longer needs it; "move" or "copy".
