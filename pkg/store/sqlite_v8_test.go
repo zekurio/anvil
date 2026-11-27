@@ -1159,3 +1159,55 @@ func TestSaveAttemptProfile(t *testing.T) {
 		t.Fatalf("missing attempt = %v, want ErrNotFound", err)
 	}
 }
+
+// A job carries its library's priority from the scan that enqueued it. A
+// priority set later has to reach the jobs already queued, or the edit would
+// not reorder the queue the operator is looking at.
+func TestUpdateLibraryPriorityReachesItsQueuedJobs(t *testing.T) {
+	ctx := context.Background()
+	state := openTestStore(t)
+	flowID := defaultFlowID(t, state)
+	for _, name := range []string{"movies", "shows"} {
+		if _, err := state.CreateLibrary(ctx, testLibrary(name, flowID), time.Now()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	movies := seedLibraryFiles(t, state, "movies")
+	shows := seedLibraryFiles(t, state, "shows")
+	done := shows["gamma.mkv"]
+	if _, err := state.TransitionJob(ctx, done.ID, domain.JobStateSkipped, time.Now(), "skipped by flow"); err != nil {
+		t.Fatal(err)
+	}
+	before, err := state.GetJob(ctx, shows["A/alpha.mkv"].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	raised := testLibrary("shows", flowID)
+	raised.Priority = 10
+	if _, err := state.UpdateLibrary(ctx, raised, time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	for path, job := range shows {
+		got, err := state.GetJob(ctx, job.ID)
+		if err != nil || got.Priority != 10 {
+			t.Errorf("shows job %s has priority %d, %v; want 10", path, got.Priority, err)
+		}
+	}
+	for path, job := range movies {
+		got, err := state.GetJob(ctx, job.ID)
+		if err != nil || got.Priority != 0 {
+			t.Errorf("movies job %s has priority %d, %v; want it untouched at 0", path, got.Priority, err)
+		}
+	}
+	// The job itself did not change, so its last activity stays what it was.
+	if after, err := state.GetJob(ctx, before.ID); err != nil || !after.UpdatedAt.Equal(before.UpdatedAt) {
+		t.Errorf("updated_at moved from %s to %s, %v", before.UpdatedAt, after.UpdatedAt, err)
+	}
+	// The movies were queued first, and the shows now go ahead of them.
+	now := time.Now()
+	leased, err := state.LeaseNextJob(ctx, "w1", now.Add(time.Hour), now)
+	if err != nil || leased == nil || leased.LibraryName != "shows" {
+		t.Fatalf("LeaseNextJob = %+v, %v; want a job of shows", leased, err)
+	}
+}

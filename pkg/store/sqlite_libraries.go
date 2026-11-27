@@ -149,6 +149,17 @@ WHERE name = ?
 `, library.Path, library.FlowID, nullableName(library.Arr), library.Paused, settings, encodeTime(defaultNow(now)), library.Name); err != nil {
 		return Library{}, fmt.Errorf("update library %q: %w", library.Name, err)
 	}
+	// A job carries the priority its library had when the scan enqueued it,
+	// and the scheduler leases by that column. Without this a new priority
+	// would only reach files found from now on, and the queue the operator
+	// wanted to reorder would stay as it was. Jobs that are done follow too,
+	// so that one retried later runs at the library's priority. updated_at is
+	// left alone: nothing happened to the job.
+	if current.Priority != library.Priority {
+		if _, err := tx.ExecContext(ctx, `UPDATE jobs SET priority = ? WHERE library_name = ? AND priority != ?`, library.Priority, library.Name, library.Priority); err != nil {
+			return Library{}, fmt.Errorf("update job priority of library %q: %w", library.Name, err)
+		}
+	}
 	updated, err := getLibrary(ctx, tx, library.Name)
 	if err != nil {
 		return Library{}, err
