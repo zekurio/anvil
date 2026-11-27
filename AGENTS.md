@@ -208,7 +208,9 @@ process output goes to per-attempt log files plus artifact events
 - `[daemon] media_roots` confines what a browser can name. When it is not
   empty, `GET /fs` lists nothing outside the roots and `checkLibrary` refuses
   a library or handoff path that does not resolve inside one
-  (`pathWithinMediaRoots`, symlinks resolved). Empty means unrestricted. The
+  (`pathWithinMediaRoots`, symlinks resolved). A folder an update leaves
+  unchanged is not checked again, so an imported library outside the roots
+  stays editable. Empty means unrestricted. The
   Nix module fills it from `mediaPaths`.
 - Pipeline step order is fixed in `worker.DefaultPipeline`. A block's `Name()`
   is its event and checkpoint name. The publish block selects replace or

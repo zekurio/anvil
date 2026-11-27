@@ -745,8 +745,8 @@ Afterwards:
    `services.anvil.mediaPaths`. The module still grants write access to the
    paths of legacy `settings.libraries` entries, but not to anything you add
    in the web UI. Those legacy paths are not part of `media_roots`, so an
-   imported library outside `mediaPaths` cannot be saved again in the UI
-   until its folder is listed.
+   imported library outside `mediaPaths` keeps working and can be edited
+   where it is, but cannot be moved to another folder outside the roots.
 
 ## Development
 
