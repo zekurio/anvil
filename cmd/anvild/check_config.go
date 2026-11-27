@@ -22,6 +22,9 @@ func runCheckConfig(cfg config.Config, opts options) error {
 
 func redactedConfig(cfg config.Config) config.Config {
 	redacted := cfg
+	if redacted.Web.Password != "" {
+		redacted.Web.Password = "********"
+	}
 	redacted.Arrs = make(map[string]config.ArrConfig, len(cfg.Arrs))
 	for name, arr := range cfg.Arrs {
 		if arr.APIKey != "" {

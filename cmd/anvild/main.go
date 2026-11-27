@@ -648,6 +648,12 @@ func validateReload(current config.Config, next config.Config) error {
 	if current.Daemon.ControlSocket != next.Daemon.ControlSocket {
 		return fmt.Errorf("daemon.control_socket changes require restart: %q -> %q", current.Daemon.ControlSocket, next.Daemon.ControlSocket)
 	}
+	if current.Web.Enabled != next.Web.Enabled {
+		return fmt.Errorf("web.enabled changes require restart: %t -> %t", current.Web.Enabled, next.Web.Enabled)
+	}
+	if next.Web.Enabled && current.Web.Listen != next.Web.Listen {
+		return fmt.Errorf("web.listen changes require restart: %q -> %q", current.Web.Listen, next.Web.Listen)
+	}
 	return nil
 }
 

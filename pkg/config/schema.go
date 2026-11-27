@@ -55,13 +55,36 @@ var DefaultIgnorableGlobs = []string{
 	"**/.nfs*",
 }
 
+// DefaultWebListen keeps a fresh installation reachable from its own machine
+// only, which is the one place a UI without a password is safe.
+const DefaultWebListen = "127.0.0.1:8484"
+
 // Config is the resolved top-level daemon configuration. Load fills defaults
 // and validates it before use.
 type Config struct {
 	Daemon    DaemonConfig             `toml:"daemon"`
+	Web       WebConfig                `toml:"web"`
 	Arrs      map[string]ArrConfig     `toml:"arrs"`
 	Profiles  map[string]ProfileConfig `toml:"profiles"`
 	Libraries map[string]LibraryConfig `toml:"libraries"`
+}
+
+// WebConfig controls the web UI and its JSON API. The UI can replace and
+// delete media files, so anything but a loopback listener needs a password.
+type WebConfig struct {
+	// Serve the web UI and API; false runs the daemon with anvilctl alone.
+	Enabled bool `toml:"enabled"`
+	// TCP address to listen on; "host:port". Changing it needs a restart.
+	Listen string `toml:"listen"`
+	// File holding the single shared password, preferred over password. Its
+	// trailing newline is ignored. Re-read on SIGHUP.
+	PasswordFile string `toml:"password_file"`
+	// Literal password, redacted by check-config --show. Set this or
+	// password_file; with neither, the UI asks for no sign-in.
+	Password string `toml:"password"`
+	// Accept a listen address other machines can reach without a password.
+	// Only for a network where everyone may change and delete the media.
+	AllowUnauthenticated bool `toml:"allow_unauthenticated"`
 }
 
 // DaemonConfig contains process-wide runtime settings.
@@ -298,9 +321,17 @@ type LibraryConfig struct {
 	ConcurrencyLimit int `toml:"concurrency_limit"`
 	// Use this Arr instance for metadata; omit to disable lookup; existing
 	// arr name.
-	Arr      string                `toml:"arr"`
-	Media    MediaLibraryConfig    `toml:"media"`
-	Download DownloadLibraryConfig `toml:"download"`
+	Arr string `toml:"arr"`
+	// FlowID is the flow every file of the library runs through.
+	FlowID int64 `toml:"-"`
+	// Paused keeps scanning and queueing but starts no new job.
+	Paused bool `toml:"-"`
+	// Rules run top to bottom and the first match decides whether a file is
+	// queued; RuleFallback ("allow" or "deny") decides when none match.
+	Rules        []Rule                `toml:"-"`
+	RuleFallback string                `toml:"-"`
+	Media        MediaLibraryConfig    `toml:"media"`
+	Download     DownloadLibraryConfig `toml:"download"`
 }
 
 // ArrConfig controls external metadata lookup through an Arr instance.

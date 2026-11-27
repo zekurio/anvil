@@ -27,7 +27,14 @@ func Default() Config {
 func resolve(raw rawConfig) (Config, error) {
 	cfg := Config{
 		Daemon: resolveDaemon(raw.Daemon),
-		Arrs:   make(map[string]ArrConfig, len(raw.Arrs)),
+		Web: WebConfig{
+			Enabled:              valueOr(raw.Web.Enabled, true),
+			Listen:               orDefault(raw.Web.Listen, DefaultWebListen),
+			PasswordFile:         strings.TrimSpace(raw.Web.PasswordFile),
+			Password:             raw.Web.Password,
+			AllowUnauthenticated: raw.Web.AllowUnauthenticated,
+		},
+		Arrs: make(map[string]ArrConfig, len(raw.Arrs)),
 	}
 
 	for name, arr := range raw.Arrs {
@@ -221,6 +228,7 @@ func resolveLibrary(name string, raw rawLibraryConfig) (LibraryConfig, error) {
 		Arr:              raw.Arr,
 		Media:            raw.Media,
 	}
+	library.Rules, library.RuleFallback = LegacyRules(raw.Include, raw.Exclude, raw.IgnoreRegex)
 	if !library.IsDownload() {
 		library.Media.ReplacementMode = orDefault(library.Media.ReplacementMode, DefaultReplacementMode)
 		return library, nil

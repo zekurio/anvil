@@ -32,6 +32,13 @@ shutdown_timeout = "0s" # Force cancellation after this graceful wait; "0s" wait
 staging_cleanup_age = "0s" # Remove abandoned staging older than this; "0s" disables cleanup; duration >= 0.
 log_level = "info" # Keep logs useful without excessive detail; "debug", "info", "warn", or "error".
 
+[web]
+enabled = true # Serve the web UI and API; false runs the daemon with anvilctl alone.
+listen = "127.0.0.1:8484" # TCP address to listen on; "host:port". Changing it needs a restart.
+# password_file = "/run/secrets/anvil-web" # File holding the single shared password, preferred over password. Its trailing newline is ignored. Re-read on SIGHUP.
+# password = "change-me" # Literal password, redacted by check-config --show. Set this or password_file; with neither, the UI asks for no sign-in.
+allow_unauthenticated = false # Accept a listen address other machines can reach without a password. Only for a network where everyone may change and delete the media.
+
 [profiles.default-av1]
 container = "mkv" # Output container; only "mkv".
 

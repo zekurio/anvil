@@ -49,6 +49,7 @@ func (p *problems) addf(format string, args ...any) {
 func (c Config) Validate() error {
 	var p problems
 	c.Daemon.validate(&p)
+	c.Web.validate(&p)
 
 	profiles := make(map[string]struct{}, len(c.Profiles))
 	for _, key := range sortedKeys(c.Profiles) {
