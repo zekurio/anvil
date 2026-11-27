@@ -109,6 +109,10 @@ type SearchCandidate struct {
 }
 
 type SearchResult struct {
+	// QualityMode is fixed when the profile set the CRF and nothing was
+	// measured: Candidates and the scores are empty and CRF is the profile's.
+	// The zero value means the CRF came from a search.
+	QualityMode             VideoQualityMode
 	Candidates              []SearchCandidate
 	CRF                     int
 	Metric                  QualityMetric
@@ -124,7 +128,9 @@ type AudioSelection struct {
 	OriginalLanguage string
 	LanguagesToKeep  []string
 	StreamIndexes    []int
-	Decision         *StreamSelectionDecision `json:"decision,omitempty"`
+	// Tracks says how each kept stream is written, in StreamIndexes order.
+	Tracks   []AudioTrackPlan         `json:"tracks,omitempty"`
+	Decision *StreamSelectionDecision `json:"decision,omitempty"`
 }
 
 type SubtitleSelection struct {
@@ -143,6 +149,9 @@ type CropSample struct {
 }
 
 type CropResult struct {
+	// Disabled reports that the profile turned crop detection off, so nothing
+	// was sampled and the video keeps its full frame.
+	Disabled            bool
 	Samples             []CropSample
 	SelectionReason     string
 	CandidateFilter     string
@@ -199,6 +208,13 @@ type EncodePlan struct {
 	ChapterMode              MetadataMode
 	FFmpegArgs               []string
 	Color                    VideoColor
+
+	// QualityMode is fixed when CRF comes straight from the profile; the
+	// search range, samples, metric, and savings floor are then unused.
+	QualityMode VideoQualityMode
+	// AudioTracks says how each selected audio stream is written. A selected
+	// stream without an entry is copied.
+	AudioTracks []AudioTrackPlan
 }
 
 type TrackTitle struct {

@@ -66,8 +66,11 @@ func (j Job) Label() string {
 
 // JobPipelineContextVersion invalidates checkpoints whose shape or meaning
 // changed. Version 6 added Dolby Vision and HDR10 static metadata to probe
-// results; an older probe checkpoint would hide a profile 5 source.
-const JobPipelineContextVersion = 6
+// results; an older probe checkpoint would hide a profile 5 source. Version 7
+// added the per-track output plan to audio selections, the keep_all rule for
+// profiles without languages, and the fixed-CRF and crop-disabled results; an
+// older audio checkpoint would copy tracks the profile re-encodes.
+const JobPipelineContextVersion = 7
 
 type JobPipelineContext struct {
 	Version             int             `json:"version"`
