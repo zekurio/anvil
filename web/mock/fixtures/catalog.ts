@@ -1,20 +1,24 @@
-// The node catalog served by GET /node-types. It exercises every FieldType,
-// visible_when, sections, and all kinds and groups of pkg/flow/catalog.go, so
-// the editor's generic option forms can be built against it.
+// The node catalog served by GET /node-types: a port of pkg/flow/nodes.go,
+// conditions.go and actions.go. Ids, option keys, defaults, outputs, groups,
+// labels and hints are the daemon's; change them there first.
 
-import type { Choice, Field, NodeType, Section } from "../../src/api/types.ts";
+import type { Choice, Field, NodeType, OptionValue, Section, Visibility } from "../../src/api/types.ts";
 
-const choices = (...values: (string | [string, string])[]): Choice[] =>
-  values.map((v) => (typeof v === "string" ? { value: v, label: v } : { value: v[0], label: v[1] }));
+const choice = (value: string, label: string): Choice => ({ value, label });
+const when = (key: string, ...values: OptionValue[]): Visibility => ({ key, in: values });
+const section = (title: string, fields: Field[], extra: Partial<Section> = {}): Section => ({ title, ...extra, fields });
 
-const section = (title: string, fields: Field[], extra: Partial<Section> = {}): Section => ({ title, fields, ...extra });
+const CONDITION_OUTPUTS = ["true", "false"];
 
-const labelField: Field = { key: "label", label: "Label", type: "string", default: "", placeholder: "Uses the node name" };
-
-const VIDEO_CODECS = choices(["av1", "AV1"], ["hevc", "HEVC (H.265)"], ["h264", "H.264"], ["vp9", "VP9"], ["mpeg2video", "MPEG-2"], ["mpeg4", "MPEG-4 Part 2"], ["vc1", "VC-1"]);
-const AUDIO_CODECS = choices(["eac3", "Dolby Digital Plus"], ["ac3", "Dolby Digital"], ["opus", "Opus"], ["aac", "AAC"], ["flac", "FLAC"]);
-const LOSSLESS = choices("truehd", "dts", "flac", "pcm_s16le", "pcm_s24le", "mlp");
-const COMPARE = choices(["gt", "greater than"], ["lt", "less than"]);
+const comparison = (first: string, firstLabel: string, second: string, secondLabel: string): Field => ({
+  key: "op",
+  label: "Compare",
+  type: "enum",
+  default: first,
+  choices: [choice(first, firstLabel), choice(second, secondLabel)],
+  segmented: true,
+  half: true,
+});
 
 const condition = (id: string, label: string, description: string, fields: Field[]): NodeType => ({
   id,
@@ -22,8 +26,79 @@ const condition = (id: string, label: string, description: string, fields: Field
   group: "Inspect",
   label,
   description,
-  outputs: ["true", "false"],
-  sections: [section("Condition", [labelField, ...fields])],
+  outputs: [...CONDITION_OUTPUTS],
+  sections: [section("Condition", fields)],
+});
+
+export const RESOLUTION_TIERS: readonly (readonly [string, number, number])[] = [
+  ["480p", 854, 480],
+  ["720p", 1280, 720],
+  ["1080p", 1920, 1080],
+  ["1440p", 2560, 1440],
+  ["2160p", 3840, 2160],
+];
+
+const search = () => when("quality_mode", "search");
+
+const languages = (): Field => ({
+  key: "languages",
+  label: "Languages to keep",
+  type: "string_list",
+  hint: "Language tags such as eng or jpn, or orig for the original language. Leave empty to keep every track.",
+  default: [],
+  mono: true,
+  placeholder: "eng",
+});
+
+const fallback = (): Field => ({
+  key: "fallback",
+  label: "When no track matches",
+  type: "enum",
+  hint: "What to keep when no track is in one of the languages.",
+  default: "keep_all",
+  choices: [choice("keep_all", "Keep every track"), choice("keep_first", "Keep the first track"), choice("fail_job", "Fail the job")],
+});
+
+const unknownAsOriginal = (): Field => ({
+  key: "unknown_as_original",
+  label: "Count untagged tracks as the original language",
+  type: "bool",
+  hint: "Applies when the library's Arr connection knows the original language.",
+  default: false,
+});
+
+const audioCodec = (): Field => ({
+  key: "codec",
+  label: "Codec",
+  type: "enum",
+  default: "eac3",
+  choices: [choice("opus", "Opus"), choice("aac", "AAC"), choice("ac3", "Dolby Digital (AC-3)"), choice("eac3", "Dolby Digital Plus (E-AC-3)"), choice("flac", "FLAC")],
+  half: true,
+});
+
+const audioBitrate = (): Field => ({
+  key: "bitrate_kbps_per_channel",
+  label: "Bitrate per channel",
+  type: "int",
+  hint: "A 5.1 track gets six times this. 0 uses the encoder's default.",
+  default: 96,
+  min: 0,
+  max: 512,
+  suffix: "kb/s",
+  mono: true,
+  half: true,
+  // FLAC is lossless and takes no bitrate.
+  visible_when: when("codec", "opus", "aac", "ac3", "eac3"),
+});
+
+const preserveOrStrip = (key: string, label: string): Field => ({
+  key,
+  label,
+  type: "enum",
+  default: "preserve",
+  choices: [choice("preserve", "Preserve"), choice("strip", "Strip")],
+  segmented: true,
+  half: true,
 });
 
 export const NODE_TYPES: NodeType[] = [
@@ -32,39 +107,98 @@ export const NODE_TYPES: NodeType[] = [
     kind: "input",
     group: "Input",
     label: "Input file",
-    description: "Where every file of the library enters the flow.",
+    description: "Where every queued file of the library enters the flow. A flow has exactly one input.",
     outputs: [""],
-    sections: [
-      section("Input", [
-        labelField,
-        { key: "extensions", label: "Extensions", type: "string_list", default: ["mkv", "mp4", "avi", "m2ts"], mono: true, placeholder: "mkv", hint: "Files with another extension never enter the flow." },
-        { key: "probe_timeout", label: "Probe timeout", type: "duration", default: "30s", mono: true, half: true, hint: "How long ffprobe may take." },
-        { key: "detect_crop", label: "Detect black bars", type: "bool", default: true, hint: "Samples the video once so Crop nodes can use the result." },
-      ]),
-    ],
+    sections: [],
   },
 
-  condition("check.video_codec", "Check video codec", "Branches on the codec of the primary video stream.", [
-    { key: "codecs", label: "Video codec is one of", type: "enum_list", default: ["av1"], choices: VIDEO_CODECS, hint: "As ffprobe reports it." },
+  condition("check.video_codec", "Check video codec", "Branches on the codec of the main video stream.", [
+    {
+      key: "codecs",
+      label: "Video codecs",
+      type: "enum_list",
+      hint: "True when the main video stream uses any of these.",
+      default: ["av1"],
+      choices: [
+        choice("h264", "H.264"),
+        choice("hevc", "HEVC (H.265)"),
+        choice("av1", "AV1"),
+        choice("vp9", "VP9"),
+        choice("vp8", "VP8"),
+        choice("mpeg2", "MPEG-2"),
+        choice("mpeg4", "MPEG-4 Part 2"),
+        choice("mpeg1", "MPEG-1"),
+        choice("vc1", "VC-1"),
+        choice("wmv3", "WMV 9"),
+        choice("theora", "Theora"),
+        choice("prores", "ProRes"),
+      ],
+      mono: true,
+    },
   ]),
-  condition("check.resolution", "Check resolution", "Branches on the height of the primary video stream.", [
-    { key: "op", label: "Height is", type: "enum", default: "gt", choices: COMPARE, segmented: true },
-    { key: "height", label: "Height", type: "int", default: 1080, min: 144, max: 4320, suffix: "px", mono: true, half: true },
+  condition("check.resolution", "Check resolution", "Branches on the resolution class of the main video stream.", [
+    comparison("at_least", "At least", "at_most", "At most"),
+    {
+      key: "resolution",
+      label: "Resolution",
+      type: "enum",
+      hint: "A frame reaches a class by width or by height, so 1920x800 counts as 1080p.",
+      default: "1080p",
+      choices: RESOLUTION_TIERS.map(([name]) => choice(name, name)),
+      mono: true,
+      half: true,
+    },
   ]),
-  condition("check.hdr", "Check HDR", "Branches on the HDR format of the primary video stream.", [
-    { key: "formats", label: "HDR format is one of", type: "enum_list", default: ["dolby_vision"], choices: choices(["hdr10", "HDR10"], ["hlg", "HLG"], ["dolby_vision", "Dolby Vision"]) },
-    { key: "dv_profiles", label: "Dolby Vision profiles", type: "string_list", default: ["5"], mono: true, placeholder: "5", hint: "Leave empty to match any profile.", visible_when: { key: "formats", in: ["dolby_vision"] } },
+  condition("check.hdr", "Check HDR", "Branches on whether the main video stream is HDR, and which kind.", [
+    {
+      key: "kinds",
+      label: "HDR formats",
+      type: "enum_list",
+      hint: "True when the video is any of these. Dolby Vision on an HDR10 or HLG base layer counts as both.",
+      default: ["hdr10", "hlg", "dolby_vision"],
+      choices: [choice("hdr10", "HDR10"), choice("hlg", "HLG"), choice("dolby_vision", "Dolby Vision")],
+    },
   ]),
-  condition("check.bitrate", "Check bitrate", "Branches on the overall bitrate of the file.", [
-    { key: "op", label: "Bitrate is", type: "enum", default: "lt", choices: COMPARE, segmented: true },
-    { key: "kbps", label: "Bitrate", type: "int", default: 2500, min: 100, max: 200000, suffix: "kb/s", mono: true, half: true },
+  condition("check.bitrate", "Check bitrate", "Branches on the overall bitrate of the file, worked out from its size and duration.", [
+    comparison("above", "Above", "below", "Below"),
+    { key: "kbps", label: "Bitrate", type: "int", hint: "All streams together. False when the duration is unknown.", default: 8000, min: 1, suffix: "kb/s", mono: true, half: true },
   ]),
   condition("check.file_size", "Check file size", "Branches on the size of the file.", [
-    { key: "op", label: "Size is", type: "enum", default: "lt", choices: COMPARE, segmented: true },
-    { key: "gigabytes", label: "Size", type: "float", default: 1.5, min: 0.1, max: 500, suffix: "GB", mono: true, half: true },
+    comparison("above", "Above", "below", "Below"),
+    { key: "megabytes", label: "Size", type: "int", hint: "1024 MiB is 1 GiB.", default: 1024, min: 1, suffix: "MiB", mono: true, half: true },
   ]),
-  condition("check.audio_language", "Check audio language", "Branches on whether an audio track in one of the languages exists.", [
-    { key: "languages", label: "Languages", type: "string_list", default: ["eng"], mono: true, placeholder: "eng", hint: "ISO 639-2 tags." },
+  condition("check.audio_language", "Check audio language", "Branches on the languages of the audio tracks.", [
+    {
+      key: "languages",
+      label: "Languages",
+      type: "string_list",
+      hint: "Language tags such as eng or jpn, or orig for the original language. True when any audio track matches.",
+      default: ["eng"],
+      mono: true,
+      placeholder: "eng",
+    },
+  ]),
+  condition("check.audio_codec", "Check audio codec", "Branches on the codecs of the audio tracks.", [
+    {
+      key: "codecs",
+      label: "Audio codecs",
+      type: "string_list",
+      hint: "Codec names as ffprobe prints them, such as truehd, dts, eac3, or aac. True when any audio track matches.",
+      default: ["truehd", "dts"],
+      mono: true,
+      placeholder: "truehd",
+    },
+  ]),
+  condition("check.audio_channels", "Check audio channels", "Branches on how many channels the audio tracks have.", [
+    {
+      key: "more_than",
+      label: "More channels than",
+      type: "enum",
+      hint: "True when any audio track has more channels than this layout.",
+      default: "2",
+      choices: [choice("2", "Stereo"), choice("6", "5.1")],
+      segmented: true,
+    },
   ]),
 
   {
@@ -72,39 +206,87 @@ export const NODE_TYPES: NodeType[] = [
     kind: "video",
     group: "Video",
     label: "Encode video",
-    description: "Re-encodes the primary video stream.",
+    description: "Re-encodes the video stream. With a quality target, Anvil measures samples of each file and picks the highest CRF that still meets it.",
     outputs: [""],
     sections: [
       section("Encoder", [
-        labelField,
-        { key: "codec", label: "Codec", type: "enum", default: "av1", choices: choices(["av1", "AV1"], ["hevc", "HEVC (H.265)"]), half: true },
-        { key: "encoder", label: "Encoder", type: "enum", default: "libsvtav1", choices: choices("libsvtav1", "libaom-av1", "av1_qsv", "libx265", "hevc_qsv"), half: true, mono: true },
-        { key: "preset", label: "Preset", type: "int", default: 6, min: 0, max: 13, mono: true, half: true, hint: "0\u201313. Lower is slower and smaller." },
-        { key: "film_grain", label: "Film grain", type: "int", default: 0, min: 0, max: 50, mono: true, half: true, hint: "0 turns synthesis off." },
+        { key: "codec", label: "Codec", type: "enum", default: "av1", choices: [choice("av1", "AV1"), choice("hevc", "HEVC (H.265)"), choice("h264", "H.264")], half: true },
+        {
+          key: "accelerator",
+          label: "Encoder backend",
+          type: "enum",
+          default: "software",
+          choices: [choice("software", "Software"), choice("qsv", "Intel Quick Sync"), choice("vaapi", "VAAPI"), choice("amf", "AMD AMF")],
+          half: true,
+        },
+        { key: "preset", label: "Preset", type: "string", hint: "Passed to the encoder as written. libsvtav1 takes 0 to 13, and lower is slower and smaller.", default: "6", mono: true, half: true },
+        { key: "bit_depth", label: "Bit depth", type: "enum", default: "10", choices: [choice("10", "10-bit"), choice("8", "8-bit")], segmented: true, half: true },
       ]),
       section("Quality", [
-        { key: "rate_control", label: "Rate control", type: "enum", default: "search", segmented: true, choices: choices(["search", "Quality target"], ["crf", "Fixed CRF"], ["bitrate", "Target bitrate"]) },
-        { key: "target_vmaf", label: "Target VMAF", type: "float", default: 95, min: 80, max: 99, mono: true, half: true, hint: "80\u201399. The CRF search picks the highest CRF that reaches it.", visible_when: { key: "rate_control", in: ["search"] } },
-        { key: "max_encoded_percent", label: "Largest output", type: "int", default: 80, min: 10, max: 100, suffix: "%", mono: true, half: true, hint: "Of the source size.", visible_when: { key: "rate_control", in: ["search"] } },
-        { key: "sample_duration", label: "Sample length", type: "duration", default: "20s", mono: true, half: true, visible_when: { key: "rate_control", in: ["search"] } },
-        { key: "sample_count", label: "Samples", type: "int", default: 4, min: 1, max: 12, mono: true, half: true, visible_when: { key: "rate_control", in: ["search"] } },
-        { key: "crf", label: "CRF", type: "int", default: 28, min: 1, max: 63, mono: true, hint: "1\u201363. Lower is better quality and larger files.", visible_when: { key: "rate_control", in: ["crf"] } },
-        { key: "bitrate", label: "Bitrate", type: "int", default: 4000, min: 100, max: 100000, suffix: "kb/s", mono: true, visible_when: { key: "rate_control", in: ["bitrate"] } },
+        { key: "quality_mode", label: "Quality", type: "enum", default: "search", choices: [choice("search", "Quality target"), choice("fixed", "Fixed CRF")], segmented: true },
+        {
+          key: "crf",
+          label: "CRF",
+          type: "int",
+          hint: "Lower is better quality and a larger file. No samples are measured and no savings are required.",
+          default: 28,
+          min: 0,
+          max: 255,
+          mono: true,
+          visible_when: when("quality_mode", "fixed"),
+        },
+        { key: "metric", label: "Metric", type: "enum", default: "vmaf", choices: [choice("vmaf", "VMAF"), choice("xpsnr", "XPSNR")], half: true, visible_when: search() },
+        {
+          key: "target",
+          label: "Target",
+          type: "float",
+          hint: "Lowest score to accept. VMAF targets are usually 93 to 96, XPSNR targets 35 to 50.",
+          default: 95,
+          min: 0,
+          max: 100,
+          mono: true,
+          half: true,
+          visible_when: search(),
+        },
+        { key: "crf_min", label: "Lowest CRF", type: "int", default: 18, min: 0, max: 255, mono: true, half: true, visible_when: search() },
+        { key: "crf_max", label: "Highest CRF", type: "int", default: 40, min: 0, max: 255, mono: true, half: true, visible_when: search() },
+        {
+          key: "min_savings_percent",
+          label: "Smallest saving worth encoding",
+          type: "float",
+          hint: "Estimated from the samples, for the video stream only.",
+          default: 20,
+          min: 0,
+          max: 100,
+          suffix: "%",
+          mono: true,
+          visible_when: search(),
+        },
+        {
+          key: "on_no_fit",
+          label: "When no CRF fits",
+          type: "enum",
+          hint: "What happens when no CRF in the range meets both the target and the saving.",
+          default: "copy",
+          choices: [choice("copy", "Copy the video"), choice("encode", "Encode anyway")],
+          segmented: true,
+          visible_when: search(),
+        },
       ]),
-      section(
-        "Filters",
-        [
-          { key: "max_height", label: "Largest resolution", type: "enum", default: "keep", choices: choices(["keep", "Keep source"], ["2160", "2160p"], ["1080", "1080p"], ["720", "720p"]) },
-          { key: "pix_fmt", label: "Pixel format", type: "enum", default: "yuv420p10le", choices: choices("yuv420p10le", "yuv420p"), mono: true, half: true },
-          { key: "keep_hdr", label: "Keep HDR10 metadata", type: "bool", default: true, hint: "Only applies to HDR sources." },
-        ],
-        { collapsible: true },
-      ),
       section(
         "Advanced",
         [
-          { key: "svt_params", label: "Encoder parameters", type: "string_list", default: [], mono: true, placeholder: "tune=0", hint: "Passed as -svtav1-params, joined with a colon." },
-          { key: "extra_args", label: "Extra ffmpeg arguments", type: "string_list", default: [], mono: true, placeholder: "-g 240", hint: "Appended after the video options." },
+          { key: "samples", label: "Samples per CRF", type: "int", hint: "0 uses one sample per 12 minutes of runtime.", default: 0, min: 0, mono: true, half: true, visible_when: search() },
+          { key: "sample_duration", label: "Sample length", type: "duration", default: "20s", mono: true, half: true, visible_when: search() },
+          {
+            key: "ffmpeg_args",
+            label: "Extra encoder arguments",
+            type: "string_list",
+            hint: "Option and value pairs, one per entry, used for the search and the final encode. Stream mapping, filters, timing, and rate control stay with Anvil.",
+            default: [],
+            mono: true,
+            placeholder: "-svtav1-params",
+          },
         ],
         { collapsible: true, collapsed: true },
       ),
@@ -115,39 +297,54 @@ export const NODE_TYPES: NodeType[] = [
     kind: "video",
     group: "Video",
     label: "Copy video",
-    description: "Keeps the video stream as it is.",
+    description: "Keeps the source video stream as it is. Put it on a branch that must not re-encode.",
     outputs: [""],
-    sections: [section("Video", [labelField])],
+    sections: [],
   },
   {
     id: "video.crop",
     kind: "video",
     group: "Video",
     label: "Crop black bars",
-    description: "Removes letterboxing found by crop detection.",
+    description: "Detects black bars and crops them away during the encode. Cropping needs a re-encode, so nothing is cropped where the video is copied.",
     outputs: [""],
     sections: [
-      section("Crop", [
-        labelField,
-        { key: "mode", label: "Mode", type: "enum", default: "auto", segmented: true, choices: choices(["auto", "Detect"], ["manual", "Manual"]) },
-        { key: "min_retained_percent", label: "Smallest kept area", type: "float", default: 70, min: 50, max: 100, suffix: "%", mono: true, hint: "A crop that keeps less than this is rejected.", visible_when: { key: "mode", in: ["auto"] } },
-        { key: "filter", label: "Crop filter", type: "string", default: "", mono: true, placeholder: "crop=1920:800:0:140", visible_when: { key: "mode", in: ["manual"] } },
+      section("Safety", [
+        {
+          key: "min_retained_area_percent",
+          label: "Smallest picture to keep",
+          type: "float",
+          hint: "A detected crop that keeps less of the frame is discarded and the file is encoded uncropped.",
+          default: 70,
+          min: 0,
+          max: 100,
+          suffix: "%",
+          mono: true,
+        },
       ]),
-    ],
-  },
-  {
-    id: "video.scale",
-    kind: "video",
-    group: "Video",
-    label: "Scale",
-    description: "Scales the video down to a largest height.",
-    outputs: [""],
-    sections: [
-      section("Scale", [
-        labelField,
-        { key: "height", label: "Largest height", type: "int", default: 1080, min: 144, max: 4320, suffix: "px", mono: true, half: true },
-        { key: "algorithm", label: "Algorithm", type: "enum", default: "lanczos", choices: choices("lanczos", "bicubic", "spline"), mono: true, half: true },
-      ]),
+      section(
+        "Advanced",
+        [
+          { key: "samples", label: "Sample windows", type: "int", hint: "0 uses one window per 3 minutes of runtime, between 4 and 24.", default: 0, min: 0, mono: true, half: true },
+          { key: "frame_count", label: "Frames per window", type: "int", default: 300, min: 1, mono: true, half: true },
+          {
+            key: "seek_offsets",
+            label: "Sample at these offsets",
+            type: "string_list",
+            hint: "Durations such as 5m or 1h10m. Leave empty to spread the windows across the file.",
+            default: [],
+            mono: true,
+            placeholder: "5m",
+          },
+          { key: "limit", label: "Black threshold", type: "int", hint: "The cropdetect limit. Higher treats brighter pixels as black.", default: 64, min: 1, max: 255, mono: true, half: true },
+          { key: "round", label: "Round to a multiple of", type: "int", default: 16, min: 1, suffix: "px", mono: true, half: true },
+          { key: "reset_count", label: "Reset after frames", type: "int", hint: "0 never resets the largest area seen.", default: 0, min: 0, mono: true, half: true },
+          { key: "required_alignment", label: "Align to a multiple of", type: "int", default: 2, min: 1, suffix: "px", mono: true, half: true },
+          { key: "min_width", label: "Narrowest crop", type: "int", default: 128, min: 1, suffix: "px", mono: true, half: true },
+          { key: "min_height", label: "Shortest crop", type: "int", default: 128, min: 1, suffix: "px", mono: true, half: true },
+        ],
+        { collapsible: true, collapsed: true },
+      ),
     ],
   },
 
@@ -156,31 +353,29 @@ export const NODE_TYPES: NodeType[] = [
     kind: "audio",
     group: "Audio",
     label: "Keep audio tracks",
-    description: "Chooses which audio tracks survive, by language.",
+    description: "Chooses which audio tracks stay in the file. Tracks in other languages are removed.",
     outputs: [""],
-    sections: [
-      section("Tracks", [
-        labelField,
-        { key: "languages", label: "Languages", type: "string_list", default: ["eng"], mono: true, placeholder: "eng", hint: "ISO 639-2 tags. Tracks in another language are dropped." },
-        { key: "keep_original", label: "Keep the original language", type: "bool", default: true, hint: "Looked up through the library's Arr connection." },
-        { key: "drop_commentary", label: "Drop commentary tracks", type: "bool", default: true },
-        { key: "fallback", label: "When no track matches", type: "enum", default: "keep_all", choices: choices(["keep_all", "Keep every track"], ["keep_first", "Keep the first track"], ["fail_job", "Fail the job"]) },
-      ]),
-    ],
+    sections: [section("Languages", [languages(), fallback()]), section("Filters", [{ key: "keep_commentary", label: "Keep commentary tracks", type: "bool", default: false }, unknownAsOriginal()])],
   },
   {
     id: "audio.encode",
     kind: "audio",
     group: "Audio",
     label: "Encode audio",
-    description: "Re-encodes audio tracks in the listed codecs.",
+    description: "Re-encodes kept audio tracks to one codec. A track already in that codec is copied, and tracks no rule claims are copied too.",
     outputs: [""],
     sections: [
-      section("Encoder", [
-        labelField,
-        { key: "from_codecs", label: "Encode tracks in", type: "enum_list", default: ["truehd", "dts", "flac"], choices: LOSSLESS, hint: "Other tracks are copied." },
-        { key: "codec", label: "Codec", type: "enum", default: "eac3", choices: AUDIO_CODECS, half: true },
-        { key: "bitrate_per_channel", label: "Bitrate per channel", type: "int", default: 96, min: 32, max: 320, suffix: "kb/s", mono: true, half: true },
+      section("Target", [audioCodec(), audioBitrate()]),
+      section("Filter", [
+        {
+          key: "source_codecs",
+          label: "Only these source codecs",
+          type: "string_list",
+          hint: "Codec names as ffprobe prints them, such as truehd, dts, flac, or pcm_s24le. Leave empty to encode every kept track.",
+          default: ["truehd", "dts"],
+          mono: true,
+          placeholder: "truehd",
+        },
       ]),
     ],
   },
@@ -188,16 +383,22 @@ export const NODE_TYPES: NodeType[] = [
     id: "audio.downmix",
     kind: "audio",
     group: "Audio",
-    label: "Downmix to stereo",
-    description: "Adds or replaces a track with a stereo downmix.",
+    label: "Downmix audio",
+    description: "Reduces tracks that have more channels than a layout down to that layout. Tracks at or below it are left alone.",
     outputs: [""],
     sections: [
-      section("Downmix", [
-        labelField,
-        { key: "mode", label: "Stereo track", type: "enum", default: "add", segmented: true, choices: choices(["add", "Add"], ["replace", "Replace"]) },
-        { key: "codec", label: "Codec", type: "enum", default: "aac", choices: choices(["aac", "AAC"], ["opus", "Opus"]), half: true },
-        { key: "bitrate", label: "Bitrate", type: "int", default: 192, min: 64, max: 512, suffix: "kb/s", mono: true, half: true },
+      section("Layout", [
+        {
+          key: "max_channels",
+          label: "Largest layout to keep",
+          type: "enum",
+          hint: "Tracks with more channels are downmixed to this layout.",
+          default: "6",
+          choices: [choice("6", "5.1"), choice("2", "Stereo")],
+          segmented: true,
+        },
       ]),
+      section("Encoding", [audioCodec(), audioBitrate()]),
     ],
   },
 
@@ -206,14 +407,15 @@ export const NODE_TYPES: NodeType[] = [
     kind: "subtitles",
     group: "Subtitles",
     label: "Keep subtitles",
-    description: "Chooses which subtitle tracks survive, by language.",
+    description: "Chooses which subtitle tracks stay in the file. Subtitles are always copied, never converted.",
     outputs: [""],
     sections: [
-      section("Tracks", [
-        labelField,
-        { key: "languages", label: "Languages", type: "string_list", default: ["eng"], mono: true, placeholder: "eng", hint: "ISO 639-2 tags." },
-        { key: "keep_forced", label: "Keep forced tracks", type: "bool", default: true },
-        { key: "drop_sdh", label: "Drop SDH tracks", type: "bool", default: false },
+      section("Languages", [languages(), fallback()]),
+      section("Filters", [
+        { key: "keep_forced", label: "Keep forced tracks", type: "bool", default: false },
+        { key: "keep_sdh", label: "Keep SDH tracks", type: "bool", hint: "Subtitles for the deaf and hard of hearing.", default: false },
+        { key: "keep_commentary", label: "Keep commentary tracks", type: "bool", default: false },
+        unknownAsOriginal(),
       ]),
     ],
   },
@@ -221,24 +423,19 @@ export const NODE_TYPES: NodeType[] = [
     id: "subtitles.drop_bitmap",
     kind: "subtitles",
     group: "Subtitles",
-    label: "Drop bitmap subtitles",
-    description: "Removes image-based subtitle tracks.",
+    label: "Remove image subtitles",
+    description: "Removes image-based subtitle tracks (PGS, VobSub, DVB) before the language rules run. Text subtitles stay.",
     outputs: [""],
-    sections: [
-      section("Tracks", [
-        labelField,
-        { key: "codecs", label: "Codecs", type: "enum_list", default: ["hdmv_pgs_subtitle", "dvd_subtitle"], choices: choices(["hdmv_pgs_subtitle", "PGS"], ["dvd_subtitle", "VobSub"], ["dvb_subtitle", "DVB"]) },
-      ]),
-    ],
+    sections: [],
   },
   {
     id: "subtitles.remove_all",
     kind: "subtitles",
     group: "Subtitles",
     label: "Remove all subtitles",
-    description: "Drops every subtitle track.",
+    description: "Removes every subtitle track, whatever a Keep subtitles node on the same path says.",
     outputs: [""],
-    sections: [section("Tracks", [labelField])],
+    sections: [],
   },
 
   {
@@ -246,30 +443,23 @@ export const NODE_TYPES: NodeType[] = [
     kind: "container",
     group: "Container",
     label: "Clean metadata",
-    description: "Removes titles, tags and attachments the encode should not carry.",
+    description: "Decides what happens to container metadata, track titles, attachments, and chapters.",
     outputs: [""],
     sections: [
       section("Metadata", [
-        labelField,
-        { key: "strip_title", label: "Remove the file title", type: "bool", default: true },
-        { key: "strip_chapters", label: "Remove chapters", type: "bool", default: false },
-        { key: "strip_attachments", label: "Remove attachments", type: "bool", default: false, hint: "Fonts for styled subtitles are attachments." },
-        { key: "tags", label: "Tags to remove", type: "string_list", default: ["encoder", "comment"], mono: true, placeholder: "comment" },
-      ]),
-    ],
-  },
-  {
-    id: "container.remux",
-    kind: "container",
-    group: "Container",
-    label: "Remux",
-    description: "Sets the output container.",
-    outputs: [""],
-    sections: [
-      section("Container", [
-        labelField,
-        { key: "container", label: "Container", type: "enum", default: "mkv", segmented: true, choices: choices("mkv", "mp4") },
-        { key: "faststart", label: "Move the index to the start", type: "bool", default: true, hint: "Lets players start before the download ends.", visible_when: { key: "container", in: ["mp4"] } },
+        preserveOrStrip("metadata", "Container metadata"),
+        {
+          key: "track_titles",
+          label: "Track titles",
+          type: "enum",
+          hint: "Standardize rewrites each title from the track's codec, channels, and language.",
+          default: "strip",
+          choices: [choice("preserve", "Preserve"), choice("strip", "Strip"), choice("standardize", "Standardize")],
+          segmented: true,
+          half: true,
+        },
+        preserveOrStrip("attachments", "Attachments"),
+        preserveOrStrip("chapters", "Chapters"),
       ]),
     ],
   },
@@ -278,28 +468,19 @@ export const NODE_TYPES: NodeType[] = [
     id: "output.publish",
     kind: "output",
     group: "Output",
-    label: "Publish",
-    description: "Runs the pipeline and publishes the result the way the library says.",
+    label: "Publish result",
+    description: "Ends the flow and publishes the processed file. The library decides how: a media library replaces the source in place, a download library hands the file off to its importer.",
     outputs: [],
-    sections: [
-      section("Output", [
-        labelField,
-        { key: "only_if_smaller", label: "Only publish a smaller file", type: "bool", default: true, hint: "A larger encode is discarded and the file is marked skipped." },
-        { key: "min_saving_percent", label: "Smallest saving", type: "float", default: 5, min: 0, max: 90, suffix: "%", mono: true, half: true, visible_when: { key: "only_if_smaller", in: [true] } },
-        { key: "validate_duration", label: "Duration tolerance", type: "duration", default: "2s", mono: true, half: true, hint: "Largest difference from the source." },
-      ]),
-    ],
+    sections: [],
   },
   {
     id: "output.skip",
     kind: "output",
     group: "Output",
     label: "Skip file",
-    description: "Leaves the file untouched and marks the job skipped.",
+    description: "Ends the flow without touching the file. The job is marked skipped.",
     outputs: [],
-    sections: [
-      section("Output", [labelField, { key: "reason", label: "Reason", type: "string", default: "", placeholder: "Already AV1", hint: "Shown on the file and in the job history." }]),
-    ],
+    sections: [],
   },
 ];
 

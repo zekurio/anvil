@@ -1,309 +1,614 @@
-// What POST /flows/check and POST /flows/test compute: node summaries,
-// validation issues, and a dry run against one file. The real daemon is the
-// authority; this is plausible enough to build the editor against.
+// What POST /flows/check and POST /flows/test compute: a port of
+// pkg/flow/validate.go, options.go and evaluate.go, with the same issue
+// order and messages. The daemon is the authority; the ffmpeg command of a
+// test is only shaped like the real one.
 
 import type { Field, FileFacts, FlowCheck, FlowTest, Graph, GraphNode, Issue, NodeType, OptionValue, Outcome } from "../src/api/types.ts";
-import { NODE_TYPE_BY_ID } from "./fixtures/catalog.ts";
+import { NODE_TYPE_BY_ID, RESOLUTION_TIERS } from "./fixtures/catalog.ts";
 
 const DOT = " · ";
 
-function fields(type: NodeType): Field[] {
-  return type.sections.flatMap((s) => s.fields);
+/* ---------- options (pkg/flow/options.go) ---------- */
+
+interface Problem {
+  field: string;
+  message: string;
 }
 
-/** The effective value of an option: the node's, or the field's default. */
-function option(node: GraphNode, type: NodeType, key: string): OptionValue {
-  const own = node.options?.[key];
-  if (own !== undefined) return own;
-  return fields(type).find((f) => f.key === key)?.default ?? null;
-}
-
-function reader(node: GraphNode, type: NodeType) {
-  return {
-    str: (key: string) => String(option(node, type, key) ?? ""),
-    num: (key: string) => Number(option(node, type, key) ?? 0),
-    bool: (key: string) => option(node, type, key) === true,
-    list: (key: string) => {
-      const value = option(node, type, key);
-      return Array.isArray(value) ? value : [];
-    },
-  };
-}
-
-function title(node: GraphNode, type: NodeType): string {
-  return node.label || type.label;
-}
-
-const sign = (op: string) => (op === "gt" ? ">" : "<");
-
-function summarize(node: GraphNode, type: NodeType): string {
-  const o = reader(node, type);
-  const join = (parts: (string | false)[]) => parts.filter(Boolean).join(DOT);
-  switch (type.id) {
-    case "input":
-      return o.list("extensions").map((e) => `*.${e}`).join(", ") || "every file";
-    case "check.video_codec":
-      return `video codec in ${o.list("codecs").join(", ") || "nothing"}`;
-    case "check.resolution":
-      return `height ${sign(o.str("op"))} ${o.num("height")} px`;
-    case "check.hdr":
-      return join([`hdr in ${o.list("formats").join(", ") || "nothing"}`, o.list("formats").includes("dolby_vision") && o.list("dv_profiles").length > 0 && `profile ${o.list("dv_profiles").join(", ")}`]);
-    case "check.bitrate":
-      return `bitrate ${sign(o.str("op"))} ${o.num("kbps")} kb/s`;
-    case "check.file_size":
-      return `size ${sign(o.str("op"))} ${o.num("gigabytes")} GB`;
-    case "check.audio_language":
-      return `audio has ${o.list("languages").join(", ") || "nothing"}`;
-    case "video.encode": {
-      const quality = { search: `vmaf ${o.num("target_vmaf")}`, crf: `crf ${o.num("crf")}`, bitrate: `${o.num("bitrate")} kb/s` }[o.str("rate_control")];
-      return join([o.str("encoder"), quality ?? "", `preset ${o.num("preset")}`]);
-    }
-    case "video.copy":
-      return "copy";
-    case "video.crop":
-      return o.str("mode") === "manual" ? o.str("filter") || "no filter set" : join(["detect", `keep ≥ ${o.num("min_retained_percent")}%`]);
-    case "video.scale":
-      return join([`≤ ${o.num("height")} px`, o.str("algorithm")]);
-    case "audio.keep":
-      return join([o.list("languages").join(", ") || "no language", o.bool("keep_original") && "original", o.bool("drop_commentary") && "no commentary"]);
-    case "audio.encode":
-      return join([`${o.list("from_codecs").join(", ") || "nothing"} → ${o.str("codec")}`, `${o.num("bitrate_per_channel")} kb/s per channel`]);
-    case "audio.downmix":
-      return join([`${o.str("mode")} ${o.str("codec")} 2.0`, `${o.num("bitrate")} kb/s`]);
-    case "subtitles.keep":
-      return join([o.list("languages").join(", ") || "no language", o.bool("keep_forced") && "forced", o.bool("drop_sdh") && "no sdh"]);
-    case "subtitles.drop_bitmap":
-      return `drop ${o.list("codecs").join(", ") || "nothing"}`;
-    case "subtitles.remove_all":
-      return "drop all";
-    case "container.metadata":
-      return join([o.bool("strip_title") && "title", o.bool("strip_chapters") && "chapters", o.bool("strip_attachments") && "attachments", o.list("tags").length > 0 && `${o.list("tags").length} tags`]) || "nothing removed";
-    case "container.remux":
-      return join([o.str("container"), o.str("container") === "mp4" && o.bool("faststart") && "faststart"]);
-    case "output.publish":
-      return o.bool("only_if_smaller") ? join(["only if smaller", `save ≥ ${o.num("min_saving_percent")}%`]) : "always publish";
-    case "output.skip":
-      return o.str("reason") || "leave untouched";
-    default:
-      return "";
+/** A node's settings after decoding: every field of the type, defaults filled in. Durations are seconds. */
+class Options {
+  readonly values = new Map<string, OptionValue>();
+  text(key: string): string {
+    const value = this.values.get(key);
+    return typeof value === "string" ? value : "";
+  }
+  number(key: string): number {
+    const value = this.values.get(key);
+    return typeof value === "number" ? value : 0;
+  }
+  on(key: string): boolean {
+    return this.values.get(key) === true;
+  }
+  list(key: string): string[] {
+    const value = this.values.get(key);
+    return Array.isArray(value) ? value : [];
   }
 }
 
-function visible(field: Field, node: GraphNode, type: NodeType): boolean {
+const UNITS: Record<string, number> = { ns: 1e-9, us: 1e-6, "µs": 1e-6, "μs": 1e-6, ms: 1e-3, s: 1, m: 60, h: 3600 };
+
+/** time.ParseDuration, in seconds; undefined when the text is not a Go duration. */
+export function parseDuration(text: string): number | undefined {
+  let rest = text.trim();
+  let sign = 1;
+  if (rest.startsWith("-") || rest.startsWith("+")) {
+    if (rest.startsWith("-")) sign = -1;
+    rest = rest.slice(1);
+  }
+  if (rest === "0") return 0;
+  if (rest === "") return undefined;
+  let total = 0;
+  while (rest !== "") {
+    const part = /^(\d*\.?\d*)(ns|us|µs|μs|ms|s|m|h)/.exec(rest);
+    if (!part || part[1] === "" || part[1] === ".") return undefined;
+    total += Number(part[1]) * (UNITS[part[2] ?? ""] ?? 0);
+    rest = rest.slice(part[0].length);
+  }
+  return sign * total;
+}
+
+const formatNumber = (value: number) => String(value);
+
+function rangeMessage(field: Field, value: number): string {
+  const below = field.min !== undefined && value < field.min;
+  const above = field.max !== undefined && value > field.max;
+  if (!below && !above) return "";
+  if (field.min !== undefined && field.max !== undefined) return `Must be between ${formatNumber(field.min)} and ${formatNumber(field.max)}.`;
+  if (field.min !== undefined) return `Must be at least ${formatNumber(field.min)}.`;
+  return `Must be at most ${formatNumber(field.max ?? 0)}.`;
+}
+
+const choiceValues = (field: Field) => (field.choices ?? []).map((c) => c.value).join(", ");
+const hasChoice = (field: Field, value: string) => (field.choices ?? []).some((c) => c.value === value);
+const isStringList = (value: unknown): value is string[] => Array.isArray(value) && value.every((entry) => typeof entry === "string");
+
+function decodeValue(field: Field, value: unknown): { value?: OptionValue; message?: string } {
+  switch (field.type) {
+    case "string":
+      return typeof value === "string" ? { value } : { message: "Must be text." };
+    case "bool":
+      return typeof value === "boolean" ? { value } : { message: "Must be true or false." };
+    case "int": {
+      if (typeof value !== "number" || !Number.isFinite(value) || !Number.isInteger(value)) return { message: "Must be a whole number." };
+      const message = rangeMessage(field, value);
+      return message ? { message } : { value };
+    }
+    case "float": {
+      if (typeof value !== "number" || !Number.isFinite(value)) return { message: "Must be a number." };
+      const message = rangeMessage(field, value);
+      return message ? { message } : { value };
+    }
+    case "duration": {
+      const seconds = typeof value === "string" ? parseDuration(value) : undefined;
+      return seconds === undefined ? { message: 'Must be a duration such as "20s".' } : { value: seconds };
+    }
+    case "enum":
+      return typeof value === "string" && hasChoice(field, value) ? { value } : { message: `Must be one of: ${choiceValues(field)}.` };
+    case "enum_list": {
+      if (!isStringList(value) || value.some((entry) => !hasChoice(field, entry))) return { message: `Must be a list of: ${choiceValues(field)}.` };
+      // A set: catalog order and no repeats.
+      return { value: (field.choices ?? []).map((c) => c.value).filter((v) => value.includes(v)) };
+    }
+    case "string_list":
+      return isStringList(value) ? { value: [...value] } : { message: "Must be a list of text values." };
+    default:
+      return { message: "Must be a value this field supports." };
+  }
+}
+
+function visible(field: Field, decoded: Options): boolean {
   const when = field.visible_when;
   if (!when) return true;
-  const current = option(node, type, when.key);
-  return when.in.some((allowed) => (Array.isArray(current) ? current.includes(String(allowed)) : current === allowed));
+  return when.in.includes(decoded.values.get(when.key) ?? null);
 }
 
-function optionIssues(node: GraphNode, type: NodeType): Issue[] {
-  const issues: Issue[] = [];
-  for (const field of fields(type)) {
-    if (!visible(field, node, type)) continue;
-    const value = option(node, type, field.key);
-    if (field.type !== "int" && field.type !== "float") continue;
-    const error = (message: string) => issues.push({ severity: "error", node_id: node.id, field: field.key, message });
-    if (typeof value !== "number" || Number.isNaN(value)) {
-      error(`${field.label} must be a number.`);
+function decodeOptions(type: NodeType, raw: Record<string, OptionValue> = {}): { options: Options; problems: Problem[] } {
+  const options = new Options();
+  const problems: Problem[] = [];
+  const flagged = new Set<string>();
+  for (const field of type.sections.flatMap((s) => s.fields)) {
+    options.values.set(field.key, decodeValue(field, field.default).value ?? null);
+    if (!(field.key in raw) || !visible(field, options)) continue;
+    const decoded = decodeValue(field, raw[field.key]);
+    if (decoded.message) {
+      problems.push({ field: field.key, message: decoded.message });
+      flagged.add(field.key);
       continue;
     }
-    if (field.type === "int" && !Number.isInteger(value)) error(`${field.label} must be a whole number.`);
-    if (field.min !== undefined && field.max !== undefined && (value < field.min || value > field.max)) {
-      error(`${field.label} must be between ${field.min} and ${field.max}.`);
-    } else if (field.min !== undefined && value < field.min) {
-      error(`${field.label} must be ${field.min} or more.`);
-    } else if (field.max !== undefined && value > field.max) {
-      error(`${field.label} must be ${field.max} or less.`);
+    options.values.set(field.key, decoded.value ?? null);
+  }
+  for (const problem of CHECKS[type.id]?.(options) ?? []) {
+    if (!flagged.has(problem.field)) problems.push(problem);
+  }
+  for (const key of Object.keys(raw).sort()) {
+    if (!options.values.has(key)) problems.push({ field: key, message: `"${key}" is not an option of this node. Remove it.` });
+  }
+  return { options, problems };
+}
+
+/* ---------- per-type rules (pkg/flow/conditions.go, actions.go, pkg/config/validate.go) ---------- */
+
+const requireEntries = (o: Options, key: string, message: string): Problem[] => (o.list(key).length > 0 ? [] : [{ field: key, message }]);
+const blankEntries = (o: Options, key: string): Problem[] => (o.list(key).some((entry) => entry.trim() === "") ? [{ field: key, message: "Entries must not be empty. Remove the blank one." }] : []);
+const cleanList = (entries: string[]) => entries.map((entry) => entry.trim().toLowerCase()).filter(Boolean);
+const listOr = (entries: string[], fallback: string) => (entries.length === 0 ? fallback : entries.join(", "));
+
+const MANAGED_ARGS = new Set(
+  "i f y n stdin nostdin vf af lavfi s video_size r vsync fps_mode t to ss sseof fs frames vframes stream_loop shortest copyts start_at_zero itsoffset itsscale c codec vcodec an vn sn dn crf qp q qscale global_quality rc qp_i qp_p qp_b b vb bit_rate pix_fmt pixel_format threads preset pass passlogfile progress stats_period".split(
+    " ",
+  ),
+);
+
+function encoderArgsRule(args: string[]): string {
+  for (let i = 0; i < args.length; i += 2) {
+    const key = args[i] ?? "";
+    if (!key.startsWith("-") || key === "-" || i + 1 === args.length) return `Must contain encoder option/value pairs; invalid option "${key}".`;
+    const name = key.replace(/^-+/, "").split(":")[0] ?? "";
+    if (name.startsWith("filter") || name.startsWith("map") || MANAGED_ARGS.has(name)) return `Option "${key}" is managed by Anvil and cannot be used during CRF search.`;
+  }
+  return "";
+}
+
+const CHECKS: Record<string, (o: Options) => Problem[]> = {
+  "check.video_codec": (o) => requireEntries(o, "codecs", "Choose at least one codec."),
+  "check.hdr": (o) => requireEntries(o, "kinds", "Choose at least one HDR format."),
+  "check.audio_language": (o) => {
+    const missing = requireEntries(o, "languages", "Add at least one language.");
+    return missing.length > 0 ? missing : blankEntries(o, "languages");
+  },
+  "check.audio_codec": (o) => {
+    const missing = requireEntries(o, "codecs", "Add at least one codec.");
+    return missing.length > 0 ? missing : blankEntries(o, "codecs");
+  },
+  "video.encode": (o) => {
+    const problems: Problem[] = [];
+    if (o.number("crf_min") > o.number("crf_max")) problems.push({ field: "crf_min", message: "Must be less than or equal to crf_max." });
+    if (o.number("sample_duration") <= 0) problems.push({ field: "sample_duration", message: "Must be positive." });
+    const args = encoderArgsRule(o.list("ffmpeg_args"));
+    if (args) problems.push({ field: "ffmpeg_args", message: args });
+    if (o.text("metric") === "xpsnr" && o.number("target") === 0) problems.push({ field: "target", message: 'Must be set when metric is "xpsnr" (typical targets are 35-50).' });
+    return problems;
+  },
+  "video.crop": (o) => {
+    const problems: Problem[] = [];
+    const offsets = o.list("seek_offsets").map((entry) => ({ entry, seconds: parseDuration(entry) }));
+    const bad = offsets.find((offset) => offset.seconds === undefined);
+    if (bad) problems.push({ field: "seek_offsets", message: `Entries must be durations such as 5m or 1h10m. "${bad.entry}" is not one.` });
+    if (o.number("samples") === 1) problems.push({ field: "samples", message: "Must be 0 (automatic) or at least 2." });
+    if (offsets.some((offset) => (offset.seconds ?? 0) < 0)) problems.push({ field: "seek_offsets", message: "Must not contain negative durations." });
+    if (o.number("min_retained_area_percent") <= 0) problems.push({ field: "min_retained_area_percent", message: "Must be finite, greater than 0, and at most 100." });
+    return problems;
+  },
+  "audio.keep": (o) => blankEntries(o, "languages"),
+  "audio.encode": (o) => blankEntries(o, "source_codecs"),
+  "subtitles.keep": (o) => blankEntries(o, "languages"),
+};
+
+const ENCODERS: Record<string, Record<string, string>> = {
+  software: { av1: "libsvtav1", hevc: "libx265", h264: "libx264" },
+  qsv: { av1: "av1_qsv", hevc: "hevc_qsv", h264: "h264_qsv" },
+  vaapi: { av1: "av1_vaapi", hevc: "hevc_vaapi", h264: "h264_vaapi" },
+  amf: { av1: "av1_amf", hevc: "hevc_amf", h264: "h264_amf" },
+};
+const encoderOf = (o: Options) => ENCODERS[o.text("accelerator")]?.[o.text("codec")] ?? "libsvtav1";
+const layoutName = (channels: string) => (channels === "2" ? "stereo" : "5.1");
+const audioBitrate = (o: Options) => (o.text("codec") === "flac" ? 0 : o.number("bitrate_kbps_per_channel"));
+
+function keepSummary(o: Options): string {
+  const languages = cleanList(o.list("languages"));
+  return languages.length === 0 ? "every language" : `${languages.join(", ")}${DOT}${o.text("fallback")} fallback`;
+}
+
+const SUMMARIES: Record<string, (o: Options) => string> = {
+  input: () => "every queued file",
+  "check.video_codec": (o) => `video.codec in ${listOr(o.list("codecs"), "nothing")}`,
+  "check.resolution": (o) => `${o.text("op").replaceAll("_", " ")} ${o.text("resolution")}`,
+  "check.hdr": (o) => `video.hdr in ${listOr(o.list("kinds"), "nothing")}`,
+  "check.bitrate": (o) => `${o.text("op")} ${o.number("kbps")} kb/s`,
+  "check.file_size": (o) => `${o.text("op")} ${o.number("megabytes")} MiB`,
+  "check.audio_language": (o) => `audio.language in ${listOr(cleanList(o.list("languages")), "nothing")}`,
+  "check.audio_codec": (o) => `audio.codec in ${listOr(cleanList(o.list("codecs")), "nothing")}`,
+  "check.audio_channels": (o) => `audio.channels above ${o.text("more_than")}`,
+  "video.encode": (o) => {
+    const parts = [encoderOf(o), o.text("quality_mode") === "fixed" ? `crf ${o.number("crf")}` : `${o.text("metric")} ${formatNumber(o.number("target"))}`];
+    if (o.text("preset").trim() !== "") parts.push(`preset ${o.text("preset").trim()}`);
+    return parts.join(DOT);
+  },
+  "video.copy": () => "keep the source video stream",
+  "video.crop": (o) => `keep at least ${formatNumber(o.number("min_retained_area_percent"))}%${DOT}limit ${o.number("limit")}`,
+  "audio.keep": keepSummary,
+  "audio.encode": (o) => {
+    const summary = `${listOr(cleanList(o.list("source_codecs")), "every track")} → ${o.text("codec")}`;
+    if (o.text("codec") === "flac") return summary;
+    return audioBitrate(o) === 0 ? `${summary}${DOT}default bitrate` : `${summary}${DOT}${audioBitrate(o)} kb/s per channel`;
+  },
+  "audio.downmix": (o) => `above ${layoutName(o.text("max_channels"))} → ${layoutName(o.text("max_channels"))}${DOT}${o.text("codec")}`,
+  "subtitles.keep": keepSummary,
+  "subtitles.drop_bitmap": () => "hdmv_pgs_subtitle, dvd_subtitle, dvb_subtitle",
+  "subtitles.remove_all": () => "every subtitle track",
+  "container.metadata": (o) => {
+    const parts = [`metadata ${o.text("metadata")}`, `track_titles ${o.text("track_titles")}`];
+    for (const key of ["attachments", "chapters"]) if (o.text(key) === "strip") parts.push(`${key} strip`);
+    return parts.join(DOT);
+  },
+  "output.publish": () => "replace or hand off, as the library says",
+  "output.skip": () => "leave the file untouched",
+};
+
+/* ---------- analysis (pkg/flow/validate.go) ---------- */
+
+interface Analysis {
+  issues: Issue[];
+  /** The first node of every non-empty id. */
+  nodes: Map<string, GraphNode>;
+  options: Map<string, Options>;
+  /** Per node, the node each output port leads to; "" marks an unconnected port. */
+  targets: Map<string, string[]>;
+  input: string;
+}
+
+const quote = (text: string) => JSON.stringify(text);
+
+function analyze(graph: Graph): Analysis {
+  const a: Analysis = { issues: [], nodes: new Map(), options: new Map(), targets: new Map(), input: "" };
+  const error = (nodeId: string, field: string, message: string) => a.issues.push({ severity: "error", ...(nodeId ? { node_id: nodeId } : {}), ...(field ? { field } : {}), message });
+  const warn = (nodeId: string, message: string) => a.issues.push({ severity: "warning", node_id: nodeId, message });
+  const label = (id: string) => {
+    const node = a.nodes.get(id);
+    return node?.label || NODE_TYPE_BY_ID.get(node?.type ?? "")?.label || id;
+  };
+  const name = (id: string) => quote(label(id));
+  const port = (id: string, index: number) => {
+    const output = NODE_TYPE_BY_ID.get(a.nodes.get(id)?.type ?? "")?.outputs[index] ?? "";
+    return output === "" ? `Output of ${name(id)}` : `${quote(output)} output of ${name(id)}`;
+  };
+
+  // Nodes and their options, as the graph lists them.
+  const inputs: string[] = [];
+  for (const node of graph.nodes) {
+    if (!node.id) {
+      error("", "", "Every node needs an ID.");
+      continue;
+    }
+    if (a.nodes.has(node.id)) {
+      error(node.id, "", `Node ID ${quote(node.id)} is used more than once. Every node needs its own ID.`);
+      continue;
+    }
+    a.nodes.set(node.id, node);
+    const type = NODE_TYPE_BY_ID.get(node.type);
+    if (!type) {
+      error(node.id, "", `${quote(node.type)} is not a node type Anvil knows. Replace this node.`);
+      continue;
+    }
+    const { options, problems } = decodeOptions(type, node.options);
+    a.options.set(node.id, options);
+    a.targets.set(
+      node.id,
+      type.outputs.map(() => ""),
+    );
+    for (const problem of problems) error(node.id, problem.field, problem.message);
+    if (type.kind === "input") inputs.push(node.id);
+  }
+  if (inputs.length === 0) error("", "", "A flow needs an input node. Add one.");
+  else {
+    a.input = inputs[0] ?? "";
+    for (const extra of inputs.slice(1)) error(extra, "", "A flow has exactly one input node. Remove this one.");
+  }
+
+  // Edges.
+  for (const edge of graph.edges) {
+    const from = a.nodes.get(edge.from);
+    if (!from) {
+      error("", "", `An edge starts at ${quote(edge.from)}, which is not a node of this flow. Remove the edge.`);
+      continue;
+    }
+    const target = a.nodes.get(edge.to);
+    if (!target) {
+      error(edge.from, "", `An edge from ${name(edge.from)} leads to ${quote(edge.to)}, which is not a node of this flow. Remove the edge.`);
+      continue;
+    }
+    if (!NODE_TYPE_BY_ID.has(from.type)) {
+      a.targets.set(edge.from, [...(a.targets.get(edge.from) ?? []), edge.to]);
+      continue;
+    }
+    const ports = a.targets.get(edge.from) ?? [];
+    if (ports.length === 0) error(edge.from, "", `${name(edge.from)} ends the flow and has no outputs. Remove the edge that leaves it.`);
+    else if (edge.port < 0 || edge.port >= ports.length) error(edge.from, "", `${name(edge.from)} has outputs 0 to ${ports.length - 1}, and an edge uses output ${edge.port}. Remove the edge.`);
+    else if (NODE_TYPE_BY_ID.get(target.type)?.kind === "input") error(edge.to, "", `The input node starts the flow, so no edge can lead into it. Remove the edge from ${name(edge.from)}.`);
+    else if (ports[edge.port] !== "") error(edge.from, "", `${port(edge.from, edge.port)} has more than one edge. An output leads to exactly one node.`);
+    else ports[edge.port] = edge.to;
+  }
+
+  // Loops.
+  const state = new Map<string, 1 | 2>();
+  const reported = new Set<string>();
+  const visit = (id: string) => {
+    state.set(id, 1);
+    for (const target of a.targets.get(id) ?? []) {
+      if (target === "") continue;
+      if (state.get(target) === 1 && !reported.has(target)) {
+        reported.add(target);
+        error(target, "", `The flow loops back to ${name(target)}. Every path has to end at an output without repeating a node.`);
+      } else if (!state.has(target)) visit(target);
+    }
+    state.set(id, 2);
+  };
+  for (const node of graph.nodes) if (a.nodes.get(node.id) === node && !state.has(node.id)) visit(node.id);
+
+  // Unconnected outputs on the way from the input.
+  const reached = new Set<string>();
+  if (a.input) {
+    reached.add(a.input);
+    const queue = [a.input];
+    for (let id = queue.shift(); id !== undefined; id = queue.shift()) {
+      (a.targets.get(id) ?? []).forEach((target, index) => {
+        if (target === "") error(id as string, "", `${port(id as string, index)} is not connected.`);
+        else if (!reached.has(target)) {
+          reached.add(target);
+          queue.push(target);
+        }
+      });
+    }
+    for (const node of graph.nodes) {
+      if (a.nodes.get(node.id) !== node || reached.has(node.id)) continue;
+      warn(node.id, `${name(node.id)} is not connected to the input, so no file reaches it.`);
     }
   }
-  return issues;
+
+  // Crop nodes on a path that ends up copying the video.
+  if (!a.issues.some((issue) => issue.severity === "error")) {
+    const useless = new Set<string>();
+    const seen = new Set<string>();
+    const stack = [{ node: a.input, encodes: false, crop: "" }];
+    for (let current = stack.pop(); current; current = stack.pop()) {
+      const key = `${current.node}|${current.encodes}|${current.crop}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const type = a.nodes.get(current.node)?.type;
+      if (type === "video.encode") current.encodes = true;
+      else if (type === "video.copy") current.encodes = false;
+      else if (type === "video.crop") current.crop = current.node;
+      else if (type === "output.publish" && !current.encodes && current.crop) useless.add(current.crop);
+      for (const target of a.targets.get(current.node) ?? []) stack.push({ node: target, encodes: current.encodes, crop: current.crop });
+    }
+    for (const node of graph.nodes) {
+      if (useless.delete(node.id)) warn(node.id, `Cropping needs a re-encode, but a path through ${name(node.id)} copies the video, so nothing is cropped there.`);
+    }
+  }
+  return a;
 }
 
 export function checkGraph(graph: Graph): FlowCheck {
-  const issues: Issue[] = [];
+  const { issues } = analyze(graph);
   const nodes: FlowCheck["nodes"] = {};
-  const byId = new Map(graph.nodes.map((n) => [n.id, n]));
-  const error = (message: string, node_id?: string) => issues.push({ severity: "error", ...(node_id ? { node_id } : {}), message });
-
-  const inputs = graph.nodes.filter((n) => n.type === "input");
-  if (inputs.length === 0) error("The flow has no Input file node. Add one from the palette.");
-  for (const extra of inputs.slice(1)) error("A flow has exactly one Input file node. Remove this one.", extra.id);
-
-  for (const e of graph.edges) {
-    if (!byId.has(e.from) || !byId.has(e.to)) error("An edge points at a node that no longer exists.");
-  }
-
-  // Everything the input can reach; only those nodes must be fully wired.
-  const reachable = new Set<string>();
-  const queue = inputs.slice(0, 1).map((n) => n.id);
-  for (let id = queue.shift(); id !== undefined; id = queue.shift()) {
-    if (reachable.has(id)) continue;
-    reachable.add(id);
-    for (const e of graph.edges) if (e.from === id) queue.push(e.to);
-  }
-
   for (const node of graph.nodes) {
     const type = NODE_TYPE_BY_ID.get(node.type);
-    if (!type) {
-      error(`"${node.type}" is not a node type this daemon knows.`, node.id);
-      nodes[node.id] = { summary: "unknown node type", invalid: true };
-      continue;
-    }
-    if (!reachable.has(node.id)) {
-      issues.push({ severity: "warning", node_id: node.id, message: `"${title(node, type)}" is not connected to the input and never runs.` });
-    } else {
-      type.outputs.forEach((label, port) => {
-        if (graph.edges.some((e) => e.from === node.id && e.port === port)) return;
-        error(label ? `Output "${label}" of "${title(node, type)}" is not connected.` : `"${title(node, type)}" is not connected to a next step.`, node.id);
-      });
-    }
-    issues.push(...optionIssues(node, type));
-    if (type.id === "audio.keep" && reader(node, type).list("languages").length === 0 && !reader(node, type).bool("keep_original")) {
-      issues.push({ severity: "warning", node_id: node.id, field: "languages", message: "No language is listed, so the fallback decides every file." });
-    }
-    nodes[node.id] = { summary: summarize(node, type), invalid: false };
+    nodes[node.id] = { summary: type ? (SUMMARIES[type.id]?.(decodeOptions(type, node.options).options) ?? "") : "unknown node type", invalid: false };
   }
-
   for (const issue of issues) {
     const entry = issue.node_id ? nodes[issue.node_id] : undefined;
-    if (!entry || issue.severity !== "error") continue;
-    entry.invalid = true;
-    if (!issue.field) entry.summary = issue.message;
+    if (entry && issue.severity === "error") entry.invalid = true;
   }
-  return { valid: !issues.some((i) => i.severity === "error"), issues, nodes };
+  return { valid: !issues.some((issue) => issue.severity === "error"), issues, nodes };
 }
 
-function decide(node: GraphNode, type: NodeType, file: FileFacts): { result: boolean; why: string } {
-  const o = reader(node, type);
-  const compare = (value: number, op: string, limit: number) => (op === "gt" ? value > limit : value < limit);
-  switch (type.id) {
-    case "check.video_codec":
-      return { result: o.list("codecs").includes(file.video_codec), why: `video codec is ${file.video_codec}` };
-    case "check.resolution":
-      return { result: compare(file.height, o.str("op"), o.num("height")), why: `height is ${file.height} px` };
+/* ---------- evaluation (pkg/flow/evaluate.go) ---------- */
+
+function codecFamily(codec: string): string {
+  return { mpeg1video: "mpeg1", mpeg2video: "mpeg2", h265: "hevc", avc: "h264" }[codec] ?? codec;
+}
+
+function resolutionRank(width: number, height: number): number {
+  let rank = 0;
+  RESOLUTION_TIERS.forEach(([, w, h], index) => {
+    if (width >= w || height >= h) rank = index + 1;
+  });
+  return rank;
+}
+
+function unique(values: string[]): string[] {
+  return [...new Set(values)];
+}
+
+function decide(type: string, o: Options, file: FileFacts): { ok: boolean; reason: string } {
+  switch (type) {
+    case "check.video_codec": {
+      const family = codecFamily(file.video_codec);
+      return family ? { ok: o.list("codecs").includes(family), reason: `video codec is ${family}` } : { ok: false, reason: "video codec is unknown" };
+    }
+    case "check.resolution": {
+      const rank = resolutionRank(file.width, file.height);
+      const wanted = 1 + RESOLUTION_TIERS.findIndex(([name]) => name === o.text("resolution"));
+      const reason = `video is ${file.width}x${file.height}, ${rank > 0 ? RESOLUTION_TIERS[rank - 1]?.[0] : "below 480p"}`;
+      return { ok: o.text("op") === "at_most" ? rank <= wanted : rank >= wanted, reason };
+    }
     case "check.hdr":
-      return { result: file.hdr !== "" && o.list("formats").includes(file.hdr), why: file.hdr ? `hdr is ${file.hdr}` : "the video is sdr" };
-    case "check.bitrate":
-      return { result: compare(file.bitrate_kbps, o.str("op"), o.num("kbps")), why: `bitrate is ${file.bitrate_kbps} kb/s` };
-    case "check.file_size":
-      return { result: compare(file.size_bytes / 1e9, o.str("op"), o.num("gigabytes")), why: `size is ${(file.size_bytes / 1e9).toFixed(1)} GB` };
+      return file.hdr === "" ? { ok: false, reason: "video is sdr" } : { ok: o.list("kinds").includes(file.hdr), reason: `video is ${file.hdr}` };
+    case "check.bitrate": {
+      if (file.duration_seconds <= 0) return { ok: false, reason: "duration is unknown" };
+      const reason = `overall bitrate is ${file.bitrate_kbps} kb/s`;
+      return { ok: o.text("op") === "below" ? file.bitrate_kbps < o.number("kbps") : file.bitrate_kbps > o.number("kbps"), reason };
+    }
+    case "check.file_size": {
+      const limit = o.number("megabytes") * 2 ** 20;
+      const reason = `file is ${(file.size_bytes / 2 ** 20).toFixed(0)} MiB`;
+      return { ok: o.text("op") === "below" ? file.size_bytes < limit : file.size_bytes > limit, reason };
+    }
+    case "check.audio_language": {
+      if (file.audio.length === 0) return { ok: false, reason: "no audio tracks" };
+      // The mock knows no original language, so "orig" never matches.
+      const tokens = cleanList(o.list("languages"));
+      const wanted = tokens.filter((token) => token !== "orig");
+      const found = unique(file.audio.map((track) => track.language || "und"));
+      const reason = `${found.length === 1 ? "audio language is" : "audio languages are"} ${found.join(", ")}${tokens.includes("orig") ? "; original language is unknown" : ""}`;
+      return { ok: file.audio.some((track) => track.language !== "" && wanted.includes(track.language)), reason };
+    }
+    case "check.audio_codec": {
+      if (file.audio.length === 0) return { ok: false, reason: "no audio tracks" };
+      const wanted = cleanList(o.list("codecs"));
+      const found = unique(file.audio.map((track) => track.codec || "unknown"));
+      return { ok: file.audio.some((track) => wanted.includes(track.codec)), reason: `${found.length === 1 ? "audio codec is" : "audio codecs are"} ${found.join(", ")}` };
+    }
     default: {
-      const wanted = o.list("languages");
-      const found = file.audio.map((a) => a.language);
-      return { result: wanted.some((l) => found.includes(l)), why: `audio languages are ${found.join(", ") || "unknown"}` };
+      if (file.audio.length === 0) return { ok: false, reason: "no audio tracks" };
+      const most = Math.max(...file.audio.map((track) => track.channels ?? 0));
+      return { ok: most > Number(o.text("more_than")), reason: `largest audio track has ${most} channels` };
     }
   }
 }
 
-function planAndCommand(path: { node: GraphNode; type: NodeType }[], file: FileFacts): { plan: string[]; command: string[] } {
-  const plan: string[] = [];
-  const video: string[] = ["-map", "0:v:0"];
-  const audio: string[] = ["-map", "0:a", "-c:a", "copy"];
-  const subtitles: string[] = ["-map", "0:s?", "-c:s", "copy"];
-  const filters: string[] = [];
-  let encoded = false;
-
-  for (const { node, type } of path) {
-    const o = reader(node, type);
-    switch (type.id) {
-      case "video.copy":
-        plan.push("Video: copy the stream unchanged");
-        video.push("-c:v", "copy");
-        encoded = true;
-        break;
-      case "video.crop":
-        plan.push(o.str("mode") === "manual" ? `Video: crop with ${o.str("filter")}` : "Video: crop the black bars crop detection found");
-        filters.push(o.str("mode") === "manual" ? o.str("filter") : "crop={crop}");
-        break;
-      case "video.scale":
-        if (file.height > o.num("height")) {
-          plan.push(`Video: scale from ${file.height} px to ${o.num("height")} px`);
-          filters.push(`scale=-2:${o.num("height")}:flags=${o.str("algorithm")}`);
-        }
-        break;
-      case "video.encode": {
-        const mode = o.str("rate_control");
-        plan.push(`Video: encode ${file.video_codec} to ${o.str("codec")} with ${o.str("encoder")}, ${mode === "search" ? `target VMAF ${o.num("target_vmaf")}` : mode === "crf" ? `CRF ${o.num("crf")}` : `${o.num("bitrate")} kb/s`}`);
-        video.push("-c:v", o.str("encoder"), "-preset", String(o.num("preset")));
-        if (mode === "bitrate") video.push("-b:v", `${o.num("bitrate")}k`);
-        else video.push("-crf", mode === "search" ? "{crf}" : String(o.num("crf")));
-        video.push("-pix_fmt", o.str("pix_fmt"), ...o.list("extra_args").flatMap((a) => a.split(" ")));
-        encoded = true;
-        break;
-      }
-      case "audio.keep":
-        plan.push(`Audio: keep ${o.list("languages").join(", ") || "no language"}${o.bool("keep_original") ? " and the original language" : ""}`);
-        break;
-      case "audio.encode": {
-        const hit = file.audio.filter((a) => o.list("from_codecs").includes(a.codec));
-        if (hit.length === 0) break;
-        plan.push(`Audio: encode ${hit.map((a) => a.codec).join(", ")} to ${o.str("codec")} at ${o.num("bitrate_per_channel")} kb/s per channel`);
-        audio.splice(2, 2, "-c:a", o.str("codec"), "-b:a", `${o.num("bitrate_per_channel") * (hit[0]?.channels ?? 2)}k`);
-        break;
-      }
-      case "audio.downmix":
-        plan.push(`Audio: ${o.str("mode")} a stereo ${o.str("codec")} track at ${o.num("bitrate")} kb/s`);
-        audio.push("-ac", "2");
-        break;
-      case "subtitles.keep":
-        plan.push(`Subtitles: keep ${o.list("languages").join(", ") || "no language"}`);
-        break;
-      case "subtitles.drop_bitmap":
-        plan.push(`Subtitles: drop ${o.list("codecs").join(", ")}`);
-        break;
-      case "subtitles.remove_all":
-        plan.push("Subtitles: drop every track");
-        subtitles.length = 0;
-        subtitles.push("-sn");
-        break;
-      case "container.metadata":
-        plan.push("Container: remove the title and the listed tags");
-        break;
-      case "container.remux":
-        plan.push(`Container: remux to ${o.str("container")}`);
-        break;
-      case "output.publish":
-        plan.push(o.bool("only_if_smaller") ? "Output: publish only if the encode is smaller than the source" : "Output: publish the result");
-        break;
-    }
-  }
-  if (!encoded) video.push("-c:v", "copy");
-  if (filters.length > 0) video.push("-vf", filters.join(","));
-  return { plan, command: ["-i", "{input}", ...video, ...audio, ...subtitles, "{output}"] };
+/** The parts of the profile a walk sets; the last node on the path wins each. */
+interface Plan {
+  video?: Options;
+  crop: boolean;
+  audioKeep?: Options;
+  audioEncode?: Options;
+  audioDownmix?: Options;
+  subtitlesKeep?: Options;
+  dropBitmap: boolean;
+  removeAll: boolean;
+  metadata?: Options;
 }
 
+const audioTarget = (o: Options) => (o.text("codec") === "flac" ? "flac" : audioBitrate(o) === 0 ? `${o.text("codec")} at the encoder's default bitrate` : `${o.text("codec")} at ${audioBitrate(o)} kb/s per channel`);
+
+function planLines(plan: Plan): string[] {
+  let video = "Video: copy";
+  if (plan.video) {
+    const o = plan.video;
+    const parts = [`encode to ${o.text("codec")} with ${encoderOf(o)}`];
+    if (o.text("preset").trim() !== "") parts.push(`preset ${o.text("preset").trim()}`);
+    parts.push(`${o.text("bit_depth")}-bit`);
+    const fixed = o.text("quality_mode") === "fixed";
+    parts.push(fixed ? `CRF ${o.number("crf")}` : `${o.text("metric").toUpperCase()} ${formatNumber(o.number("target"))} target (CRF ${o.number("crf_min")}–${o.number("crf_max")})`);
+    video = `Video: ${parts.join(", ")}`;
+    if (!fixed && o.text("on_no_fit") === "encode") video += "; encode anyway when no CRF fits";
+    if (plan.crop) video += "; crop black bars";
+  } else if (plan.crop) video = "Video: copy; black bars are not cropped, because cropping needs a re-encode";
+
+  const audio = [`keep ${listOr(cleanList(plan.audioKeep?.list("languages") ?? []), "every track")}`];
+  if (!plan.audioEncode && !plan.audioDownmix) audio.push("copy");
+  if (plan.audioEncode) audio.push(`encode ${listOr(cleanList(plan.audioEncode.list("source_codecs")), "every track")} to ${audioTarget(plan.audioEncode)}`);
+  if (plan.audioDownmix) audio.push(`downmix above ${layoutName(plan.audioDownmix.text("max_channels"))} to ${audioTarget(plan.audioDownmix)}`);
+
+  let subtitles = "Subtitles: remove all";
+  if (!plan.removeAll) {
+    const keep = plan.subtitlesKeep;
+    const languages = cleanList(keep?.list("languages") ?? []);
+    subtitles = `Subtitles: keep ${listOr(languages, "every track")}`;
+    const kinds = keep && languages.length > 0 ? [keep.on("keep_forced") && "forced", keep.on("keep_sdh") && "SDH", keep.on("keep_commentary") && "commentary"].filter(Boolean) : [];
+    if (kinds.length > 0) subtitles += `, including ${kinds.join(", ")}`;
+    if (plan.dropBitmap) subtitles += "; drop image-based";
+  }
+
+  const container = ["mkv"];
+  const meta = plan.metadata;
+  if (meta?.text("metadata") === "strip") container.push("strip metadata");
+  if (meta?.text("track_titles") === "strip") container.push("strip track titles");
+  if (meta?.text("track_titles") === "standardize") container.push("standardize track titles");
+  if (meta?.text("attachments") === "strip") container.push("strip attachments");
+  if (meta?.text("chapters") === "strip") container.push("strip chapters");
+  if (container.length === 1) container.push("keep metadata, track titles, attachments, and chapters");
+
+  return [video, `Audio: ${audio.join("; ")}`, subtitles, `Container: ${container.join("; ")}`];
+}
+
+const BITMAP_SUBTITLES = ["hdmv_pgs_subtitle", "dvd_subtitle", "dvb_subtitle"];
+
+function keeps(o: Options | undefined, language: string): boolean {
+  const wanted = cleanList(o?.list("languages") ?? []);
+  return wanted.length === 0 || wanted.includes(language);
+}
+
+/** An argument list shaped like the daemon's: per-stream maps, then codecs, then metadata. */
+function command(plan: Plan, file: FileFacts): string[] {
+  const args = ["-i", "{input}", "-map", "0:v:0"];
+  let audio = file.audio.map((track, index) => ({ track, index })).filter(({ track }) => keeps(plan.audioKeep, track.language));
+  if (audio.length === 0) audio = file.audio.map((track, index) => ({ track, index })).slice(0, plan.audioKeep?.text("fallback") === "keep_first" ? 1 : undefined);
+  for (const { index } of audio) args.push("-map", `0:a:${index}`);
+  let subtitles = plan.removeAll ? [] : file.subtitles.map((track, index) => ({ track, index })).filter(({ track }) => !(plan.dropBitmap && BITMAP_SUBTITLES.includes(track.codec)));
+  const kept = subtitles.filter(({ track }) => keeps(plan.subtitlesKeep, track.language));
+  if (kept.length > 0 || plan.subtitlesKeep?.text("fallback") !== "keep_all") subtitles = kept;
+  for (const { index } of subtitles) args.push("-map", `0:s:${index}`);
+
+  if (plan.video) {
+    const o = plan.video;
+    const software = o.text("accelerator") === "software";
+    if (plan.crop) args.push("-vf", "{crop}");
+    args.push("-c:v", encoderOf(o), "-preset", o.text("preset").trim() || "medium", software ? "-crf" : "-global_quality", o.text("quality_mode") === "fixed" ? String(o.number("crf")) : "{crf}");
+    args.push("-pix_fmt", o.text("bit_depth") === "8" ? "yuv420p" : "yuv420p10le", ...o.list("ffmpeg_args"));
+  } else args.push("-c:v", "copy");
+
+  audio.forEach(({ track }, out) => {
+    const channels = track.channels ?? 2;
+    const downmix = plan.audioDownmix && channels > Number(plan.audioDownmix.text("max_channels")) ? plan.audioDownmix : undefined;
+    const encode = plan.audioEncode && (plan.audioEncode.list("source_codecs").length === 0 || cleanList(plan.audioEncode.list("source_codecs")).includes(track.codec)) ? plan.audioEncode : undefined;
+    const target = downmix ?? (encode && encode.text("codec") !== track.codec ? encode : undefined);
+    if (!target) return void args.push(`-c:a:${out}`, "copy");
+    const outChannels = downmix ? Number(downmix.text("max_channels")) : channels;
+    args.push(`-c:a:${out}`, target.text("codec") === "opus" ? "libopus" : target.text("codec"));
+    if (audioBitrate(target) > 0) args.push(`-b:a:${out}`, `${audioBitrate(target) * outChannels}k`);
+    if (downmix) args.push(`-ac:a:${out}`, String(outChannels));
+  });
+  if (subtitles.length > 0) args.push("-c:s", "copy");
+
+  const meta = plan.metadata;
+  if (meta?.text("metadata") === "strip") args.push("-map_metadata", "-1");
+  if (meta?.text("chapters") === "strip") args.push("-map_chapters", "-1");
+  if (meta?.text("attachments") !== "strip") args.push("-map", "0:t?");
+  args.push("-f", "matroska", "{output}");
+  return args;
+}
+
+/** Walks a graph for one file. The graph must have no error issues. */
 export function testGraph(graph: Graph, file: FileFacts): FlowTest {
+  const a = analyze(graph);
   const check = checkGraph(graph);
-  const byId = new Map(graph.nodes.map((n) => [n.id, n]));
-  const walked: { node: GraphNode; type: NodeType }[] = [];
+  const path: string[] = [];
   const decisions: string[] = [];
+  const plan: Plan = { crop: false, dropBitmap: false, removeAll: false };
   let outcome: Outcome = "skip";
 
-  let current = graph.nodes.find((n) => n.type === "input");
-  while (current && walked.length <= graph.nodes.length) {
-    const type = NODE_TYPE_BY_ID.get(current.type);
-    if (!type) break;
-    walked.push({ node: current, type });
+  // A valid graph always arrives at an output node; the guard only protects the mock from a bad fixture.
+  for (let id = a.input, steps = 0; id && steps <= graph.nodes.length; steps++) {
+    const node = a.nodes.get(id);
+    const type = node && NODE_TYPE_BY_ID.get(node.type);
+    const o = a.options.get(id);
+    if (!node || !type || !o) break;
+    path.push(id);
     let port = 0;
     if (type.kind === "condition") {
-      const { result, why } = decide(current, type, file);
-      decisions.push(`${title(current, type)} -> ${result} (${why})`);
-      port = result ? 0 : 1;
+      const { ok, reason } = decide(type.id, o, file);
+      if (!ok) port = 1;
+      decisions.push(`${node.label || type.label} → ${ok} (${reason})`);
     }
-    if (type.id === "output.publish") outcome = "process";
-    const from = current.id;
-    const next = graph.edges.find((e) => e.from === from && e.port === port);
-    current = next ? byId.get(next.to) : undefined;
+    if (type.id === "video.encode") plan.video = o;
+    else if (type.id === "video.copy") plan.video = undefined;
+    else if (type.id === "video.crop") plan.crop = true;
+    else if (type.id === "audio.keep") plan.audioKeep = o;
+    else if (type.id === "audio.encode") plan.audioEncode = o;
+    else if (type.id === "audio.downmix") plan.audioDownmix = o;
+    else if (type.id === "subtitles.keep") plan.subtitlesKeep = o;
+    else if (type.id === "subtitles.drop_bitmap") plan.dropBitmap = true;
+    else if (type.id === "subtitles.remove_all") plan.removeAll = true;
+    else if (type.id === "container.metadata") plan.metadata = o;
+    if (type.kind === "output") {
+      outcome = type.id === "output.publish" ? "process" : "skip";
+      break;
+    }
+    id = a.targets.get(id)?.[port] ?? "";
   }
 
-  const { plan, command } = planAndCommand(walked, file);
-  return {
-    check,
-    outcome,
-    path: walked.map((w) => w.node.id),
-    decisions,
-    file,
-    plan: outcome === "skip" ? ["The file is left untouched."] : plan,
-    command: outcome === "skip" ? [] : command,
-  };
+  const skip = outcome === "skip";
+  return { check, outcome, path, decisions, file, plan: skip ? ["File: skip, leave it untouched"] : planLines(plan), command: skip ? [] : command(plan, file) };
 }

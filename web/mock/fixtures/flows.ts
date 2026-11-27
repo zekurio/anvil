@@ -23,64 +23,68 @@ const node = (id: string, type: string, x: number, y: number, label = "", option
 
 const edge = (from: string, to: string, port = 0): GraphEdge => ({ from, port, to });
 
+// Laid out the way pkg/flow/generate.go lays out a generated flow: 112 px
+// rows, a condition's true branch 224 px to its left and its false branch
+// 224 px to its right, branches rejoining in the column of the condition
+// that split them.
 const av1Archive: Graph = {
   nodes: [
-    node("in", "input", 288, 32),
-    node("is_av1", "check.video_codec", 288, 144, "Video is AV1?", { codecs: ["av1"] }),
-    node("skip", "output.skip", 32, 256, "Skip, already AV1", { reason: "Already AV1" }),
-    node("is_dv", "check.hdr", 544, 256, "Dolby Vision profile 5?", { formats: ["dolby_vision"], dv_profiles: ["5"] }),
-    node("copy", "video.copy", 288, 368, "Copy video"),
-    node("crop", "video.crop", 800, 368),
-    node("encode", "video.encode", 800, 480, "Encode to AV1", { target_vmaf: 95, preset: 6 }),
-    node("audio", "audio.keep", 544, 592, "", { languages: ["eng", "jpn"] }),
-    node("lossless", "audio.encode", 544, 704, "Shrink lossless audio"),
-    node("subs", "subtitles.keep", 544, 816, "", { languages: ["eng"] }),
-    node("out", "output.publish", 544, 928),
+    node("input", "input", 288, 32),
+    node("is-av1", "check.video_codec", 288, 144, "Video is av1?", { codecs: ["av1"] }),
+    node("skip", "output.skip", 64, 256, "Skip, already AV1"),
+    node("is-dv", "check.hdr", 512, 256, "Dolby Vision?", { kinds: ["dolby_vision"] }),
+    node("copy", "video.copy", 288, 368),
+    node("crop", "video.crop", 736, 368),
+    node("video", "video.encode", 736, 480, "Encode to AV1", { codec: "av1", accelerator: "software", preset: "6", quality_mode: "search", metric: "vmaf", target: 95 }),
+    node("audio", "audio.keep", 512, 592, "", { languages: ["eng", "jpn", "orig"], fallback: "keep_all", keep_commentary: false }),
+    node("audio-encode", "audio.encode", 512, 704, "Shrink lossless audio", { codec: "eac3", bitrate_kbps_per_channel: 96, source_codecs: ["truehd", "dts", "flac"] }),
+    node("subtitles", "subtitles.keep", 512, 816, "", { languages: ["eng"], fallback: "keep_all", keep_forced: true }),
+    node("metadata", "container.metadata", 512, 928),
+    node("publish", "output.publish", 512, 1040),
   ],
   edges: [
-    edge("in", "is_av1"),
-    edge("is_av1", "skip", 0),
-    edge("is_av1", "is_dv", 1),
-    edge("is_dv", "copy", 0),
-    edge("is_dv", "crop", 1),
-    edge("crop", "encode"),
+    edge("input", "is-av1"),
+    edge("is-av1", "skip", 0),
+    edge("is-av1", "is-dv", 1),
+    edge("is-dv", "copy", 0),
+    edge("is-dv", "crop", 1),
+    edge("crop", "video"),
     edge("copy", "audio"),
-    edge("encode", "audio"),
-    edge("audio", "lossless"),
-    edge("lossless", "subs"),
-    edge("subs", "out"),
+    edge("video", "audio"),
+    edge("audio", "audio-encode"),
+    edge("audio-encode", "subtitles"),
+    edge("subtitles", "metadata"),
+    edge("metadata", "publish"),
   ],
 };
 
 const remuxOnly: Graph = {
   nodes: [
-    node("in", "input", 288, 32),
-    node("meta", "container.metadata", 288, 144),
-    node("remux", "container.remux", 288, 256, "Remux to mkv"),
-    node("out", "output.publish", 288, 368, "", { only_if_smaller: false }),
+    node("input", "input", 288, 32),
+    node("metadata", "container.metadata", 288, 144, "", { metadata: "strip", track_titles: "standardize" }),
+    node("publish", "output.publish", 288, 256),
   ],
-  edges: [edge("in", "meta"), edge("meta", "remux"), edge("remux", "out")],
+  edges: [edge("input", "metadata"), edge("metadata", "publish")],
 };
 
-// Carries a warning on purpose: "bitmap" is not connected to the input.
+// Carries a warning on purpose: "images" is not connected to the input.
 const travel: Graph = {
   nodes: [
-    node("in", "input", 288, 32),
-    node("is_large", "check.resolution", 288, 144, "Taller than 1080p?", { op: "gt", height: 1080 }),
-    node("scale", "video.scale", 32, 256, "Scale to 1080p"),
-    node("encode", "video.encode", 288, 368, "Encode to AV1", { rate_control: "crf", crf: 32, preset: 8 }),
-    node("stereo", "audio.downmix", 288, 480, "", { mode: "replace", codec: "opus", bitrate: 128 }),
-    node("out", "output.publish", 288, 592),
-    node("bitmap", "subtitles.drop_bitmap", 608, 256),
+    node("input", "input", 288, 32),
+    node("is-surround", "check.audio_channels", 288, 144, "More than stereo?", { more_than: "2" }),
+    node("downmix", "audio.downmix", 64, 256, "Downmix to stereo", { max_channels: "2", codec: "opus", bitrate_kbps_per_channel: 64 }),
+    node("video", "video.encode", 288, 368, "Encode small", { codec: "hevc", preset: "medium", bit_depth: "8", quality_mode: "fixed", crf: 30 }),
+    node("publish", "output.publish", 288, 480),
+    node("images", "subtitles.drop_bitmap", 608, 256),
   ],
-  edges: [edge("in", "is_large"), edge("is_large", "scale", 0), edge("is_large", "encode", 1), edge("scale", "encode"), edge("encode", "stereo"), edge("stereo", "out")],
+  edges: [edge("input", "is-surround"), edge("is-surround", "downmix", 0), edge("is-surround", "video", 1), edge("downmix", "video"), edge("video", "publish")],
 };
 
 export function initialFlows(now: number): StoredFlow[] {
   const at = (daysAgo: number) => new Date(now - daysAgo * 86_400_000).toISOString();
   return [
     { id: 1, name: "AV1 archive", description: "Encodes everything that is not AV1 yet and keeps English and Japanese audio.", revision: 7, graph: av1Archive, created_at: at(41), updated_at: at(3) },
-    { id: 2, name: "Remux only", description: "Cleans metadata and remuxes to mkv without touching the streams.", revision: 2, graph: remuxOnly, created_at: at(30), updated_at: at(22) },
-    { id: 3, name: "1080p for travel", description: "Small stereo copies for a tablet.", revision: 4, graph: travel, created_at: at(12), updated_at: at(1) },
+    { id: 2, name: "Remux only", description: "Strips metadata and standardizes track titles without touching the streams.", revision: 2, graph: remuxOnly, created_at: at(30), updated_at: at(22) },
+    { id: 3, name: "Small files for travel", description: "Small stereo copies for a tablet.", revision: 4, graph: travel, created_at: at(12), updated_at: at(1) },
   ];
 }

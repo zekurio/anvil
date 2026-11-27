@@ -76,6 +76,10 @@ export function flowRoutes(router: Router): void {
     if (typeof request.path !== "string" || !request.path.startsWith("/")) throw invalid("Must be the absolute path of a media file.", "path");
     const file = db.files.find((f) => absolutePath(f) === request.path);
     if (!file) throw invalid("Must be a media file inside a configured library.", "path");
+    const check = checkGraph(graph);
+    if (!check.valid) throw new HttpError(422, "invalid_flow", "The flow has problems, so it cannot be tested yet.", undefined, check.issues);
+    // The files whose jobs failed on corrupt data cannot be probed here either.
+    if (file.last_error?.includes("Invalid data found")) throw invalid("ffprobe could not read the file: Invalid data found when processing input.", "path");
     return testGraph(graph, factsOf(file));
   });
 
@@ -99,6 +103,16 @@ export function flowRoutes(router: Router): void {
     if (users.length > 0) throw conflict(`"${flow.name}" is still assigned to ${users.join(", ")}. Assign another flow first.`);
     db.flows.splice(db.flows.indexOf(flow), 1);
     return noContent();
+  });
+
+  // Mock only: bumps the revision as if someone else had saved the flow, so
+  // the next save from an open editor answers 409. From a shell:
+  //   curl -X POST localhost:5173/api/v1/flows/1/_touch
+  router.on("POST", "/flows/:id/_touch", (ctx) => {
+    const flow = find(ctx);
+    flow.revision += 1;
+    flow.updated_at = new Date().toISOString();
+    return view(flow);
   });
 
   router.on("POST", "/flows/:id/duplicate", (ctx) => {
