@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/zekurio/anvil/pkg/domain"
 	"github.com/zekurio/anvil/pkg/language"
@@ -30,6 +31,9 @@ func (e Encoder) Encode(ctx context.Context, plan domain.EncodePlan) (process.Re
 		return process.Result{}, errors.New("encode output path is required")
 	}
 	if err := ValidateEncoderArgs(plan.FFmpegArgs); err != nil {
+		return process.Result{}, err
+	}
+	if err := validateAudioTracks(plan); err != nil {
 		return process.Result{}, err
 	}
 	runner := e.Runner
@@ -88,6 +92,7 @@ func BuildPlanFromRequest(request BuildPlanRequest) (domain.EncodePlan, error) {
 		Preset:               video.Preset,
 		BitDepth:             videocodec.NormalizeBitDepth(video.BitDepth),
 		PixelFormat:          videocodec.SoftwarePixelFormat(video.BitDepth),
+		QualityMode:          video.QualityMode,
 		CRF:                  crf,
 		CRFMin:               video.CRFMin,
 		CRFMax:               video.CRFMax,
@@ -117,7 +122,15 @@ func BuildPlanFromRequest(request BuildPlanRequest) (domain.EncodePlan, error) {
 		plan.VideoSelectionApplied = true
 		plan.VideoStreamIndex = inputVideo.Index
 	}
+	// A crop found before the profile turned detection off must not survive
+	// in the job metadata and reach the encoder.
+	if request.Profile.Crop.Disabled {
+		plan.CropFilter = ""
+	}
 	applyAudioSelection(&plan, request.Audio)
+	if err := validateAudioTracks(plan); err != nil {
+		return domain.EncodePlan{}, err
+	}
 	applySubtitleSelection(&plan, request.Subtitles)
 	plan.TrackTitles = standardizedTrackTitles(plan, request.Probe)
 	return plan, nil
@@ -157,19 +170,23 @@ func videoCopyState(video domain.VideoProfile, source domain.MediaStream, search
 }
 
 func selectedCRF(video domain.VideoProfile, videoCopy bool, search *domain.SearchResult) int {
-	if videoCopy {
+	switch {
+	case videoCopy:
 		return 0
-	}
-	if search != nil {
+	case video.QualityMode == domain.VideoQualityFixed:
+		return video.CRF
+	case search != nil:
 		return search.CRF
+	default:
+		return video.CRFMin
 	}
-	return video.CRFMin
 }
 
 func applyAudioSelection(plan *domain.EncodePlan, audio *domain.AudioSelection) {
 	if audio != nil {
 		plan.AudioSelectionApplied = true
 		plan.AudioStreamIndexes = append([]int(nil), audio.StreamIndexes...)
+		plan.AudioTracks = append([]domain.AudioTrackPlan(nil), audio.Tracks...)
 	}
 }
 
@@ -192,7 +209,7 @@ func Args(plan domain.EncodePlan) []string {
 	args = append(args, "-i", plan.InputPath)
 	args = append(args, mapArgs(plan)...)
 	args = append(args, videoOutputArgs(plan, videoFilter(plan))...)
-	args = append(args, audioArgs()...)
+	args = append(args, audioArgs(plan)...)
 	args = append(args, subtitleArgs()...)
 	if plan.MetadataMode == domain.MetadataModeStrip {
 		args = append(args, "-map_metadata", "-1")
@@ -207,14 +224,21 @@ func Args(plan domain.EncodePlan) []string {
 	if plan.ChapterMode == domain.MetadataModeStrip {
 		args = append(args, "-map_chapters", "-1")
 	}
-	// A re-encode invalidates the source video's Matroska statistics tags
+	// A re-encode invalidates the source stream's Matroska statistics tags
 	// (BPS, NUMBER_OF_FRAMES, NUMBER_OF_BYTES), which ffmpeg otherwise copies
 	// verbatim. Clear them so players never show the source's numbers for the
-	// new video; copied streams keep their still-accurate statistics, and
-	// ffmpeg writes a fresh DURATION itself.
+	// new video or a re-encoded audio track; copied streams keep their
+	// still-accurate statistics, and ffmpeg writes a fresh DURATION itself.
+	var reencoded []string
 	if !plan.VideoCopy {
+		reencoded = append(reencoded, "v")
+	}
+	for _, track := range encodedAudioTracks(plan) {
+		reencoded = append(reencoded, "a:"+strconv.Itoa(track.output))
+	}
+	for _, stream := range reencoded {
 		for _, key := range []string{"BPS", "NUMBER_OF_FRAMES", "NUMBER_OF_BYTES", "_STATISTICS_WRITING_APP", "_STATISTICS_WRITING_DATE_UTC", "_STATISTICS_TAGS"} {
-			args = append(args, "-metadata:s:v", key+"=")
+			args = append(args, "-metadata:s:"+stream, key+"=")
 		}
 	}
 	// The artifact is written under a temporary .anvil-part name, so ffmpeg
@@ -259,10 +283,22 @@ func (b Block) Run(ctx context.Context, job *pipeline.JobContext) error {
 			"color_transfer", video.ColorTransfer,
 		)
 	}
+	if encoded := encodedAudioTracks(plan); len(encoded) > 0 {
+		summaries := make([]string, 0, len(encoded))
+		for _, track := range encoded {
+			summaries = append(summaries, track.Summary())
+		}
+		slog.Info("re-encoding audio tracks", "input", plan.InputPath, "tracks", summaries)
+	}
 	job.EncodePlan = &plan
 	// The quality search can outlast a media manager's handoff folder cleanup.
 	if err := replace.PrepareDestination(job); err != nil {
 		return fmt.Errorf("prepare encode destination: %w", err)
+	}
+	// The encode covers the whole input, so its output timestamp against the
+	// probed duration is an honest percentage for whoever reports progress.
+	if job.Probe != nil {
+		ctx = process.WithMediaDuration(ctx, time.Duration(job.Probe.DurationSeconds*float64(time.Second)))
 	}
 	_, err = b.Encoder.Encode(ctx, plan)
 	if err != nil {
@@ -469,10 +505,6 @@ func qualityArgs(plan domain.EncodePlan) []string {
 	}
 }
 
-func audioArgs() []string {
-	return []string{"-c:a", "copy"}
-}
-
 func subtitleArgs() []string {
 	return []string{"-c:s", "copy"}
 }
@@ -521,7 +553,7 @@ func standardizedTrackTitles(plan domain.EncodePlan, probe *domain.ProbeResult) 
 		titles = appendTrackTitle(titles, "v", 0, videoTrackTitle(plan, video))
 	}
 	for outputIndex, stream := range selectedAudioStreams(plan, probe.Streams) {
-		titles = appendTrackTitle(titles, "a", outputIndex, audioTrackTitle(stream))
+		titles = appendTrackTitle(titles, "a", outputIndex, audioTrackTitle(outputAudioStream(plan, stream)))
 	}
 	for outputIndex, stream := range selectedSubtitleStreams(plan, probe.Streams) {
 		titles = appendTrackTitle(titles, "s", outputIndex, subtitleTrackTitle(stream))
