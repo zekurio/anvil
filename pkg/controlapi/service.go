@@ -379,14 +379,7 @@ func (s Service) cleanupOrphanedPart(ctx context.Context, jobID domain.JobID) {
 	if destErr != nil {
 		log("resolve some staged destinations", destErr)
 	}
-	for _, destination := range destinations {
-		if err := replacepkg.CleanupPartFiles(destination.Library, destination.Path, replacepkg.PartJobLabel(jobID)); err != nil {
-			log("remove part files", err)
-		}
-		if err := replacepkg.CleanupLegacyPartFiles(ctx, s.Store, destination.Path); err != nil {
-			log("remove legacy part files", err)
-		}
-	}
+	s.removeStagedParts(ctx, jobID, destinations)
 }
 
 // stagedDestination is a publish destination together with the library

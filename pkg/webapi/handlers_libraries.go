@@ -243,8 +243,16 @@ func (s *Server) deleteLibrary(_ http.ResponseWriter, r *http.Request) (int, any
 	if _, err := s.storedLibrary(r.Context(), name); err != nil {
 		return fail(err)
 	}
-	// Jobs that only wait go with the library. The store refuses while a
-	// worker holds one of its jobs or a publish has not finished, and says
+	// Where the library's jobs left part files is read now, while the rows
+	// that say so still exist, and acted on only after the delete went
+	// through.
+	parts, err := s.Jobs.LibraryParts(r.Context(), name)
+	if err != nil {
+		return fail(err)
+	}
+	// Jobs that only wait go with the library, and so does a job whose
+	// publish stopped in conflict. The store refuses while a worker holds one
+	// of its jobs or an interrupted publish still has to be resumed, and says
 	// which.
 	deleted, err := s.Store.DeleteLibrary(r.Context(), name)
 	var busy *store.LibraryBusyError
@@ -257,9 +265,13 @@ func (s *Server) deleteLibrary(_ http.ResponseWriter, r *http.Request) (int, any
 	if err := s.refresh(r.Context()); err != nil {
 		return fail(err)
 	}
-	// The deleted jobs' scratch goes last and cannot fail the request: the
-	// library is gone either way, and what is left is only disk space the
-	// staging cleanup also knows how to reclaim.
+	// What the deleted jobs left on disk goes last and cannot fail the
+	// request: the library is gone either way. It also has to happen whether
+	// or not the client is still there, because once the rows are deleted
+	// nothing else knows which part files were theirs.
+	s.Jobs.RemoveParts(context.WithoutCancel(r.Context()), parts)
+	// Scratch under the temp dir is only disk space the staging cleanup also
+	// knows how to reclaim.
 	scratch := make([]staging.Job, 0, len(deleted))
 	for _, job := range deleted {
 		scratch = append(scratch, staging.Job{ID: int64(job.ID), Slug: job.Slug})
@@ -283,7 +295,9 @@ func libraryBusy(busy *store.LibraryBusyError) string {
 		reasons = append(reasons, count(busy.Running, "job is running. Cancel it or wait until it has finished.", "jobs are running. Cancel them or wait until they have finished."))
 	}
 	if busy.Publishing > 0 {
-		reasons = append(reasons, count(busy.Publishing, "job has not finished publishing its result. Retry it so the publish completes.", "jobs have not finished publishing their results. Retry them so the publishes complete."))
+		reasons = append(reasons, count(busy.Publishing,
+			"job was interrupted while publishing its result. The publish finishes the next time the job runs: retry the job if it failed, and resume the library if it is paused.",
+			"jobs were interrupted while publishing their results. Each publish finishes the next time its job runs: retry the jobs that failed, and resume the library if it is paused."))
 	}
 	return fmt.Sprintf("The library %q cannot be deleted yet: %s Jobs that only wait in the queue are deleted with the library.", busy.Library, strings.Join(reasons, " Also, "))
 }

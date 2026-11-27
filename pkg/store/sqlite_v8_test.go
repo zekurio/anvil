@@ -876,7 +876,7 @@ func TestDeleteLibraryRefusesLiveWorkAndRemovesEverythingElse(t *testing.T) {
 	}
 
 	// The attempt fails and the job waits to retry: nothing holds it any
-	// more. With an unfinished publish it still keeps its library, because
+	// more. With an interrupted publish it still keeps its library, because
 	// the journal names files on disk only the job's own recovery can
 	// resolve.
 	if _, err := state.FinishAttempt(ctx, attempt.ID, domain.AttemptStateFailed, "publish interrupted", now); err != nil {
@@ -887,14 +887,24 @@ func TestDeleteLibraryRefusesLiveWorkAndRemovesEverythingElse(t *testing.T) {
 	}
 	if _, err := state.db.ExecContext(ctx, `
 INSERT INTO publish_operations (job_id, stage, operation_json, created_at, updated_at) VALUES (?, ?, '{}', ?, ?)
-`, int64(leased.ID), string(replacepkg.PublishStagePublished), encodeTime(now), encodeTime(now)); err != nil {
+`, int64(leased.ID), string(replacepkg.PublishStagePrepared), encodeTime(now), encodeTime(now)); err != nil {
 		t.Fatal(err)
 	}
-	_, err = state.DeleteLibrary(ctx, "movies")
-	wantBusy(err, 0, 1, "unfinished publish")
-	if _, err := state.db.ExecContext(ctx, `UPDATE publish_operations SET stage = 'committed' WHERE job_id = ?`, int64(leased.ID)); err != nil {
-		t.Fatal(err)
+	setStage := func(stage replacepkg.PublishStage) {
+		t.Helper()
+		if _, err := state.db.ExecContext(ctx, `UPDATE publish_operations SET stage = ? WHERE job_id = ?`, string(stage), int64(leased.ID)); err != nil {
+			t.Fatal(err)
+		}
 	}
+	for _, stage := range []replacepkg.PublishStage{replacepkg.PublishStagePrepared, replacepkg.PublishStagePublished, replacepkg.PublishStageSourceCleaned} {
+		setStage(stage)
+		_, err = state.DeleteLibrary(ctx, "movies")
+		// The refusal says what resolves it, and that is not a plain retry.
+		wantBusy(err, 0, 1, "an interrupted publish finishes the next time its job runs")
+	}
+	// A conflict is no interrupted publish: no attempt can move it, so it
+	// must not keep the library, or the library could never be deleted.
+	setStage(replacepkg.PublishStageConflict)
 
 	// Two pending jobs and one waiting to retry: the library goes, and takes
 	// them and their history with it.

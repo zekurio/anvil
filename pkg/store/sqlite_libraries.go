@@ -173,19 +173,22 @@ type LibraryBusyError struct {
 	// Running counts jobs a worker holds: leased, running, validating, or
 	// replacing.
 	Running int64
-	// Publishing counts jobs whose publish journal has not reached committed,
-	// whatever their state.
+	// Publishing counts jobs whose publish was interrupted part-way and has
+	// not been resumed yet, whatever their state: the journal is at prepared,
+	// published, or source_cleaned. A publish that stopped in conflict is not
+	// counted; see DeleteLibrary.
 	Publishing int64
 }
 
 func (e *LibraryBusyError) Error() string {
+	const resume = "an interrupted publish finishes the next time its job runs (retry a failed job, resume a paused library)"
 	switch {
 	case e.Running > 0 && e.Publishing > 0:
-		return fmt.Sprintf("%v: library %q has %d running job(s) and %d job(s) with an unfinished publish", ErrActiveWork, e.Library, e.Running, e.Publishing)
+		return fmt.Sprintf("%v: library %q has %d running job(s) and %d job(s) with an interrupted publish; cancel the running ones or let them finish, and %s", ErrActiveWork, e.Library, e.Running, e.Publishing, resume)
 	case e.Running > 0:
 		return fmt.Sprintf("%v: library %q has %d running job(s); cancel them or let them finish, then delete it", ErrActiveWork, e.Library, e.Running)
 	default:
-		return fmt.Sprintf("%v: library %q has %d job(s) with an unfinished publish; retry them so the publish completes, then delete it", ErrActiveWork, e.Library, e.Publishing)
+		return fmt.Sprintf("%v: library %q has %d job(s) with an interrupted publish; %s, then delete it", ErrActiveWork, e.Library, e.Publishing, resume)
 	}
 }
 
@@ -205,11 +208,19 @@ func (e *LibraryBusyError) Unwrap() error {
 //     or replacing). Its attempt writes a part file and may be about to
 //     replace a media file; deleting the row under it would leave that work
 //     without a record.
-//   - a job is one maintenance must not disturb because its publish journal
-//     has not reached committed (see ProtectedJobs). The journal names a
-//     destination file and possibly a backup on disk, and deleting the row
-//     would strand them. This holds whatever the job's state, so a job
-//     waiting to retry an interrupted publish keeps its library.
+//   - the publish of a job was interrupted part-way: its journal is at
+//     prepared, published, or source_cleaned. The journal names a destination
+//     file and possibly a backup on disk that only the job's next attempt can
+//     finish with, and deleting the row would strand them. This holds whatever
+//     the job's state, so a job waiting to retry an interrupted publish keeps
+//     its library.
+//
+// A publish that stopped in conflict does not refuse the delete. No attempt
+// can move a conflict, so it would keep its library forever; it waits for the
+// operator, like it does for a cancel (see cancelSkipReasonTx), and deleting
+// the library is the operator letting go of it. What the conflict left on
+// disk stays there: the caller reads the journal before the delete to say
+// which files those are.
 //
 // Checking and deleting share the transaction, and the store has a single
 // connection, so no job can be leased between the two.
@@ -235,8 +246,8 @@ SELECT count(*) FROM jobs j WHERE j.library_name = ? AND j.state IN (`+placehold
 		return nil, fmt.Errorf("count running jobs of library %q: %w", name, err)
 	}
 	if err := tx.QueryRowContext(ctx, `
-SELECT count(*) FROM jobs j WHERE j.library_name = ? AND `+unresolvedPublishCondition,
-		name, committedPublishStage()).Scan(&busy.Publishing); err != nil {
+SELECT count(*) FROM jobs j WHERE j.library_name = ? AND `+publishInFlightCondition,
+		append([]any{name}, settledPublishStages()...)...).Scan(&busy.Publishing); err != nil {
 		return nil, fmt.Errorf("count journaled jobs of library %q: %w", name, err)
 	}
 	if busy.Running > 0 || busy.Publishing > 0 {

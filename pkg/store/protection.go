@@ -113,3 +113,23 @@ const unresolvedPublishCondition = `EXISTS (
 func committedPublishStage() any {
 	return string(replacepkg.PublishStageCommitted)
 }
+
+// publishInFlightCondition selects the jobs whose publish stopped part-way
+// and will be resumed by the job's next attempt: the journal is neither
+// committed nor in conflict. It takes the two bound arguments of
+// settledPublishStages.
+//
+// A conflict is different from the other unresolved stages. It has stopped
+// for good, no attempt can move it, and what it left on disk waits for the
+// operator. Maintenance still leaves such a job alone, which is why
+// unresolvedPublishCondition includes it, but a decision the operator takes
+// (canceling the job, deleting its library) must not be refused on its
+// account, or the job could never be let go of.
+const publishInFlightCondition = `EXISTS (
+	SELECT 1 FROM publish_operations p
+	WHERE p.job_id = j.id AND p.stage NOT IN (?, ?)
+)`
+
+func settledPublishStages() []any {
+	return []any{string(replacepkg.PublishStageCommitted), string(replacepkg.PublishStageConflict)}
+}

@@ -71,6 +71,8 @@ type Jobs interface {
 	RetryJobs(context.Context, control.JobRetryRequest) (control.JobRetryResponse, error)
 	ScanLibraries(context.Context, control.LibraryScanRequest) (control.LibraryScanResponse, error)
 	ForceOccurrences(ctx context.Context, library string, paths []string) ([]controlapi.ForcedOccurrence, error)
+	LibraryParts(ctx context.Context, library string) ([]controlapi.JobParts, error)
+	RemoveParts(context.Context, []controlapi.JobParts)
 }
 
 // ProgressSource is the live progress of running jobs.
