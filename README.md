@@ -794,7 +794,7 @@ direnv allow
 make all
 ```
 
-Without direnv, `nix develop --no-pure-eval` enters the same shell. Without
+Without direnv, `nix develop` enters the same shell. Without
 Nix, install Go 1.26.4 or newer, Node.js 22.12 or newer, and the media tools
 above, and use the same `make` targets. `make lint` runs `golangci-lint`
 inside `nix develop`.

@@ -63,7 +63,7 @@
   `ANVIL_MEDIA_TEST=1 go test ./pkg/ffmpeg ./pkg/search` inside the dev shell.
   The frontend has no test runner; its checks are the typecheck and the build.
 - External tools (`ffmpeg`/`ffprobe`) and Node.js are provided by the Nix dev
-  shell (`flake.nix`, `devenv.nix`, `direnv allow`). Bump `vendorHash` in
+  shell (`flake.nix`, `nix/dev-shell.nix`, `direnv allow`). Bump `vendorHash` in
   `flake.nix` whenever Go dependencies change. JavaScript dependencies need no
   hash: the flake reads `web/package-lock.json` through `importNpmLock`. The
   `goSrc` fileset in `flake.nix` is an allow-list, so add every new top-level

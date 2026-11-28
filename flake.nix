@@ -3,11 +3,10 @@
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
-    devenv.url = "github:cachix/devenv";
   };
 
   outputs =
-    inputs@{ self, nixpkgs, devenv, ... }:
+    { self, nixpkgs, ... }:
     let
       # The daemon and its packages only support Linux, but the development
       # shell also evaluates on darwin so maintainers on macOS can build,
@@ -52,7 +51,7 @@
           runtimePackages = [
             ffmpegPackage
           ];
-          # Keep in step with the Node.js in devenv.nix so the packaged UI and
+          # Keep in step with the Node.js in nix/dev-shell.nix so the packaged UI and
           # a local `make web` come from the same toolchain.
           nodejs = pkgs.nodejs_24;
 
@@ -225,12 +224,7 @@
       devShells = forEachSystem devSystems (
         { pkgs, ... }:
         {
-          default = devenv.lib.mkShell {
-            inherit inputs pkgs;
-            modules = [
-              ./devenv.nix
-            ];
-          };
+          default = pkgs.callPackage ./nix/dev-shell.nix { };
         }
       );
     };

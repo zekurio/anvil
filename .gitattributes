@@ -9,6 +9,5 @@
 # of language stats.
 go.sum linguist-generated=true
 flake.lock linguist-generated=true
-devenv.lock linguist-generated=true
 web/package-lock.json linguist-generated=true
 web/src/ui/icon-data.ts linguist-generated=true

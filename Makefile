@@ -1,4 +1,4 @@
-NIX_DEVELOP ?= nix develop --no-pure-eval --command
+NIX_DEVELOP ?= nix develop --command
 
 # npm rewrites this file on every install, so it doubles as the stamp that
 # says node_modules matches the lockfile.
