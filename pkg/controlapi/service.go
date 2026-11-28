@@ -76,6 +76,11 @@ type Service struct {
 	// reports whether one was signaled. It is optional: without it, cancel
 	// still records the terminal state but cannot stop a live process.
 	CancelRunningJob func(domain.JobID) bool
+	// RunningAttempts lists the jobs of a library a worker is running an
+	// attempt for, from before the attempt starts until the worker has
+	// cleaned up after it (scheduler.Scheduler.RunningJobs). It is optional:
+	// without it, only the job rows say what is running.
+	RunningAttempts func(domain.LibraryName) []domain.JobID
 }
 
 func (s Service) Status(ctx context.Context) (control.StatusResponse, error) {
@@ -376,7 +381,12 @@ func (s Service) cleanupOrphanedPart(ctx context.Context, jobID domain.JobID) {
 		log("load occurrence", err)
 		return
 	}
-	destinations, destErr := stagedDestinations(ctx, s.Store, job, source, asset)
+	attempts, err := s.Store.ListAttemptsForJob(ctx, jobID)
+	if err != nil {
+		log("list attempts", err)
+		return
+	}
+	destinations, destErr := stagedDestinations(job, source, asset, attempts)
 	if destErr != nil {
 		log("resolve some staged destinations", destErr)
 	}
@@ -395,11 +405,7 @@ type stagedDestination struct {
 // config, so the persisted per-attempt snapshots — not the current runtime
 // config, which a reload may have changed or removed since — decide where an
 // orphaned part file can be.
-func stagedDestinations(ctx context.Context, store Store, job domain.Job, source domain.MediaSource, asset domain.MediaAsset) ([]stagedDestination, error) {
-	attempts, err := store.ListAttemptsForJob(ctx, job.ID)
-	if err != nil {
-		return nil, fmt.Errorf("list attempts: %w", err)
-	}
+func stagedDestinations(job domain.Job, source domain.MediaSource, asset domain.MediaAsset, attempts []domain.Attempt) ([]stagedDestination, error) {
 	var destinations []stagedDestination
 	seen := make(map[string]struct{})
 	var errs []error

@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -17,7 +18,7 @@ import (
 
 // Default returns a valid minimal configuration.
 func Default() Config {
-	cfg, err := resolve(rawConfig{})
+	cfg, err := resolve(rawConfig{}, processStateHost())
 	if err != nil {
 		panic(fmt.Sprintf("config: default configuration does not resolve: %v", err))
 	}
@@ -27,9 +28,9 @@ func Default() Config {
 // resolve turns a decoded rawConfig into an effective Config by filling
 // defaults. Because raw numeric and duration fields are pointers, an explicit
 // zero in the file survives while an omitted key gets the default.
-func resolve(raw rawConfig) (Config, error) {
+func resolve(raw rawConfig, host stateHost) (Config, error) {
 	cfg := Config{
-		Daemon:        resolveDaemon(raw.Daemon),
+		Daemon:        resolveDaemon(raw.Daemon, host),
 		DaemonSources: fileDaemonSources(raw.Daemon),
 		Web: WebConfig{
 			Enabled:              valueOr(raw.Web.Enabled, true),
@@ -84,24 +85,24 @@ func resolve(raw rawConfig) (Config, error) {
 }
 
 // StoreOnScratch reports whether the store lies under the system's temporary
-// directory or inside temp_dir, which is where it ends up when neither
-// store_path nor temp_dir is set. Either may be cleared at boot or by a
-// cleanup job, and the store is the only copy of the libraries, flows, Arr
-// connections, and daemon settings, so the daemon warns about it.
+// directory or inside temp_dir. Either may be cleared at boot or by a cleanup
+// job, and the store is the only copy of the libraries, flows, Arr
+// connections, and daemon settings, so the daemon warns about it. The default
+// store_path is on persistent storage; only an explicit store_path, or a state
+// directory that itself lies under the temporary directory, gets here.
 func (d DaemonConfig) StoreOnScratch() bool {
-	store, err := filepath.Abs(d.StorePath)
-	if err != nil {
+	file, ok, err := StoreFile(d.StorePath)
+	if err != nil || !ok {
+		return false
+	}
+	if file, err = filepath.Abs(file); err != nil {
 		return false
 	}
 	for _, dir := range []string{os.TempDir(), d.TempDir} {
 		if strings.TrimSpace(dir) == "" {
 			continue
 		}
-		dir, err := filepath.Abs(dir)
-		if err != nil {
-			continue
-		}
-		if rel, err := filepath.Rel(dir, store); err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		if dir, err := filepath.Abs(dir); err == nil && pathWithin(file, dir) {
 			return true
 		}
 	}
@@ -112,14 +113,85 @@ func (d DaemonConfig) StoreOnScratch() bool {
 // StoreOnScratch holds.
 const StoreOnScratchWarning = "the store holds the libraries, flows, Arr connections, and daemon settings, but lies in a temporary directory; set daemon.store_path to a file on persistent storage"
 
-func resolveDaemon(raw rawDaemonConfig) DaemonConfig {
+// StoreFile returns the file a store_path names. modernc.org/sqlite accepts a
+// plain filename and a "file:" URI, which is how an operator sets pragmas, so
+// both resolve to the same file. ok is false for a store with no file: an
+// in-memory database, or a "file:" URI without a filename, which SQLite opens
+// as an anonymous temporary database.
+func StoreFile(storePath string) (file string, ok bool, err error) {
+	storePath = strings.TrimSpace(storePath)
+	switch {
+	case storePath == "", storePath == ":memory:":
+		return "", false, nil
+	case !strings.HasPrefix(storePath, "file:"):
+		return storePath, true, nil
+	}
+	parsed, err := url.Parse(storePath)
+	if err != nil {
+		return "", false, fmt.Errorf("parse daemon.store_path %q as a SQLite URI: %w", storePath, err)
+	}
+	query, err := url.ParseQuery(parsed.RawQuery)
+	if err != nil {
+		return "", false, fmt.Errorf("parse daemon.store_path %q query: %w", storePath, err)
+	}
+	if strings.EqualFold(query.Get("mode"), "memory") {
+		return "", false, nil
+	}
+	// SQLite URIs are written both as file:relative.db and file:/absolute.db,
+	// which url.Parse splits into Opaque and Path respectively.
+	file = parsed.Opaque
+	if file == "" {
+		file = parsed.Path
+	}
+	file = strings.TrimSpace(file)
+	if file == "" || file == ":memory:" {
+		return "", false, nil
+	}
+	return file, true, nil
+}
+
+// SystemStorePath is the default store_path of a daemon that runs as root.
+const SystemStorePath = "/var/lib/anvil/anvil.db"
+
+// stateHost is what the default store_path depends on. Load reads it from the
+// process; tests fill it in.
+type stateHost struct {
+	euid         int
+	xdgStateHome string
+	home         func() (string, error)
+}
+
+func processStateHost() stateHost {
+	return stateHost{euid: os.Geteuid(), xdgStateHome: os.Getenv("XDG_STATE_HOME"), home: os.UserHomeDir}
+}
+
+// defaultStorePath puts the store on persistent storage, never in a temporary
+// directory: SystemStorePath for root, otherwise the XDG state directory. An
+// XDG_STATE_HOME that is not absolute is ignored, as the XDG specification
+// requires. It returns "" when no home directory is known, and validation then
+// asks for an explicit daemon.store_path.
+func (h stateHost) defaultStorePath() string {
+	if h.euid == 0 {
+		return SystemStorePath
+	}
+	if filepath.IsAbs(h.xdgStateHome) {
+		return filepath.Join(h.xdgStateHome, "anvil", "anvil.db")
+	}
+	home, err := h.home()
+	if err != nil || !filepath.IsAbs(home) {
+		return ""
+	}
+	return filepath.Join(home, ".local", "state", "anvil", "anvil.db")
+}
+
+func resolveDaemon(raw rawDaemonConfig, host stateHost) DaemonConfig {
 	tempDir := strings.TrimSpace(raw.TempDir)
 	if tempDir == "" {
 		tempDir = filepath.Join(os.TempDir(), "anvil")
 	}
 	storePath := strings.TrimSpace(raw.StorePath)
 	if storePath == "" {
-		storePath = filepath.Join(tempDir, "anvil.db")
+		storePath = host.defaultStorePath()
 	}
 	controlSocket := strings.TrimSpace(raw.ControlSocket)
 	if controlSocket == "" {

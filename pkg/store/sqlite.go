@@ -77,9 +77,16 @@ type EnqueueJobInput struct {
 	Now         time.Time
 }
 
+// ScanToken is what BeginLibraryScan hands out: the library row the scan was
+// planned against and the scan's place in that row's sequence.
 type ScanToken struct {
 	LibraryName domain.LibraryName
-	Sequence    int64
+	// LibraryCreatedAt is the identity of the row (see
+	// config.LibraryConfig.CreatedAt). A library deleted and created again
+	// under the same name starts a new sequence, so the sequence alone cannot
+	// tell a scan of the old row from one of the new.
+	LibraryCreatedAt time.Time
+	Sequence         int64
 }
 
 type ScanEntry struct {
@@ -93,8 +100,8 @@ type ScanEntry struct {
 	Enqueue            bool
 	// DeniedReason is set when the library's rules keep the file out, and
 	// says which rule did. Such an entry is not persisted; if the file is
-	// already tracked, the job it was queued with is skipped with this
-	// reason, provided the job has not started yet.
+	// already tracked, its jobs that only wait are skipped with this reason
+	// (see scanApplication.skipDeniedJobs).
 	DeniedReason string
 }
 
@@ -115,13 +122,19 @@ type ApplyScanResult struct {
 	// the rules allow their files again.
 	EnqueuedJobs int
 	ExistingJobs int
-	// DeniedJobs counts queued jobs this scan skipped because the rules now
-	// deny their files.
-	DeniedJobs int
+	// DeniedJobs lists the waiting jobs this scan skipped because the rules
+	// now deny their files. A job that already ran an attempt can have left
+	// a part file, and no attempt will reclaim it now, so the caller has to
+	// (controlapi.Service.ReclaimEndedJobs).
+	DeniedJobs []domain.JobID
 }
 
 type ForceOccurrenceInput struct {
-	LibraryName        domain.LibraryName
+	LibraryName domain.LibraryName
+	// LibraryCreatedAt is the identity of the library row the path was
+	// planned against (config.LibraryConfig.CreatedAt). A library deleted and
+	// created again under the same name since is not that library.
+	LibraryCreatedAt   time.Time
 	SourceKind         domain.SourceKind
 	SourceRelativePath string
 	SourceFingerprint  domain.FileFingerprint

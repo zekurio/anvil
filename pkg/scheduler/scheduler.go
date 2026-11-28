@@ -182,6 +182,25 @@ func (s *Scheduler) ActiveCount() int {
 	return s.activeCount()
 }
 
+// RunningJobs lists the jobs of a library a worker is running right now. A
+// worker is registered before it starts, which is before its attempt asks the
+// store to start, and unregistered only once Worker.Run has returned, which
+// is after the attempt's cleanup. So a job is listed for the whole life of
+// its attempt, also when the job row already says it is over: a canceled job
+// is terminal the moment the cancel commits, while its worker may still be
+// stopping ffmpeg and removing its part file.
+func (s *Scheduler) RunningJobs(library domain.LibraryName) []domain.JobID {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var jobs []domain.JobID
+	for _, assignment := range s.active {
+		if assignment.library == library {
+			jobs = append(jobs, assignment.jobID)
+		}
+	}
+	return jobs
+}
+
 // CancelJob signals every worker currently running jobID and reports whether
 // any worker was signaled. It is safe to call for unknown or already finished
 // jobs, which makes operator cancellation idempotent.

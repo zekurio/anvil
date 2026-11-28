@@ -61,13 +61,14 @@ func TestRecoveredPublishCompletesFromTheJournaledOperation(t *testing.T) {
 				Name: "downloads", Kind: "download", Path: downloads, FlowID: created.ID,
 				Download: config.DownloadLibraryConfig{HandoffPath: handoff, PackageMode: "file", HandoffMode: "move", CleanupSourceMedia: test.journaledRemove},
 			}
-			if _, err := state.CreateLibrary(ctx, library, time.Now()); err != nil {
+			stored, err := state.CreateLibrary(ctx, library, time.Now())
+			if err != nil {
 				t.Fatal(err)
 			}
 
 			// The file is scanned and its job leased, and the publish got as
 			// far as cleaning up the source before the daemon went down.
-			token, err := state.BeginLibraryScan(ctx, "downloads")
+			token, err := state.BeginLibraryScan(ctx, stored.LibraryConfig)
 			if err != nil {
 				t.Fatal(err)
 			}

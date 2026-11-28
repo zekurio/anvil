@@ -134,12 +134,17 @@ type DaemonConfig struct {
 	// Scratch directory for search samples and process logs. Encode artifacts
 	// are written on the destination filesystem as <name>.job-<id>.anvil-part:
 	// beside the destination for media libraries, under
-	// <handoff_path>/.anvil-work for download libraries. store_path and
-	// control_socket default to locations inside this directory.
+	// <handoff_path>/.anvil-work for download libraries. Defaults to anvil
+	// inside the system temporary directory.
 	TempDir string `toml:"temp_dir"`
-	// SQLite state path. Defaults to anvil.db inside temp_dir; any non-empty path.
+	// SQLite state path, on persistent storage: the store is the only copy of
+	// the libraries, flows, Arr connections, and daemon settings. Defaults to
+	// /var/lib/anvil/anvil.db as root, otherwise to anvil/anvil.db in
+	// $XDG_STATE_HOME or ~/.local/state; set it when there is no home
+	// directory. A missing directory is created 0700.
 	StorePath string `toml:"store_path"`
-	// Daemon Unix socket. Defaults to anvild.sock inside temp_dir; must be absolute.
+	// Daemon Unix socket. Defaults to anvild.sock inside temp_dir; must be
+	// absolute and outside the store's directory.
 	ControlSocket string `toml:"control_socket"`
 	// Simultaneous jobs. Defaults to the CPU count; integer >= 1.
 	WorkerCount int `toml:"worker_count"`
@@ -346,6 +351,12 @@ type ModeConfig struct {
 // in the store and are edited in the web UI; this is their in-memory shape.
 type LibraryConfig struct {
 	Name string
+	// CreatedAt is when the store created the library. Together with the
+	// name it identifies the stored row: a library deleted and created again
+	// under the same name gets a new one, so work planned from the old row
+	// (a scan, a requeue) is told apart from work meant for the new one. Only
+	// the store sets it; it is not a setting.
+	CreatedAt time.Time
 	// Replace media in place or process downloader output; "media" or
 	// "download". It cannot change once the library exists.
 	Kind string

@@ -11,9 +11,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/zekurio/anvil/pkg/controlapi"
 	"github.com/zekurio/anvil/pkg/domain"
 	"github.com/zekurio/anvil/pkg/pipeline"
 	replacepkg "github.com/zekurio/anvil/pkg/replace"
+	"github.com/zekurio/anvil/pkg/store"
 )
 
 // stagedJob is a job of a download library whose attempt staged an artifact
@@ -29,7 +31,16 @@ type stagedJob struct {
 // artifact where the stage step puts it.
 func (f *fixture) stageDownload(name string) stagedJob {
 	f.t.Helper()
-	ctx := context.Background()
+	source, handoff := f.queueDownload(name)
+	staged := f.stageQueued()
+	staged.source, staged.handoff = source, handoff
+	return staged
+}
+
+// queueDownload creates a download library holding one file and scans it, so
+// its job waits in the queue. It returns the file and the handoff folder.
+func (f *fixture) queueDownload(name string) (string, string) {
+	f.t.Helper()
 	handoff, err := filepath.EvalSymlinks(f.t.TempDir())
 	if err != nil {
 		f.t.Fatal(err)
@@ -42,7 +53,15 @@ func (f *fixture) stageDownload(name string) stagedJob {
 	if scan := want[ScanResult](f.t, f.send(http.MethodPost, "/api/v1/libraries/"+name+"/scan", nil), http.StatusOK); scan.EnqueuedJobs != 1 {
 		f.t.Fatalf("scan = %+v, want one job", scan)
 	}
+	return source, handoff
+}
 
+// stageQueued leases the next queued job, starts an attempt with the
+// snapshots the worker records, and writes the artifact where the stage step
+// puts it.
+func (f *fixture) stageQueued() stagedJob {
+	f.t.Helper()
+	ctx := context.Background()
 	now := time.Now().UTC()
 	leased, err := f.state.LeaseNextJob(ctx, "worker-1", now.Add(time.Hour), now)
 	if err != nil || leased == nil {
@@ -79,7 +98,7 @@ func (f *fixture) stageDownload(name string) stagedJob {
 	if err := os.WriteFile(job.OutputPath, []byte("the encode"), 0o640); err != nil {
 		f.t.Fatal(err)
 	}
-	return stagedJob{job: job, source: source, handoff: handoff}
+	return stagedJob{job: job}
 }
 
 // failAttempt ends the attempt the way the worker does when its publish does
@@ -174,5 +193,85 @@ func TestDeleteLibraryWithAnInterruptedPublishSaysWhatResolvesIt(t *testing.T) {
 	wantNoContent(t, f.send(http.MethodDelete, "/api/v1/libraries/inbox", nil))
 	if data, err := os.ReadFile(staged.job.DestinationPath); err != nil || string(data) != "the encode" {
 		t.Errorf("published file after the delete = %q, %v", data, err)
+	}
+}
+
+// A cancel makes the job terminal in the store at once, while its worker may
+// still be stopping ffmpeg and cleaning up. Until the worker is done, the
+// library must not go, or its part files would be removed under a live
+// attempt.
+func TestDeleteLibraryWaitsForTheWorkerOfACanceledJob(t *testing.T) {
+	ctx := context.Background()
+	f := newFixture(t, "", nil)
+	staged := f.stageDownload("inbox")
+	// The scheduler's account of the attempts its workers run.
+	var running []domain.JobID
+	service := f.server.Jobs.(controlapi.Service)
+	service.RunningAttempts = func(library domain.LibraryName) []domain.JobID {
+		if library != "inbox" {
+			return nil
+		}
+		return running
+	}
+	f.server.Jobs = service
+	running = []domain.JobID{staged.job.Job.ID}
+
+	canceled := want[JobActionResult](t, f.send(http.MethodPost, "/api/v1/jobs/cancel", JobActionRequest{IDs: []int64{int64(staged.job.Job.ID)}}), http.StatusOK)
+	if canceled.Changed != 1 {
+		t.Fatalf("cancel = %+v", canceled)
+	}
+	f.wantJobState(staged.job.Job.ID, domain.JobStateCanceled)
+
+	refused := wantError(t, f.send(http.MethodDelete, "/api/v1/libraries/inbox", nil), http.StatusConflict, CodeConflict)
+	if !strings.Contains(refused.Message, "1 job is running. Cancel it or wait for it.") {
+		t.Fatalf("refusal = %q, want it to say a job is still running", refused.Message)
+	}
+	if _, err := f.state.GetJob(ctx, staged.job.Job.ID); err != nil {
+		t.Fatalf("job after the refused delete: %v", err)
+	}
+	want[Library](t, f.get("/api/v1/libraries/inbox"), http.StatusOK)
+
+	// The worker returned: now the library goes.
+	running = nil
+	wantNoContent(t, f.send(http.MethodDelete, "/api/v1/libraries/inbox", nil))
+	if info, err := os.Stat(staged.source); err != nil || info.Size() != 5000 {
+		t.Errorf("source after the delete: %v, %v; want it untouched", info, err)
+	}
+}
+
+// interleavingStore runs something right before the library delete, the way
+// a worker may lease, stage, and fail a job between the handler being called
+// and the delete reaching the store.
+type interleavingStore struct {
+	Store
+	before func()
+}
+
+func (s interleavingStore) DeleteLibrary(ctx context.Context, name string, inFlight func() []domain.JobID) ([]store.DeletedJob, error) {
+	s.before()
+	return s.Store.DeleteLibrary(ctx, name, inFlight)
+}
+
+// What the deleted jobs staged is read in the delete's own transaction: a job
+// that had never run when the request came in, and staged and failed into the
+// queue before the delete, still has its part file found and removed.
+func TestDeleteLibraryReclaimsThePartOfAJobThatStagedJustBeforeIt(t *testing.T) {
+	f := newFixture(t, "", nil)
+	source, _ := f.queueDownload("inbox")
+	var staged stagedJob
+	f.server.Store = interleavingStore{Store: f.state, before: func() {
+		staged = f.stageQueued()
+		f.failAttempt(staged, errors.New("encoder crashed"))
+	}}
+
+	wantNoContent(t, f.send(http.MethodDelete, "/api/v1/libraries/inbox", nil))
+	if staged.job == nil {
+		t.Fatal("the job was not staged before the delete")
+	}
+	if _, err := os.Stat(staged.job.OutputPath); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("part file %s of a job that staged just before the delete is still there (%v)", staged.job.OutputPath, err)
+	}
+	if info, err := os.Stat(source); err != nil || info.Size() != 5000 {
+		t.Errorf("source after the delete: %v, %v; want it untouched", info, err)
 	}
 }

@@ -249,6 +249,17 @@ func testLibrary(name string, flowID int64) config.LibraryConfig {
 	}
 }
 
+// storedLibrary is the snapshot of a stored library a scan or requeue is
+// planned from.
+func storedLibrary(t testing.TB, state *SQLiteStore, name string) config.LibraryConfig {
+	t.Helper()
+	library, err := state.GetLibrary(context.Background(), name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return library.LibraryConfig
+}
+
 // mustCreateLibrary gives a test the library row every scan and requeue
 // needs.
 func mustCreateLibrary(t testing.TB, state *SQLiteStore, name string) {
@@ -265,17 +276,18 @@ func mustCreateLibrary(t testing.TB, state *SQLiteStore, name string) {
 func TestScansOfAnUnknownLibraryAreRefused(t *testing.T) {
 	ctx := context.Background()
 	state := openTestStore(t)
-	if _, err := state.BeginLibraryScan(ctx, "ghost"); !errors.Is(err, ErrNotFound) {
+	if _, err := state.BeginLibraryScan(ctx, config.LibraryConfig{Name: "ghost"}); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("BeginLibraryScan = %v, want ErrNotFound", err)
 	}
 	mustCreateLibrary(t, state, "movies")
-	token, err := state.BeginLibraryScan(ctx, "movies")
+	movies := storedLibrary(t, state, "movies")
+	token, err := state.BeginLibraryScan(ctx, movies)
 	if err != nil {
 		t.Fatal(err)
 	}
 	// The library is deleted while the scan walks the filesystem: applying
 	// its result must not bring sources back.
-	if _, err := state.DeleteLibrary(ctx, "movies"); err != nil {
+	if _, err := state.DeleteLibrary(ctx, "movies", nil); err != nil {
 		t.Fatal(err)
 	}
 	entry := scanTestEntry(1)
@@ -283,13 +295,70 @@ func TestScansOfAnUnknownLibraryAreRefused(t *testing.T) {
 		t.Fatalf("ApplyLibraryScan after delete = %v, want ErrNotFound", err)
 	}
 	if _, err := state.ForceOccurrence(ctx, ForceOccurrenceInput{
-		LibraryName: "movies", SourceKind: domain.SourceKindFile, SourceRelativePath: "a.mkv", AssetRelativePath: "a.mkv",
+		LibraryName: "movies", LibraryCreatedAt: movies.CreatedAt, SourceKind: domain.SourceKindFile, SourceRelativePath: "a.mkv", AssetRelativePath: "a.mkv",
 	}); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("ForceOccurrence after delete = %v, want ErrNotFound", err)
 	}
 	var sources int
 	if err := state.db.QueryRowContext(ctx, `SELECT count(*) FROM media_sources`).Scan(&sources); err != nil || sources != 0 {
 		t.Fatalf("%d sources were written for a deleted library, %v", sources, err)
+	}
+}
+
+// A library deleted and created again under the same name starts its scan
+// sequence over. A scan of the old library that was still walking the
+// filesystem must not apply to the new one, which has other folders and
+// rules, even when its number has come round again.
+func TestScanOfALibraryDeletedAndCreatedAgainIsSuperseded(t *testing.T) {
+	ctx := context.Background()
+	state := openTestStore(t)
+	flowID := defaultFlowID(t, state)
+	if _, err := state.CreateLibrary(ctx, testLibrary("movies", flowID), time.Unix(100, 0)); err != nil {
+		t.Fatal(err)
+	}
+	old := storedLibrary(t, state, "movies")
+	stale, err := state.BeginLibraryScan(ctx, old)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := state.DeleteLibrary(ctx, "movies", nil); err != nil {
+		t.Fatal(err)
+	}
+	recreated := testLibrary("movies", flowID)
+	recreated.Path = "/media/elsewhere"
+	if _, err := state.CreateLibrary(ctx, recreated, time.Unix(200, 0)); err != nil {
+		t.Fatal(err)
+	}
+	// A scan planned from a snapshot of the old row cannot start either.
+	if _, err := state.BeginLibraryScan(ctx, old); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("BeginLibraryScan from the old library = %v, want ErrNotFound", err)
+	}
+	current := storedLibrary(t, state, "movies")
+	fresh, err := state.BeginLibraryScan(ctx, current)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fresh.Sequence != stale.Sequence {
+		t.Fatalf("sequences %d and %d, want the new library to have reached the old token's number", fresh.Sequence, stale.Sequence)
+	}
+
+	result, err := state.ApplyLibraryScan(ctx, stale, ApplyScanInput{LibraryName: "movies", Entries: []ScanEntry{scanTestEntry(1)}})
+	if err != nil || result.Applied {
+		t.Fatalf("ApplyLibraryScan of the old library = %+v, %v; want it superseded", result, err)
+	}
+	var sources int
+	if err := state.db.QueryRowContext(ctx, `SELECT count(*) FROM media_sources`).Scan(&sources); err != nil || sources != 0 {
+		t.Fatalf("%d sources were written by the old library's scan, %v", sources, err)
+	}
+	// A requeue planned against the old library is refused the same way.
+	if _, err := state.ForceOccurrence(ctx, ForceOccurrenceInput{
+		LibraryName: "movies", LibraryCreatedAt: old.CreatedAt, SourceKind: domain.SourceKindFile, SourceRelativePath: "a.mkv", AssetRelativePath: "a.mkv",
+	}); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("ForceOccurrence planned against the old library = %v, want ErrNotFound", err)
+	}
+	// The new library's own scan applies.
+	if result, err := state.ApplyLibraryScan(ctx, fresh, ApplyScanInput{LibraryName: "movies", Entries: []ScanEntry{scanTestEntry(1)}}); err != nil || !result.Applied {
+		t.Fatalf("ApplyLibraryScan of the new library = %+v, %v", result, err)
 	}
 }
 
@@ -765,7 +834,7 @@ func TestFlowAndArrInUseCannotBeDeleted(t *testing.T) {
 	}
 
 	for _, name := range []string{"shows", "movies"} {
-		if _, err := state.DeleteLibrary(ctx, name); err != nil {
+		if _, err := state.DeleteLibrary(ctx, name, nil); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -844,7 +913,7 @@ func TestLibraryRoundTripAndImmutableKind(t *testing.T) {
 func seedLibraryFiles(t *testing.T, state *SQLiteStore, library domain.LibraryName) map[string]domain.Job {
 	t.Helper()
 	ctx := context.Background()
-	token, err := state.BeginLibraryScan(ctx, library)
+	token, err := state.BeginLibraryScan(ctx, storedLibrary(t, state, string(library)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1006,7 +1075,7 @@ func TestDeleteLibraryRefusesLiveWorkAndRemovesEverythingElse(t *testing.T) {
 	if err != nil || leased == nil {
 		t.Fatalf("LeaseNextJobForLibraries = %v, %v", leased, err)
 	}
-	_, err = state.DeleteLibrary(ctx, "movies")
+	_, err = state.DeleteLibrary(ctx, "movies", nil)
 	wantBusy(err, 1, 0, "1 running job(s)")
 	attempt, err := state.StartAttempt(ctx, leased.ID, "worker-1", nil, nil, nil, now)
 	if err != nil {
@@ -1016,7 +1085,7 @@ func TestDeleteLibraryRefusesLiveWorkAndRemovesEverythingElse(t *testing.T) {
 		if _, err := state.TransitionJob(ctx, leased.ID, held, now, ""); err != nil {
 			t.Fatal(err)
 		}
-		_, err = state.DeleteLibrary(ctx, "movies")
+		_, err = state.DeleteLibrary(ctx, "movies", nil)
 		wantBusy(err, 1, 0, "running job(s)")
 	}
 
@@ -1037,13 +1106,13 @@ INSERT INTO publish_operations (job_id, stage, operation_json, created_at, updat
 	}
 	setStage := func(stage replacepkg.PublishStage) {
 		t.Helper()
-		if _, err := state.db.ExecContext(ctx, `UPDATE publish_operations SET stage = ? WHERE job_id = ?`, string(stage), int64(leased.ID)); err != nil {
+		if _, err := state.db.ExecContext(ctx, `UPDATE publish_operations SET stage = ?, operation_json = json_object('stage', ?) WHERE job_id = ?`, string(stage), string(stage), int64(leased.ID)); err != nil {
 			t.Fatal(err)
 		}
 	}
 	for _, stage := range []replacepkg.PublishStage{replacepkg.PublishStagePrepared, replacepkg.PublishStagePublished, replacepkg.PublishStageSourceCleaned} {
 		setStage(stage)
-		_, err = state.DeleteLibrary(ctx, "movies")
+		_, err = state.DeleteLibrary(ctx, "movies", nil)
 		// The refusal says what resolves it, and that is not a plain retry.
 		wantBusy(err, 0, 1, "an interrupted publish finishes the next time its job runs")
 	}
@@ -1051,9 +1120,23 @@ INSERT INTO publish_operations (job_id, stage, operation_json, created_at, updat
 	// must not keep the library, or the library could never be deleted.
 	setStage(replacepkg.PublishStageConflict)
 
+	// The row says the job waits, but the worker says it still runs the
+	// attempt, as after a cancel while ffmpeg is being stopped. The worker
+	// is asked inside the delete, and its word is enough. A job it names
+	// that the rows also count is counted once.
+	asked := 0
+	_, err = state.DeleteLibrary(ctx, "movies", func() []domain.JobID {
+		asked++
+		return []domain.JobID{leased.ID, leased.ID}
+	})
+	wantBusy(err, 1, 0, "1 running job(s)")
+	if asked != 1 {
+		t.Fatalf("the worker's account was asked %d times, want once", asked)
+	}
+
 	// Two pending jobs and one waiting to retry: the library goes, and takes
 	// them and their history with it.
-	deleted, err := state.DeleteLibrary(ctx, "movies")
+	deleted, err := state.DeleteLibrary(ctx, "movies", func() []domain.JobID { return nil })
 	if err != nil {
 		t.Fatalf("DeleteLibrary with waiting jobs: %v", err)
 	}
@@ -1063,6 +1146,25 @@ INSERT INTO publish_operations (job_id, stage, operation_json, created_at, updat
 	for _, job := range deleted {
 		if job.ID == 0 || job.Slug == "" {
 			t.Errorf("deleted job %+v lacks its id or slug", job)
+		}
+		// Only the job that ran an attempt can have staged anything, and the
+		// delete hands back what finding that takes, read before the rows
+		// went.
+		if job.ID != leased.ID {
+			if job.Staged != nil {
+				t.Errorf("deleted job %d never ran but comes with %+v", job.ID, job.Staged)
+			}
+			continue
+		}
+		staged := job.Staged
+		if staged == nil || staged.Job.ID != leased.ID || staged.Source.ID != leased.SourceID || staged.Asset.ID != leased.AssetID {
+			t.Fatalf("deleted job that ran = %+v, want its job and occurrence", staged)
+		}
+		if len(staged.Attempts) != 1 || staged.Attempts[0].ID != attempt.ID {
+			t.Errorf("deleted job attempts = %+v, want the one it ran", staged.Attempts)
+		}
+		if staged.Journal == nil || staged.Journal.Stage != replacepkg.PublishStageConflict {
+			t.Errorf("deleted job journal = %+v, want the conflict", staged.Journal)
 		}
 	}
 	for table, column := range map[string]string{
@@ -1103,7 +1205,7 @@ INSERT INTO publish_operations (job_id, stage, operation_json, created_at, updat
 			t.Fatalf("leased %+v, a job of the deleted library", next)
 		}
 	}
-	if _, err := state.DeleteLibrary(ctx, "movies"); !errors.Is(err, ErrNotFound) {
+	if _, err := state.DeleteLibrary(ctx, "movies", nil); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("second delete = %v, want ErrNotFound", err)
 	}
 }
@@ -1222,10 +1324,11 @@ func TestEnqueueTakesThePriorityOfTheStoredLibrary(t *testing.T) {
 	flowID := defaultFlowID(t, state)
 	library := testLibrary("movies", flowID)
 	library.Priority = 1
-	if _, err := state.CreateLibrary(ctx, library, time.Now()); err != nil {
+	stored, err := state.CreateLibrary(ctx, library, time.Now())
+	if err != nil {
 		t.Fatal(err)
 	}
-	token, err := state.BeginLibraryScan(ctx, "movies")
+	token, err := state.BeginLibraryScan(ctx, stored.LibraryConfig)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1245,7 +1348,7 @@ func TestEnqueueTakesThePriorityOfTheStoredLibrary(t *testing.T) {
 		t.Fatal(err)
 	}
 	forced, err := state.ForceOccurrence(ctx, ForceOccurrenceInput{
-		LibraryName: "movies", SourceKind: domain.SourceKindFile,
+		LibraryName: "movies", LibraryCreatedAt: stored.CreatedAt, SourceKind: domain.SourceKindFile,
 		SourceRelativePath: "forced.mkv", SourceFingerprint: fingerprint,
 		AssetRelativePath: "forced.mkv", AssetRole: domain.MediaAssetRolePrimaryVideo, AssetFingerprint: fingerprint,
 	})

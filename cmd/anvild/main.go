@@ -344,6 +344,13 @@ func runDaemon(ctx context.Context, cfg config.Config, opts options) error {
 			}
 			return planner.CancelJob(jobID)
 		},
+		runningJobs: func(library domain.LibraryName) []domain.JobID {
+			planner := plannerRef.Load()
+			if planner == nil {
+				return nil
+			}
+			return planner.RunningJobs(library)
+		},
 	})
 
 	// The address was bound before the store was opened. Serving starts only
@@ -361,11 +368,11 @@ func runDaemon(ctx context.Context, cfg config.Config, opts options) error {
 
 	control := startControlService(serviceCtx, &wg, listener, jobs)
 	startReloadLoop(serviceCtx, &wg, opts, runtimeCfg, webServer, reloadSignals)
-	runInitialScan(serviceCtx, runtimeCfg.Get(), state, completion)
+	runInitialScan(serviceCtx, runtimeCfg.Get(), state, completion, jobs)
 	startRecoveryLoop(serviceCtx, &wg, runtimeCfg.Get, jobs)
 	planner := startSchedulerLoop(serviceCtx, workerCtx, &wg, runtimeCfg.Get, state, progress, schedulerReconfigured)
 	plannerRef.Store(planner)
-	startScannerLoop(serviceCtx, &wg, runtimeCfg.Get, state, completion, planner.ActiveCount, monitorReconfigured, watcherReconfigured)
+	startScannerLoop(serviceCtx, &wg, runtimeCfg.Get, state, completion, jobs, planner.ActiveCount, monitorReconfigured, watcherReconfigured)
 
 	request := awaitShutdown(shutdown, control, stopServices)
 	shutdownCfg := runtimeCfg.Get()
@@ -491,8 +498,11 @@ func logConfiguredWork(cfg config.Config) {
 	slog.Info("scanner, scheduler, worker, and built-in media pipeline are enabled")
 }
 
-func runInitialScan(ctx context.Context, cfg config.Config, state *store.SQLiteStore, completion *scanner.CompletionTracker) {
+// runInitialScan scans every library once. The part files of jobs it skips
+// because the rules now deny their files are reclaimed through jobs.
+func runInitialScan(ctx context.Context, cfg config.Config, state *store.SQLiteStore, completion *scanner.CompletionTracker, jobs controlapi.Service) {
 	result, err := scanner.Scanner{Store: state, Completion: completion}.Scan(ctx, cfg)
+	jobs.ReclaimEndedJobs(ctx, result.DeniedJobs)
 	if err != nil {
 		slog.Error("initial scan failed", "error", err)
 		return
@@ -509,7 +519,7 @@ func logScanComplete(message string, library string, reason string, result scann
 		"existing_jobs", result.ExistingJobs,
 		"skipped_ignored", result.SkippedIgnored,
 		"skipped_unstable", result.SkippedUnstable,
-		"denied_jobs", result.DeniedJobs,
+		"denied_jobs", len(result.DeniedJobs),
 	}
 	if library != "" {
 		args = append([]any{"library", library}, args...)
@@ -607,13 +617,14 @@ func parseLogLevel(logLevel string) (slog.Level, string, error) {
 	}
 }
 
-func startScannerLoop(ctx context.Context, wg *sync.WaitGroup, cfgProvider func() config.Config, state *store.SQLiteStore, completion *scanner.CompletionTracker, activeWorkers func() int, monitorReconfigured, watcherReconfigured <-chan struct{}) {
+func startScannerLoop(ctx context.Context, wg *sync.WaitGroup, cfgProvider func() config.Config, state *store.SQLiteStore, completion *scanner.CompletionTracker, jobs controlapi.Service, activeWorkers func() int, monitorReconfigured, watcherReconfigured <-chan struct{}) {
 	monitor := &scanner.Monitor{
 		Scanner:        scanner.Scanner{Store: state, Completion: completion},
 		ConfigProvider: cfgProvider,
 		EventSource:    &scanner.FilesystemEventSource{Completion: completion, Reconfigured: watcherReconfigured},
 		Reconfigured:   monitorReconfigured,
 		OnScan: func(library config.LibraryConfig, reason string, result scanner.ScanResult, err error) {
+			jobs.ReclaimEndedJobs(ctx, result.DeniedJobs)
 			if err != nil {
 				slog.Error("scan failed", "library", library.Name, "reason", reason, "error", err)
 				return

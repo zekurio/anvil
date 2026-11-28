@@ -179,8 +179,12 @@ WHERE id = ?
 	return scanAttempt(row)
 }
 
-func (s *SQLiteStore) ListAttemptsForJob(ctx context.Context, jobID domain.JobID) (attempts []domain.Attempt, err error) {
-	rows, err := s.db.QueryContext(ctx, `
+func (s *SQLiteStore) ListAttemptsForJob(ctx context.Context, jobID domain.JobID) ([]domain.Attempt, error) {
+	return listAttemptsForJob(ctx, s.db, jobID)
+}
+
+func listAttemptsForJob(ctx context.Context, q rowsQuerier, jobID domain.JobID) (attempts []domain.Attempt, err error) {
+	rows, err := q.QueryContext(ctx, `
 SELECT id, job_id, number, worker_id, state, resolved_library_json,
 	resolved_flow_json, resolved_profile_json, started_at, finished_at, error
 FROM attempts

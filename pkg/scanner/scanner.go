@@ -20,7 +20,7 @@ import (
 )
 
 type Store interface {
-	BeginLibraryScan(context.Context, domain.LibraryName) (store.ScanToken, error)
+	BeginLibraryScan(context.Context, config.LibraryConfig) (store.ScanToken, error)
 	ApplyLibraryScan(context.Context, store.ScanToken, store.ApplyScanInput) (store.ApplyScanResult, error)
 }
 
@@ -38,9 +38,10 @@ type ScanResult struct {
 	ExistingJobs    int
 	SkippedIgnored  int
 	SkippedUnstable int
-	// DeniedJobs counts queued jobs the scan skipped because the rules now
-	// deny their files.
-	DeniedJobs   int
+	// DeniedJobs lists the waiting jobs the scan skipped because the rules
+	// now deny their files. Their part files are the caller's to reclaim
+	// (controlapi.Service.ReclaimEndedJobs).
+	DeniedJobs   []domain.JobID
 	NextStableAt time.Time
 }
 
@@ -116,7 +117,7 @@ func (s Scanner) scan(ctx context.Context, library config.LibraryConfig, root st
 	if s.Store == nil {
 		return ScanResult{}, fmt.Errorf("scanner store is required")
 	}
-	token, err := s.Store.BeginLibraryScan(ctx, domain.LibraryName(library.Name))
+	token, err := s.Store.BeginLibraryScan(ctx, library)
 	if err != nil {
 		return ScanResult{}, fmt.Errorf("begin library scan: %w", err)
 	}
@@ -239,7 +240,7 @@ func (r *ScanResult) add(other ScanResult) {
 	r.EnqueuedJobs += other.EnqueuedJobs
 	r.ExistingJobs += other.ExistingJobs
 	r.SkippedIgnored += other.SkippedIgnored
-	r.DeniedJobs += other.DeniedJobs
+	r.DeniedJobs = append(r.DeniedJobs, other.DeniedJobs...)
 	r.SkippedUnstable += other.SkippedUnstable
 	if !other.NextStableAt.IsZero() && (r.NextStableAt.IsZero() || other.NextStableAt.Before(r.NextStableAt)) {
 		r.NextStableAt = other.NextStableAt

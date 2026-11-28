@@ -117,7 +117,7 @@ func fileDaemonSources(raw rawDaemonConfig) map[string]string {
 
 // DefaultDaemon returns the [daemon] table of an empty anvil.toml.
 func DefaultDaemon() DaemonConfig {
-	return resolveDaemon(rawDaemonConfig{})
+	return resolveDaemon(rawDaemonConfig{}, processStateHost())
 }
 
 // DaemonSource says where the value of a DaemonKeys key comes from: one of

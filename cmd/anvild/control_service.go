@@ -25,6 +25,7 @@ type controlServiceDeps struct {
 	startedAt     time.Time
 	activeWorkers func() int
 	cancelJob     func(domain.JobID) bool
+	runningJobs   func(domain.LibraryName) []domain.JobID
 	completion    *scanner.CompletionTracker
 }
 
@@ -38,6 +39,7 @@ func newControlService(deps controlServiceDeps) controlapi.Service {
 		Config:           deps.config,
 		ActiveWorkers:    deps.activeWorkers,
 		CancelRunningJob: deps.cancelJob,
+		RunningAttempts:  deps.runningJobs,
 		StartedAt:        deps.startedAt,
 		DaemonVersion:    control.BuildVersion,
 	}

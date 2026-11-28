@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/zekurio/anvil/pkg/config"
+	"github.com/zekurio/anvil/pkg/domain"
 	"github.com/zekurio/anvil/pkg/store"
 )
 
@@ -26,8 +27,8 @@ func (s disconnectingStore) UpdateLibrary(ctx context.Context, library config.Li
 	return stored, err
 }
 
-func (s disconnectingStore) DeleteLibrary(ctx context.Context, name string) ([]store.DeletedJob, error) {
-	deleted, err := s.Store.DeleteLibrary(ctx, name)
+func (s disconnectingStore) DeleteLibrary(ctx context.Context, name string, inFlight func() []domain.JobID) ([]store.DeletedJob, error) {
+	deleted, err := s.Store.DeleteLibrary(ctx, name, inFlight)
 	s.disconnect()
 	return deleted, err
 }

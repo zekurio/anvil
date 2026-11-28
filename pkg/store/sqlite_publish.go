@@ -73,9 +73,13 @@ ORDER BY job_id
 }
 
 func (s *SQLiteStore) GetPublishOperation(ctx context.Context, jobID domain.JobID) (replacepkg.PublishOperation, bool, error) {
+	return getPublishOperation(ctx, s.db, jobID)
+}
+
+func getPublishOperation(ctx context.Context, q rowQuerier, jobID domain.JobID) (replacepkg.PublishOperation, bool, error) {
 	var data []byte
 	var stage replacepkg.PublishStage
-	err := s.db.QueryRowContext(ctx, `
+	err := q.QueryRowContext(ctx, `
 SELECT stage, operation_json
 FROM publish_operations
 WHERE job_id = ?

@@ -93,11 +93,12 @@ func newFlowFixture(t *testing.T) *flowFixture {
 		t.Fatal(err)
 	}
 	library := config.LibraryConfig{Name: "movies", Kind: "media", Path: "/media/movies", FlowID: created.ID, Media: config.MediaLibraryConfig{ReplacementMode: "replace"}}
-	if _, err := state.CreateLibrary(ctx, library, time.Now()); err != nil {
+	stored, err := state.CreateLibrary(ctx, library, time.Now())
+	if err != nil {
 		t.Fatal(err)
 	}
 	cfg := config.Default()
-	cfg.Libraries = map[string]config.LibraryConfig{"movies": library}
+	cfg.Libraries = map[string]config.LibraryConfig{"movies": stored.LibraryConfig}
 	return &flowFixture{t: t, state: state, flowID: created.ID, cfg: cfg}
 }
 
@@ -105,8 +106,15 @@ func newFlowFixture(t *testing.T) *flowFixture {
 // with the given source codec.
 func (f *flowFixture) run(path, codec string) (domain.Job, domain.Attempt, error) {
 	f.t.Helper()
+	f.queue(path)
+	return f.attempt(codec)
+}
+
+// queue scans one file into the library, so its job waits in the queue.
+func (f *flowFixture) queue(path string) {
+	f.t.Helper()
 	ctx := context.Background()
-	token, err := f.state.BeginLibraryScan(ctx, "movies")
+	token, err := f.state.BeginLibraryScan(ctx, f.cfg.Libraries["movies"])
 	if err != nil {
 		f.t.Fatal(err)
 	}
@@ -118,7 +126,6 @@ func (f *flowFixture) run(path, codec string) (domain.Job, domain.Attempt, error
 	if _, err := f.state.ApplyLibraryScan(ctx, token, store.ApplyScanInput{LibraryName: "movies", SourcePaths: []string{path}, Entries: []store.ScanEntry{entry}}); err != nil {
 		f.t.Fatal(err)
 	}
-	return f.attempt(codec)
 }
 
 func (f *flowFixture) attempt(codec string) (domain.Job, domain.Attempt, error) {

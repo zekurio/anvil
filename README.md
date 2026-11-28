@@ -39,14 +39,13 @@ make all
 ```
 
 `make all` builds the web UI and then `bin/anvild` and `bin/anvilctl`. Give the
-daemon a directory for its state and a config that points into it:
+daemon a working directory and a config that points into it:
 
 ```sh
 mkdir -p ~/anvil/tmp
 cat > ~/anvil/anvil.toml <<EOF
 [daemon]
 temp_dir = "$HOME/anvil/tmp"
-store_path = "$HOME/anvil/anvil.db"
 control_socket = "$HOME/anvil/anvild.sock"
 
 [web]
@@ -56,6 +55,9 @@ EOF
 bin/anvild check-config --config ~/anvil/anvil.toml
 bin/anvild --config ~/anvil/anvil.toml
 ```
+
+The store, which holds your libraries and flows, goes to
+`~/.local/state/anvil/anvil.db` (`$XDG_STATE_HOME` if set).
 
 With Nix you can skip the build. The packaged daemon carries the web UI and
 Jellyfin's ffmpeg:
@@ -508,7 +510,9 @@ your media.
 
 The daemon sets the database and its `-wal` and `-shm` files to mode `0600`
 on every start, and creates a missing store directory with mode `0700`. A
-directory that already exists keeps its mode. `anvilctl backup` writes its
+directory that already exists keeps its mode. The control socket must sit
+outside the store's directory, and the daemon refuses a config that puts it
+there. `anvilctl backup` writes its
 snapshot with mode `0600` too.
 
 The control socket is the other way in. The daemon creates it with mode
@@ -533,9 +537,12 @@ a signed-in browser can never widen its own confinement.
 
 [`examples/anvil.toml`](examples/anvil.toml) is a minimal starting point.
 [`examples/anvil-reference.toml`](examples/anvil-reference.toml) documents
-every setting and its default. Without a config file the daemon keeps its
-state under the system temporary directory, which does not survive a reboot.
-Set `store_path` to persistent storage for anything you mean to keep.
+every setting and its default. Without `store_path` the store goes to
+`/var/lib/anvil/anvil.db` when the daemon runs as root, and otherwise to
+`anvil/anvil.db` under `$XDG_STATE_HOME` or `~/.local/state`. A daemon with no
+home directory needs `store_path` set. `temp_dir` and the control socket
+default to `anvil` under the system temporary directory. The daemon warns
+about a `store_path` under the temporary directory or inside `temp_dir`.
 
 Check a config before you start anything:
 
@@ -609,8 +616,8 @@ Then import and configure the module:
 The module renders `/etc/anvil/anvil.toml`, keeps the store in
 `/var/lib/anvil/anvil.db` and scratch in `/var/lib/anvil/tmp`, puts the
 control socket in `/run/anvil`, and adds Jellyfin's ffmpeg to the service
-`PATH`. The socket is `0660` inside a `0750` directory owned by
-`services.anvil.group`. Membership in that group is what grants `anvilctl`
+`PATH`. `/var/lib/anvil` and its `tmp` are `0700`. The socket is `0660`
+inside a `0750` directory owned by `services.anvil.group`. Membership in that group is what grants `anvilctl`
 access. Installing `anvilctl` grants nothing.
 
 `services.anvil.web` has `enable`, `listenAddress`, `port`, `passwordFile`,

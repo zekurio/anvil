@@ -41,7 +41,7 @@ type Store interface {
 	GetLibrary(context.Context, string) (store.Library, error)
 	CreateLibrary(context.Context, config.LibraryConfig, time.Time) (store.Library, error)
 	UpdateLibrary(context.Context, config.LibraryConfig, time.Time) (store.Library, error)
-	DeleteLibrary(context.Context, string) ([]store.DeletedJob, error)
+	DeleteLibrary(ctx context.Context, name string, inFlight func() []domain.JobID) ([]store.DeletedJob, error)
 	LibraryOverviews(context.Context) (map[string]store.LibraryOverview, error)
 	ListLibraryFiles(context.Context, store.LibraryFileFilter) ([]store.LibraryFile, int64, error)
 
@@ -73,8 +73,8 @@ type Jobs interface {
 	RetryJobs(context.Context, control.JobRetryRequest) (control.JobRetryResponse, error)
 	ScanLibraries(context.Context, control.LibraryScanRequest) (control.LibraryScanResponse, error)
 	ForceOccurrences(ctx context.Context, library string, paths []string) ([]controlapi.ForcedOccurrence, error)
-	LibraryParts(ctx context.Context, library string) ([]controlapi.JobParts, error)
-	RemoveParts(context.Context, []controlapi.JobParts)
+	AttemptsInFlight(library string) []domain.JobID
+	RemoveParts(context.Context, []store.DeletedJob)
 }
 
 // ProgressSource is the live progress of running jobs.

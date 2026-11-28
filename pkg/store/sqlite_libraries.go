@@ -11,6 +11,7 @@ import (
 
 	"github.com/zekurio/anvil/pkg/config"
 	"github.com/zekurio/anvil/pkg/domain"
+	replacepkg "github.com/zekurio/anvil/pkg/replace"
 )
 
 // ErrImmutable reports an update that tried to change a part of a library
@@ -18,10 +19,11 @@ import (
 var ErrImmutable = errors.New("store: the value cannot change after creation")
 
 // Library is a stored library: its settings in the shape every loop of the
-// daemon reads them in, plus when the row was written.
+// daemon reads them in, plus when the row was last written. When it was
+// created is part of the settings (config.LibraryConfig.CreatedAt), because
+// the runtime snapshot carries it as the row's identity.
 type Library struct {
 	config.LibraryConfig
-	CreatedAt time.Time
 	UpdatedAt time.Time
 }
 
@@ -55,9 +57,7 @@ func (s *SQLiteStore) ListLibraries(ctx context.Context) ([]Library, error) {
 }
 
 // listLibraries reads every library through a *sql.DB or a *sql.Tx.
-func listLibraries(ctx context.Context, q interface {
-	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
-}) (libraries []Library, err error) {
+func listLibraries(ctx context.Context, q rowsQuerier) (libraries []Library, err error) {
 	rows, err := q.QueryContext(ctx, `SELECT `+libraryColumns+` FROM libraries ORDER BY name`)
 	if err != nil {
 		return nil, fmt.Errorf("list libraries: %w", err)
@@ -177,19 +177,40 @@ WHERE name = ?
 	return updated, nil
 }
 
-// DeletedJob names a job that went away with its library. The daemon uses it
-// to remove what the job left under its temp dir.
+// DeletedJob is a job that went away with its library, as it stood in the
+// transaction that deleted it. Once the rows are gone this is the only record
+// of what the job left on disk: its scratch under the temp dir, and possibly
+// a part file beside a destination.
 type DeletedJob struct {
 	ID   domain.JobID
 	Slug string
+	// Staged is set for a job that ran an attempt and did not complete. Only
+	// such a job can have left an unpublished artifact: a completed one
+	// published it or never wrote one.
+	Staged *StagedJob
+}
+
+// StagedJob is what it takes to find the artifacts a job's attempts may have
+// staged: the job and its occurrence, which plan the destination, the
+// attempts, whose library snapshots decide where each one staged, and the
+// publish journal.
+type StagedJob struct {
+	Job    domain.Job
+	Source domain.MediaSource
+	// Asset is the zero asset for a job without one.
+	Asset    domain.MediaAsset
+	Attempts []domain.Attempt
+	// Journal is the job's publish journal, nil when it has none.
+	Journal *replacepkg.PublishOperation
 }
 
 // LibraryBusyError is why DeleteLibrary refused, in counts. It wraps
 // ErrActiveWork.
 type LibraryBusyError struct {
 	Library string
-	// Running counts jobs a worker holds: leased, running, validating, or
-	// replacing.
+	// Running counts jobs a worker holds, by the job row (leased, running,
+	// validating, or replacing) or by the worker's own account of the
+	// attempts it still runs, whichever says so.
 	Running int64
 	// Publishing counts jobs whose publish was interrupted part-way and has
 	// not been resumed yet, whatever their state: the journal is at prepared,
@@ -222,10 +243,13 @@ func (e *LibraryBusyError) Unwrap() error {
 // one waiting to retry holds nothing a worker is using. The delete is refused
 // with a *LibraryBusyError in exactly two cases, and nothing is deleted then:
 //
-//   - a worker holds one of the library's jobs (leased, running, validating,
-//     or replacing). Its attempt writes a part file and may be about to
-//     replace a media file; deleting the row under it would leave that work
-//     without a record.
+//   - a worker holds one of the library's jobs: the row is leased, running,
+//     validating, or replacing, or inFlight names it. Its attempt writes a
+//     part file and may be about to replace a media file; deleting the row
+//     under it would leave that work without a record. inFlight is the
+//     worker's own account and covers what the row cannot: a canceled job is
+//     terminal the moment the cancel commits, while its attempt may still be
+//     stopping ffmpeg and cleaning up.
 //   - the publish of a job was interrupted part-way: its journal is at
 //     prepared, published, or source_cleaned. The journal names a destination
 //     file and possibly a backup on disk that only the job's next attempt can
@@ -237,12 +261,16 @@ func (e *LibraryBusyError) Unwrap() error {
 // can move a conflict, so it would keep its library forever; it waits for the
 // operator, like it does for a cancel (see cancelSkipReasonTx), and deleting
 // the library is the operator letting go of it. What the conflict left on
-// disk stays there: the caller reads the journal before the delete to say
-// which files those are.
+// disk stays there; the returned journal says which files those are.
 //
-// Checking and deleting share the transaction, and the store has a single
-// connection, so no job can be leased between the two.
-func (s *SQLiteStore) DeleteLibrary(ctx context.Context, name string) ([]DeletedJob, error) {
+// The checks, the read of what the deleted jobs staged, and the delete share
+// one transaction, and the store has a single connection, so between them no
+// job can be leased, start an attempt, stage, or fail into the queue. inFlight
+// is called inside the transaction for the same reason: a worker registers
+// its attempt before it asks the store to start it, so one that is not
+// registered by then cannot start one of these jobs any more. A nil inFlight
+// leaves the rows to speak alone.
+func (s *SQLiteStore) DeleteLibrary(ctx context.Context, name string, inFlight func() []domain.JobID) ([]DeletedJob, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, fmt.Errorf("begin library deletion: %w", err)
@@ -252,17 +280,25 @@ func (s *SQLiteStore) DeleteLibrary(ctx context.Context, name string) ([]Deleted
 		return nil, err
 	}
 
-	busy := LibraryBusyError{Library: name}
 	held := []domain.JobState{domain.JobStateLeased, domain.JobStateRunning, domain.JobStateValidating, domain.JobStateReplacing}
 	args := []any{name}
 	for _, state := range held {
 		args = append(args, string(state))
 	}
-	if err := tx.QueryRowContext(ctx, `
-SELECT count(*) FROM jobs j WHERE j.library_name = ? AND j.state IN (`+placeholders(len(held))+`)
-`, args...).Scan(&busy.Running); err != nil {
-		return nil, fmt.Errorf("count running jobs of library %q: %w", name, err)
+	running, err := jobIDsTx(ctx, tx, `SELECT id FROM jobs WHERE library_name = ? AND state IN (`+placeholders(len(held))+`)`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list running jobs of library %q: %w", name, err)
 	}
+	busyJobs := make(map[domain.JobID]struct{}, len(running))
+	for _, id := range running {
+		busyJobs[id] = struct{}{}
+	}
+	if inFlight != nil {
+		for _, id := range inFlight() {
+			busyJobs[id] = struct{}{}
+		}
+	}
+	busy := LibraryBusyError{Library: name, Running: int64(len(busyJobs))}
 	if err := tx.QueryRowContext(ctx, `
 SELECT count(*) FROM jobs j WHERE j.library_name = ? AND `+publishInFlightCondition,
 		append([]any{name}, settledPublishStages()...)...).Scan(&busy.Publishing); err != nil {
@@ -272,20 +308,9 @@ SELECT count(*) FROM jobs j WHERE j.library_name = ? AND `+publishInFlightCondit
 		return nil, &busy
 	}
 
-	rows, err := tx.QueryContext(ctx, `SELECT id, COALESCE(slug, '') FROM jobs WHERE library_name = ? ORDER BY id`, name)
+	deleted, err := deletedJobsTx(ctx, tx, name)
 	if err != nil {
-		return nil, fmt.Errorf("list jobs of library %q: %w", name, err)
-	}
-	var deleted []DeletedJob
-	for rows.Next() {
-		var job DeletedJob
-		if err := rows.Scan(&job.ID, &job.Slug); err != nil {
-			return nil, errors.Join(fmt.Errorf("scan job of library %q: %w", name, err), rows.Close())
-		}
-		deleted = append(deleted, job)
-	}
-	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
-		return nil, fmt.Errorf("list jobs of library %q: %w", name, err)
+		return nil, err
 	}
 
 	// Jobs go first by name: a job row always carries its library, also when
@@ -306,6 +331,83 @@ SELECT count(*) FROM jobs j WHERE j.library_name = ? AND `+publishInFlightCondit
 		return nil, fmt.Errorf("commit library deletion: %w", err)
 	}
 	return deleted, nil
+}
+
+// deletedJobsTx reads every job of a library as DeleteLibrary returns it.
+func deletedJobsTx(ctx context.Context, tx *sql.Tx, library string) ([]DeletedJob, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT id, COALESCE(slug, ''), state, attempt_count FROM jobs WHERE library_name = ? ORDER BY id`, library)
+	if err != nil {
+		return nil, fmt.Errorf("list jobs of library %q: %w", library, err)
+	}
+	var deleted []DeletedJob
+	var staged []int
+	for rows.Next() {
+		var job DeletedJob
+		var state domain.JobState
+		var attempts int
+		if err := rows.Scan(&job.ID, &job.Slug, &state, &attempts); err != nil {
+			return nil, errors.Join(fmt.Errorf("scan job of library %q: %w", library, err), rows.Close())
+		}
+		if attempts > 0 && state != domain.JobStateComplete {
+			staged = append(staged, len(deleted))
+		}
+		deleted = append(deleted, job)
+	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		return nil, fmt.Errorf("list jobs of library %q: %w", library, err)
+	}
+	for _, index := range staged {
+		job, err := stagedJobTx(ctx, tx, deleted[index].ID)
+		if err != nil {
+			return nil, fmt.Errorf("read what job %d of library %q staged: %w", deleted[index].ID, library, err)
+		}
+		deleted[index].Staged = &job
+	}
+	return deleted, nil
+}
+
+func stagedJobTx(ctx context.Context, tx *sql.Tx, id domain.JobID) (StagedJob, error) {
+	job, err := getJobTx(ctx, tx, id)
+	if err != nil {
+		return StagedJob{}, err
+	}
+	staged := StagedJob{Job: job}
+	if staged.Source, err = getMediaSourceTx(ctx, tx, job.SourceID); err != nil {
+		return StagedJob{}, fmt.Errorf("get source: %w", err)
+	}
+	if job.AssetID != 0 {
+		if staged.Asset, err = getMediaAssetTx(ctx, tx, job.AssetID); err != nil {
+			return StagedJob{}, fmt.Errorf("get asset: %w", err)
+		}
+	}
+	if staged.Attempts, err = listAttemptsForJob(ctx, tx, id); err != nil {
+		return StagedJob{}, err
+	}
+	operation, journaled, err := getPublishOperation(ctx, tx, id)
+	if err != nil {
+		return StagedJob{}, err
+	}
+	if journaled {
+		staged.Journal = &operation
+	}
+	return staged, nil
+}
+
+// jobIDsTx runs a query that selects job ids.
+func jobIDsTx(ctx context.Context, tx *sql.Tx, query string, args ...any) (ids []domain.JobID, err error) {
+	rows, err := tx.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer closeRows(rows, &err, "close job ids")
+	for rows.Next() {
+		var id domain.JobID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
 }
 
 // LibraryOverview summarizes one library: what a scan last found, how its

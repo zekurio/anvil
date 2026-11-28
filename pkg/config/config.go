@@ -24,7 +24,7 @@ func Load(path string) (Config, error) {
 		}
 	}
 
-	cfg, err := resolve(raw)
+	cfg, err := resolve(raw, processStateHost())
 	if err != nil {
 		return Config{}, fmt.Errorf("invalid config:\n- %w", err)
 	}

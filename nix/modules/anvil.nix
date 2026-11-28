@@ -80,11 +80,16 @@ let
   ffmpegPackage = pkgs.jellyfin-ffmpeg or pkgs.ffmpeg;
   storeDirectory = builtins.dirOf daemon.store_path;
   controlSocketDirectory = builtins.dirOf daemon.control_socket;
-  daemonDirectoryPaths = lib.unique [
-    daemon.temp_dir
+  # The store can hold Arr API keys, so its directory and the scratch beside
+  # it are closed to the group. The group reaches the control socket through
+  # the socket's own directory, which an assertion keeps out of the store's.
+  # A temp_dir set to the socket directory takes the socket directory's mode.
+  socketDirectoryPaths = [ controlSocketDirectory ];
+  privateDirectoryPaths = lib.subtractLists socketDirectoryPaths (lib.unique [
     storeDirectory
-    controlSocketDirectory
-  ];
+    daemon.temp_dir
+  ]);
+  daemonDirectoryPaths = privateDirectoryPaths ++ socketDirectoryPaths;
   # The store must not live here. /run and /tmp do not survive a reboot or,
   # under PrivateTmp, a service stop, and temp_dir is scratch the operator may
   # wipe.
@@ -331,7 +336,9 @@ in
         daemon holds the process settings. Its store_path defaults to
         /var/lib/anvil/anvil.db and must stay on persistent storage, because
         the store holds the libraries, flows, and Arr connections made in the
-        web UI. temp_dir defaults to /var/lib/anvil/tmp and only holds scratch.
+        web UI. Its directory is created 0700, so control_socket, which
+        defaults to /run/anvil/anvild.sock, must lie outside it. temp_dir
+        defaults to /var/lib/anvil/tmp and only holds scratch.
         A daemon key from worker_count through log_level that is set here is
         pinned: the web UI's Settings page shows it read-only. Leave one out to
         manage it on that page.
@@ -397,6 +404,18 @@ in
         '';
       }
       {
+        # Mirrors the daemon's own rule: the store directory is 0700, so the
+        # service group could not reach a socket inside it.
+        assertion = !lib.hasPrefix "${storeDirectory}/" daemon.control_socket;
+        message = ''
+          services.anvil.settings.daemon.control_socket is ${daemon.control_socket}, inside
+          ${storeDirectory}, the directory of store_path. That directory is closed to
+          services.anvil.group because the store can hold Arr API keys, so the group could
+          not reach the socket. Put the socket in a directory of its own. The default is
+          ${daemonDefaults.control_socket}.
+        '';
+      }
+      {
         assertion = (cfg.settings.daemon or { }) ? media_roots || uncleanMediaRoots == [ ];
         message = ''
           services.anvil.mediaPaths has ${lib.concatMapStringsSep ", " (path: "\"${path}\"") uncleanMediaRoots},
@@ -451,7 +470,9 @@ in
     users.groups = optionalAttrs (cfg.createGroup && cfg.group != null) {
       ${cfg.group} = { };
     };
-    systemd.tmpfiles.rules = map (path: "d ${path} 0750 ${tmpfilesUser} ${tmpfilesGroup} - -") daemonDirectoryPaths;
+    systemd.tmpfiles.rules =
+      map (path: "d ${path} 0700 ${tmpfilesUser} ${tmpfilesGroup} - -") privateDirectoryPaths
+      ++ map (path: "d ${path} 0750 ${tmpfilesUser} ${tmpfilesGroup} - -") socketDirectoryPaths;
     networking.firewall.allowedTCPPorts = optional (
       cfg.web.openFirewall && web.enabled && webListen != null
     ) webPort;
@@ -487,9 +508,11 @@ in
           ];
           Restart = "on-failure";
           StateDirectory = [ "anvil" "anvil/tmp" ];
-          # The store can hold Arr API keys, so the state directory is as
-          # closed as the tmpfiles rule and the runtime directory.
-          StateDirectoryMode = "0750";
+          # The store can hold Arr API keys, so the state directory and its
+          # scratch are closed to the group, like their tmpfiles rules. The
+          # runtime directory holds the control socket, which the group
+          # reaches through it.
+          StateDirectoryMode = "0700";
           RuntimeDirectory = "anvil";
           RuntimeDirectoryMode = "0750";
           UMask = "0027";

@@ -3,7 +3,6 @@ package controlapi
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -13,15 +12,6 @@ import (
 	"github.com/zekurio/anvil/pkg/domain"
 	replacepkg "github.com/zekurio/anvil/pkg/replace"
 )
-
-type attemptSnapshotStore struct {
-	Store
-	attempts []domain.Attempt
-}
-
-func (s attemptSnapshotStore) ListAttemptsForJob(context.Context, domain.JobID) ([]domain.Attempt, error) {
-	return s.attempts, nil
-}
 
 func TestStagedDestinationsUseAttemptSnapshots(t *testing.T) {
 	job := domain.Job{ID: 42}
@@ -37,7 +27,7 @@ func TestStagedDestinationsUseAttemptSnapshots(t *testing.T) {
 		{Number: 5, ResolvedLibrary: []byte("{"), ResolvedFlow: []byte("{}"), ResolvedProfile: []byte("{}")},
 	}
 
-	destinations, err := stagedDestinations(context.Background(), attemptSnapshotStore{attempts: attempts}, job, source, domain.MediaAsset{})
+	destinations, err := stagedDestinations(job, source, domain.MediaAsset{}, attempts)
 	if err == nil || !strings.Contains(err.Error(), "decode attempt 5 resolved library") {
 		t.Fatalf("stagedDestinations error = %v, want malformed snapshot error", err)
 	}
@@ -51,14 +41,6 @@ func TestStagedDestinationsUseAttemptSnapshots(t *testing.T) {
 	}
 	if !reflect.DeepEqual(paths, want) {
 		t.Fatalf("stagedDestinations = %#v, want %#v", paths, want)
-	}
-}
-
-func TestStagedDestinationsPropagatesListError(t *testing.T) {
-	store := listAttemptsErrorStore{err: errors.New("store unavailable")}
-	_, err := stagedDestinations(context.Background(), store, domain.Job{ID: 42}, domain.MediaSource{}, domain.MediaAsset{})
-	if err == nil || !strings.Contains(err.Error(), "list attempts: store unavailable") {
-		t.Fatalf("stagedDestinations error = %v, want wrapped store error", err)
 	}
 }
 
@@ -129,15 +111,6 @@ func (s *cancelCleanupStore) ListAttemptsForJob(context.Context, domain.JobID) (
 func (s *cancelCleanupStore) PublishArtifactProtected(_ context.Context, path string) (bool, error) {
 	s.protectionChecked = true
 	return path == s.protectedPath, nil
-}
-
-type listAttemptsErrorStore struct {
-	Store
-	err error
-}
-
-func (s listAttemptsErrorStore) ListAttemptsForJob(context.Context, domain.JobID) ([]domain.Attempt, error) {
-	return nil, s.err
 }
 
 func snapshotAttempt(t *testing.T, number int, library domain.Library, profile domain.Profile) domain.Attempt {

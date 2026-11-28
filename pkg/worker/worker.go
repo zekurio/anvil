@@ -43,6 +43,7 @@ type Store interface {
 	SaveAttemptProfile(ctx context.Context, attemptID domain.AttemptID, resolvedProfile []byte) error
 	FinishAttempt(ctx context.Context, attemptID domain.AttemptID, state domain.AttemptState, message string, finishedAt time.Time) (domain.Attempt, error)
 	TransitionJob(ctx context.Context, jobID domain.JobID, to domain.JobState, now time.Time, lastError string) (domain.Job, error)
+	GetJob(ctx context.Context, id domain.JobID) (domain.Job, error)
 	CompleteJobOccurrence(ctx context.Context, input store.CompleteJobOccurrenceInput) (domain.Job, error)
 	HeartbeatJob(ctx context.Context, jobID domain.JobID, workerID string, leaseDeadline time.Time, now time.Time) (domain.Job, error)
 	RecordAttemptEvent(ctx context.Context, event domain.AttemptEvent) (domain.AttemptEvent, error)
@@ -99,6 +100,14 @@ func (r Runner) Run(ctx context.Context, assignment scheduler.Assignment) error 
 	}
 
 	attempt, err := r.Store.StartAttempt(ctx, assignment.Job.ID, assignment.WorkerID, resolvedLibrary, resolvedFlow, nil, r.now())
+	if errors.Is(err, store.ErrNotFound) {
+		// The job is no longer this worker's: it was canceled, or its library
+		// deleted, between the lease and now, or the lease went to another
+		// worker. Nothing has been touched on disk yet, so there is nothing
+		// to undo either.
+		slog.Info("worker attempt not started; the job is no longer leased to this worker", "worker", assignment.WorkerID, "job", assignment.Job.Label(), "library", string(assignment.Job.LibraryName))
+		return nil
+	}
 	if err != nil {
 		return fmt.Errorf("start attempt: %w", err)
 	}
@@ -525,6 +534,9 @@ func (r Runner) cancel(ctx context.Context, job domain.Job, attempt domain.Attem
 		return fmt.Errorf("finish canceled attempt: %w", err)
 	}
 	if _, err := r.Store.TransitionJob(ctx, job.ID, domain.JobStateCanceled, r.now(), message); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return jobDeleted(job, attempt)
+		}
 		return fmt.Errorf("transition job to canceled: %w", err)
 	}
 	slog.Warn("worker job canceled", "worker", attempt.WorkerID, "job", job.Label(), "attempt", attempt.Number, "library", string(job.LibraryName), "reason", message)
@@ -552,6 +564,9 @@ func (r Runner) fail(ctx context.Context, job domain.Job, attempt domain.Attempt
 	// attempt is the store having recorded the outcome first, not an error.
 	if _, err := r.Store.FinishAttempt(ctx, attempt.ID, domain.AttemptStateFailed, message, r.now()); err != nil && !errors.Is(err, store.ErrNotFound) {
 		return fmt.Errorf("finish failed attempt: %w", err)
+	}
+	if _, err := r.Store.GetJob(ctx, job.ID); errors.Is(err, store.ErrNotFound) {
+		return jobDeleted(job, attempt)
 	}
 	if errors.Is(cause, ErrInputOccurrenceChanged) {
 		slog.Warn("worker input occurrence changed; job skipped", "worker", attempt.WorkerID, "job", job.Label(), "attempt", attempt.Number, "library", string(job.LibraryName), "error", cause)
@@ -582,6 +597,16 @@ func (r Runner) fail(ctx context.Context, job domain.Job, attempt domain.Attempt
 		return fmt.Errorf("transition job to pending: %w", err)
 	}
 	return cause
+}
+
+// jobDeleted ends an attempt whose job row is gone: an operator deleted the
+// job's library, or pruned the job, after a cancel had already made it
+// terminal. There is no outcome left to record. The attempt cleaned up its
+// staging and part file before it got here, which is all a deleted job can
+// still own on disk, so this is reported once and not as an error.
+func jobDeleted(job domain.Job, attempt domain.Attempt) error {
+	slog.Info("worker attempt ended after its job was deleted", "worker", attempt.WorkerID, "job", job.Label(), "attempt", attempt.Number, "library", string(job.LibraryName))
+	return nil
 }
 
 func (r Runner) cleanupFailedStaging(ctx context.Context, job *pipeline.JobContext, cfg config.Config) {

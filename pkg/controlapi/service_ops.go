@@ -100,12 +100,7 @@ func (s Service) RecoverStaleJobs(ctx context.Context) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
-	for _, jobID := range recovery.Ended {
-		// The jobs are already terminal, so this is the only chance to
-		// reclaim their parts: it must not stop with a daemon shutdown or a
-		// control client that hung up.
-		s.cleanupOrphanedPart(context.WithoutCancel(ctx), jobID)
-	}
+	s.ReclaimEndedJobs(ctx, recovery.Ended)
 	return recovery.Recovered, nil
 }
 
@@ -175,6 +170,9 @@ func (s Service) ScanLibraries(ctx context.Context, request control.LibraryScanR
 	} else {
 		result, err = s.Scanner.Scan(ctx, cfg)
 	}
+	// A scan of several libraries that failed part-way has still skipped the
+	// denied jobs of the ones it applied.
+	s.ReclaimEndedJobs(ctx, result.DeniedJobs)
 	if err != nil {
 		return control.LibraryScanResponse{}, err
 	}
@@ -183,7 +181,7 @@ func (s Service) ScanLibraries(ctx context.Context, request control.LibraryScanR
 		Libraries: result.Libraries, Sources: result.Sources, Assets: result.Assets,
 		EnqueuedJobs: result.EnqueuedJobs, ExistingJobs: result.ExistingJobs,
 		SkippedIgnored: result.SkippedIgnored, SkippedUnstable: result.SkippedUnstable,
-		DeniedJobs: result.DeniedJobs,
+		DeniedJobs: len(result.DeniedJobs),
 	}
 	if !result.NextStableAt.IsZero() {
 		nextStableAt := result.NextStableAt
@@ -333,6 +331,7 @@ func (s Service) forcePlannedOccurrence(ctx context.Context, library config.Libr
 	}
 	result, err := s.Store.ForceOccurrence(ctx, store.ForceOccurrenceInput{
 		LibraryName:        domain.LibraryName(library.Name),
+		LibraryCreatedAt:   library.CreatedAt,
 		SourceKind:         candidate.SourceKind,
 		SourceRelativePath: candidate.SourceRelativePath,
 		SourceFingerprint: domain.FileFingerprint{
@@ -351,6 +350,11 @@ func (s Service) forcePlannedOccurrence(ctx context.Context, library config.Libr
 		// Active work is an operator-fixable state, not a daemon failure: the
 		// answer is to wait for or cancel the running job.
 		return control.ForceOccurrenceResponse{}, refused(ForceRefusedActive, invalidArgumentf("library %q path %q still has active work; wait for it or cancel it first", library.Name, relativePath))
+	}
+	if errors.Is(err, store.ErrNotFound) {
+		// The library was deleted, or deleted and created again, after it
+		// was planned: the plan is not about the library there is now.
+		return control.ForceOccurrenceResponse{}, notFoundf("library %q was deleted while path %q was being requeued", library.Name, relativePath)
 	}
 	if err != nil {
 		return control.ForceOccurrenceResponse{}, fmt.Errorf("force occurrence for library %q path %q: %w", library.Name, relativePath, err)

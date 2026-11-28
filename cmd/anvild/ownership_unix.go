@@ -37,13 +37,15 @@ func acquireDaemonOwnership(storePath string) (*daemonOwnership, error) {
 		// daemon in a way this lock could describe.
 		return &daemonOwnership{}, nil
 	}
-	// The lock lives beside the store, so creating its directory here also
-	// provisions the store directory a fresh install has not created yet.
-	// This is the operator's explicitly configured state path, not a guess.
-	if err := os.MkdirAll(filepath.Dir(lockPath), 0o750); err != nil {
+	// The lock lives beside the store and runs before the store opens, so
+	// this creates the store directory on a fresh install. It gets the mode
+	// the store would give it, 0700, because the store can hold Arr API keys.
+	// A directory that exists keeps its mode: the operator may have chosen a
+	// shared one, and the store files themselves are 0600 either way.
+	if err := os.MkdirAll(filepath.Dir(lockPath), 0o700); err != nil {
 		return nil, fmt.Errorf("create store directory for %q: %w", lockPath, err)
 	}
-	file, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o640)
+	file, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		return nil, fmt.Errorf("open daemon ownership lock %q: %w", lockPath, err)
 	}

@@ -137,11 +137,12 @@ temp_dir = "/srv/anvil"
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Daemon.StorePath != "/srv/anvil/anvil.db" {
-		t.Fatalf("StorePath = %q", cfg.Daemon.StorePath)
-	}
 	if cfg.Daemon.ControlSocket != "/srv/anvil/anvild.sock" {
 		t.Fatalf("ControlSocket = %q", cfg.Daemon.ControlSocket)
+	}
+	// temp_dir is scratch, so the store default never follows it there.
+	if cfg.Daemon.StorePath == "" || strings.HasPrefix(cfg.Daemon.StorePath, "/srv/anvil/") {
+		t.Fatalf("StorePath = %q", cfg.Daemon.StorePath)
 	}
 }
 
@@ -350,8 +351,8 @@ ffmpeg_args = ["-svtav1-params", "tune=0"]
 	}
 }
 
-// With neither store_path nor temp_dir set the store lands under /tmp, and it
-// is the only copy of the libraries and flows, so the daemon warns.
+// An explicit store_path under /tmp or inside temp_dir is the only copy of the
+// libraries and flows, so the daemon warns. The defaults never get there.
 func TestStoreOnScratch(t *testing.T) {
 	scratch := t.TempDir()
 	t.Setenv("TMPDIR", scratch)
@@ -360,7 +361,10 @@ func TestStoreOnScratch(t *testing.T) {
 		daemon DaemonConfig
 		want   bool
 	}{
-		{name: "default", daemon: Default().Daemon, want: true},
+		{name: "default as root", daemon: resolveDaemon(rawDaemonConfig{}, stateHost{euid: 0}), want: false},
+		{name: "default as a user", daemon: resolveDaemon(rawDaemonConfig{}, stateHost{euid: 1000, home: fixedHome("/home/operator")}), want: false},
+		{name: "file URI under the system temp", daemon: DaemonConfig{TempDir: "/var/cache/anvil", StorePath: "file:" + filepath.Join(scratch, "anvil.db") + "?_pragma=busy_timeout(5000)"}, want: true},
+		{name: "in memory", daemon: DaemonConfig{TempDir: "/var/cache/anvil", StorePath: ":memory:"}, want: false},
 		{name: "inside temp_dir", daemon: DaemonConfig{TempDir: "/var/cache/anvil", StorePath: "/var/cache/anvil/state/anvil.db"}, want: true},
 		{name: "under the system temp", daemon: DaemonConfig{TempDir: "/var/cache/anvil", StorePath: filepath.Join(scratch, "anvil.db")}, want: true},
 		{name: "persistent", daemon: DaemonConfig{TempDir: "/var/cache/anvil", StorePath: "/var/lib/anvil/anvil.db"}, want: false},

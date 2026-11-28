@@ -107,18 +107,39 @@ func (d DaemonConfig) validate(p *problems) {
 	if strings.TrimSpace(d.TempDir) == "" {
 		p.addf("daemon.temp_dir is required")
 	}
-	if strings.TrimSpace(d.StorePath) == "" {
-		p.addf("daemon.store_path is required")
+	// Resolution leaves store_path empty only when it found no home directory
+	// for the default, and a temporary directory is no substitute.
+	storeFile, storeOnDisk, storeErr := StoreFile(d.StorePath)
+	switch {
+	case strings.TrimSpace(d.StorePath) == "":
+		p.addf("daemon.store_path is required: there is no home directory for the default $XDG_STATE_HOME/anvil/anvil.db or ~/.local/state/anvil/anvil.db; set it to a file on persistent storage")
+	case storeErr != nil:
+		p.addf("%v", storeErr)
 	}
 	switch {
 	case strings.TrimSpace(d.ControlSocket) == "":
 		p.addf("daemon.control_socket is required")
 	case !filepath.IsAbs(d.ControlSocket):
 		p.addf("daemon.control_socket must be an absolute path")
+	case storeOnDisk && socketInStoreDirectory(d.ControlSocket, storeFile):
+		p.addf("daemon.control_socket %q is inside the store's directory %q, which only the daemon may enter; put the socket in a directory of its own, such as /run/anvil", d.ControlSocket, filepath.Dir(storeFile))
 	}
 	for _, problem := range d.tunableProblems() {
 		p.addf("daemon.%s", problem.text)
 	}
+}
+
+// socketInStoreDirectory reports whether the control socket lies in the
+// store's directory or below it. The daemon creates that directory 0700 to
+// keep the store and its Arr API keys private, while the service group
+// reaches the socket through the socket's directory, so the two cannot share
+// one.
+func socketInStoreDirectory(socket, storeFile string) bool {
+	storeFile, err := filepath.Abs(storeFile)
+	if err != nil {
+		return false
+	}
+	return pathWithin(filepath.Clean(socket), filepath.Dir(storeFile))
 }
 
 func (profile ProfileConfig) validate(p *problems, name string) {

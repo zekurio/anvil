@@ -17,9 +17,9 @@
 
 [daemon]
 media_roots = [] # Absolute directory roots the web API may browse and assign to libraries. Empty leaves filesystem browsing and library locations unrestricted. Re-read on SIGHUP.
-temp_dir = "/var/lib/anvil/tmp" # Scratch directory for search samples and process logs. Encode artifacts are written on the destination filesystem as <name>.job-<id>.anvil-part: beside the destination for media libraries, under <handoff_path>/.anvil-work for download libraries. store_path and control_socket default to locations inside this directory.
-store_path = "/var/lib/anvil/anvil.db" # SQLite state path. Defaults to anvil.db inside temp_dir; any non-empty path.
-control_socket = "/run/anvil/anvild.sock" # Daemon Unix socket. Defaults to anvild.sock inside temp_dir; must be absolute.
+temp_dir = "/var/lib/anvil/tmp" # Scratch directory for search samples and process logs. Encode artifacts are written on the destination filesystem as <name>.job-<id>.anvil-part: beside the destination for media libraries, under <handoff_path>/.anvil-work for download libraries. Defaults to anvil inside the system temporary directory.
+store_path = "/var/lib/anvil/anvil.db" # SQLite state path, on persistent storage: the store is the only copy of the libraries, flows, Arr connections, and daemon settings. Defaults to /var/lib/anvil/anvil.db as root, otherwise to anvil/anvil.db in $XDG_STATE_HOME or ~/.local/state; set it when there is no home directory. A missing directory is created 0700.
+control_socket = "/run/anvil/anvild.sock" # Daemon Unix socket. Defaults to anvild.sock inside temp_dir; must be absolute and outside the store's directory.
 worker_count = 2 # Simultaneous jobs. Defaults to the CPU count; integer >= 1.
 total_threads = 8 # Shared encode-thread budget. Defaults to the CPU count; integer >= 0.
 max_threads_per_job = 0 # Per-job thread cap. Zero shares the budget across worker slots; integer >= 0.

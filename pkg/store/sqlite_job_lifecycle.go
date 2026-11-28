@@ -55,10 +55,10 @@ func (e *RetryRefusedError) Error() string {
 }
 
 // deniedByRules reports whether a scan skipped the job because the rules of
-// its library deny the file (scanApplication.skipDeniedJobs): it never
-// started, and its reason is a rule's.
+// its library deny the file (scanApplication.skipDeniedJobs): it is skipped,
+// and its reason is a rule's.
 func deniedByRules(job domain.Job) bool {
-	return job.State == domain.JobStateSkipped && job.AttemptCount == 0 && config.DeniedByRules(job.LastError)
+	return job.State == domain.JobStateSkipped && config.DeniedByRules(job.LastError)
 }
 
 func (s *SQLiteStore) EnqueueJob(ctx context.Context, input EnqueueJobInput) (domain.Job, bool, error) {

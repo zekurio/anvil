@@ -256,18 +256,16 @@ func (s *Server) deleteLibrary(_ http.ResponseWriter, r *http.Request) (int, any
 	if _, err := s.storedLibrary(r.Context(), name); err != nil {
 		return fail(err)
 	}
-	// Where the library's jobs left part files is read now, while the rows
-	// that say so still exist, and acted on only after the delete went
-	// through.
-	parts, err := s.Jobs.LibraryParts(r.Context(), name)
-	if err != nil {
-		return fail(err)
-	}
 	// Jobs that only wait go with the library, and so does a job whose
 	// publish stopped in conflict. The store refuses while a worker holds one
 	// of its jobs or an interrupted publish still has to be resumed, and says
-	// which.
-	deleted, err := s.Store.DeleteLibrary(r.Context(), name)
+	// which. Whether a worker still runs an attempt is asked inside the
+	// delete's transaction, so no attempt can start between the answer and
+	// the delete; the same transaction reads where the deleted jobs staged,
+	// so a job that stages or fails meanwhile cannot be missed either.
+	deleted, err := s.Store.DeleteLibrary(r.Context(), name, func() []domain.JobID {
+		return s.Jobs.AttemptsInFlight(name)
+	})
 	var busy *store.LibraryBusyError
 	switch {
 	case errors.As(err, &busy):
@@ -282,7 +280,7 @@ func (s *Server) deleteLibrary(_ http.ResponseWriter, r *http.Request) (int, any
 	// request: the library is gone either way. It also has to happen whether
 	// or not the client is still there, because once the rows are deleted
 	// nothing else knows which part files were theirs.
-	s.Jobs.RemoveParts(context.WithoutCancel(r.Context()), parts)
+	s.Jobs.RemoveParts(context.WithoutCancel(r.Context()), deleted)
 	// Scratch under the temp dir is only disk space the staging cleanup also
 	// knows how to reclaim.
 	scratch := make([]staging.Job, 0, len(deleted))

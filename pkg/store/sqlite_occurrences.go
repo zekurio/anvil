@@ -25,7 +25,7 @@ func (s *SQLiteStore) ForceOccurrence(ctx context.Context, input ForceOccurrence
 	}
 	defer rollback(tx)
 
-	library, err := requireLibraryTx(ctx, tx, input.LibraryName)
+	library, err := requireLibraryRowTx(ctx, tx, input.LibraryName, input.LibraryCreatedAt)
 	if err != nil {
 		return ForceOccurrenceResult{}, err
 	}

@@ -245,12 +245,23 @@ process output goes to per-attempt log files plus artifact events
   removes the library with its jobs, sources, and scan records in one
   transaction. Jobs that only wait go with it. It refuses with a
   `LibraryBusyError` (`ErrActiveWork`) in two cases: a worker holds a job
-  (`leased`, `running`, `validating`, `replacing`), or a publish journal is at
-  `prepared`, `published`, or `source_cleaned`. A journal in `conflict` does
-  not refuse it. The web API reads the part files of the library's jobs
-  before the delete (`controlapi.Service.LibraryParts`) and removes them
-  after it. A flow or Arr connection still assigned to a library is not
-  deleted (`InUseError`).
+  (`leased`, `running`, `validating`, `replacing`, or still listed by
+  `scheduler.RunningJobs`, which covers a canceled job whose attempt is
+  winding down), or a publish journal is at `prepared`, `published`, or
+  `source_cleaned`. A journal in `conflict` does not refuse it. The same
+  transaction reads where the deleted jobs staged and returns it
+  (`store.DeletedJob`); the web API removes those part files after the
+  delete (`controlapi.Service.RemoveParts`). A flow or Arr connection still
+  assigned to a library is not deleted (`InUseError`).
+- A scan that finds a file denied skips every job of it that only waits
+  (`pending` or `retrying`, whatever its attempt count) and has no unresolved
+  publish journal. A job a worker holds is left alone. The skipped ids go
+  back to the caller, which reclaims their part files
+  (`controlapi.Service.ReclaimEndedJobs`), as stale-lease recovery does.
+- A `ScanToken` and a forced occurrence carry the library row's `created_at`.
+  A library deleted and created again under the same name is a different
+  library: a scan planned against the old row is superseded, and a requeue is
+  refused.
 - `UpdateLibrary` writes a changed priority to the library's jobs in the same
   transaction. The scheduler leases by `jobs.priority`, so the two must not
   drift.
@@ -262,7 +273,12 @@ process output goes to per-attempt log files plus artifact events
   `publishInFlightCondition`, which lets a `conflict` journal go.
 - The store sets its database, `-wal`, and `-shm` files to `0600` on every
   open and creates a missing parent directory `0700`. It can hold Arr API
-  keys; do not loosen either mode.
+  keys; do not loosen either mode. The ownership lock runs first and creates
+  the directory `0700` and `<store_path>.lock` `0600` itself. An existing
+  directory keeps its mode (it may be shared); the NixOS module enforces
+  `0700` on its state directory. The control socket must lie outside the
+  store's directory (a daemon rule in `pkg/config` and a module assertion),
+  because the service group reaches the socket through its directory.
 - A list query never reads or decodes `pipeline_context_json`. The probe
   facts the library file list shows live in the `probe_*` columns of `jobs`,
   which `SaveJobPipelineContext` writes in the same statement as the
@@ -296,6 +312,15 @@ process output goes to per-attempt log files plus artifact events
   under `<handoff_path>/.anvil-work` for download libraries, so an importer
   never sees it), so publish is fsync + hardlink + unlink, never a bulk copy; `pkg/staging` keeps only
   scratch (search samples) under `temp_dir`.
+- The default `store_path` is persistent, never under a temporary directory:
+  `config.SystemStorePath` (`/var/lib/anvil/anvil.db`) as root, otherwise
+  `anvil/anvil.db` in `$XDG_STATE_HOME` (when absolute) or `~/.local/state`.
+  Without a home it stays empty and `Validate` asks for an explicit
+  `daemon.store_path`. Resolution reads the uid, environment, and home through
+  `stateHost`, which tests fill in. `temp_dir` and the control socket still
+  default under the system temporary directory. `config.StoreFile` maps a
+  plain path or a `file:` URI to the store's file; use it rather than
+  reparsing `store_path`.
 - `anvild` takes an exclusive `flock` on `<store_path>.lock`, then claims the
   control socket, and only then opens the store, recovers jobs, sweeps
   staging, runs the legacy import, and builds the runtime snapshot. Nothing
