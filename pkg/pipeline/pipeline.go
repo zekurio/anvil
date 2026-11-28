@@ -14,15 +14,20 @@ import (
 )
 
 type JobContext struct {
-	Job       domain.Job
-	Attempt   domain.Attempt
-	Source    domain.MediaSource
-	Asset     domain.MediaAsset
-	Library   domain.Library
-	Profile   domain.Profile
-	Resources domain.ResourceAllocation
-	Metadata  domain.JobMetadata
-	InputPath string
+	Job     domain.Job
+	Attempt domain.Attempt
+	Source  domain.MediaSource
+	Asset   domain.MediaAsset
+	Library domain.Library
+	// Flow is the library's flow as it was when the attempt started. The
+	// flow step evaluates it against the probe and sets Profile and
+	// FlowResolution; steps before it must not read Profile.
+	Flow           domain.FlowSnapshot
+	FlowResolution *domain.FlowResolution
+	Profile        domain.Profile
+	Resources      domain.ResourceAllocation
+	Metadata       domain.JobMetadata
+	InputPath      string
 	// DestinationPath is the final publish path planned by the stage step;
 	// OutputPath is the temporary name the artifact is written to (see
 	// replace.PartPath) until publish links it into place.
@@ -30,6 +35,12 @@ type JobContext struct {
 	OutputPath      string
 	StagingDir      string
 	FinalPath       string
+	// SourceMediaRemoved is set by the publish step when the operation it
+	// committed removed the source media, as a handoff with source cleanup
+	// does. It reports what the journaled operation did, which is not always
+	// what the library says now: the library may have been edited between a
+	// publish that was interrupted and the attempt that finished it.
+	SourceMediaRemoved bool
 
 	Probe      *domain.ProbeResult
 	Audio      *domain.AudioSelection
@@ -40,15 +51,20 @@ type JobContext struct {
 	Validation *domain.ValidationResult
 }
 
+// ErrStop is returned, wrapped, by a block that finished its own work and
+// decided the job needs none of the remaining steps. The runner records the
+// step as finished, not failed, and returns the error so the caller can tell
+// what stopped the run.
+var ErrStop = errors.New("pipeline stopped by a step")
+
 // NewJobContext starts a job context for one occurrence of a library's media.
 // The input path follows from the library root and the occurrence paths.
-func NewJobContext(job domain.Job, source domain.MediaSource, asset domain.MediaAsset, library domain.Library, profile domain.Profile) *JobContext {
+func NewJobContext(job domain.Job, source domain.MediaSource, asset domain.MediaAsset, library domain.Library) *JobContext {
 	return &JobContext{
 		Job:       job,
 		Source:    source,
 		Asset:     asset,
 		Library:   library,
-		Profile:   profile,
 		InputPath: mediapath.Input(library.Path, source, asset),
 	}
 }
@@ -119,6 +135,16 @@ func (r Runner) runStep(ctx context.Context, index int, block Block, job *JobCon
 	log.Info("pipeline step started")
 	started := time.Now()
 	if err := block.Run(process.WithStep(ctx, step), job); err != nil {
+		if errors.Is(err, ErrStop) {
+			// The step did what it is there for. What it decided is recorded
+			// like any other outcome; a failure to record it must not turn
+			// the decision into a different one.
+			log.Info("pipeline step stopped the run", "duration", time.Since(started), "reason", err)
+			if recordErr := r.recordOutcome(ctx, block, job, payload); recordErr != nil {
+				return errors.Join(err, recordErr)
+			}
+			return err
+		}
 		log.Error("pipeline step failed", "duration", time.Since(started), "error", err)
 		// A failing block can still have decided something worth keeping —
 		// a fail_job stream selection is exactly the case where the record
@@ -194,6 +220,9 @@ func (r Runner) recordBlockArtifact(ctx context.Context, block Block, job *JobCo
 	if !ok {
 		return nil
 	}
+	// The log carries the same one-line outcome as the attempt event, also
+	// for a resumed step whose block never ran.
+	slog.Info("pipeline step result", "job", job.Job.Label(), "attempt", job.Attempt.Number, "step", block.Name(), "artifact", artifact.Name, "result", artifact.Message)
 	return r.record(ctx, job.Attempt.ID, domain.AttemptEventArtifact, artifact.Name, artifact.Message, artifact.Payload)
 }
 

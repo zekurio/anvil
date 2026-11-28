@@ -27,3 +27,19 @@ coverage.out
 # OS files
 .DS_Store
 Thumbs.db
+
+# Nix build result symlinks
+/result
+/result-*
+
+# Web UI dependencies and build output. dist keeps only its placeholder.
+/web/node_modules/
+/web/dist/*
+!/web/dist/.gitkeep
+
+# Vite and TypeScript caches, and the temp files Vite leaves beside its config
+# when loading it is interrupted
+/web/.vite/
+/web/vite.config.*.timestamp-*
+/web/*.tsbuildinfo
+npm-debug.log*

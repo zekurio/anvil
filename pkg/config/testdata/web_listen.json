@@ -1,0 +1,262 @@
+[
+  {
+    "listen": "127.0.0.1:8484",
+    "valid": true,
+    "loopback": true
+  },
+  {
+    "listen": "127.8.9.10:8484",
+    "valid": true,
+    "loopback": true
+  },
+  {
+    "listen": "127.255.255.255:1",
+    "valid": true,
+    "loopback": true
+  },
+  {
+    "listen": "localhost:8484",
+    "valid": true,
+    "loopback": true
+  },
+  {
+    "listen": "LOCALHOST:8484",
+    "valid": true,
+    "loopback": true
+  },
+  {
+    "listen": "localhost.:8484",
+    "valid": true,
+    "loopback": true
+  },
+  {
+    "listen": "anvil.localhost:8484",
+    "valid": true,
+    "loopback": true
+  },
+  {
+    "listen": "[::1]:8484",
+    "valid": true,
+    "loopback": true
+  },
+  {
+    "listen": "[0:0:0:0:0:0:0:1]:8484",
+    "valid": true,
+    "loopback": true
+  },
+  {
+    "listen": "[0000:0000:0000:0000:0000:0000:0000:0001]:8484",
+    "valid": true,
+    "loopback": true
+  },
+  {
+    "listen": "[0::1]:8484",
+    "valid": true,
+    "loopback": true
+  },
+  {
+    "listen": "[::0001]:8484",
+    "valid": true,
+    "loopback": true
+  },
+  {
+    "listen": "[::ffff:127.0.0.1]:8484",
+    "valid": true,
+    "loopback": true
+  },
+  {
+    "listen": "[::FFFF:127.1.2.3]:8484",
+    "valid": true,
+    "loopback": true
+  },
+  {
+    "listen": "[::ffff:7f00:1]:8484",
+    "valid": true,
+    "loopback": true
+  },
+  {
+    "listen": "[0:0:0:0:0:ffff:7f00:1]:8484",
+    "valid": true,
+    "loopback": true
+  },
+  {
+    "listen": "127.0.0.1:0",
+    "valid": true,
+    "loopback": true
+  },
+  {
+    "listen": "127.0.0.1:65535",
+    "valid": true,
+    "loopback": true
+  },
+  {
+    "listen": "127.0.0.1:08484",
+    "valid": true,
+    "loopback": true
+  },
+  {
+    "listen": ":8484",
+    "valid": true,
+    "loopback": false
+  },
+  {
+    "listen": "0.0.0.0:8484",
+    "valid": true,
+    "loopback": false
+  },
+  {
+    "listen": "[::]:8484",
+    "valid": true,
+    "loopback": false
+  },
+  {
+    "listen": "192.168.1.10:8484",
+    "valid": true,
+    "loopback": false
+  },
+  {
+    "listen": "128.0.0.1:8484",
+    "valid": true,
+    "loopback": false
+  },
+  {
+    "listen": "12.7.0.1:8484",
+    "valid": true,
+    "loopback": false
+  },
+  {
+    "listen": "nas.example:8484",
+    "valid": true,
+    "loopback": false
+  },
+  {
+    "listen": "localhost.example:8484",
+    "valid": true,
+    "loopback": false
+  },
+  {
+    "listen": "notlocalhost:8484",
+    "valid": true,
+    "loopback": false
+  },
+  {
+    "listen": "127.example.org:8484",
+    "valid": true,
+    "loopback": false
+  },
+  {
+    "listen": "127.1:8484",
+    "valid": true,
+    "loopback": false
+  },
+  {
+    "listen": "127.0.0.01:8484",
+    "valid": true,
+    "loopback": false
+  },
+  {
+    "listen": "127.0.0.256:8484",
+    "valid": true,
+    "loopback": false
+  },
+  {
+    "listen": "127.0.0.1.2:8484",
+    "valid": true,
+    "loopback": false
+  },
+  {
+    "listen": "[::2]:8484",
+    "valid": true,
+    "loopback": false
+  },
+  {
+    "listen": "[1::1]:8484",
+    "valid": true,
+    "loopback": false
+  },
+  {
+    "listen": "[fe80::1]:8484",
+    "valid": true,
+    "loopback": false
+  },
+  {
+    "listen": "[::1%lo]:8484",
+    "valid": true,
+    "loopback": false
+  },
+  {
+    "listen": "[::ffff:128.0.0.1]:8484",
+    "valid": true,
+    "loopback": false
+  },
+  {
+    "listen": "[::ffff:8000:1]:8484",
+    "valid": true,
+    "loopback": false
+  },
+  {
+    "listen": "[::fffe:127.0.0.1]:8484",
+    "valid": true,
+    "loopback": false
+  },
+  {
+    "listen": "[2001:db8::7f00:1]:8484",
+    "valid": true,
+    "loopback": false
+  },
+  {
+    "listen": "[:::1]:8484",
+    "valid": true,
+    "loopback": false
+  },
+  {
+    "listen": "[0:0:0:0:0:0:0:0:1]:8484",
+    "valid": true,
+    "loopback": false
+  },
+  {
+    "listen": "127.0.0.1",
+    "valid": false,
+    "loopback": false
+  },
+  {
+    "listen": "localhost",
+    "valid": false,
+    "loopback": false
+  },
+  {
+    "listen": "127.0.0.1:",
+    "valid": false,
+    "loopback": false
+  },
+  {
+    "listen": "127.0.0.1:http",
+    "valid": false,
+    "loopback": false
+  },
+  {
+    "listen": "127.0.0.1:65536",
+    "valid": false,
+    "loopback": false
+  },
+  {
+    "listen": "::1:8484",
+    "valid": false,
+    "loopback": false
+  },
+  {
+    "listen": "[::1]",
+    "valid": false,
+    "loopback": false
+  },
+  {
+    "listen": "[::1]8484",
+    "valid": false,
+    "loopback": false
+  },
+  {
+    "listen": "",
+    "valid": false,
+    "loopback": false
+  }
+]

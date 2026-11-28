@@ -2,3 +2,13 @@
 
 *.bat text eol=crlf
 *.cmd text eol=crlf
+
+*.woff2 binary
+
+# GitHub collapses these machine-written files in diffs and leaves them out
+# of language stats.
+go.sum linguist-generated=true
+flake.lock linguist-generated=true
+devenv.lock linguist-generated=true
+web/package-lock.json linguist-generated=true
+web/src/ui/icon-data.ts linguist-generated=true

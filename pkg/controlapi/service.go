@@ -27,6 +27,7 @@ import (
 // uses, and that tests can stand in for parts of it.
 type Store interface {
 	ListJobs(context.Context, store.JobListFilter) ([]store.JobSummary, error)
+	CountJobs(context.Context, store.JobListFilter) (int64, error)
 	GetJobSummary(context.Context, domain.JobID) (store.JobSummary, error)
 	ResolveJobReference(context.Context, string) (domain.Job, error)
 	GetJob(context.Context, domain.JobID) (domain.Job, error)
@@ -41,12 +42,17 @@ type Store interface {
 	ListAttemptEvents(context.Context, domain.AttemptID) ([]domain.AttemptEvent, error)
 	GetJobPipelineContext(context.Context, domain.JobID) (domain.JobPipelineContext, bool, error)
 	RetryJobs(context.Context, store.RetryJobsInput) (store.RetryJobsResult, error)
-	RecoverStaleJobs(context.Context, int, time.Time) (int64, error)
+	RecoverStaleJobs(context.Context, int, time.Time) (store.StaleRecovery, error)
 	ListLibraryStats(context.Context, store.LibraryStatsFilter) ([]store.LibraryStats, error)
 	PruneMissingSourceJobs(context.Context, store.PruneMissingSourceJobsOptions) (store.PruneMissingSourceJobsResult, error)
 	ForceOccurrence(context.Context, store.ForceOccurrenceInput) (store.ForceOccurrenceResult, error)
 	Backup(context.Context, string) (store.BackupResult, error)
 	ProtectedJobs(context.Context) ([]store.ProtectedJob, error)
+	ListLibraries(context.Context) ([]store.Library, error)
+	LibraryOverviews(context.Context) (map[string]store.LibraryOverview, error)
+	ListFlows(context.Context) ([]store.Flow, error)
+	FlowNames(context.Context) (map[int64]string, error)
+	FlowLibraries(context.Context) (map[int64][]string, error)
 }
 
 // Scanner is the daemon's own scanner. Scans requested over the control socket
@@ -70,6 +76,11 @@ type Service struct {
 	// reports whether one was signaled. It is optional: without it, cancel
 	// still records the terminal state but cannot stop a live process.
 	CancelRunningJob func(domain.JobID) bool
+	// RunningAttempts lists the jobs of a library a worker is running an
+	// attempt for, from before the attempt starts until the worker has
+	// cleaned up after it (scheduler.Scheduler.RunningJobs). It is optional:
+	// without it, only the job rows say what is running.
+	RunningAttempts func(domain.LibraryName) []domain.JobID
 }
 
 func (s Service) Status(ctx context.Context) (control.StatusResponse, error) {
@@ -345,15 +356,16 @@ func (s Service) CancelJobs(ctx context.Context, request control.JobCancelReques
 	return response, nil
 }
 
-// cleanupOrphanedPart removes a canceled job's unpublished artifact beside
-// its destination. A canceled job never runs another attempt, so without this
-// a part left by a crashed attempt would sit in the library forever. The job
-// must have no publish journal: cancel only refuses jobs whose publish is in
-// flight, while a conflicted publish leaves its residue for the operator on
+// cleanupOrphanedPart removes the unpublished artifact of a job that ended
+// without a worker: one an operator canceled, or one stale-lease recovery
+// failed or skipped. Such a job never runs another attempt, so without this a
+// part left by a crashed attempt would sit in the library forever. The job
+// must have no publish journal: an interrupted publish still needs its
+// artifact, and a conflicted one leaves its residue for the operator on
 // purpose — both keep their part file.
 func (s Service) cleanupOrphanedPart(ctx context.Context, jobID domain.JobID) {
 	log := func(reason string, err error) {
-		slog.Warn("canceled job part cleanup skipped", "job", jobID, "reason", reason, "error", err)
+		slog.Warn("part cleanup of an ended job skipped", "job", jobID, "reason", reason, "error", err)
 	}
 	if _, found, err := s.Store.GetPublishOperation(ctx, jobID); err != nil || found {
 		log("publish journal present", err)
@@ -369,18 +381,16 @@ func (s Service) cleanupOrphanedPart(ctx context.Context, jobID domain.JobID) {
 		log("load occurrence", err)
 		return
 	}
-	destinations, destErr := stagedDestinations(ctx, s.Store, job, source, asset)
+	attempts, err := s.Store.ListAttemptsForJob(ctx, jobID)
+	if err != nil {
+		log("list attempts", err)
+		return
+	}
+	destinations, destErr := stagedDestinations(job, source, asset, attempts)
 	if destErr != nil {
 		log("resolve some staged destinations", destErr)
 	}
-	for _, destination := range destinations {
-		if err := replacepkg.CleanupPartFiles(destination.Library, destination.Path, replacepkg.PartJobLabel(jobID)); err != nil {
-			log("remove part files", err)
-		}
-		if err := replacepkg.CleanupLegacyPartFiles(ctx, s.Store, destination.Path); err != nil {
-			log("remove legacy part files", err)
-		}
-	}
+	s.removeStagedParts(ctx, jobID, destinations)
 }
 
 // stagedDestination is a publish destination together with the library
@@ -395,29 +405,22 @@ type stagedDestination struct {
 // config, so the persisted per-attempt snapshots — not the current runtime
 // config, which a reload may have changed or removed since — decide where an
 // orphaned part file can be.
-func stagedDestinations(ctx context.Context, store Store, job domain.Job, source domain.MediaSource, asset domain.MediaAsset) ([]stagedDestination, error) {
-	attempts, err := store.ListAttemptsForJob(ctx, job.ID)
-	if err != nil {
-		return nil, fmt.Errorf("list attempts: %w", err)
-	}
+func stagedDestinations(job domain.Job, source domain.MediaSource, asset domain.MediaAsset, attempts []domain.Attempt) ([]stagedDestination, error) {
 	var destinations []stagedDestination
 	seen := make(map[string]struct{})
 	var errs []error
 	for _, attempt := range attempts {
+		// The profile is recorded once the flow step has resolved it, which
+		// is before anything is staged. An attempt without one never staged.
 		if len(attempt.ResolvedLibrary) == 0 || len(attempt.ResolvedProfile) == 0 {
-			continue // config resolution failed before the pipeline ran: never staged
+			continue
 		}
 		var library domain.Library
-		var profile domain.Profile
 		if err := json.Unmarshal(attempt.ResolvedLibrary, &library); err != nil {
 			errs = append(errs, fmt.Errorf("decode attempt %d resolved library: %w", attempt.Number, err))
 			continue
 		}
-		if err := json.Unmarshal(attempt.ResolvedProfile, &profile); err != nil {
-			errs = append(errs, fmt.Errorf("decode attempt %d resolved profile: %w", attempt.Number, err))
-			continue
-		}
-		destination, err := replacepkg.PlanDestination(pipeline.NewJobContext(job, source, asset, library, profile))
+		destination, err := replacepkg.PlanDestination(pipeline.NewJobContext(job, source, asset, library))
 		if err != nil {
 			errs = append(errs, fmt.Errorf("plan destination for attempt %d: %w", attempt.Number, err))
 			continue
@@ -622,11 +625,11 @@ func (s Service) jobOccurrence(ctx context.Context, job domain.Job) (domain.Medi
 }
 
 func plannedDestination(cfg config.Config, job domain.Job, source domain.MediaSource, asset domain.MediaAsset) string {
-	library, profile, err := cfg.ResolveForLibrary(job.LibraryName)
+	library, err := cfg.ResolveLibrary(job.LibraryName)
 	if err != nil {
 		return ""
 	}
-	destination, err := replacepkg.PlanDestination(pipeline.NewJobContext(job, source, asset, library, profile))
+	destination, err := replacepkg.PlanDestination(pipeline.NewJobContext(job, source, asset, library))
 	if err != nil {
 		return ""
 	}

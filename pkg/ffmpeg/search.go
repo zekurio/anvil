@@ -1,7 +1,11 @@
 package ffmpeg
 
 import (
+	"errors"
 	"fmt"
+	"maps"
+	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -61,23 +65,92 @@ func ReferenceFilter(plan domain.EncodePlan) string {
 	return plan.CropFilter
 }
 
-// encoderParamsOptions are the raw option names whose values libsvtav1,
-// libx265, and libx264 apply after the FFmpeg-level options. A rate-control
-// key inside one of them overrides the CRF Anvil searched for even though the
-// FFmpeg-level options themselves pass validation.
-var encoderParamsOptions = map[string]bool{
-	"svtav1-params": true,
-	"x265-params":   true,
-	"x264-params":   true,
+// encoderParams maps each encoder parameter bundle to the keys accepted
+// inside it. libsvtav1, libx265, and libx264 apply a bundle after the
+// FFmpeg-level options, and each of them has keys that name a file to read or
+// write (stats, csv, analysis-save, dump-yuv, fgs-table, cqmfile, film-grain
+// for x265, ...). So the bundles are an allow-list too: only keys whose value
+// is a number, an enum, or a colour description are listed. Keys that take a
+// path, select rate control or quality, change the frame geometry or timing,
+// or are unclear are left out.
+var encoderParams = map[string]map[string]bool{
+	"svtav1-params": keySet(
+		"tune", "film-grain", "film-grain-denoise", "adaptive-film-grain",
+		"enable-qm", "qm-min", "qm-max", "chroma-qm-min", "chroma-qm-max",
+		"aq-mode", "sharpness", "ac-bias", "luminance-qp-bias", "qp-scale-compress-strength",
+		"enable-variance-boost", "variance-boost-strength", "variance-octile", "variance-boost-curve",
+		"enable-overlays", "scd", "lookahead", "keyint", "irefresh-type", "hierarchical-levels",
+		"enable-tf", "tf-strength", "scm", "fast-decode", "max-tx-size",
+		"enable-restoration", "enable-cdef", "enable-dlf", "enable-mfmv", "enable-dg",
+		"tile-rows", "tile-columns", "lp", "pin",
+		"color-primaries", "transfer-characteristics", "matrix-coefficients", "color-range",
+		"chroma-sample-position", "mastering-display", "content-light",
+	),
+	"x265-params": keySet(
+		"aq-mode", "aq-strength", "aq-motion", "hevc-aq", "qg-size", "cutree",
+		"psy-rd", "psy-rdoq", "rd", "rdoq-level", "rd-refine", "dynamic-rd", "ssim-rd",
+		"rskip", "rskip-edge-threshold", "deblock", "sao", "sao-non-deblock", "limit-sao", "selective-sao",
+		"strong-intra-smoothing", "constrained-intra", "b-intra", "fast-intra", "rdpenalty",
+		"ctu", "min-cu-size", "max-tu-size", "tu-intra-depth", "tu-inter-depth", "limit-tu",
+		"ref", "limit-refs", "limit-modes", "rect", "amp", "max-merge", "me", "subme", "merange",
+		"temporal-mvp", "early-skip", "tskip", "tskip-fast", "signhide", "weightp", "weightb",
+		"bframes", "b-adapt", "b-pyramid", "bframe-bias", "rc-lookahead", "lookahead-slices",
+		"keyint", "min-keyint", "scenecut", "scenecut-bias", "hist-scenecut", "fades", "radl",
+		"gop-lookahead", "open-gop", "rc-grain", "nr-intra", "nr-inter", "ipratio", "pbratio",
+		"qcomp", "cbqpoffs", "crqpoffs", "frame-threads", "wpp", "info", "log-level",
+		"hdr10", "hdr10-opt", "repeat-headers", "aud", "hrd", "high-tier", "level-idc",
+		"colorprim", "transfer", "colormatrix", "range", "chromaloc", "master-display", "max-cll", "cll",
+	),
+	"x264-params": keySet(
+		"aq-mode", "aq-strength", "psy-rd", "psy", "trellis", "deblock", "nr",
+		"deadzone-inter", "deadzone-intra", "ipratio", "pbratio", "qcomp", "chroma-qp-offset", "mbtree",
+		"bframes", "b-adapt", "b-bias", "b-pyramid", "open-gop", "ref", "me", "subme", "merange",
+		"rc-lookahead", "keyint", "min-keyint", "scenecut", "cabac", "weightb", "weightp", "direct",
+		"partitions", "8x8dct", "mixed-refs", "chroma-me", "fast-pskip", "dct-decimate",
+		"constrained-intra", "aud",
+		"colorprim", "transfer", "colormatrix", "chromaloc", "mastering-display", "cll",
+	),
 }
 
-// managedParamsKeys are encoder-params keys that select quality, rate control,
-// or speed, which Anvil owns for the search and final encode.
-var managedParamsKeys = map[string]bool{
-	"crf": true, "qp": true, "qpmin": true, "qpmax": true,
-	"rc": true, "bitrate": true, "bit_rate": true, "tbr": true, "mbr": true,
-	"preset": true,
+// negatableParams are the bundles whose parser reads "no-<key>" as <key>
+// switched off, so no-sao=1 is the same key as sao=0.
+var negatableParams = map[string]bool{"x265-params": true, "x264-params": true}
+
+func keySet(keys ...string) map[string]bool {
+	set := make(map[string]bool, len(keys))
+	for _, key := range keys {
+		set[key] = true
+	}
+	return set
 }
+
+// encoderOptions is the small set of value-only encoder controls accepted
+// across Anvil's software, QSV, VAAPI, and AMF encoders. None names a file,
+// URL, device, stream selector, or filter graph.
+var encoderOptions = map[string]bool{
+	"tune": true, "profile": true, "level": true,
+	"g": true, "keyint_min": true, "bf": true, "refs": true, "sc_threshold": true,
+	"aq-mode": true, "aq-strength": true, "rc-lookahead": true, "b_strategy": true,
+	"look_ahead": true, "look_ahead_depth": true, "extbrc": true, "low_power": true,
+	"async_depth": true, "adaptive_i": true, "adaptive_b": true, "quality": true,
+}
+
+const acceptedEncoderArgs = "encoder parameter bundles (-svtav1-params, -x265-params, -x264-params) of value-only keys, or value-only tuning options (-tune, -profile:v, -level, -g, -keyint_min, -bf, -refs, -sc_threshold, -aq-mode, -aq-strength, -rc-lookahead, -b_strategy, -look_ahead, -look_ahead_depth, -extbrc, -low_power, -async_depth, -adaptive_i, -adaptive_b, -quality)"
+
+// managedParamsKeys are encoder-params keys that select quality, rate control,
+// or speed, which Anvil owns for the search and final encode. They are not in
+// any allow-list; naming them only gives the refusal a clearer reason. Keys
+// are compared lowercased with underscores as dashes, as x265 and x264 read
+// them.
+var managedParamsKeys = keySet(
+	"crf", "crf-min", "crf-max", "qp", "qpmin", "qpmax", "min-qp", "max-qp",
+	"rc", "bitrate", "bit-rate", "tbr", "mbr", "vbv-maxrate", "vbv-bufsize",
+	"pass", "passes", "lossless", "preset",
+)
+
+// negativeNumber is the one shape of value that may begin with "-": ffmpeg
+// takes the argument after an option as its value, so -g -1 is unambiguous.
+var negativeNumber = regexp.MustCompile(`^-[0-9]+(\.[0-9]+)?$`)
 
 // ValidateEncoderArgs prevents extra options from changing what is searched,
 // overriding the selected quality, or introducing additional inputs/outputs.
@@ -85,40 +158,65 @@ func ValidateEncoderArgs(args []string) error {
 	for i := 0; i < len(args); i += 2 {
 		key := args[i]
 		if !strings.HasPrefix(key, "-") || key == "-" || i+1 == len(args) {
-			return fmt.Errorf("ffmpeg_args must contain encoder option/value pairs; invalid option %q", key)
+			return fmt.Errorf("ffmpeg_args must contain option/value pairs; invalid option %q; accepted: %s", key, acceptedEncoderArgs)
 		}
 		name := strings.SplitN(strings.TrimLeft(key, "-"), ":", 2)[0]
-		if strings.HasPrefix(name, "filter") || strings.HasPrefix(name, "map") {
-			return fmt.Errorf("ffmpeg_args option %q is managed by Anvil and cannot be used during CRF search", key)
+		value := args[i+1]
+		if strings.HasPrefix(value, "-") && !negativeNumber.MatchString(value) {
+			return fmt.Errorf("ffmpeg_args value %q for option %q must not begin with \"-\" unless it is a negative number", value, key)
 		}
-		if encoderParamsOptions[name] {
-			if err := validateEncoderParams(args[i+1]); err != nil {
+		if _, bundle := encoderParams[name]; bundle {
+			if err := validateEncoderParams(name, value); err != nil {
 				return fmt.Errorf("ffmpeg_args option %q: %w", key, err)
 			}
 			continue
 		}
-		switch name {
-		case "i", "f", "y", "n", "stdin", "nostdin", "vf", "af", "lavfi", "s", "video_size", "r", "vsync", "fps_mode",
-			"t", "to", "ss", "sseof", "fs", "frames", "vframes", "stream_loop", "shortest", "copyts", "start_at_zero", "itsoffset", "itsscale",
-			"c", "codec", "vcodec", "an", "vn", "sn", "dn", "crf", "qp", "q", "qscale", "global_quality", "rc", "qp_i", "qp_p", "qp_b", "b", "vb", "bit_rate",
-			"pix_fmt", "pixel_format", "threads", "preset", "pass", "passlogfile", "progress", "stats_period":
-			return fmt.Errorf("ffmpeg_args option %q is managed by Anvil and cannot be used during CRF search", key)
+		if !encoderOptions[name] {
+			return fmt.Errorf("ffmpeg_args option %q is not accepted; accepted: %s", key, acceptedEncoderArgs)
 		}
 	}
 	return nil
 }
 
-// validateEncoderParams rejects managed keys in a codec params string such as
-// "tune=0:film-grain=8". Keys are colon separated.
-func validateEncoderParams(value string) error {
+// validateEncoderParams checks a bundle such as "tune=0:film-grain=8" against
+// the keys of its encoder. ffmpeg splits a bundle with av_dict_parse_string,
+// which honours backslash escapes and quotes and trims whitespace, so c\rf=51
+// or 'crf'=60 reaches the encoder as crf. Refusing every character but
+// letters, digits, and . , + - _ ( ) makes the literal split on ":" and "="
+// below see exactly the keys the encoder sees, and leaves no room for a path.
+// ffmpeg refuses an entry without "=", so even a switch needs a value (sao=1,
+// no-sao=1).
+func validateEncoderParams(option, value string) error {
+	keys := encoderParams[option]
 	for _, entry := range strings.Split(value, ":") {
-		key, _, found := strings.Cut(strings.TrimSpace(entry), "=")
-		if !found {
-			continue
-		}
-		if managedParamsKeys[strings.ToLower(strings.TrimSpace(key))] {
-			return fmt.Errorf("encoder param %q overrides a setting managed by Anvil", strings.TrimSpace(key))
+		key, setting, found := strings.Cut(entry, "=")
+		normalized := strings.ReplaceAll(strings.ToLower(key), "_", "-")
+		negated, isNegated := strings.CutPrefix(key, "no-")
+		accepted := keys[key] || isNegated && negatableParams[option] && keys[negated]
+		switch {
+		case entry == "":
+			return errors.New(`encoder params must not contain an empty entry; separate key=value entries with one ":"`)
+		case !paramText(key) || !paramText(setting):
+			return fmt.Errorf("encoder param %q may only contain letters, digits, and . , + - _ ( )", entry)
+		case managedParamsKeys[normalized]:
+			return fmt.Errorf("encoder param %q overrides a setting managed by Anvil", key)
+		case !accepted:
+			return fmt.Errorf("encoder param %q is not accepted in -%s; accepted: %s", key, option, strings.Join(slices.Sorted(maps.Keys(keys)), ", "))
+		case !found || setting == "":
+			return fmt.Errorf("encoder param %q needs a value, such as %s=1", key, key)
 		}
 	}
 	return nil
+}
+
+func paramText(text string) bool {
+	for _, r := range text {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+		case strings.ContainsRune(".,+-_()", r):
+		default:
+			return false
+		}
+	}
+	return true
 }

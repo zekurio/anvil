@@ -127,3 +127,28 @@ func encoderFor(codec string, accelerator string) (string, bool) {
 	encoder, ok := encoders[accelerator][codec]
 	return encoder, ok
 }
+
+// QualityRange returns the lowest and highest value an encoder honors for the
+// quality option Anvil drives it with: -crf for software encoders,
+// -global_quality for QSV and VAAPI, and the -qp_* options for AMF.
+//
+// The software ranges are measured: libsvtav1 reads -crf 0 as "not set" and
+// encodes at its default, libx265 refuses values above 51, and libx264 clamps
+// them. The hardware ranges follow the quantizer scales FFmpeg declares, where
+// 0 means "not set" for -global_quality and AV1 counts to 255 instead of 51.
+func QualityRange(encoder string) (int, int) {
+	highest := 51
+	if CanonicalCodec(encoder) == "av1" {
+		highest = 255
+	}
+	switch EncoderAccelerator(encoder) {
+	case AcceleratorQSV, AcceleratorVAAPI:
+		return 1, highest
+	case AcceleratorAMF:
+		return 0, highest
+	}
+	if CanonicalCodec(encoder) == "av1" {
+		return 1, 63
+	}
+	return 0, 51
+}

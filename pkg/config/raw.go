@@ -8,12 +8,22 @@ package config
 // here are the schema; keep them in sync with the resolved structs.
 type rawConfig struct {
 	Daemon    rawDaemonConfig             `toml:"daemon"`
+	Web       rawWebConfig                `toml:"web"`
 	Arrs      map[string]ArrConfig        `toml:"arrs"`
 	Profiles  map[string]rawProfileConfig `toml:"profiles"`
 	Libraries map[string]rawLibraryConfig `toml:"libraries"`
 }
 
+type rawWebConfig struct {
+	Enabled              *bool  `toml:"enabled"`
+	Listen               string `toml:"listen"`
+	PasswordFile         string `toml:"password_file"`
+	Password             string `toml:"password"`
+	AllowUnauthenticated bool   `toml:"allow_unauthenticated"`
+}
+
 type rawDaemonConfig struct {
+	MediaRoots        []string  `toml:"media_roots"`
 	TempDir           string    `toml:"temp_dir"`
 	StorePath         string    `toml:"store_path"`
 	ControlSocket     string    `toml:"control_socket"`

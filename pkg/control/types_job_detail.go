@@ -17,13 +17,15 @@ type JobShowRequest struct {
 // JobShowResponse is the full recorded history of a job. Its JSON shape is the
 // contract `anvilctl show --json` publishes.
 type JobShowResponse struct {
-	APIVersion       string                   `json:"api_version"`
-	ServerTime       time.Time                `json:"server_time"`
-	Job              JobDetail                `json:"job"`
-	PipelineContext  *PipelineContextDetail   `json:"pipeline_context,omitempty"`
-	PublishOperation *PublishOperationDetail  `json:"publish_operation,omitempty"`
-	StreamSelection  []AttemptStreamSelection `json:"stream_selection,omitempty"`
-	Attempts         []AttemptDetail          `json:"attempts"`
+	APIVersion       string                  `json:"api_version"`
+	ServerTime       time.Time               `json:"server_time"`
+	Job              JobDetail               `json:"job"`
+	PipelineContext  *PipelineContextDetail  `json:"pipeline_context,omitempty"`
+	PublishOperation *PublishOperationDetail `json:"publish_operation,omitempty"`
+	// Flow is absent until an attempt has evaluated the library's flow.
+	Flow            *JobFlowDetail           `json:"flow,omitempty"`
+	StreamSelection []AttemptStreamSelection `json:"stream_selection,omitempty"`
+	Attempts        []AttemptDetail          `json:"attempts"`
 }
 
 type JobDetail struct {
@@ -135,9 +137,13 @@ type PipelineContextDetail struct {
 	CropOutputWidth         int     `json:"crop_output_width,omitempty"`
 	CropOutputHeight        int     `json:"crop_output_height,omitempty"`
 	CropRetainedAreaPercent float64 `json:"crop_retained_area_percent,omitempty"`
-	SearchCRF               int     `json:"search_crf,omitempty"`
-	SearchMetric            string  `json:"search_metric,omitempty"`
-	SearchVMAF              float64 `json:"search_vmaf,omitempty"`
-	SearchXPSNR             float64 `json:"search_xpsnr,omitempty"`
-	SearchSkipReason        string  `json:"search_skip_reason,omitempty"`
+	// QualityMode is "fixed" when the flow set the CRF and nothing was
+	// measured; SearchCRF is then that CRF and the scores are absent. It is
+	// empty when the CRF came from a quality search.
+	QualityMode      string  `json:"quality_mode,omitempty"`
+	SearchCRF        int     `json:"search_crf,omitempty"`
+	SearchMetric     string  `json:"search_metric,omitempty"`
+	SearchVMAF       float64 `json:"search_vmaf,omitempty"`
+	SearchXPSNR      float64 `json:"search_xpsnr,omitempty"`
+	SearchSkipReason string  `json:"search_skip_reason,omitempty"`
 }

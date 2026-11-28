@@ -1,0 +1,28 @@
+/* anvil: the Queue page. Colours, spacing and radii come from tokens. */
+
+.av-queue { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+
+/* running jobs: one 48px row each, above the table */
+.av-running { flex: none; display: flex; flex-direction: column; max-height: 45%; background: var(--surface); border-bottom: 1px solid var(--line); }
+.av-running-head { display: flex; align-items: baseline; gap: var(--space-3); padding: var(--space-2) var(--space-4); }
+.av-running-title { margin: 0; font: var(--text-label); color: var(--text); }
+.av-running-meta { font: var(--text-mono-small); color: var(--text-muted); }
+.av-running-list { margin: 0; padding: 0; overflow: auto; list-style: none; }
+.av-running-row { display: grid; grid-template-columns: minmax(0, 1fr) 112px 136px minmax(200px, 320px); align-items: center; gap: var(--space-4); min-height: 48px; padding: var(--space-1) var(--space-4); border-top: 1px solid var(--line); font: var(--text-small); cursor: pointer; }
+.av-running-row:hover { background: var(--surface-hover); }
+.av-running-row.av-running-active { background: var(--accent-soft); }
+.av-running-row:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: -2px; }
+.av-running-library { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-muted); }
+.av-running-step { white-space: nowrap; color: var(--text); }
+.av-running-empty { padding: var(--space-3) var(--space-4); border-top: 1px solid var(--line); font: var(--text-small); color: var(--text-muted); }
+/* A sentence, not a row of figures: it wraps beside the open side sheet at any width. */
+.av-sheet-open .av-running-empty, .av-sheet-open .av-running-head { padding-right: calc(var(--sheet) + var(--space-4)); }
+
+@media (min-width: 1200px) {
+  /* Wide enough to keep the progress of running jobs clear of the open side sheet. */
+  .av-sheet-open .av-running-row { padding-right: calc(var(--sheet) + var(--space-4)); grid-template-columns: minmax(0, 1fr) 96px 120px minmax(160px, 220px); }
+}
+
+@media (max-width: 1100px) {
+  .av-running-row { grid-template-columns: minmax(0, 1fr) 96px 120px minmax(160px, 220px); gap: var(--space-3); }
+}

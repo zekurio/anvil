@@ -70,13 +70,16 @@ func (s Service) ShowJob(ctx context.Context, request control.JobShowRequest) (c
 		detail := publishOperationDetail(operation)
 		response.PublishOperation = &detail
 	}
+	recorded := make(map[domain.AttemptID][]domain.AttemptEvent, len(attempts))
 	for _, attempt := range attempts {
 		events, err := s.Store.ListAttemptEvents(ctx, attempt.ID)
 		if err != nil {
 			return control.JobShowResponse{}, err
 		}
+		recorded[attempt.ID] = events
 		response.Attempts = append(response.Attempts, attemptDetail(attempt, events))
 	}
+	response.Flow = latestFlowResolution(attempts, recorded)
 	response.StreamSelection = latestStreamSelection(response.Attempts)
 	return response, nil
 }
@@ -172,7 +175,9 @@ func jobDetailFromSummary(summary store.JobSummary) control.JobDetail {
 // recognizes. A package job's asset lives under its source, so reporting only
 // one of them would name a directory or a file with no context.
 func jobPath(summary store.JobSummary) string {
-	if summary.AssetPath == "" || summary.AssetPath == summary.SourcePath {
+	// Only a package has its asset below the source; a file source is its own
+	// asset, whatever the two paths look like.
+	if summary.SourceKind != domain.SourceKindPackage || summary.AssetPath == "" {
 		return summary.SourcePath
 	}
 	source := strings.Trim(summary.SourcePath, "/")
@@ -291,6 +296,9 @@ func pipelineContextDetail(snapshot domain.JobPipelineContext) control.PipelineC
 		result.CropRetainedAreaPercent = snapshot.Crop.RetainedAreaPercent
 	}
 	if snapshot.Search != nil {
+		if snapshot.Search.QualityMode == domain.VideoQualityFixed {
+			result.QualityMode = string(domain.VideoQualityFixed)
+		}
 		result.SearchCRF = snapshot.Search.CRF
 		result.SearchMetric = string(snapshot.Search.Metric)
 		result.SearchVMAF = snapshot.Search.VMAF

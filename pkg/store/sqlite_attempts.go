@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -96,6 +97,26 @@ WHERE id = ? AND state = ?
 	return s.GetAttempt(ctx, attemptID)
 }
 
+// SaveAttemptProfile records the profile an attempt resolved to. The profile
+// is only known once the flow has been evaluated against the probe, which is
+// after the attempt row exists.
+func (s *SQLiteStore) SaveAttemptProfile(ctx context.Context, attemptID domain.AttemptID, resolvedProfile []byte) error {
+	result, err := s.db.ExecContext(ctx, `
+UPDATE attempts SET resolved_profile_json = ? WHERE id = ?
+`, emptyBytesIfNil(resolvedProfile), int64(attemptID))
+	if err != nil {
+		return fmt.Errorf("save attempt profile: %w", err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("save attempt profile rows affected: %w", err)
+	}
+	if rows == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 func (s *SQLiteStore) RecordAttemptEvent(ctx context.Context, event domain.AttemptEvent) (domain.AttemptEvent, error) {
 	if event.CreatedAt.IsZero() {
 		event.CreatedAt = time.Now().UTC()
@@ -158,8 +179,12 @@ WHERE id = ?
 	return scanAttempt(row)
 }
 
-func (s *SQLiteStore) ListAttemptsForJob(ctx context.Context, jobID domain.JobID) (attempts []domain.Attempt, err error) {
-	rows, err := s.db.QueryContext(ctx, `
+func (s *SQLiteStore) ListAttemptsForJob(ctx context.Context, jobID domain.JobID) ([]domain.Attempt, error) {
+	return listAttemptsForJob(ctx, s.db, jobID)
+}
+
+func listAttemptsForJob(ctx context.Context, q rowsQuerier, jobID domain.JobID) (attempts []domain.Attempt, err error) {
+	rows, err := q.QueryContext(ctx, `
 SELECT id, job_id, number, worker_id, state, resolved_library_json,
 	resolved_flow_json, resolved_profile_json, started_at, finished_at, error
 FROM attempts
@@ -280,4 +305,56 @@ ORDER BY a.job_id ASC, e.id ASC
 		return fmt.Errorf("iterate latest attempt artifacts: %w", err)
 	}
 	return nil
+}
+
+// LatestAttempt is what a job listing shows of a job's most recent attempt.
+type LatestAttempt struct {
+	Number    int
+	State     domain.AttemptState
+	StartedAt time.Time
+	// FinishedAt is nil while the attempt runs.
+	FinishedAt *time.Time
+	// FlowName is the name of the flow the attempt took its snapshot of, or
+	// empty when it recorded none.
+	FlowName string
+}
+
+// LatestAttempts returns the most recent attempt of each named job, keyed by
+// job. A job that never started has no entry. The ids travel as one JSON
+// parameter, so a page of any size stays below SQLite's parameter limit.
+func (s *SQLiteStore) LatestAttempts(ctx context.Context, ids []domain.JobID) (map[domain.JobID]LatestAttempt, error) {
+	latest := make(map[domain.JobID]LatestAttempt, len(ids))
+	if len(ids) == 0 {
+		return latest, nil
+	}
+	encoded, err := json.Marshal(ids)
+	if err != nil {
+		return nil, fmt.Errorf("encode job ids: %w", err)
+	}
+	// resolved_flow_json is a BLOB column; json_extract reads it as text only
+	// after a cast, and an attempt without a snapshot holds an empty value.
+	err = s.eachRow(ctx, "latest attempts", `
+SELECT a.job_id, a.number, a.state, a.started_at, a.finished_at,
+	CASE WHEN json_valid(CAST(a.resolved_flow_json AS TEXT))
+		THEN COALESCE(json_extract(CAST(a.resolved_flow_json AS TEXT), '$.name'), '') ELSE '' END
+FROM attempts a
+WHERE a.job_id IN (SELECT value FROM json_each(?))
+	AND a.number = (SELECT max(number) FROM attempts WHERE job_id = a.job_id)
+`, []any{string(encoded)}, func(rows *sql.Rows) error {
+		var jobID domain.JobID
+		var attempt LatestAttempt
+		var startedAt string
+		var finishedAt sql.NullString
+		if err := rows.Scan(&jobID, &attempt.Number, &attempt.State, &startedAt, &finishedAt, &attempt.FlowName); err != nil {
+			return err
+		}
+		attempt.StartedAt = parseTime(startedAt)
+		attempt.FinishedAt = parseNullTimePtr(finishedAt)
+		latest[jobID] = attempt
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return latest, nil
 }

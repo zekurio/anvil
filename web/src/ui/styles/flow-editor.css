@@ -1,0 +1,46 @@
+/* anvil: what the flow editor adds to the flow node and canvas: dragging, connecting, edge selection. Colours, spacing and radii come from tokens. */
+
+/* node states while editing */
+/* The state icon takes the colour of its state; the header's rule for icons would grey it. */
+.av-node-state .av-icon { color: inherit; }
+.av-node-dragging { box-shadow: var(--shadow-drag); cursor: grabbing; }
+.av-node-dragging[aria-pressed="true"] { box-shadow: 0 0 0 1px var(--accent), var(--shadow-drag); }
+.av-node-dimmed { opacity: 0.5; }
+.av-node-target { border-color: var(--accent); }
+.av-node-target > .av-port:first-of-type { border-color: var(--accent); }
+
+/* an output port as a press target: 24px around the 10px dot */
+.av-port-hit { position: absolute; width: 24px; height: 24px; margin: -12px 0 0 -12px; padding: 0; border: 0; border-radius: 50%; background: none; cursor: crosshair; touch-action: none; }
+.av-port-hit::after { content: ""; position: absolute; inset: 6px; border: 2px solid transparent; border-radius: 50%; }
+.av-port-hit:hover::after { border-color: var(--accent); background: var(--surface-raised); }
+
+/* the canvas while it can be edited */
+.av-canvas-live { height: 100%; cursor: grab; touch-action: none; user-select: none; -webkit-user-select: none; }
+.av-canvas-panning { cursor: grabbing; }
+.av-canvas-live .av-node { z-index: 1; touch-action: none; }
+.av-canvas-live .av-node-dragging { z-index: 2; }
+/* While an edge is being drawn only the nodes it may end at respond. */
+.av-canvas-connecting, .av-canvas-connecting .av-node { cursor: crosshair; }
+.av-canvas-connecting .av-node:not(.av-node-target):hover { border-color: var(--line-control); }
+.av-canvas-connecting .av-node-target:hover { box-shadow: 0 0 0 1px var(--accent); }
+
+/* edges that can be selected: a wide invisible stroke takes the press */
+.av-edge-hit { fill: none; stroke: transparent; stroke-width: 16; pointer-events: stroke; cursor: pointer; outline: none; }
+.av-edge-hit:hover + .av-edge { stroke: var(--text-muted); }
+.av-edge-hit:focus-visible + .av-edge { stroke: var(--focus-ring); stroke-width: 3; }
+.av-edge-selected { stroke-width: 2.5; }
+.av-edge-preview { stroke: var(--edge-active); stroke-width: 2; stroke-dasharray: 4 4; }
+/* The edge a new one is about to replace. */
+.av-edge-replaced .av-edge { stroke-dasharray: 2 4; }
+.av-edge-remove { position: absolute; z-index: 3; display: inline-flex; align-items: center; justify-content: center; width: 20px; height: 20px; padding: 0; border: 1px solid var(--accent); border-radius: 50%; background: var(--surface-raised); color: var(--text); cursor: pointer; transition: background-color 100ms ease-out; }
+.av-edge-remove:hover { background: var(--surface-hover); }
+.av-edge-remove:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+
+/* canvas toolbar additions */
+.av-canvas-tools { z-index: 4; cursor: default; }
+.av-canvas-sep { width: 1px; height: 16px; margin: 0 2px; background: var(--line); }
+
+/* what the palette drags: a node following the pointer */
+.av-node-ghost { position: fixed; z-index: 20; left: 0; top: 0; pointer-events: none; transform-origin: 0 0; }
+
+@media (prefers-reduced-motion: reduce) { .av-edge-remove { transition: none; } }

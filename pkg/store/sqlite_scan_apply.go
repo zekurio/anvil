@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/zekurio/anvil/pkg/config"
 	"github.com/zekurio/anvil/pkg/domain"
 )
 
@@ -26,15 +27,68 @@ type rowQuerier interface {
 	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
 }
 
-func (s *SQLiteStore) BeginLibraryScan(ctx context.Context, libraryName domain.LibraryName) (ScanToken, error) {
-	if strings.TrimSpace(string(libraryName)) == "" {
+// rowsQuerier is satisfied by both *sql.DB and *sql.Tx.
+type rowsQuerier interface {
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+}
+
+// BeginLibraryScan issues the token a scan of library applies with. library
+// is the snapshot the scan is planned from; a snapshot of a row that has been
+// deleted since, also one replaced by a new library of the same name, is
+// refused with ErrNotFound.
+func (s *SQLiteStore) BeginLibraryScan(ctx context.Context, library config.LibraryConfig) (ScanToken, error) {
+	libraryName := domain.LibraryName(library.Name)
+	if strings.TrimSpace(library.Name) == "" {
 		return ScanToken{}, errors.New("scan library name is required")
 	}
-	token, err := issueScanToken(ctx, s.db, libraryName)
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return ScanToken{}, fmt.Errorf("begin library scan: %w", err)
 	}
-	return ScanToken{LibraryName: libraryName, Sequence: token}, nil
+	defer rollback(tx)
+	if _, err := requireLibraryRowTx(ctx, tx, libraryName, library.CreatedAt); err != nil {
+		return ScanToken{}, fmt.Errorf("begin library scan: %w", err)
+	}
+	token, err := issueScanToken(ctx, tx, libraryName)
+	if err != nil {
+		return ScanToken{}, fmt.Errorf("begin library scan: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return ScanToken{}, fmt.Errorf("begin library scan: %w", err)
+	}
+	return ScanToken{LibraryName: libraryName, LibraryCreatedAt: library.CreatedAt, Sequence: token}, nil
+}
+
+// requireLibraryTx refuses to record anything for a library that is not in
+// the store, and returns the row otherwise. A scan or requeue can be in
+// flight, working from a snapshot of the libraries, at the moment its library
+// is deleted; without this check it would write sources and jobs back that
+// nothing owns and nothing removes. The same snapshot can carry a priority
+// the operator has changed since, which is why a new job takes the priority
+// of the row read here, never the caller's.
+func requireLibraryTx(ctx context.Context, tx *sql.Tx, libraryName domain.LibraryName) (Library, error) {
+	library, err := getLibrary(ctx, tx, string(libraryName))
+	if errors.Is(err, ErrNotFound) {
+		return Library{}, fmt.Errorf("library %q: %w", libraryName, ErrNotFound)
+	}
+	if err != nil {
+		return Library{}, fmt.Errorf("look up library %q: %w", libraryName, err)
+	}
+	return library, nil
+}
+
+// requireLibraryRowTx is requireLibraryTx for work planned from one row: a
+// library created again under the same name since is a different library,
+// planned with other folders and rules, and is reported as not found.
+func requireLibraryRowTx(ctx context.Context, tx *sql.Tx, libraryName domain.LibraryName, createdAt time.Time) (Library, error) {
+	library, err := requireLibraryTx(ctx, tx, libraryName)
+	if err != nil {
+		return Library{}, err
+	}
+	if !library.CreatedAt.Equal(createdAt) {
+		return Library{}, fmt.Errorf("library %q was deleted and created again: %w", libraryName, ErrNotFound)
+	}
+	return library, nil
 }
 
 // issueScanToken hands out the next scan sequence for a library. A scan only
@@ -79,6 +133,17 @@ func (s *SQLiteStore) ApplyLibraryScan(ctx context.Context, token ScanToken, inp
 	}
 	defer rollback(tx)
 
+	library, err := requireLibraryTx(ctx, tx, input.LibraryName)
+	if err != nil {
+		return ApplyScanResult{}, fmt.Errorf("apply library scan: %w", err)
+	}
+	// A library created again under the same name has its own sequence,
+	// which may already have reached this token's number. The scan was
+	// planned with the old library's folders and rules, so it is superseded
+	// like one a newer scan overtook.
+	if !library.CreatedAt.Equal(token.LibraryCreatedAt) {
+		return ApplyScanResult{}, nil
+	}
 	superseded, err := scanSupersededTx(ctx, tx, token)
 	if err != nil {
 		return ApplyScanResult{}, err
@@ -97,6 +162,7 @@ func (s *SQLiteStore) ApplyLibraryScan(ctx context.Context, token ScanToken, inp
 	app := &scanApplication{
 		tx:       tx,
 		input:    input,
+		priority: library.Priority,
 		token:    token,
 		now:      defaultNow(input.CompletedAt),
 		snapshot: snapshot,
@@ -136,8 +202,11 @@ SELECT next_token, applied_token FROM library_scans WHERE library_name = ?
 // scanApplication reconciles one scan's observations with the current
 // occurrences inside a single transaction.
 type scanApplication struct {
-	tx       *sql.Tx
-	input    ApplyScanInput
+	tx    *sql.Tx
+	input ApplyScanInput
+	// priority is the library's as stored when the scan applies, not the
+	// one the scan was planned with.
+	priority int
 	token    ScanToken
 	now      time.Time
 	snapshot scanSnapshot
@@ -184,6 +253,9 @@ func (a *scanApplication) apply(ctx context.Context, groups map[string]*scanSour
 }
 
 func (a *scanApplication) applySource(ctx context.Context, group *scanSourceGroup) error {
+	if err := a.skipDeniedJobs(ctx, group); err != nil {
+		return err
+	}
 	if !group.persist {
 		return nil
 	}
@@ -280,6 +352,98 @@ WHERE id = ?
 	return nil
 }
 
+// skipDeniedJobs takes files the rules now deny off the queue. A rule change
+// only reaches files the library already tracks through here: a denied file
+// is not persisted, so without this its job, queued while the rules still
+// allowed it, would be leased and its file replaced after the operator said
+// to leave it alone.
+//
+// Every job of the file that only waits is skipped: pending or retrying,
+// whatever its attempt count, so also one waiting to retry or one stale-lease
+// recovery put back. Two kinds are left alone. A job a worker holds is the
+// worker's to finish or fail. A job with an unresolved publish journal has
+// already started to replace the file, and only its next attempt can finish
+// or undo that safely; stopping it would strand the destination and backup
+// the journal names. A skipped job that ran an attempt may have left a part
+// file, which is why the ids go back to the caller.
+//
+// The occurrence itself stays as it is, so the file keeps its place in the
+// listing with the rule as the reason, and requeueAllowedJob puts the job
+// back once the rules allow the file again.
+func (a *scanApplication) skipDeniedJobs(ctx context.Context, group *scanSourceGroup) error {
+	source, tracked := a.snapshot.sources[group.path]
+	if !tracked {
+		return nil
+	}
+	for _, path := range slices.Sorted(maps.Keys(group.entries)) {
+		entry := group.entries[path]
+		asset, tracked := a.snapshot.assets[source.ID][path]
+		if entry.DeniedReason == "" || !tracked {
+			continue
+		}
+		rows, err := a.tx.QueryContext(ctx, `
+UPDATE jobs
+SET state = ?, lease_owner = '', lease_deadline = NULL, heartbeat_at = NULL,
+	last_error = ?, updated_at = ?, completed_at = COALESCE(completed_at, ?)
+WHERE id IN (
+	SELECT j.id FROM jobs j WHERE j.asset_id = ? AND j.state IN (?, ?) AND `+noUnresolvedPublishCondition+`
+)
+RETURNING id
+`, string(domain.JobStateSkipped), entry.DeniedReason, encodeTime(a.now), encodeTime(a.now),
+			int64(asset.ID), string(domain.JobStatePending), string(domain.JobStateRetrying), committedPublishStage())
+		if err != nil {
+			return fmt.Errorf("skip jobs of denied file %q: %w", path, err)
+		}
+		for rows.Next() {
+			var id domain.JobID
+			if err := rows.Scan(&id); err != nil {
+				return errors.Join(fmt.Errorf("skip jobs of denied file %q: %w", path, err), rows.Close())
+			}
+			a.result.DeniedJobs = append(a.result.DeniedJobs, id)
+		}
+		if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+			return fmt.Errorf("skip jobs of denied file %q: %w", path, err)
+		}
+	}
+	return nil
+}
+
+// requeueAllowedJob is the reverse of skipDeniedJobs: the rules allow a file
+// again whose job they took off the queue, so the job waits in the queue
+// again. Without it a rule that was too strict would have to be undone file
+// by file, by retrying each job by hand.
+//
+// It reaches only what skipDeniedJobs left behind: a skipped job whose reason
+// is a rule's. A job the flow skipped, one that was canceled, and one whose
+// file was already processed all have another state or reason, and stay as
+// they are.
+func (a *scanApplication) requeueAllowedJob(ctx context.Context, assetID domain.MediaAssetID) (bool, error) {
+	var id int64
+	var reason string
+	err := a.tx.QueryRowContext(ctx, `
+SELECT id, last_error FROM jobs WHERE asset_id = ? AND state = ?
+`, int64(assetID), string(domain.JobStateSkipped)).Scan(&id, &reason)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("find job of allowed file: %w", err)
+	}
+	if !config.DeniedByRules(reason) {
+		return false, nil
+	}
+	if _, err := a.tx.ExecContext(ctx, `
+UPDATE jobs
+SET state = ?, lease_owner = '', lease_deadline = NULL, heartbeat_at = NULL,
+	last_error = '', updated_at = ?, completed_at = NULL
+WHERE id = ?
+`, string(domain.JobStatePending), encodeTime(a.now), id); err != nil {
+		return false, fmt.Errorf("requeue job of allowed file: %w", err)
+	}
+	a.result.EnqueuedJobs++
+	return true, nil
+}
+
 // applyAsset records one persisted asset observation and reports whether the
 // asset is still active afterwards.
 func (a *scanApplication) applyAsset(ctx context.Context, sourceID domain.MediaSourceID, assets map[string]domain.MediaAsset, path string, entry ScanEntry, skipKnown bool) (bool, error) {
@@ -323,7 +487,18 @@ WHERE id = ?
 	a.touchedAssets = append(a.touchedAssets, int64(asset.ID))
 
 	active := asset.Status == domain.MediaAssetActive
-	if entry.Enqueue && active && !skipKnown {
+	if !entry.Enqueue || !active {
+		return active, nil
+	}
+	if found {
+		// A known path is not queued a second time, but a job the rules took
+		// off the queue goes back on it.
+		requeued, err := a.requeueAllowedJob(ctx, asset.ID)
+		if err != nil || requeued {
+			return active, err
+		}
+	}
+	if !skipKnown {
 		if err := a.enqueue(ctx, sourceID, asset.ID); err != nil {
 			return false, err
 		}
@@ -338,7 +513,7 @@ func (a *scanApplication) enqueue(ctx context.Context, sourceID domain.MediaSour
 	}
 	_, inserted, err := enqueueJobTx(ctx, a.tx, EnqueueJobInput{
 		SourceID: sourceID, AssetID: assetID, LibraryName: a.input.LibraryName,
-		Priority: a.input.Priority, Now: a.now,
+		Priority: a.priority, Now: a.now,
 	})
 	if err != nil {
 		return err

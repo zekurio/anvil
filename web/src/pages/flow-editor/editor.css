@@ -1,0 +1,83 @@
+/* The flow editor page: top bar, stage, node options, issues, test result. Colours, spacing and radii come from tokens. */
+
+/* stage: the canvas, with the side sheet docked over its right edge */
+.fe-stage { position: relative; flex: 1; min-width: 0; }
+/* Firefox draws light scrollbars unless told otherwise; these keep the palette and the sheet on the theme. */
+.av-palette-list, .fe-stage .av-sheet-body, .fe-problems-pop { scrollbar-width: thin; scrollbar-color: var(--line-control) transparent; }
+.fe-ghost-off { opacity: 0.5; }
+/* The same static accent line a navigation in flight draws across the top. */
+.fe-reloading { position: fixed; top: 0; left: 0; right: 0; z-index: 6; height: 2px; background: var(--accent); }
+
+/* top bar */
+.fe-topbar .av-topbar-titles { align-items: center; gap: var(--space-2); }
+/* The flow name: reads as the page title, edits as a field. The ::after copy of the text gives the input its width. */
+.fe-name { display: inline-grid; flex: 0 1 auto; min-width: 64px; max-width: 360px; margin-left: calc(-1 * var(--space-2)); }
+.fe-name::after, .fe-name-input { grid-area: 1 / 1; box-sizing: border-box; min-width: 0; padding: 1px var(--space-2); border: 1px solid transparent; font: var(--text-heading); white-space: pre; }
+.fe-name::after { content: attr(data-value); visibility: hidden; overflow: hidden; }
+.fe-name-input { width: 100%; border-radius: var(--radius-md); background: none; color: var(--text); text-overflow: ellipsis; transition: border-color 100ms ease-out; }
+.fe-name-input::placeholder { color: var(--text-muted); }
+.fe-name-input:hover { border-color: var(--line-control); }
+.fe-name-input:focus { border-color: var(--line-control); background: var(--surface-raised); }
+.fe-name-input:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+.fe-name-input[aria-invalid="true"] { border-color: var(--danger); }
+.fe-status { display: flex; align-items: center; gap: var(--space-3); min-width: 0; margin-left: var(--space-1); }
+.fe-status > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fe-status > span:first-child { flex: none; }
+.fe-draft { color: var(--warn); }
+.fe-name-error { color: var(--danger); }
+
+/* what the live check found: a button in the top bar that opens the list */
+.fe-problems { display: inline-flex; align-items: center; flex: none; gap: var(--space-1); height: var(--control-sm); padding: 0 var(--space-2); border: 0; border-radius: var(--radius-md); background: none; font: 500 13px/18px var(--font-sans); white-space: nowrap; cursor: pointer; transition: background-color 100ms ease-out; }
+.fe-problems-error { color: var(--danger); }
+.fe-problems-error:hover, .fe-problems-error[data-open] { background: var(--danger-soft); }
+.fe-problems-warning { color: var(--warn); }
+.fe-problems-warning:hover, .fe-problems-warning[data-open] { background: var(--warn-soft); }
+.fe-problems:focus-visible, .fe-problem:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+.fe-problems-pop { box-sizing: border-box; width: 400px; max-width: calc(100vw - var(--space-6)); max-height: min(480px, var(--available-height)); margin: 0; padding: var(--space-1); overflow: auto; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--surface-raised); color: var(--text); box-shadow: var(--shadow-overlay); }
+.fe-problems-title { margin: 0; padding: var(--space-1) var(--space-2); font: var(--text-label); color: var(--text-muted); }
+.fe-problems-list { margin: 0; padding: 0; list-style: none; }
+.fe-problem { display: grid; grid-template-columns: 14px minmax(0, 1fr); column-gap: var(--space-2); row-gap: 2px; align-items: start; width: 100%; padding: var(--space-2); border: 0; border-radius: var(--radius-sm); background: none; color: var(--text); text-align: left; cursor: pointer; }
+.fe-problem:hover:not(:disabled) { background: var(--surface-hover); }
+.fe-problem:disabled { cursor: default; }
+.fe-problem > .av-icon { grid-row: span 2; margin-top: 2px; }
+.fe-problem-error > .av-icon { color: var(--danger); }
+.fe-problem-warning > .av-icon { color: var(--warn); }
+.fe-problem-place { font: var(--text-label); color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fe-problem-text { font: var(--text-small); }
+
+/* node options */
+.fe-about { display: flex; flex-direction: column; gap: var(--space-1); padding: var(--space-3) var(--space-4) var(--space-4); }
+.fe-about-type { font: var(--text-label); color: var(--text); }
+.fe-about-text { margin: 0 0 var(--space-3); font: var(--text-caption); color: var(--text-muted); }
+.fe-issues { display: flex; flex-direction: column; gap: var(--space-2); margin: 0; padding: var(--space-3) var(--space-4); list-style: none; border-bottom: 1px solid var(--line); }
+.fe-issue { display: flex; align-items: flex-start; gap: var(--space-2); font: var(--text-small); }
+.fe-issue > .av-icon { flex: none; margin-top: 2px; }
+.fe-issue-error > .av-icon { color: var(--danger); }
+.fe-issue-warning > .av-icon { color: var(--warn); }
+.fe-issue-text { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+/* A set of choices: ticked boxes in two columns. */
+.fe-checks { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-2) var(--space-3); padding: var(--space-1) 0; }
+.fe-check { display: flex; align-items: center; gap: var(--space-2); min-width: 0; font: var(--text-small); cursor: pointer; }
+.fe-check-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fe-check-id { font: var(--text-mono-small); color: var(--text-muted); }
+/* A field row keeps its fields aligned at the top when one of a pair shows a hint or an error. */
+.fe-stage .av-grid-2 { align-items: start; }
+.fe-stage .av-seg { align-self: flex-start; }
+
+/* test result */
+.fe-outcome { display: flex; align-items: center; gap: var(--space-2); font: var(--text-small); }
+.fe-lines { display: flex; flex-direction: column; gap: var(--space-2); margin: 0; padding: 0; list-style: none; font: var(--text-small); overflow-wrap: anywhere; }
+.fe-test-path { font: var(--text-mono-small); }
+.fe-facts { display: flex; flex-direction: column; gap: var(--space-2); margin: 0; }
+.fe-fact { display: grid; grid-template-columns: 72px minmax(0, 1fr); gap: var(--space-3); }
+.fe-fact dt { font: var(--text-label); color: var(--text-muted); }
+.fe-fact dd { margin: 0; font: var(--text-mono-small); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.fe-track { display: flex; flex-direction: column; }
+.fe-track + .fe-track { margin-top: var(--space-1); }
+.fe-track-title { color: var(--text-muted); }
+.fe-test-failed { display: flex; align-items: flex-start; gap: var(--space-3); padding: var(--space-4); font: var(--text-small); }
+.fe-test-failed > .av-icon { flex: none; margin-top: 2px; color: var(--danger); }
+.fe-test-failed p { margin: var(--space-1) 0 0; color: var(--text-muted); overflow-wrap: anywhere; }
+.fe-test-failed-title { font: var(--text-body-strong); }
+
+@media (prefers-reduced-motion: reduce) { .fe-name-input, .fe-problems { transition: none; } }

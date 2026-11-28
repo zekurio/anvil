@@ -8,13 +8,11 @@ import (
 	"os"
 	"path"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strings"
 	"syscall"
 	"time"
 
-	"github.com/bmatcuk/doublestar/v4"
 	"github.com/zekurio/anvil/pkg/config"
 	"github.com/zekurio/anvil/pkg/domain"
 	replacepkg "github.com/zekurio/anvil/pkg/replace"
@@ -22,7 +20,7 @@ import (
 )
 
 type Store interface {
-	BeginLibraryScan(context.Context, domain.LibraryName) (store.ScanToken, error)
+	BeginLibraryScan(context.Context, config.LibraryConfig) (store.ScanToken, error)
 	ApplyLibraryScan(context.Context, store.ScanToken, store.ApplyScanInput) (store.ApplyScanResult, error)
 }
 
@@ -40,7 +38,11 @@ type ScanResult struct {
 	ExistingJobs    int
 	SkippedIgnored  int
 	SkippedUnstable int
-	NextStableAt    time.Time
+	// DeniedJobs lists the waiting jobs the scan skipped because the rules
+	// now deny their files. Their part files are the caller's to reclaim
+	// (controlapi.Service.ReclaimEndedJobs).
+	DeniedJobs   []domain.JobID
+	NextStableAt time.Time
 }
 
 type LibraryPlan struct {
@@ -68,8 +70,12 @@ type CandidatePlan struct {
 	SourceModTime       time.Time
 	Ignored             bool
 	IgnoreReason        string
-	Unstable            bool
-	Enqueueable         bool
+	// Denied is set on an ignored candidate the library's rules keep out, as
+	// opposed to one the scanner leaves alone on its own account: a sample,
+	// download residue, or one of Anvil's own outputs.
+	Denied      bool
+	Unstable    bool
+	Enqueueable bool
 }
 
 func (s Scanner) Scan(ctx context.Context, cfg config.Config) (ScanResult, error) {
@@ -111,7 +117,7 @@ func (s Scanner) scan(ctx context.Context, library config.LibraryConfig, root st
 	if s.Store == nil {
 		return ScanResult{}, fmt.Errorf("scanner store is required")
 	}
-	token, err := s.Store.BeginLibraryScan(ctx, domain.LibraryName(library.Name))
+	token, err := s.Store.BeginLibraryScan(ctx, library)
 	if err != nil {
 		return ScanResult{}, fmt.Errorf("begin library scan: %w", err)
 	}
@@ -173,6 +179,7 @@ func (s Scanner) planPaths(ctx context.Context, library config.LibraryConfig, ro
 			SourceModTime:       stat.modTime.UTC(),
 			Ignored:             candidate.ignored,
 			IgnoreReason:        candidate.ignoreReason,
+			Denied:              candidate.denied,
 			Unstable:            unstable,
 			Enqueueable:         enqueueable,
 		})
@@ -190,17 +197,21 @@ func (s Scanner) applyPlan(ctx context.Context, plan LibraryPlan) (ScanResult, e
 	now := s.now()
 	entries := make([]store.ScanEntry, 0, len(plan.Candidates))
 	for _, candidate := range plan.Candidates {
-		entries = append(entries, store.ScanEntry{
+		entry := store.ScanEntry{
 			SourceKind: candidate.SourceKind, SourceRelativePath: candidate.SourceRelativePath,
 			SourceFingerprint: domain.FileFingerprint{SizeBytes: candidate.SourceSizeBytes, ModTime: candidate.SourceModTime},
 			AssetRelativePath: candidate.AssetRelativePath, AssetRole: candidate.Role,
 			AssetFingerprint: domain.FileFingerprint{SizeBytes: candidate.SizeBytes, ModTime: candidate.ModTime},
 			Persist:          !candidate.Ignored && !candidate.Unstable,
 			Enqueue:          candidate.Enqueueable,
-		})
+		}
+		if candidate.Denied {
+			entry.DeniedReason = candidate.IgnoreReason
+		}
+		entries = append(entries, entry)
 	}
 	applied, err := s.Store.ApplyLibraryScan(ctx, plan.ScanToken, store.ApplyScanInput{
-		SourcePaths: plan.SourcePaths, LibraryName: domain.LibraryName(plan.Library.Name), Priority: plan.Library.Priority,
+		SourcePaths: plan.SourcePaths, LibraryName: domain.LibraryName(plan.Library.Name),
 		RequeueExisting: plan.Library.IsDownload(), Entries: entries, CompletedAt: now,
 	})
 	if err != nil {
@@ -210,6 +221,7 @@ func (s Scanner) applyPlan(ctx context.Context, plan LibraryPlan) (ScanResult, e
 	result.Assets = applied.Assets
 	result.EnqueuedJobs = applied.EnqueuedJobs
 	result.ExistingJobs = applied.ExistingJobs
+	result.DeniedJobs = applied.DeniedJobs
 
 	return result, nil
 }
@@ -228,6 +240,7 @@ func (r *ScanResult) add(other ScanResult) {
 	r.EnqueuedJobs += other.EnqueuedJobs
 	r.ExistingJobs += other.ExistingJobs
 	r.SkippedIgnored += other.SkippedIgnored
+	r.DeniedJobs = append(r.DeniedJobs, other.DeniedJobs...)
 	r.SkippedUnstable += other.SkippedUnstable
 	if !other.NextStableAt.IsZero() && (r.NextStableAt.IsZero() || other.NextStableAt.Before(r.NextStableAt)) {
 		r.NextStableAt = other.NextStableAt
@@ -244,6 +257,7 @@ type candidate struct {
 	info                fs.FileInfo
 	ignored             bool
 	ignoreReason        string
+	denied              bool
 }
 
 type sourceStat struct {
@@ -263,8 +277,10 @@ type discovery struct {
 	root       string
 	library    config.LibraryConfig
 	completion *CompletionTracker
-	exclude    []string
-	ignore     []*regexp.Regexp
+	rules      config.RuleSet
+	// ignorable holds the residue globs of a download library, which are
+	// never part of a package whatever the rules say.
+	ignorable []string
 
 	candidates []candidate
 	stats      map[string]sourceStat
@@ -272,7 +288,7 @@ type discovery struct {
 }
 
 func discoverPaths(ctx context.Context, root string, library config.LibraryConfig, completion *CompletionTracker, paths []string) ([]candidate, map[string]sourceStat, int, error) {
-	ignore, err := compileIgnoreRegexps(library.IgnoreRegex)
+	rules, err := config.CompileRules(library.Rules, library.RuleFallback)
 	if err != nil {
 		return nil, nil, 0, err
 	}
@@ -281,8 +297,8 @@ func discoverPaths(ctx context.Context, root string, library config.LibraryConfi
 		root:       root,
 		library:    library,
 		completion: completion,
-		exclude:    effectiveExcludeGlobs(library),
-		ignore:     ignore,
+		rules:      rules,
+		ignorable:  ignorableGlobs(library),
 		stats:      make(map[string]sourceStat),
 	}
 	if paths == nil {
@@ -308,21 +324,17 @@ func discoverPaths(ctx context.Context, root string, library config.LibraryConfi
 }
 
 // skipScopedRoot reports whether a scoped walk root must not be walked: it
-// sits below an excluded or ignored directory a full walk would have pruned,
-// or it no longer exists.
+// sits below a pruned directory a full walk would never have entered, or it
+// no longer exists.
 func (d *discovery) skipScopedRoot(walkRoot string) (bool, error) {
-	for parent := filepath.Dir(walkRoot); parent != d.root && parent != filepath.Dir(parent); parent = filepath.Dir(parent) {
+	if parent := filepath.Dir(walkRoot); parent != d.root && parent != filepath.Dir(parent) {
 		rel, err := filepath.Rel(d.root, parent)
 		if err != nil {
 			return false, err
 		}
-		rel = filepath.ToSlash(rel)
-		excluded, err := matchesExcludedPath(d.exclude, rel, true)
-		if err != nil {
-			return false, err
-		}
-		if excluded || ignoredByRegex(d.ignore, rel, true) {
-			return true, nil
+		pruned, err := d.pruned(filepath.ToSlash(rel), true)
+		if pruned || err != nil {
+			return pruned, err
 		}
 	}
 	if _, err := os.Lstat(walkRoot); errors.Is(err, fs.ErrNotExist) {
@@ -331,6 +343,15 @@ func (d *discovery) skipScopedRoot(walkRoot string) (bool, error) {
 		return false, err
 	}
 	return false, nil
+}
+
+// pruned reports whether a path, or a directory above it, is out of the
+// library: the rules prune it or it is ignorable download residue.
+func (d *discovery) pruned(rel string, dir bool) (bool, error) {
+	if d.rules.Prunes(rel, dir) {
+		return true, nil
+	}
+	return ignorablePath(d.ignorable, rel, dir)
 }
 
 func (d *discovery) visit(absPath string, entry fs.DirEntry, walkErr error) error {
@@ -355,39 +376,48 @@ func (d *discovery) visit(absPath string, entry fs.DirEntry, walkErr error) erro
 }
 
 func (d *discovery) visitDir(rel string) error {
-	if ignoredByRegex(d.ignore, rel, true) {
-		d.skipped++
+	if d.rules.Prunes(rel, true) {
 		return filepath.SkipDir
 	}
-	excluded, err := matchesExcludedPath(d.exclude, rel, true)
+	ignorable, err := matchesExcludedPath(d.ignorable, rel, true)
 	if err != nil {
 		return err
 	}
-	if excluded {
+	if ignorable {
 		return filepath.SkipDir
 	}
 	return nil
 }
 
 func (d *discovery) visitFile(absPath, rel string, entry fs.DirEntry) error {
-	media := likelyMediaFile(rel)
-	if ignoredByRegex(d.ignore, rel, false) {
+	media := LikelyMediaFile(rel)
+	// A pruned file is not part of the library: it is neither a candidate's
+	// residue nor counted towards a package. Pruned media is still reported,
+	// so a scan says what the rules kept out.
+	if d.rules.Prunes(rel, false) {
 		if !media {
-			// Ignored non-media still counts as skipped, unlike excluded files.
-			d.skipped++
 			return nil
 		}
-		return d.skipEntry(absPath, rel, entry, "ignore_regex")
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		// Prunes only looks at the rules up to the first allow, all deny
+		// rules, so with the real size Decide still denies, and names the
+		// rule that matches first: a size rule above the path rule only when
+		// the file is that size.
+		d.deny(absPath, rel, info, d.rules.Decide(config.RuleFile{Path: rel, SizeBytes: info.Size()}).Reason)
+		return nil
 	}
-	excluded, err := matchesAny(d.exclude, rel)
+	ignorable, err := matchesAny(d.ignorable, rel)
 	if err != nil {
 		return err
 	}
-	if excluded {
+	if ignorable {
 		if !media {
 			return nil
 		}
-		return d.skipEntry(absPath, rel, entry, "excluded")
+		return d.skipEntry(absPath, rel, entry, "ignorable")
 	}
 	if entry.Type()&fs.ModeType != 0 {
 		return nil
@@ -417,12 +447,8 @@ func (d *discovery) visitFile(absPath, rel string, entry fs.DirEntry) error {
 		return nil
 	}
 	recordSourceStat(d.stats, d.library, absPath, rel, info, d.completion)
-	included, err := includedBy(d.library.Include, rel)
-	if err != nil {
-		return err
-	}
-	if !included {
-		d.skip(absPath, rel, info, "not_included")
+	if decision := d.rules.Decide(config.RuleFile{Path: rel, SizeBytes: info.Size()}); !decision.Allowed {
+		d.deny(absPath, rel, info, decision.Reason)
 		return nil
 	}
 	if classifyMediaAsset(rel) == domain.MediaAssetRoleSample {
@@ -449,36 +475,10 @@ func (d *discovery) skip(absPath, rel string, info fs.FileInfo, reason string) {
 	d.skipped++
 }
 
-func compileIgnoreRegexps(patterns []string) ([]*regexp.Regexp, error) {
-	if len(patterns) == 0 {
-		return nil, nil
-	}
-
-	regexps := make([]*regexp.Regexp, 0, len(patterns))
-	for i, pattern := range patterns {
-		pattern = strings.TrimSpace(pattern)
-		if pattern == "" {
-			return nil, fmt.Errorf("ignore_regex[%d] must not be empty", i)
-		}
-		compiled, err := regexp.Compile(pattern)
-		if err != nil {
-			return nil, fmt.Errorf("ignore_regex[%d] is invalid: %w", i, err)
-		}
-		regexps = append(regexps, compiled)
-	}
-	return regexps, nil
-}
-
-func ignoredByRegex(patterns []*regexp.Regexp, rel string, isDir bool) bool {
-	for _, pattern := range patterns {
-		if pattern.MatchString(rel) {
-			return true
-		}
-		if isDir && pattern.MatchString(rel+"/") {
-			return true
-		}
-	}
-	return false
+// deny records a media file the library's rules keep out.
+func (d *discovery) deny(absPath, rel string, info fs.FileInfo, reason string) {
+	d.skip(absPath, rel, info, reason)
+	d.candidates[len(d.candidates)-1].denied = true
 }
 
 func buildCandidate(library config.LibraryConfig, absPath string, rel string, info fs.FileInfo, ignored bool, ignoreReason string) candidate {
@@ -496,12 +496,29 @@ func buildCandidate(library config.LibraryConfig, absPath string, rel string, in
 	}
 }
 
-func effectiveExcludeGlobs(library config.LibraryConfig) []string {
-	exclude := append([]string(nil), library.Exclude...)
-	if library.IsDownload() {
-		exclude = append(exclude, library.Download.IgnorableGlobs...)
+// ignorableGlobs are the residue patterns of a download library. Media
+// libraries have none.
+func ignorableGlobs(library config.LibraryConfig) []string {
+	if !library.IsDownload() {
+		return nil
 	}
-	return exclude
+	return library.Download.IgnorableGlobs
+}
+
+// ignorablePath reports whether a path, or a directory above it, matches an
+// ignorable glob.
+func ignorablePath(patterns []string, rel string, dir bool) (bool, error) {
+	if len(patterns) == 0 {
+		return false, nil
+	}
+	rel = path.Clean(rel)
+	for current := rel; current != "." && current != "/"; current = path.Dir(current) {
+		matched, err := matchesExcludedPath(patterns, current, dir || current != rel)
+		if matched || err != nil {
+			return matched, err
+		}
+	}
+	return false, nil
 }
 
 func recordSourceStat(stats map[string]sourceStat, library config.LibraryConfig, absPath string, rel string, info fs.FileInfo, completion *CompletionTracker) {
@@ -541,50 +558,19 @@ func sourceFor(library config.LibraryConfig, rel string) (string, string, domain
 	return first, rest, domain.SourceKindPackage
 }
 
-func includedBy(patterns []string, rel string) (bool, error) {
-	if len(patterns) == 0 {
-		return true, nil
-	}
-	return matchesAny(patterns, rel)
-}
-
 func matchesAny(patterns []string, rel string) (bool, error) {
-	directory := strings.HasSuffix(filepath.ToSlash(rel), "/")
-	rel = path.Clean(filepath.ToSlash(rel))
-	if directory {
-		rel += "/"
-	}
-	base := path.Base(rel)
-
 	for _, pattern := range patterns {
-		pattern = strings.TrimSpace(filepath.ToSlash(pattern))
-		if pattern == "" {
-			continue
-		}
-
-		matched, err := doublestar.PathMatch(pattern, rel)
-		if err != nil {
-			return false, fmt.Errorf("invalid glob %q: %w", pattern, err)
-		}
-		if matched {
-			return true, nil
-		}
-
-		if !strings.Contains(pattern, "/") {
-			matched, err = doublestar.PathMatch(pattern, base)
-			if err != nil {
-				return false, fmt.Errorf("invalid glob %q: %w", pattern, err)
-			}
-			if matched {
-				return true, nil
-			}
+		matched, err := config.GlobMatches(pattern, rel)
+		if matched || err != nil {
+			return matched, err
 		}
 	}
-
 	return false, nil
 }
 
-func likelyMediaFile(rel string) bool {
+// LikelyMediaFile reports whether a path has one of the extensions the
+// scanner treats as media. It looks at the name only.
+func LikelyMediaFile(rel string) bool {
 	switch strings.ToLower(path.Ext(rel)) {
 	case ".mkv", ".mp4", ".m4v", ".mov", ".avi", ".webm", ".ts", ".m2ts":
 		return true
@@ -627,7 +613,7 @@ func (s Scanner) ScanPaths(ctx context.Context, library config.LibraryConfig, pa
 			return s.ScanLibrary(ctx, library)
 		}
 		rel = filepath.ToSlash(rel)
-		if !library.GroupsPackages() && !likelyMediaFile(rel) {
+		if !library.GroupsPackages() && !LikelyMediaFile(rel) {
 			return s.ScanLibrary(ctx, library)
 		}
 		source, _, _ := sourceFor(library, rel)

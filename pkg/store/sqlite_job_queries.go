@@ -137,33 +137,61 @@ ORDER BY state
 	return counts, nil
 }
 
-func (s *SQLiteStore) ListJobs(ctx context.Context, filter JobListFilter) (jobs []JobSummary, err error) {
-	query := `
-SELECT j.id, j.slug, j.source_id, j.asset_id, j.library_name, j.priority, j.state,
-	j.lease_owner, j.lease_deadline, j.heartbeat_at, j.attempt_count,
-	j.last_error, j.input_size_bytes, j.output_size_bytes, j.created_at,
-	j.updated_at, j.completed_at,
-	s.kind, s.relative_path, a.relative_path, a.role
+const jobListFrom = `
 FROM jobs j
 JOIN media_sources s ON s.id = j.source_id
 LEFT JOIN media_assets a ON a.id = j.asset_id
 WHERE 1 = 1
 `
+
+// jobListWhere builds the conditions of a job listing, so the page and its
+// total always select the same jobs.
+func jobListWhere(filter JobListFilter) (string, []any) {
+	var where string
 	var args []any
 	if filter.LibraryName != "" {
-		query += " AND j.library_name = ?\n"
+		where += " AND j.library_name = ?\n"
 		args = append(args, string(filter.LibraryName))
 	}
 	if len(filter.States) > 0 {
-		query += " AND j.state IN (" + placeholders(len(filter.States)) + ")\n"
+		where += " AND j.state IN (" + placeholders(len(filter.States)) + ")\n"
 		for _, state := range filter.States {
 			args = append(args, string(state))
 		}
 	}
-	query += "ORDER BY j.created_at DESC, j.id DESC\n"
+	if query := strings.TrimSpace(filter.Query); query != "" {
+		where += ` AND (s.relative_path LIKE ? ESCAPE '\' OR a.relative_path LIKE ? ESCAPE '\')` + "\n"
+		args = append(args, likeContains(query), likeContains(query))
+	}
+	return where, args
+}
+
+// CountJobs counts the jobs a filter selects, ignoring its limit and offset.
+func (s *SQLiteStore) CountJobs(ctx context.Context, filter JobListFilter) (int64, error) {
+	where, args := jobListWhere(filter)
+	var total int64
+	if err := s.db.QueryRowContext(ctx, "SELECT count(*)"+jobListFrom+where, args...).Scan(&total); err != nil {
+		return 0, fmt.Errorf("count jobs: %w", err)
+	}
+	return total, nil
+}
+
+func (s *SQLiteStore) ListJobs(ctx context.Context, filter JobListFilter) (jobs []JobSummary, err error) {
+	where, args := jobListWhere(filter)
+	query := `
+SELECT j.id, j.slug, j.source_id, j.asset_id, j.library_name, j.priority, j.state,
+	j.lease_owner, j.lease_deadline, j.heartbeat_at, j.attempt_count,
+	j.last_error, j.input_size_bytes, j.output_size_bytes, j.created_at,
+	j.updated_at, j.completed_at,
+	s.kind, s.relative_path, a.relative_path, a.role` + jobListFrom + where
+	if filter.NewestActivityFirst {
+		query += "ORDER BY j.updated_at DESC, j.id DESC\n"
+	} else {
+		query += "ORDER BY j.created_at DESC, j.id DESC\n"
+	}
 	if filter.Limit > 0 {
-		query += "LIMIT ?\n"
-		args = append(args, filter.Limit)
+		query += "LIMIT ? OFFSET ?\n"
+		args = append(args, filter.Limit, max(filter.Offset, 0))
 	}
 
 	rows, err := s.db.QueryContext(ctx, query, args...)

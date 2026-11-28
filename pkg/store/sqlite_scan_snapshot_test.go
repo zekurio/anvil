@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"github.com/zekurio/anvil/pkg/domain"
+	replacepkg "github.com/zekurio/anvil/pkg/replace"
 )
 
 func scanStore(t testing.TB) *SQLiteStore {
@@ -23,12 +25,13 @@ func scanStore(t testing.TB) *SQLiteStore {
 			t.Error(err)
 		}
 	})
+	mustCreateLibrary(t, state, "test")
 	return state
 }
 
 func scanToken(t testing.TB, s *SQLiteStore) ScanToken {
 	t.Helper()
-	token, err := s.BeginLibraryScan(context.Background(), "test")
+	token, err := s.BeginLibraryScan(context.Background(), storedLibrary(t, s, "test"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -155,7 +158,7 @@ func BenchmarkUnchangedLibraryScan(b *testing.B) {
 func TestForceSupersedesPendingScan(t *testing.T) {
 	s := scanStore(t)
 	old := scanToken(t, s)
-	_, err := s.ForceOccurrence(context.Background(), ForceOccurrenceInput{LibraryName: "test", SourceKind: domain.SourceKindFile, SourceRelativePath: "a", AssetRelativePath: "a", SourceFingerprint: domain.FileFingerprint{SizeBytes: 2}, AssetFingerprint: domain.FileFingerprint{SizeBytes: 2}})
+	_, err := s.ForceOccurrence(context.Background(), ForceOccurrenceInput{LibraryName: "test", LibraryCreatedAt: storedLibrary(t, s, "test").CreatedAt, SourceKind: domain.SourceKindFile, SourceRelativePath: "a", AssetRelativePath: "a", SourceFingerprint: domain.FileFingerprint{SizeBytes: 2}, AssetFingerprint: domain.FileFingerprint{SizeBytes: 2}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -217,9 +220,9 @@ func TestUpgradeSchemaSixToSeven(t *testing.T) {
 	}
 	// Version 7 adds only source_scans. Remove that addition to build the
 	// previous schema, including its existing full-scan watermark.
-	start := strings.Index(currentSchema, "CREATE TABLE source_scans (")
-	end := start + strings.Index(currentSchema[start:], "CREATE TABLE media_sources (")
-	schemaSix := currentSchema[:start] + currentSchema[end:]
+	start := strings.Index(schemaVersion7, "CREATE TABLE source_scans (")
+	end := start + strings.Index(schemaVersion7[start:], "CREATE TABLE media_sources (")
+	schemaSix := schemaVersion7[:start] + schemaVersion7[end:]
 	_, setupErr := db.ExecContext(ctx, schemaSix+`INSERT INTO schema_migrations VALUES (6, '2026-09-05T00:00:00Z'); INSERT INTO library_scans VALUES ('test', 4, 3, NULL);`)
 	closeErr := db.Close()
 	if setupErr != nil {
@@ -241,10 +244,11 @@ func TestUpgradeSchemaSixToSeven(t *testing.T) {
 	if err := s.db.QueryRow(`SELECT max(version) FROM schema_migrations`).Scan(&version); err != nil {
 		t.Fatal(err)
 	}
-	if version != 7 {
+	mustCreateLibrary(t, s, "test")
+	if version != currentSchemaVersion {
 		t.Fatalf("schema version %d", version)
 	}
-	if result := applyEntries(t, s, ScanToken{LibraryName: "test", Sequence: 2}, []string{"a"}, pathEntry("a", 1)); result.Applied {
+	if result := applyEntries(t, s, ScanToken{LibraryName: "test", LibraryCreatedAt: storedLibrary(t, s, "test").CreatedAt, Sequence: 2}, []string{"a"}, pathEntry("a", 1)); result.Applied {
 		t.Fatal("upgrade lost full watermark")
 	}
 	applyEntries(t, s, scanToken(t, s), []string{"a"}, pathEntry("a", 1))
@@ -282,5 +286,246 @@ func TestRetryTransitionSignalsWork(t *testing.T) {
 	case <-s.WorkAvailable():
 	default:
 		t.Fatal("missing retry signal")
+	}
+}
+
+// A rule change reaches files the library already tracks: the next scan
+// reports them as denied, and a job that was queued while the rules still
+// allowed its file must not run. Only a job that never started is touched.
+// A file the rules now deny must not be replaced by a job that was queued
+// while they allowed it, also when that job already ran an attempt and only
+// waits to try again. What a worker holds, and a publish that already
+// started to replace the file, are left to finish.
+func TestScanSkipsWaitingJobsOfDeniedFiles(t *testing.T) {
+	ctx := context.Background()
+	s := scanStore(t)
+	paths := []string{"waiting.mkv", "requeued.mkv", "retrying.mkv", "publishing.mkv", "conflicted.mkv", "running.mkv", "allowed.mkv", "unstable.mkv"}
+	var entries []ScanEntry
+	for _, path := range paths {
+		entries = append(entries, pathEntry(path, 1))
+	}
+	first := applyEntries(t, s, scanToken(t, s), nil, entries...)
+	if first.EnqueuedJobs != len(paths) || len(first.DeniedJobs) != 0 {
+		t.Fatalf("first scan = %+v, want %d queued jobs", first, len(paths))
+	}
+	jobOf := func(path string) domain.Job {
+		t.Helper()
+		source, err := s.GetMediaSourceByPath(ctx, "test", path)
+		if err != nil {
+			t.Fatalf("%s: %v", path, err)
+		}
+		jobs, err := s.ListJobs(ctx, JobListFilter{LibraryName: "test"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, job := range jobs {
+			if job.Job.SourceID == source.ID {
+				return job.Job
+			}
+		}
+		t.Fatalf("%s has no job", path)
+		return domain.Job{}
+	}
+	now := time.Unix(100, 0).UTC()
+	set := func(path, query string, args ...any) {
+		t.Helper()
+		if _, err := s.db.ExecContext(ctx, query, append(args, int64(jobOf(path).ID))...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	journal := func(path string, stage replacepkg.PublishStage) {
+		t.Helper()
+		if _, err := s.db.ExecContext(ctx, `
+INSERT INTO publish_operations (job_id, stage, operation_json, created_at, updated_at) VALUES (?, ?, '{}', ?, ?)
+`, int64(jobOf(path).ID), string(stage), encodeTime(now), encodeTime(now)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Stale-lease recovery put one back in the queue after an attempt; one
+	// failed an attempt and waits to retry; two are back in the queue with a
+	// publish that started; one a worker holds.
+	set("requeued.mkv", `UPDATE jobs SET attempt_count = 1 WHERE id = ?`)
+	set("retrying.mkv", `UPDATE jobs SET state = 'retrying', attempt_count = 2 WHERE id = ?`)
+	set("publishing.mkv", `UPDATE jobs SET attempt_count = 1 WHERE id = ?`)
+	journal("publishing.mkv", replacepkg.PublishStagePublished)
+	set("conflicted.mkv", `UPDATE jobs SET attempt_count = 1 WHERE id = ?`)
+	journal("conflicted.mkv", replacepkg.PublishStageConflict)
+	set("running.mkv", `UPDATE jobs SET state = 'running', attempt_count = 1, lease_owner = 'worker-1' WHERE id = ?`)
+
+	const reason = `denied by rule 1 (size lt "5 MB")`
+	denied := func(path string) ScanEntry {
+		entry := pathEntry(path, 1)
+		entry.Persist, entry.Enqueue = false, false
+		entry.DeniedReason = reason
+		return entry
+	}
+	// A download that is still being written is not persisted either, and
+	// must not be mistaken for a denied file.
+	unstable := pathEntry("unstable.mkv", 1)
+	unstable.Persist, unstable.Enqueue = false, false
+	strict := []ScanEntry{
+		denied("waiting.mkv"), denied("requeued.mkv"), denied("retrying.mkv"), denied("publishing.mkv"),
+		denied("conflicted.mkv"), denied("running.mkv"), denied("never-seen.mkv"), pathEntry("allowed.mkv", 1), unstable,
+	}
+	second, err := s.ApplyLibraryScan(ctx, scanToken(t, s), ApplyScanInput{LibraryName: "test", RequeueExisting: true, CompletedAt: now, Entries: strict})
+	if err != nil {
+		t.Fatal(err)
+	}
+	skipped := map[domain.JobID]bool{}
+	for _, id := range second.DeniedJobs {
+		skipped[id] = true
+	}
+	for _, path := range []string{"waiting.mkv", "requeued.mkv", "retrying.mkv"} {
+		job := jobOf(path)
+		if job.State != domain.JobStateSkipped || job.LastError != reason || job.CompletedAt == nil || job.LeaseOwner != "" {
+			t.Errorf("job of the denied file %s = %+v, want it skipped with the rule as its reason", path, job)
+		}
+		if !skipped[job.ID] {
+			t.Errorf("job of %s is not among the skipped jobs %v the caller has to clean up after", path, second.DeniedJobs)
+		}
+	}
+	if len(second.DeniedJobs) != 3 {
+		t.Fatalf("second scan skipped %v, want exactly the three waiting jobs", second.DeniedJobs)
+	}
+	for path, state := range map[string]domain.JobState{
+		"publishing.mkv": domain.JobStatePending, "conflicted.mkv": domain.JobStatePending, "running.mkv": domain.JobStateRunning,
+		"allowed.mkv": domain.JobStatePending, "unstable.mkv": domain.JobStatePending,
+	} {
+		if job := jobOf(path); job.State != state {
+			t.Errorf("job of %s = %s, want it left %s", path, job.State, state)
+		}
+	}
+	// The denied file keeps its occurrence, so it stays listed with its reason
+	// and its job goes back on the queue once the rules allow the file again.
+	if source, err := s.GetMediaSourceByPath(ctx, "test", "waiting.mkv"); err != nil || !source.Current || source.Status != domain.MediaSourceActive {
+		t.Fatalf("occurrence of the denied file = %+v, %v", source, err)
+	}
+	if _, err := s.GetMediaSourceByPath(ctx, "test", "never-seen.mkv"); err == nil {
+		t.Fatal("a denied file the library never tracked was recorded")
+	}
+	// A retry does not go around the rules, whether or not the job had run
+	// before: queued by hand, it would be leased against them or skipped again
+	// by the next scan.
+	for _, path := range []string{"waiting.mkv", "retrying.mkv"} {
+		var refusal *RetryRefusedError
+		if _, err := s.RetryJob(ctx, jobOf(path).ID, now); !errors.As(err, &refusal) || !refusal.Denied {
+			t.Fatalf("retry of the job of %s the rules skipped = %v, want a refusal that says the rules deny the file", path, err)
+		}
+		if job := jobOf(path); job.State != domain.JobStateSkipped {
+			t.Fatalf("refused retry left the job of %s %s", path, job.State)
+		}
+	}
+	// A repeated scan has nothing left to skip.
+	third, err := s.ApplyLibraryScan(ctx, scanToken(t, s), ApplyScanInput{LibraryName: "test", RequeueExisting: true, CompletedAt: now, Entries: strict})
+	if err != nil || len(third.DeniedJobs) != 0 {
+		t.Fatalf("third scan = %+v, %v", third, err)
+	}
+	// Once the rules allow the files again, the jobs they skipped are queued
+	// again, also the one that had run before.
+	fourth := applyEntries(t, s, scanToken(t, s), nil, entries...)
+	if fourth.EnqueuedJobs != 3 {
+		t.Fatalf("scan with the rules relaxed = %+v, want the three skipped jobs queued again", fourth)
+	}
+	if job := jobOf("retrying.mkv"); job.State != domain.JobStatePending || job.AttemptCount != 2 {
+		t.Fatalf("job of retrying.mkv after the rules relaxed = %+v, want it pending with its attempts", job)
+	}
+}
+
+// A rule that was too strict is undone by changing the rule: the scan after
+// puts the jobs it took off the queue back, and nothing else.
+func TestScanRequeuesJobsOnceTheRulesAllowTheFileAgain(t *testing.T) {
+	for _, requeueExisting := range []bool{false, true} {
+		ctx := context.Background()
+		s := scanStore(t)
+		now := time.Unix(100, 0).UTC()
+		paths := []string{"denied.mkv", "by-fallback.mkv", "by-flow.mkv", "canceled.mkv", "done.mkv"}
+		entries := func(deny map[string]string) []ScanEntry {
+			list := make([]ScanEntry, 0, len(paths))
+			for _, path := range paths {
+				entry := pathEntry(path, 1)
+				if reason := deny[path]; reason != "" {
+					entry.Persist, entry.Enqueue, entry.DeniedReason = false, false, reason
+				}
+				list = append(list, entry)
+			}
+			return list
+		}
+		scan := func(deny map[string]string) ApplyScanResult {
+			t.Helper()
+			result, err := s.ApplyLibraryScan(ctx, scanToken(t, s), ApplyScanInput{LibraryName: "test", RequeueExisting: requeueExisting, CompletedAt: now, Entries: entries(deny)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			return result
+		}
+		stateOf := func(path string) domain.JobState {
+			t.Helper()
+			var state string
+			if err := s.db.QueryRowContext(ctx, `
+SELECT jobs.state FROM jobs JOIN media_sources ON media_sources.id = jobs.source_id WHERE media_sources.relative_path = ?
+`, path).Scan(&state); err != nil {
+				t.Fatalf("%s: %v", path, err)
+			}
+			return domain.JobState(state)
+		}
+		idOf := func(path string) int64 {
+			t.Helper()
+			var id int64
+			if err := s.db.QueryRowContext(ctx, `
+SELECT jobs.id FROM jobs JOIN media_sources ON media_sources.id = jobs.source_id WHERE media_sources.relative_path = ?
+`, path).Scan(&id); err != nil {
+				t.Fatalf("%s: %v", path, err)
+			}
+			return id
+		}
+
+		if first := scan(nil); first.EnqueuedJobs != len(paths) {
+			t.Fatalf("first scan = %+v, want %d queued jobs", first, len(paths))
+		}
+		// Three jobs end for reasons that are not a rule's. The flow skipped
+		// one in its first attempt, with the flow's reason.
+		for _, change := range []struct {
+			path  string
+			query string
+			args  []any
+		}{
+			{"by-flow.mkv", `UPDATE jobs SET state = 'skipped', attempt_count = 1, last_error = ? WHERE id = ?`, []any{`skipped by flow "Skip HEVC": Video is hevc? yes`}},
+			{"canceled.mkv", `UPDATE jobs SET state = 'canceled', last_error = ? WHERE id = ?`, []any{"canceled by operator"}},
+			{"done.mkv", `UPDATE jobs SET state = 'skipped', last_error = ? WHERE id = ?`, []any{"the file is no longer in the library"}},
+		} {
+			if _, err := s.db.ExecContext(ctx, change.query, append(change.args, idOf(change.path))...); err != nil {
+				t.Fatal(err)
+			}
+		}
+
+		second := scan(map[string]string{"denied.mkv": `denied by rule 2 (size gt "1 MB")`, "by-fallback.mkv": "no rule allows it"})
+		if len(second.DeniedJobs) != 2 {
+			t.Fatalf("scan with the strict rules = %+v, want two jobs skipped", second)
+		}
+		third := scan(nil)
+		if third.EnqueuedJobs != 2 || len(third.DeniedJobs) != 0 {
+			t.Fatalf("scan with the rules relaxed = %+v, want the two jobs queued again", third)
+		}
+		want := map[string]domain.JobState{
+			"denied.mkv": domain.JobStatePending, "by-fallback.mkv": domain.JobStatePending,
+			"by-flow.mkv": domain.JobStateSkipped, "canceled.mkv": domain.JobStateCanceled, "done.mkv": domain.JobStateSkipped,
+		}
+		for path, state := range want {
+			if got := stateOf(path); got != state {
+				t.Errorf("requeue existing %t: job of %s = %s, want %s", requeueExisting, path, got, state)
+			}
+		}
+		var lastError string
+		var completedAt sql.NullString
+		if err := s.db.QueryRowContext(ctx, `SELECT last_error, completed_at FROM jobs WHERE id = ?`, idOf("denied.mkv")).Scan(&lastError, &completedAt); err != nil {
+			t.Fatal(err)
+		}
+		if lastError != "" || completedAt.Valid {
+			t.Errorf("requeued job keeps last_error %q, completed_at %v", lastError, completedAt)
+		}
+		// Nothing left to put back: the next scan changes nothing.
+		if fourth := scan(nil); fourth.EnqueuedJobs != 0 {
+			t.Errorf("repeated scan = %+v, want nothing queued", fourth)
+		}
 	}
 }

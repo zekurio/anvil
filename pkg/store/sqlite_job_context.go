@@ -39,6 +39,9 @@ WHERE id = ?
 	return snapshot, true, nil
 }
 
+// SaveJobPipelineContext stores a job's checkpoint. The probe facts a file
+// list shows are written to their own columns in the same statement, so a
+// list never has to read the checkpoint and the two cannot disagree.
 func (s *SQLiteStore) SaveJobPipelineContext(ctx context.Context, jobID domain.JobID, snapshot domain.JobPipelineContext, now time.Time) error {
 	if snapshot.Version == 0 {
 		snapshot.Version = domain.JobPipelineContextVersion
@@ -47,11 +50,14 @@ func (s *SQLiteStore) SaveJobPipelineContext(ctx context.Context, jobID domain.J
 	if err != nil {
 		return fmt.Errorf("encode job pipeline context: %w", err)
 	}
+	facts := probeFactsOf(snapshot.Probe)
 	result, err := s.db.ExecContext(ctx, `
 UPDATE jobs
-SET pipeline_context_json = ?, updated_at = ?
+SET pipeline_context_json = ?, probe_format = ?, probe_video_codec = ?, probe_width = ?, probe_height = ?,
+	probe_audio_codec = ?, probe_audio_channels = ?, updated_at = ?
 WHERE id = ?
-`, data, encodeTime(defaultNow(now)), int64(jobID))
+`, data, facts.FormatName, facts.VideoCodec, facts.Width, facts.Height,
+		facts.AudioCodec, facts.AudioChannels, encodeTime(defaultNow(now)), int64(jobID))
 	if err != nil {
 		return fmt.Errorf("save job pipeline context: %w", err)
 	}

@@ -28,6 +28,9 @@ func writeJobShow(out io.Writer, report control.JobShowResponse) error {
 		w.Printf("  Path: %s\n", textout.OrNone(job.Path))
 		w.Printf("  Last error: %s\n", textout.OrNone(job.LastError))
 
+		if report.Flow != nil {
+			writeJobFlow(w, *report.Flow)
+		}
 		if report.PipelineContext != nil {
 			writePipelineContext(w, *report.PipelineContext)
 		}
@@ -109,6 +112,23 @@ func writeJobShow(out io.Writer, report control.JobShowResponse) error {
 	})
 }
 
+// writeJobFlow says which flow the job ran and what it made of the file. The
+// path is the answer to "why was this encoded like that", and for a skipped
+// job the last decision is the answer to "why was this left alone".
+func writeJobFlow(w *textout.Writer, resolved control.JobFlowDetail) {
+	w.Println()
+	w.Heading(fmt.Sprintf("Flow (attempt %d)", resolved.AttemptNumber))
+	w.Printf("  Flow: %s (revision %d)\n", textout.OrNone(resolved.FlowName), resolved.Revision)
+	w.Printf("  Outcome: %s\n", textout.OrNone(resolved.Outcome))
+	w.Printf("  Path: %s\n", textout.OrNone(strings.Join(resolved.Path, " → ")))
+	for _, decision := range resolved.Decisions {
+		w.Printf("  Decision: %s\n", decision)
+	}
+	for _, line := range resolved.Plan {
+		w.Printf("  Plan: %s\n", line)
+	}
+}
+
 func writePipelineContext(w *textout.Writer, context control.PipelineContextDetail) {
 	w.Println()
 	w.Heading("Saved context")
@@ -129,21 +149,24 @@ func writePipelineContext(w *textout.Writer, context control.PipelineContextDeta
 			w.Printf("  Crop dimensions: %dx%d -> %dx%d\n", context.CropSourceWidth, context.CropSourceHeight, context.CropOutputWidth, context.CropOutputHeight)
 		}
 	}
-	if context.SearchMetric != "" || context.SearchCRF > 0 || context.SearchSkipReason != "" {
-		if context.SearchSkipReason != "" {
-			w.Printf("  Search: skipped video encode (%s)\n", context.SearchSkipReason)
-		} else {
-			w.Printf("  Search: CRF %d", context.SearchCRF)
-			// XPSNR scores can be zero or negative, so the metric label — not
-			// the value — decides which score is shown. A missing metric means
-			// the checkpoint predates XPSNR support and only VMAF can be present.
-			if context.SearchMetric == string(domain.QualityMetricXPSNR) {
-				w.Printf(" XPSNR %.2f", context.SearchXPSNR)
-			} else if context.SearchVMAF > 0 {
-				w.Printf(" VMAF %.2f", context.SearchVMAF)
-			}
-			w.Printf("\n")
+	switch {
+	case context.QualityMode == string(domain.VideoQualityFixed):
+		// Nothing was searched or measured: the flow set this CRF. Calling it
+		// a search result would claim a quality check that never ran.
+		w.Printf("  Quality: fixed CRF %d (set by the flow, no search)\n", context.SearchCRF)
+	case context.SearchSkipReason != "":
+		w.Printf("  Search: skipped video encode (%s)\n", context.SearchSkipReason)
+	case context.SearchMetric != "" || context.SearchCRF > 0:
+		w.Printf("  Search: CRF %d", context.SearchCRF)
+		// XPSNR scores can be zero or negative, so the metric label — not
+		// the value — decides which score is shown. A missing metric means
+		// the checkpoint predates XPSNR support and only VMAF can be present.
+		if context.SearchMetric == string(domain.QualityMetricXPSNR) {
+			w.Printf(" XPSNR %.2f", context.SearchXPSNR)
+		} else if context.SearchVMAF > 0 {
+			w.Printf(" VMAF %.2f", context.SearchVMAF)
 		}
+		w.Printf("\n")
 	}
 }
 

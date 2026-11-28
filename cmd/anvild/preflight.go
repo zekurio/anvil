@@ -147,6 +147,13 @@ func runPreflightCommand(ctx context.Context, cfg config.Config, opts options) e
 	var lookup preflightStore
 	if storeAvailable {
 		lookup = state
+		// Preflight plans against the libraries the daemon would run, and
+		// those live in the store. The handle is read-only: nothing here
+		// imports, migrates, or seeds.
+		cfg, err = withStoreSnapshot(ctx, cfg, state)
+		if err != nil {
+			return err
+		}
 	}
 	report, err := buildPreflightReport(ctx, cfg, opts, lookup, storeAvailable)
 	if err != nil {
@@ -191,7 +198,7 @@ func buildPreflightReport(ctx context.Context, cfg config.Config, opts options, 
 		report.Warnings = append(report.Warnings, "broad preflight has no --limit; output can be large on real libraries")
 	}
 	if !storeAvailable {
-		report.Warnings = append(report.Warnings, "SQLite store was not found; existing source, asset, and job status is reported as absent")
+		report.Warnings = append(report.Warnings, "SQLite store was not found, and libraries live in the store, so there is nothing to plan; start anvild once to create it and add a library in the web UI")
 	}
 
 	for _, name := range names {
@@ -199,7 +206,7 @@ func buildPreflightReport(ctx context.Context, cfg config.Config, opts options, 
 		if !ok {
 			return preflightReport{}, fmt.Errorf("library %q not found", name)
 		}
-		library, _, err := cfg.ResolveForLibrary(domain.LibraryName(name))
+		library, err := cfg.ResolveLibrary(domain.LibraryName(name))
 		if err != nil {
 			return preflightReport{}, err
 		}
@@ -279,7 +286,7 @@ func buildPreflightCandidate(ctx context.Context, cfg config.Config, state prefl
 	if err != nil {
 		return preflightCandidate{}, err
 	}
-	jobContext := pipeline.NewJobContext(domain.Job{}, source, asset, library, domain.Profile{})
+	jobContext := pipeline.NewJobContext(domain.Job{}, source, asset, library)
 	jobContext.StagingDir = stagingDir
 	inputPath := jobContext.InputPath
 	destination, err := replacepkg.PlanDestination(jobContext)

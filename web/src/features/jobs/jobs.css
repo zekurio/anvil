@@ -1,0 +1,63 @@
+/* anvil: the job sheet and the pieces of it other views reuse. Colours, spacing and radii come from tokens. */
+
+/* head strip and live progress */
+.av-jobhead { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-2); padding: var(--space-3) var(--space-4); border-bottom: 1px solid var(--line); font: var(--text-small); }
+.av-jobprogress { display: flex; flex-direction: column; gap: var(--space-2); padding: var(--space-3) var(--space-4); border-bottom: 1px solid var(--line); }
+.av-jobprogress-step { font: var(--text-label); color: var(--text); }
+.av-step-open { display: flex; align-items: center; gap: var(--space-2); font: var(--text-mono-small); color: var(--text-muted); }
+
+/* copyable mono text */
+.av-copy { display: flex; align-items: flex-start; gap: var(--space-1); min-width: 0; }
+.av-copy-text { flex: 1; min-width: 0; padding: 5px 0; font: var(--text-mono-small); color: var(--text); overflow-wrap: anywhere; user-select: all; }
+.av-copy .av-btn { flex: none; }
+
+/* wrapped mono block: error text */
+.av-pre { margin: 0; max-height: 240px; padding: var(--space-2) var(--space-3); overflow: auto; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--surface-sunken); color: var(--text); font: var(--text-mono-small); white-space: pre-wrap; overflow-wrap: anywhere; }
+.av-pre-danger { border-color: var(--danger); }
+
+/* flow map: a read-only canvas scaled to the sheet */
+.av-flowmap { min-height: 48px; border: 1px solid var(--line); border-radius: var(--radius-md); overflow: hidden; background: var(--surface-sunken); }
+.av-flowmap-loading { height: 160px; }
+
+/* stream decisions */
+.av-streams { margin: 0; padding: 0; list-style: none; border: 1px solid var(--line); border-radius: var(--radius-md); }
+.av-stream { display: grid; grid-template-columns: 20px minmax(0, 1fr) auto; align-items: start; gap: var(--space-2); padding: var(--space-2) var(--space-3); border-top: 1px solid var(--line); }
+.av-stream:first-child { border-top: 0; }
+.av-stream-id { font: var(--text-mono-small); color: var(--text-muted); text-align: right; }
+.av-stream-body { min-width: 0; }
+.av-stream-facts { font: var(--text-mono-small); color: var(--text); overflow-wrap: anywhere; }
+.av-stream-title { margin-left: var(--space-2); font: var(--text-caption); color: var(--text-muted); }
+.av-stream-why { font: var(--text-caption); color: var(--text-muted); overflow-wrap: anywhere; }
+.av-stream-state { display: inline-flex; align-items: center; gap: var(--space-1); font: var(--text-label); color: var(--text); white-space: nowrap; }
+.av-stream-dropped { color: var(--text-muted); }
+
+/* attempts */
+.av-attempts { display: flex; flex-direction: column; gap: var(--space-2); }
+.av-attempt { border: 1px solid var(--line); border-radius: var(--radius-md); min-width: 0; }
+.av-attempt-head { display: flex; align-items: center; gap: var(--space-2); width: 100%; min-height: var(--row); padding: 0 var(--space-3); border: 0; border-radius: var(--radius-md); background: none; color: var(--text); font: var(--text-small); text-align: left; cursor: pointer; }
+.av-attempt-head:hover { background: var(--surface-hover); }
+.av-attempt-head:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+.av-attempt-head > .av-icon { color: var(--text-muted); }
+.av-attempt-n { font: var(--text-label); }
+.av-attempt-meta { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: right; font: var(--text-mono-small); color: var(--text-muted); }
+.av-attempt-body { display: flex; flex-direction: column; gap: var(--space-3); padding: var(--space-2) var(--space-3) var(--space-3); border-top: 1px solid var(--line); }
+.av-attempt-times { font: var(--text-mono-small); color: var(--text-muted); }
+
+/* timeline of one attempt */
+.av-timeline { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: var(--space-3); }
+.av-tl { display: grid; grid-template-columns: 14px minmax(0, 1fr); gap: var(--space-2); }
+.av-tl-icon { margin-top: 2px; color: var(--text-muted); }
+.av-tl-finished .av-tl-icon { color: var(--ok); }
+.av-tl-failed .av-tl-icon { color: var(--danger); }
+.av-tl-running .av-tl-icon { color: var(--accent); }
+.av-tl-body { display: flex; flex-direction: column; gap: var(--space-1); min-width: 0; }
+.av-tl-head { display: flex; align-items: baseline; justify-content: space-between; gap: var(--space-2); }
+.av-tl-name { font: var(--text-small); color: var(--text); }
+.av-tl-time { font: var(--text-mono-small); color: var(--text-muted); white-space: nowrap; }
+.av-tl-message { font: var(--text-caption); color: var(--text-muted); white-space: pre-wrap; overflow-wrap: anywhere; }
+.av-tl-error { color: var(--danger); }
+.av-artifact { display: flex; flex-direction: column; gap: var(--space-1); min-width: 0; }
+.av-artifact-line { font: var(--text-mono-small); color: var(--text-muted); overflow-wrap: anywhere; }
+.av-artifact-line.av-tl-error { color: var(--danger); }
+.av-artifact-name { font: var(--text-label); color: var(--text-muted); }
+.av-logpath { display: flex; flex-direction: column; min-width: 0; }

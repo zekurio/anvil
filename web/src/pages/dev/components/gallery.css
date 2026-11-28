@@ -1,0 +1,27 @@
+/* Dev-only: layout of the components gallery. Not part of the design system. */
+
+.gal { display: flex; flex-direction: column; height: 100%; }
+.gal-bar { display: flex; align-items: center; gap: var(--space-4); height: var(--topbar); padding: 0 var(--space-4); box-sizing: border-box; flex: none; border-bottom: 1px solid var(--line); background: var(--surface); }
+.gal-bar h1 { margin: 0; font: var(--text-heading); }
+.gal-bar nav { display: flex; gap: var(--space-3); flex: 1; min-width: 0; overflow: hidden; font: var(--text-small); }
+.gal-cols { flex: 1; min-height: 0; display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); overflow: auto; }
+.gal-col { min-width: 0; background: var(--bg); color: var(--text); border-right: 1px solid var(--line); }
+.gal-section { padding: var(--space-5) var(--space-4); border-bottom: 1px solid var(--line); }
+.gal-section > h2 { margin: 0 0 var(--space-4); font: var(--text-title); }
+.gal-item { margin-bottom: var(--space-5); }
+.gal-item:last-child { margin-bottom: 0; }
+.gal-item > h3 { margin: 0 0 var(--space-2); font: var(--text-label); color: var(--text-muted); }
+.gal-panel { padding: var(--space-4); border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--surface); }
+.gal-panel-flush { padding: 0; overflow: hidden; }
+.gal-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: var(--space-4); }
+.gal-icons { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: var(--space-2); font: var(--text-mono-small); color: var(--text-muted); }
+.gal-icons > div { display: flex; align-items: center; gap: var(--space-2); }
+.gal-icons .av-icon { color: var(--text); }
+.gal-swatches { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: var(--space-2); font: var(--text-mono-small); color: var(--text-muted); }
+.gal-swatch { height: var(--control-md); border: 1px solid var(--line); border-radius: var(--radius-md); margin-bottom: var(--space-1); }
+.gal-frame { position: relative; height: 420px; display: flex; overflow: hidden; }
+.gal-page { height: 720px; width: 1280px; background: var(--bg); color: var(--text); }
+
+/* ?print lays the gallery out at full height so one screenshot captures it. */
+.gal-print { height: auto; }
+.gal-print .gal-cols { overflow: visible; }

@@ -1,0 +1,50 @@
+/* anvil: empty, loading and error states, banner, folder picker, sign-in. Colours, spacing and radii come from tokens. */
+
+/* empty / loading / error state */
+.av-state { box-sizing: border-box; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: var(--space-2); flex: 1; min-height: 0; padding: var(--space-6); text-align: center; }
+.av-state-icon { margin-bottom: var(--space-1); color: var(--text-muted); }
+.av-state-danger { color: var(--danger); }
+.av-state-title { margin: 0; font: var(--text-title); color: var(--text); }
+.av-state-text { margin: 0; max-width: 480px; font: var(--text-body); color: var(--text-muted); overflow-wrap: anywhere; }
+.av-state-actions { display: flex; flex-wrap: wrap; justify-content: center; gap: var(--space-2); margin-top: var(--space-2); }
+.av-state[role="status"] { flex-direction: row; }
+.av-spinner { color: var(--accent); }
+
+/* loading rows */
+.av-skeleton { background: var(--surface); }
+.av-skeleton-row { display: flex; align-items: center; justify-content: space-between; gap: var(--space-4); height: var(--row); padding: 0 var(--space-3); border-bottom: 1px solid var(--line); }
+.av-skeleton-bar { height: 8px; border-radius: var(--radius-sm); background: var(--neutral-soft); }
+.av-skeleton-short { width: 64px; }
+
+/* banner */
+.av-banner { display: flex; align-items: center; gap: var(--space-2); min-height: var(--control-md); padding: var(--space-1) var(--space-4); border-bottom: 1px solid var(--line); background: var(--neutral-soft); color: var(--text); font: var(--text-small); }
+.av-banner > .av-icon { color: var(--text-muted); }
+.av-banner-text { flex: 1; min-width: 0; }
+.av-banner-warning { background: var(--warn-soft); }
+.av-banner-warning > .av-icon { color: var(--warn); }
+.av-banner-danger { background: var(--danger-soft); }
+.av-banner-danger > .av-icon { color: var(--danger); }
+
+/* folder picker */
+.av-picker { display: flex; flex-direction: column; gap: var(--space-3); min-height: 320px; }
+.av-picker-bar { display: flex; align-items: center; gap: var(--space-2); }
+.av-picker-list { flex: 1; height: 288px; margin: 0; padding: var(--space-1) 0; overflow: auto; list-style: none; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--surface-sunken); }
+.av-picker-list[aria-busy="true"] { opacity: 0.6; }
+.av-picker-item { display: flex; align-items: center; gap: var(--space-2); width: 100%; height: var(--control-sm); padding: 0 var(--space-3); border: 0; background: none; color: var(--text); font: var(--text-mono); text-align: left; cursor: pointer; }
+.av-picker-item:hover { background: var(--surface-hover); }
+.av-picker-item[aria-pressed="true"] { background: var(--accent-soft); }
+.av-picker-item .av-icon { color: var(--text-muted); }
+.av-picker-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.av-picker-size { color: var(--text-muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.av-picker-empty { padding: var(--space-4); font: var(--text-small); color: var(--text-muted); }
+.av-picker-foot { display: flex; align-items: center; gap: var(--space-2); }
+.av-picker-chosen { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: var(--text-mono); color: var(--text-muted); }
+
+/* sign-in */
+.av-signin { box-sizing: border-box; position: fixed; inset: 0; width: 100vw; height: 100dvh; max-width: none; max-height: none; margin: 0; padding: var(--space-4); border: 0; background: var(--bg); color: var(--text); }
+.av-signin[open] { display: flex; align-items: center; justify-content: center; }
+.av-signin::backdrop { background: var(--bg); }
+.av-signin-panel { box-sizing: border-box; display: flex; flex-direction: column; gap: var(--space-4); width: 320px; max-width: 100%; padding: var(--space-5); border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--surface); }
+.av-signin-head { display: flex; flex-direction: column; align-items: flex-start; gap: var(--space-3); color: var(--text); }
+.av-signin-text { margin: 0; font: var(--text-small); color: var(--text-muted); }
+.av-signin-form { display: flex; flex-direction: column; gap: var(--space-4); margin: 0; }

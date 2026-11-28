@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"os"
 	"os/signal"
 	"sync"
@@ -23,6 +24,7 @@ import (
 	"github.com/zekurio/anvil/pkg/scheduler"
 	"github.com/zekurio/anvil/pkg/staging"
 	"github.com/zekurio/anvil/pkg/store"
+	"github.com/zekurio/anvil/pkg/webapi"
 	"github.com/zekurio/anvil/pkg/worker"
 )
 
@@ -68,27 +70,6 @@ type options struct {
 	preflightLimit  int
 	jsonOutput      bool
 	showConfig      bool
-}
-
-type runtimeConfig struct {
-	mu  sync.RWMutex
-	cfg config.Config
-}
-
-func newRuntimeConfig(cfg config.Config) *runtimeConfig {
-	return &runtimeConfig{cfg: cfg}
-}
-
-func (r *runtimeConfig) Get() config.Config {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	return r.cfg
-}
-
-func (r *runtimeConfig) Set(cfg config.Config) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.cfg = cfg
 }
 
 func main() {
@@ -234,7 +215,6 @@ type shutdownRequest struct {
 
 func runDaemon(ctx context.Context, cfg config.Config, opts options) error {
 	startedAt := time.Now().UTC()
-	runtimeCfg := newRuntimeConfig(cfg)
 	serviceCtx, stopServices, workerCtx, stopWorkers := daemonContexts(ctx)
 	defer stopServices()
 	defer stopWorkers()
@@ -277,18 +257,66 @@ func runDaemon(ctx context.Context, cfg config.Config, opts options) error {
 		}
 	}()
 
+	// The web UI's address and password are the last things that can fail
+	// for reasons outside the store, so they are settled before the store is
+	// opened: a start that fails on them leaves the store as it was, without
+	// a migration. Nothing is served until the snapshot exists, further down.
+	var webClaimed webClaim
+	if cfg.Web.Enabled {
+		webClaimed, err = claimWeb(serviceCtx, cfg)
+		if err != nil {
+			return err
+		}
+		defer func() {
+			if err := webClaimed.release(); err != nil {
+				slog.Error("release web listener", "error", err)
+			}
+		}()
+	}
+
+	if cfg.Daemon.StoreOnScratch() {
+		slog.Warn(config.StoreOnScratchWarning, "store_path", cfg.Daemon.StorePath)
+	}
 	state, err := openStore(serviceCtx, cfg)
 	if err != nil {
 		return err
 	}
 	defer closeStore(state)
 
-	recovered, err := state.RecoverStaleJobs(serviceCtx, cfg.Daemon.MaxAttempts, time.Now())
+	// loaded is what anvil.toml and the command line say. The daemon settings
+	// saved in the web UI apply from here on, before recovery reads
+	// max_attempts and the sweep reads staging_cleanup_age.
+	loaded := cfg
+	if cfg, err = withStoredDaemonSettings(serviceCtx, loaded, state); err != nil {
+		return err
+	}
+	if _, err := applyLogLevel(&activeLogLevel, cfg.Daemon.LogLevel); err != nil {
+		return err
+	}
+
+	// Recovery goes through the job service even this early, so a job it ends
+	// has its part file reclaimed like one the recovery loop ends later. It
+	// needs nothing of the service but the store and the attempt limit.
+	recovered, err := controlapi.Service{Store: state, Config: func() config.Config { return cfg }}.RecoverStaleJobs(serviceCtx)
 	if err != nil {
 		return err
 	}
 
 	runConfiguredStagingCleanup(serviceCtx, cfg, state)
+
+	// Libraries, flows, and arr connections live in the store. An installation
+	// that still has them in anvil.toml gets them moved over once, and only
+	// then is the snapshot built that every loop below reads.
+	if err := importLegacyConfig(serviceCtx, cfg, state); err != nil {
+		return err
+	}
+	warnLegacySections(cfg)
+	runtimeCfg := newRuntimeConfig(state, &activeLogLevel)
+	if err := runtimeCfg.Reload(serviceCtx, loaded); err != nil {
+		return err
+	}
+	cfg = runtimeCfg.Get()
+	monitorReconfigured, watcherReconfigured, schedulerReconfigured := runtimeCfg.Reconfigured(), runtimeCfg.Reconfigured(), runtimeCfg.Reconfigured()
 
 	slog.Info("starting anvild", "mode", mode, "config", configPathLabel(opts.configPath), "temp_dir", cfg.Daemon.TempDir, "store", cfg.Daemon.StorePath, "control_socket", cfg.Daemon.ControlSocket, "workers", cfg.Daemon.WorkerCount, "threads", cfg.Daemon.TotalThreads, "filesystem_event_debounce", cfg.FilesystemEventDebounce(), "shutdown_policy", cfg.Daemon.ShutdownPolicy, "shutdown_timeout", cfg.Daemon.ShutdownTimeout, "log_level", cfg.Daemon.LogLevel, "recovered_jobs", recovered)
 	logConfiguredWork(cfg)
@@ -296,7 +324,8 @@ func runDaemon(ctx context.Context, cfg config.Config, opts options) error {
 	var wg sync.WaitGroup
 	var plannerRef atomic.Pointer[scheduler.Scheduler]
 	completion := &scanner.CompletionTracker{}
-	control := startControlService(serviceCtx, &wg, listener, controlServiceDeps{
+	progress := &worker.ProgressTracker{}
+	jobs := newControlService(controlServiceDeps{
 		store:      state,
 		config:     runtimeCfg.Get,
 		startedAt:  startedAt,
@@ -315,13 +344,35 @@ func runDaemon(ctx context.Context, cfg config.Config, opts options) error {
 			}
 			return planner.CancelJob(jobID)
 		},
+		runningJobs: func(library domain.LibraryName) []domain.JobID {
+			planner := plannerRef.Load()
+			if planner == nil {
+				return nil
+			}
+			return planner.RunningJobs(library)
+		},
 	})
-	startReloadLoop(serviceCtx, &wg, opts, runtimeCfg, reloadSignals)
-	runInitialScan(serviceCtx, runtimeCfg.Get(), state, completion)
-	startRecoveryLoop(serviceCtx, &wg, runtimeCfg.Get, state)
-	planner := startSchedulerLoop(serviceCtx, workerCtx, &wg, runtimeCfg.Get, state)
+
+	// The address was bound before the store was opened. Serving starts only
+	// here, once the store is open, recovered, and imported into, and the
+	// snapshot the UI is served from exists.
+	var webServer *webapi.Server
+	if cfg.Web.Enabled {
+		webServer = newWebServer(webClaimed.password, webServiceDeps{
+			store: state, jobs: jobs, runtime: runtimeCfg, progress: progress, configPath: opts.configPath,
+		})
+		startWebService(serviceCtx, &wg, webClaimed.listener, webServer, cfg)
+	} else {
+		slog.Info("web UI is disabled (web.enabled = false)")
+	}
+
+	control := startControlService(serviceCtx, &wg, listener, jobs)
+	startReloadLoop(serviceCtx, &wg, opts, runtimeCfg, webServer, reloadSignals)
+	runInitialScan(serviceCtx, runtimeCfg.Get(), state, completion, jobs)
+	startRecoveryLoop(serviceCtx, &wg, runtimeCfg.Get, jobs)
+	planner := startSchedulerLoop(serviceCtx, workerCtx, &wg, runtimeCfg.Get, state, progress, schedulerReconfigured)
 	plannerRef.Store(planner)
-	startScannerLoop(serviceCtx, &wg, runtimeCfg.Get, state, completion, planner.ActiveCount)
+	startScannerLoop(serviceCtx, &wg, runtimeCfg.Get, state, completion, jobs, planner.ActiveCount, monitorReconfigured, watcherReconfigured)
 
 	request := awaitShutdown(shutdown, control, stopServices)
 	shutdownCfg := runtimeCfg.Get()
@@ -437,18 +488,21 @@ func closeStore(state *store.SQLiteStore) {
 
 func logConfiguredWork(cfg config.Config) {
 	if len(cfg.Libraries) == 0 {
-		slog.Info("no libraries configured; scanner and scheduler will stay idle")
+		slog.Info("no libraries yet; scanner and scheduler stay idle until one is added in the web UI")
 		return
 	}
 
 	for name, library := range cfg.Libraries {
-		slog.Info("library configured", "name", name, "kind", library.Kind, "path", library.Path, "profile", library.Profile, "scan_interval", cfg.ScanIntervalForLibrary(domain.LibraryName(name)))
+		slog.Info("library loaded", "name", name, "kind", library.Kind, "path", library.Path, "flow_id", library.FlowID, "paused", library.Paused, "scan_interval", cfg.ScanIntervalForLibrary(domain.LibraryName(name)))
 	}
 	slog.Info("scanner, scheduler, worker, and built-in media pipeline are enabled")
 }
 
-func runInitialScan(ctx context.Context, cfg config.Config, state *store.SQLiteStore, completion *scanner.CompletionTracker) {
+// runInitialScan scans every library once. The part files of jobs it skips
+// because the rules now deny their files are reclaimed through jobs.
+func runInitialScan(ctx context.Context, cfg config.Config, state *store.SQLiteStore, completion *scanner.CompletionTracker, jobs controlapi.Service) {
 	result, err := scanner.Scanner{Store: state, Completion: completion}.Scan(ctx, cfg)
+	jobs.ReclaimEndedJobs(ctx, result.DeniedJobs)
 	if err != nil {
 		slog.Error("initial scan failed", "error", err)
 		return
@@ -465,6 +519,7 @@ func logScanComplete(message string, library string, reason string, result scann
 		"existing_jobs", result.ExistingJobs,
 		"skipped_ignored", result.SkippedIgnored,
 		"skipped_unstable", result.SkippedUnstable,
+		"denied_jobs", len(result.DeniedJobs),
 	}
 	if library != "" {
 		args = append([]any{"library", library}, args...)
@@ -478,7 +533,7 @@ func logScanComplete(message string, library string, reason string, result scann
 	slog.Info(message, args...)
 }
 
-func startReloadLoop(ctx context.Context, wg *sync.WaitGroup, opts options, runtimeCfg *runtimeConfig, reloadSignals <-chan os.Signal) {
+func startReloadLoop(ctx context.Context, wg *sync.WaitGroup, opts options, runtimeCfg *runtimeConfig, webServer *webapi.Server, reloadSignals <-chan os.Signal) {
 	wg.Go(func() {
 		for {
 			select {
@@ -495,12 +550,31 @@ func startReloadLoop(ctx context.Context, wg *sync.WaitGroup, opts options, runt
 					slog.Error("config reload rejected", "error", err)
 					continue
 				}
-				if err := configureLogging(next.Daemon.LogLevel); err != nil {
-					slog.Error("config reload rejected", "error", err)
+				// The password is read before anything is applied: a password
+				// file that went missing rejects the whole reload and leaves
+				// the old password in force.
+				password := ""
+				if webServer != nil {
+					if password, err = next.Web.LoadPassword(); err != nil {
+						slog.Error("config reload rejected", "error", err)
+						continue
+					}
+				}
+				// SIGHUP re-reads both halves: the process settings from
+				// anvil.toml and, merged into them, the daemon settings, the
+				// libraries, and the Arr connections from the store. A value
+				// saved in the web UI therefore survives a reload, and the
+				// merged log level is the one that applies.
+				if err := runtimeCfg.Reload(ctx, next); err != nil {
+					slog.Error("config reload failed", "error", err)
 					continue
 				}
-				runtimeCfg.Set(next)
-				slog.Info("config reloaded", "config", configPathLabel(opts.configPath), "libraries", len(next.Libraries), "profiles", len(next.Profiles), "workers", next.Daemon.WorkerCount, "threads", next.Daemon.TotalThreads, "filesystem_event_debounce", next.FilesystemEventDebounce(), "log_level", next.Daemon.LogLevel)
+				if webServer != nil {
+					webServer.SetPassword(password)
+				}
+				warnLegacySections(next)
+				reloaded := runtimeCfg.Get()
+				slog.Info("config reloaded", "config", configPathLabel(opts.configPath), "libraries", len(reloaded.Libraries), "workers", reloaded.Daemon.WorkerCount, "threads", reloaded.Daemon.TotalThreads, "filesystem_event_debounce", reloaded.FilesystemEventDebounce(), "log_level", reloaded.Daemon.LogLevel)
 			}
 		}
 	})
@@ -543,12 +617,14 @@ func parseLogLevel(logLevel string) (slog.Level, string, error) {
 	}
 }
 
-func startScannerLoop(ctx context.Context, wg *sync.WaitGroup, cfgProvider func() config.Config, state *store.SQLiteStore, completion *scanner.CompletionTracker, activeWorkers func() int) {
+func startScannerLoop(ctx context.Context, wg *sync.WaitGroup, cfgProvider func() config.Config, state *store.SQLiteStore, completion *scanner.CompletionTracker, jobs controlapi.Service, activeWorkers func() int, monitorReconfigured, watcherReconfigured <-chan struct{}) {
 	monitor := &scanner.Monitor{
 		Scanner:        scanner.Scanner{Store: state, Completion: completion},
 		ConfigProvider: cfgProvider,
-		EventSource:    &scanner.FilesystemEventSource{Completion: completion},
+		EventSource:    &scanner.FilesystemEventSource{Completion: completion, Reconfigured: watcherReconfigured},
+		Reconfigured:   monitorReconfigured,
 		OnScan: func(library config.LibraryConfig, reason string, result scanner.ScanResult, err error) {
+			jobs.ReclaimEndedJobs(ctx, result.DeniedJobs)
 			if err != nil {
 				slog.Error("scan failed", "library", library.Name, "reason", reason, "error", err)
 				return
@@ -570,7 +646,7 @@ func startScannerLoop(ctx context.Context, wg *sync.WaitGroup, cfgProvider func(
 	})
 }
 
-func startRecoveryLoop(ctx context.Context, wg *sync.WaitGroup, cfgProvider func() config.Config, state *store.SQLiteStore) {
+func startRecoveryLoop(ctx context.Context, wg *sync.WaitGroup, cfgProvider func() config.Config, jobs controlapi.Service) {
 	wg.Go(func() {
 		for {
 			cfg := cfgProvider()
@@ -580,8 +656,7 @@ func startRecoveryLoop(ctx context.Context, wg *sync.WaitGroup, cfgProvider func
 				timer.Stop()
 				return
 			case <-timer.C:
-				cfg = cfgProvider()
-				recovered, err := state.RecoverStaleJobs(ctx, cfg.Daemon.MaxAttempts, time.Now())
+				recovered, err := jobs.RecoverStaleJobs(ctx)
 				if err != nil {
 					slog.Error("stale job recovery failed", "error", err)
 					continue
@@ -594,12 +669,13 @@ func startRecoveryLoop(ctx context.Context, wg *sync.WaitGroup, cfgProvider func
 	})
 }
 
-func startSchedulerLoop(ctx context.Context, workerCtx context.Context, wg *sync.WaitGroup, cfgProvider func() config.Config, state *store.SQLiteStore) *scheduler.Scheduler {
+func startSchedulerLoop(ctx context.Context, workerCtx context.Context, wg *sync.WaitGroup, cfgProvider func() config.Config, state *store.SQLiteStore, progress *worker.ProgressTracker, reconfigured <-chan struct{}) *scheduler.Scheduler {
 	runner := worker.Runner{
 		Store:            state,
 		ConfigProvider:   cfgProvider,
 		MetadataResolver: metadata.Resolver{},
 		Pipeline:         worker.DefaultPipeline(cfgProvider().Daemon.TempDir, state),
+		Progress:         progress,
 		TempDir:          cfgProvider().Daemon.TempDir,
 	}
 	planner := &scheduler.Scheduler{
@@ -607,6 +683,7 @@ func startSchedulerLoop(ctx context.Context, workerCtx context.Context, wg *sync
 		Worker:         runner,
 		ConfigProvider: cfgProvider,
 		WorkerContext:  workerCtx,
+		Reconfigured:   reconfigured,
 	}
 
 	wg.Go(func() {
@@ -622,8 +699,15 @@ func loadRuntimeConfig(path string, opts options) (config.Config, error) {
 	if err != nil {
 		return config.Config{}, err
 	}
+	// An option pins its key like the file does, and wins over it: a value
+	// saved in the web UI must not override what the operator started with.
+	sources := maps.Clone(cfg.DaemonSources)
+	if sources == nil {
+		sources = map[string]string{}
+	}
 	if opts.shutdownPolicy != "" {
 		cfg.Daemon.ShutdownPolicy = opts.shutdownPolicy
+		sources["shutdown_policy"] = config.SourceFlag
 	}
 	if opts.shutdownTimeout != "" {
 		timeout, err := time.ParseDuration(opts.shutdownTimeout)
@@ -631,7 +715,9 @@ func loadRuntimeConfig(path string, opts options) (config.Config, error) {
 			return config.Config{}, fmt.Errorf("parse --shutdown-timeout: %w", err)
 		}
 		cfg.Daemon.ShutdownTimeout = config.Duration{Duration: timeout}
+		sources["shutdown_timeout"] = config.SourceFlag
 	}
+	cfg.DaemonSources = sources
 	if err := cfg.Validate(); err != nil {
 		return config.Config{}, err
 	}
@@ -647,6 +733,12 @@ func validateReload(current config.Config, next config.Config) error {
 	}
 	if current.Daemon.ControlSocket != next.Daemon.ControlSocket {
 		return fmt.Errorf("daemon.control_socket changes require restart: %q -> %q", current.Daemon.ControlSocket, next.Daemon.ControlSocket)
+	}
+	if current.Web.Enabled != next.Web.Enabled {
+		return fmt.Errorf("web.enabled changes require restart: %t -> %t", current.Web.Enabled, next.Web.Enabled)
+	}
+	if next.Web.Enabled && current.Web.Listen != next.Web.Listen {
+		return fmt.Errorf("web.listen changes require restart: %q -> %q", current.Web.Listen, next.Web.Listen)
 	}
 	return nil
 }
@@ -693,13 +785,17 @@ func writeUsage(out io.Writer) error {
   anvild preflight [--config PATH] [--library NAME] [--limit N] [--json]
 
 anvild is the service binary: it owns the config it is running, the SQLite
-store, staging, and publication. check-config and preflight stay here because
-both are local, read-only, and useful before a daemon exists.
+store, staging, and publication, and it serves the web UI (web.listen,
+127.0.0.1:8484 unless configured), where libraries, flows, and Arr connections
+are managed. check-config and preflight stay here because both are local,
+read-only, and useful before a daemon exists.
 
 Every live operation is asked of the running daemon with anvilctl:
 
   anvilctl status
   anvilctl version
+  anvilctl libraries
+  anvilctl flows
   anvilctl jobs
   anvilctl show JOB_ID_OR_SLUG
   anvilctl cancel [JOB_ID_OR_SLUG...]

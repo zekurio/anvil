@@ -1,0 +1,34 @@
+/* anvil: data table and rule list. Colours, spacing and radii come from tokens. */
+
+/* data table */
+.av-table-wrap { overflow: auto; background: var(--surface); }
+.av-table { width: 100%; table-layout: fixed; border-collapse: separate; border-spacing: 0; font: 400 13px/18px var(--font-sans); }
+.av-table th { position: sticky; top: 0; z-index: 1; height: var(--row); padding: 0 var(--space-3); background: var(--surface); border-bottom: 1px solid var(--line); text-align: left; font: 500 12px/16px var(--font-sans); color: var(--text-muted); white-space: nowrap; }
+.av-th button { display: inline-flex; align-items: center; gap: 2px; padding: 0; border: 0; background: none; font: inherit; color: inherit; cursor: pointer; }
+.av-th button:hover, .av-th[aria-sort] button { color: var(--text); }
+.av-table td { height: var(--row); padding: 0 var(--space-3); border-bottom: 1px solid var(--line); color: var(--text); white-space: nowrap; max-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.av-table tr:hover td { background: var(--surface-hover); }
+.av-table tr[aria-selected="true"] td { background: var(--accent-soft); }
+.av-table .av-num { text-align: right; font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+.av-table td.av-mono { font-size: 12px; }
+.av-table .av-sel { width: 16px; padding-right: 0; }
+.av-table-compact td, .av-table-compact th { height: var(--control-sm); }
+.av-table tr.av-row-link { cursor: pointer; }
+.av-table tr.av-row-active td { background: var(--accent-soft); }
+.av-table tr:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: -2px; }
+.av-path { display: flex; width: 100%; min-width: 0; }
+.av-path-dir { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-muted); font: 400 12px/18px var(--font-mono); flex: 0 1 auto; min-width: 0; }
+.av-path-file { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 0 0 auto; max-width: 100%; color: var(--text); }
+
+/* rule list */
+.av-rules { display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--surface); }
+.av-rule { display: grid; grid-template-columns: 16px 24px 140px 140px 120px minmax(0, 1fr) var(--control-sm); align-items: center; gap: var(--space-2); padding: var(--space-1) var(--space-2); border-top: 1px solid var(--line); }
+.av-rule:first-child { border-top: 0; }
+.av-rule-n { font: 400 12px/16px var(--font-mono); color: var(--text-muted); text-align: right; }
+.av-rule-grip { display: flex; padding: 0; border: 0; border-radius: var(--radius-sm); background: none; color: var(--text-muted); cursor: grab; touch-action: none; }
+.av-rule-grip:disabled { color: var(--text-disabled); cursor: not-allowed; }
+.av-rule-dragging { position: relative; z-index: 1; background: var(--surface-raised); box-shadow: var(--shadow-drag); }
+.av-rule-fallback b { color: var(--text); font-weight: 500; }
+.av-rule-fallback { display: flex; align-items: center; gap: var(--space-2); padding: var(--space-2) var(--space-3); border-top: 1px solid var(--line); font: 400 12px/16px var(--font-sans); color: var(--text-muted); background: var(--bg); border-radius: 0 0 var(--radius-md) var(--radius-md); }
+.av-seg button.av-allow[aria-checked="true"] { color: var(--ok); }
+.av-seg button.av-deny[aria-checked="true"] { color: var(--danger); }

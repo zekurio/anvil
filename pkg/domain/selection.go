@@ -19,8 +19,20 @@ const (
 type StreamSelectionRule string
 
 const (
-	StreamSelectionRuleNoStreams         StreamSelectionRule = "no_streams"
-	StreamSelectionRuleCleanupDisabled   StreamSelectionRule = "cleanup_disabled"
+	StreamSelectionRuleNoStreams StreamSelectionRule = "no_streams"
+	// StreamSelectionRuleCleanupDisabled keeps every stream the language rules
+	// would have judged, because the job's metadata cannot be trusted. It is
+	// the outcome operators are warned about; a profile that lists no
+	// languages gets StreamSelectionRuleKeepAll instead.
+	StreamSelectionRuleCleanupDisabled StreamSelectionRule = "cleanup_disabled"
+	// StreamSelectionRuleKeepAll is a profile without languages to keep.
+	StreamSelectionRuleKeepAll StreamSelectionRule = "keep_all"
+	// StreamSelectionRuleRemoveAll is a subtitle profile that drops every
+	// track.
+	StreamSelectionRuleRemoveAll StreamSelectionRule = "remove_all"
+	// StreamSelectionRuleBitmapOnly is a source whose subtitle tracks are all
+	// image-based, under a profile that drops those. No fallback applies.
+	StreamSelectionRuleBitmapOnly        StreamSelectionRule = "bitmap_only"
 	StreamSelectionRuleLanguageFilter    StreamSelectionRule = "language_filter"
 	StreamSelectionRuleFallbackKeepAll   StreamSelectionRule = "fallback_keep_all"
 	StreamSelectionRuleFallbackKeepFirst StreamSelectionRule = "fallback_keep_first"
@@ -35,6 +47,7 @@ const (
 	StreamKeptOriginalLanguage  StreamDecisionReason = "original_language"
 	StreamKeptUnknownAsOriginal StreamDecisionReason = "unknown_as_original"
 	StreamKeptCleanupDisabled   StreamDecisionReason = "cleanup_disabled"
+	StreamKeptKeepAll           StreamDecisionReason = "keep_all"
 	StreamKeptFallbackKeepAll   StreamDecisionReason = "fallback_keep_all"
 	StreamKeptFallbackKeepFirst StreamDecisionReason = "fallback_keep_first"
 
@@ -42,6 +55,8 @@ const (
 	StreamDroppedCommentary StreamDecisionReason = "commentary"
 	StreamDroppedForced     StreamDecisionReason = "forced"
 	StreamDroppedSDH        StreamDecisionReason = "sdh"
+	StreamDroppedRemoveAll  StreamDecisionReason = "remove_all"
+	StreamDroppedBitmap     StreamDecisionReason = "bitmap"
 )
 
 // StreamDecision records what happened to one input stream. It carries enough

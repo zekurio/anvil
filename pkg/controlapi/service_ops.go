@@ -76,14 +76,32 @@ func (s Service) RetryJobs(ctx context.Context, request control.JobRetryRequest)
 // RecoverJobs releases stale leases the same way the daemon's own recovery loop
 // does, using the daemon's live max-attempts policy.
 func (s Service) RecoverJobs(ctx context.Context) (control.JobRecoverResponse, error) {
-	if err := s.requireStore(); err != nil {
-		return control.JobRecoverResponse{}, err
-	}
-	recovered, err := s.Store.RecoverStaleJobs(ctx, s.runtimeConfig().Daemon.MaxAttempts, s.now())
+	recovered, err := s.RecoverStaleJobs(ctx)
 	if err != nil {
 		return control.JobRecoverResponse{}, err
 	}
 	return control.JobRecoverResponse{APIVersion: control.Version, ServerTime: s.now(), RecoveredJobs: recovered}, nil
+}
+
+// RecoverStaleJobs releases every lease whose deadline has passed and returns
+// how many jobs that touched. A job with attempts left goes back to the
+// queue. One that has none, or whose input is gone, becomes terminal here,
+// without a worker to clean up after it, so its part file is reclaimed the
+// way a canceled job's is: only its own part, and never while a publish
+// journal exists for it.
+//
+// The daemon's start-up recovery, its recovery loop, and the control command
+// all go through here.
+func (s Service) RecoverStaleJobs(ctx context.Context) (int64, error) {
+	if err := s.requireStore(); err != nil {
+		return 0, err
+	}
+	recovery, err := s.Store.RecoverStaleJobs(ctx, s.runtimeConfig().Daemon.MaxAttempts, s.now())
+	if err != nil {
+		return 0, err
+	}
+	s.ReclaimEndedJobs(ctx, recovery.Ended)
+	return recovery.Recovered, nil
 }
 
 // PruneJobs deletes terminal jobs whose source occurrence is already missing.
@@ -152,6 +170,9 @@ func (s Service) ScanLibraries(ctx context.Context, request control.LibraryScanR
 	} else {
 		result, err = s.Scanner.Scan(ctx, cfg)
 	}
+	// A scan of several libraries that failed part-way has still skipped the
+	// denied jobs of the ones it applied.
+	s.ReclaimEndedJobs(ctx, result.DeniedJobs)
 	if err != nil {
 		return control.LibraryScanResponse{}, err
 	}
@@ -160,6 +181,7 @@ func (s Service) ScanLibraries(ctx context.Context, request control.LibraryScanR
 		Libraries: result.Libraries, Sources: result.Sources, Assets: result.Assets,
 		EnqueuedJobs: result.EnqueuedJobs, ExistingJobs: result.ExistingJobs,
 		SkippedIgnored: result.SkippedIgnored, SkippedUnstable: result.SkippedUnstable,
+		DeniedJobs: len(result.DeniedJobs),
 	}
 	if !result.NextStableAt.IsZero() {
 		nextStableAt := result.NextStableAt
@@ -208,16 +230,108 @@ func (s Service) ForceOccurrence(ctx context.Context, request control.ForceOccur
 	if !ok {
 		return control.ForceOccurrenceResponse{}, notFoundf("library %q is not configured", name)
 	}
-	relativePath, err := control.CleanRelativePath(request.Path)
+	plan, err := s.Scanner.PlanLibrary(ctx, library)
 	if err != nil {
-		return control.ForceOccurrenceResponse{}, err
+		return control.ForceOccurrenceResponse{}, fmt.Errorf("plan library %q for forced occurrence: %w", library.Name, err)
 	}
-	candidate, err := s.forceOccurrenceCandidate(ctx, library, relativePath)
+	return s.forcePlannedOccurrence(ctx, library, plan, request.Path)
+}
+
+// ForceRefusal names why a path was not requeued. It is stable and
+// machine-readable; the error next to it carries the words.
+type ForceRefusal string
+
+const (
+	// ForceRefusedNotFound: the library holds no media file at the path.
+	ForceRefusedNotFound ForceRefusal = "not_found"
+	// ForceRefusedDenied: the library's rules deny the file.
+	ForceRefusedDenied ForceRefusal = "denied"
+	// ForceRefusedIgnored: the scanner leaves the file out on its own
+	// account: a sample, download residue, or one of Anvil's own outputs.
+	ForceRefusedIgnored ForceRefusal = "ignored"
+	// ForceRefusedUnstable: the download is still being written.
+	ForceRefusedUnstable ForceRefusal = "unstable"
+	// ForceRefusedActive: the file has a job that is queued or running.
+	ForceRefusedActive ForceRefusal = "active"
+	// ForceRefusedInvalid: the path cannot name one file to queue.
+	ForceRefusedInvalid ForceRefusal = "invalid"
+)
+
+// forceRefusedError is a refusal together with the control error that words
+// it, so both front doors report the same sentence.
+type forceRefusedError struct {
+	refusal ForceRefusal
+	err     error
+}
+
+func (e *forceRefusedError) Error() string { return e.err.Error() }
+func (e *forceRefusedError) Unwrap() error { return e.err }
+
+func refused(refusal ForceRefusal, err error) error {
+	return &forceRefusedError{refusal: refusal, err: err}
+}
+
+// ForcedOccurrence is the outcome of one path of ForceOccurrences: the job it
+// created, or why it created none.
+type ForcedOccurrence struct {
+	Path     string
+	Response control.ForceOccurrenceResponse
+	Err      error
+	// Refusal is set when Err is a refusal that concerns this path alone. An
+	// Err without one is a failure of the daemon.
+	Refusal ForceRefusal
+}
+
+// ForceOccurrences is ForceOccurrence for many paths of one library. The
+// library is planned once, so requeueing a selection of files walks it once
+// and not once per file. One path's refusal does not stop the others; only a
+// failure to plan the library fails the call.
+func (s Service) ForceOccurrences(ctx context.Context, libraryName string, paths []string) ([]ForcedOccurrence, error) {
+	if err := s.requireStore(); err != nil {
+		return nil, err
+	}
+	if s.Scanner == nil {
+		return nil, newError(control.CodeInternal, "control service scanner is required")
+	}
+	name := strings.TrimSpace(libraryName)
+	library, ok := s.runtimeConfig().FindLibrary(domain.LibraryName(name))
+	if !ok {
+		return nil, notFoundf("library %q is not configured", name)
+	}
+	plan, err := s.Scanner.PlanLibrary(ctx, library)
+	if err != nil {
+		return nil, fmt.Errorf("plan library %q for forced occurrence: %w", library.Name, err)
+	}
+	results := make([]ForcedOccurrence, 0, len(paths))
+	for _, path := range paths {
+		response, err := s.forcePlannedOccurrence(ctx, library, plan, path)
+		result := ForcedOccurrence{Path: path, Response: response, Err: err}
+		var refusal *forceRefusedError
+		if errors.As(err, &refusal) {
+			result.Refusal = refusal.refusal
+		}
+		results = append(results, result)
+		if ctx.Err() != nil {
+			return results, ctx.Err()
+		}
+	}
+	return results, nil
+}
+
+// forcePlannedOccurrence forces one path against a library plan that was just
+// built.
+func (s Service) forcePlannedOccurrence(ctx context.Context, library config.LibraryConfig, plan scanner.LibraryPlan, path string) (control.ForceOccurrenceResponse, error) {
+	relativePath, err := control.CleanRelativePath(path)
+	if err != nil {
+		return control.ForceOccurrenceResponse{}, refused(ForceRefusedInvalid, err)
+	}
+	candidate, err := forceOccurrenceCandidate(library, plan, relativePath)
 	if err != nil {
 		return control.ForceOccurrenceResponse{}, err
 	}
 	result, err := s.Store.ForceOccurrence(ctx, store.ForceOccurrenceInput{
 		LibraryName:        domain.LibraryName(library.Name),
+		LibraryCreatedAt:   library.CreatedAt,
 		SourceKind:         candidate.SourceKind,
 		SourceRelativePath: candidate.SourceRelativePath,
 		SourceFingerprint: domain.FileFingerprint{
@@ -230,13 +344,17 @@ func (s Service) ForceOccurrence(ctx context.Context, request control.ForceOccur
 			SizeBytes: candidate.SizeBytes,
 			ModTime:   candidate.ModTime,
 		},
-		Priority: library.Priority,
-		Now:      s.now(),
+		Now: s.now(),
 	})
 	if errors.Is(err, store.ErrActiveWork) {
 		// Active work is an operator-fixable state, not a daemon failure: the
 		// answer is to wait for or cancel the running job.
-		return control.ForceOccurrenceResponse{}, invalidArgumentf("library %q path %q still has active work; wait for it or cancel it first", library.Name, relativePath)
+		return control.ForceOccurrenceResponse{}, refused(ForceRefusedActive, invalidArgumentf("library %q path %q still has active work; wait for it or cancel it first", library.Name, relativePath))
+	}
+	if errors.Is(err, store.ErrNotFound) {
+		// The library was deleted, or deleted and created again, after it
+		// was planned: the plan is not about the library there is now.
+		return control.ForceOccurrenceResponse{}, notFoundf("library %q was deleted while path %q was being requeued", library.Name, relativePath)
 	}
 	if err != nil {
 		return control.ForceOccurrenceResponse{}, fmt.Errorf("force occurrence for library %q path %q: %w", library.Name, relativePath, err)
@@ -256,11 +374,7 @@ func (s Service) ForceOccurrence(ctx context.Context, request control.ForceOccur
 // applies: an ignored, unstable, ambiguous, or non-enqueueable target is a
 // mistake in every case, and enqueueing it anyway is how a half-written
 // download gets encoded.
-func (s Service) forceOccurrenceCandidate(ctx context.Context, library config.LibraryConfig, relativePath string) (scanner.CandidatePlan, error) {
-	plan, err := s.Scanner.PlanLibrary(ctx, library)
-	if err != nil {
-		return scanner.CandidatePlan{}, fmt.Errorf("plan library %q for forced occurrence: %w", library.Name, err)
-	}
+func forceOccurrenceCandidate(library config.LibraryConfig, plan scanner.LibraryPlan, relativePath string) (scanner.CandidatePlan, error) {
 	var target scanner.CandidatePlan
 	found := false
 	for _, candidate := range plan.Candidates {
@@ -268,20 +382,29 @@ func (s Service) forceOccurrenceCandidate(ctx context.Context, library config.Li
 			continue
 		}
 		if found {
-			return scanner.CandidatePlan{}, invalidArgumentf("target %q is ambiguous in library %q", relativePath, library.Name)
+			return scanner.CandidatePlan{}, refused(ForceRefusedInvalid, invalidArgumentf("target %q is ambiguous in library %q", relativePath, library.Name))
 		}
 		target = candidate
 		found = true
 	}
 	switch {
 	case !found:
-		return scanner.CandidatePlan{}, notFoundf("target %q was not found in library %q", relativePath, library.Name)
+		// A scan never looks inside a directory the rules prune, so a file
+		// below one is not among the candidates. It is denied all the same,
+		// and saying "not found" about a file the operator can see would send
+		// them looking for the wrong problem.
+		if rules, err := config.CompileRules(library.Rules, library.RuleFallback); err == nil && rules.Prunes(relativePath, false) {
+			return scanner.CandidatePlan{}, refused(ForceRefusedDenied, invalidArgumentf("target %q is ignored: %s", relativePath, rules.Decide(config.RuleFile{Path: relativePath}).Reason))
+		}
+		return scanner.CandidatePlan{}, refused(ForceRefusedNotFound, notFoundf("target %q was not found in library %q", relativePath, library.Name))
+	case target.Denied:
+		return scanner.CandidatePlan{}, refused(ForceRefusedDenied, invalidArgumentf("target %q is ignored: %s", relativePath, target.IgnoreReason))
 	case target.Ignored:
-		return scanner.CandidatePlan{}, invalidArgumentf("target %q is ignored: %s", relativePath, target.IgnoreReason)
+		return scanner.CandidatePlan{}, refused(ForceRefusedIgnored, invalidArgumentf("target %q is ignored: %s", relativePath, target.IgnoreReason))
 	case target.Unstable:
-		return scanner.CandidatePlan{}, invalidArgumentf("target %q is still unstable", relativePath)
+		return scanner.CandidatePlan{}, refused(ForceRefusedUnstable, invalidArgumentf("target %q is still unstable", relativePath))
 	case !target.Enqueueable:
-		return scanner.CandidatePlan{}, invalidArgumentf("target %q is not enqueueable", relativePath)
+		return scanner.CandidatePlan{}, refused(ForceRefusedInvalid, invalidArgumentf("target %q is not enqueueable", relativePath))
 	}
 	return target, nil
 }

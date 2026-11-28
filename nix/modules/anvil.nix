@@ -13,14 +13,66 @@ let
     ;
 
   format = pkgs.formats.toml { };
+  # The store holds the operator's libraries, flows, and Arr connections next
+  # to the job history, so it lives in the persistent StateDirectory. temp_dir
+  # is scratch and stays in its own subdirectory.
   daemonDefaults = {
     temp_dir = "/var/lib/anvil/tmp";
     store_path = "/var/lib/anvil/anvil.db";
     control_socket = "/run/anvil/anvild.sock";
   };
-  daemon = daemonDefaults // (cfg.settings.daemon or { });
+  # The daemon refuses a media root that is not absolute, cleaned, and unique,
+  # and would crash-loop on one. A trailing slash and the same path with and
+  # without "-" are normalised away here; anything else unclean fails an
+  # assertion below.
+  stripTrailingSlashes = path: if path != "/" && lib.hasSuffix "/" path then stripTrailingSlashes (lib.removeSuffix "/" path) else path;
+  declaredMediaRoots = lib.unique (map (path: stripTrailingSlashes (lib.removePrefix "-" path)) cfg.mediaPaths);
+  uncleanMediaRoots = lib.filter (
+    path:
+    !lib.hasPrefix "/" path
+    || lib.hasInfix "//" path
+    || lib.hasInfix "/./" path
+    || lib.hasInfix "/../" path
+    || lib.hasSuffix "/." path
+    || lib.hasSuffix "/.." path
+  ) declaredMediaRoots;
+  daemon = daemonDefaults
+    // optionalAttrs (!((cfg.settings.daemon or { }) ? media_roots)) {
+      media_roots = declaredMediaRoots;
+    }
+    // (cfg.settings.daemon or { });
+
+  # The typed web options render first; settings.web overrides them key by
+  # key. Everything below reads the merged table, so the assertion and the
+  # firewall rule see what the daemon will see.
+  webDefaults =
+    {
+      enabled = cfg.web.enable;
+      listen =
+        if lib.hasInfix ":" cfg.web.listenAddress then
+          "[${cfg.web.listenAddress}]:${toString cfg.web.port}"
+        else
+          "${cfg.web.listenAddress}:${toString cfg.web.port}";
+      allow_unauthenticated = cfg.web.allowUnauthenticated;
+    }
+    // optionalAttrs (cfg.web.passwordFile != null) {
+      password_file = toString cfg.web.passwordFile;
+    };
+  web = webDefaults // (cfg.settings.web or { });
+  # web-listen.nix reads the address exactly as the daemon does; see there.
+  listenAddress = import ./web-listen.nix { inherit lib; };
+  webListen = listenAddress.parse web.listen;
+  webPort = webListen.port;
+  webLoopback = listenAddress.isLoopback webListen.host;
+  webHasPassword = (web.password_file or "") != "" || (web.password or "") != "";
+
   libraries = cfg.settings.libraries or { };
-  generatedConfig = cfg.settings // { inherit daemon; };
+  legacyTables = lib.filter (name: (cfg.settings.${name} or { }) != { }) [
+    "libraries"
+    "profiles"
+    "arrs"
+  ];
+  generatedConfig = cfg.settings // { inherit daemon web; };
   generatedConfigFile = format.generate "anvil.toml" generatedConfig;
 
   packageExe = if cfg.package == null then "${pkgs.coreutils}/bin/false" else lib.getExe cfg.package;
@@ -28,20 +80,39 @@ let
   ffmpegPackage = pkgs.jellyfin-ffmpeg or pkgs.ffmpeg;
   storeDirectory = builtins.dirOf daemon.store_path;
   controlSocketDirectory = builtins.dirOf daemon.control_socket;
-  daemonDirectoryPaths = lib.unique [
-    daemon.temp_dir
+  # The store can hold Arr API keys, so its directory and the scratch beside
+  # it are closed to the group. The group reaches the control socket through
+  # the socket's own directory, which an assertion keeps out of the store's.
+  # A temp_dir set to the socket directory takes the socket directory's mode.
+  socketDirectoryPaths = [ controlSocketDirectory ];
+  privateDirectoryPaths = lib.subtractLists socketDirectoryPaths (lib.unique [
     storeDirectory
-    controlSocketDirectory
+    daemon.temp_dir
+  ]);
+  daemonDirectoryPaths = privateDirectoryPaths ++ socketDirectoryPaths;
+  # The store must not live here. /run and /tmp do not survive a reboot or,
+  # under PrivateTmp, a service stop, and temp_dir is scratch the operator may
+  # wipe.
+  storeUnsafeDirectories = [
+    "/run"
+    "/tmp"
+    "/var/tmp"
+    "/dev/shm"
+    daemon.temp_dir
   ];
   tmpfilesUser = if cfg.user == null then "root" else cfg.user;
   tmpfilesGroup = if cfg.group == null then "root" else cfg.group;
-  libraryWritePaths = lib.flatten (
+  # Operators add libraries in the web UI at runtime, so the unit cannot learn
+  # their paths from the config and the operator declares them in mediaPaths.
+  # The legacy settings.libraries tables still contribute theirs, so a config
+  # from before the web UI keeps its access.
+  legacyLibraryPaths = lib.flatten (
     lib.mapAttrsToList (
       _name: library:
       optional (library ? path && library.path != "") library.path
     ) libraries
   );
-  handoffWritePaths = lib.flatten (
+  legacyHandoffPaths = lib.flatten (
     lib.mapAttrsToList (
       _name: library:
       let
@@ -56,8 +127,9 @@ let
   );
   readWritePaths = lib.unique (
     daemonDirectoryPaths
-    ++ libraryWritePaths
-    ++ handoffWritePaths
+    ++ cfg.mediaPaths
+    ++ legacyLibraryPaths
+    ++ legacyHandoffPaths
     ++ cfg.service.extraReadWritePaths
   );
 in
@@ -68,7 +140,11 @@ in
     package = mkOption {
       type = types.nullOr types.package;
       default = null;
-      description = "Anvil package providing anvild. Required when the service is enabled.";
+      description = ''
+        Anvil package providing anvild. Required when the service is enabled.
+        The flake's anvild and anvil packages carry the web UI; a daemon built
+        without it serves the API only.
+      '';
     };
 
     controlClient = {
@@ -85,7 +161,7 @@ in
       package = mkOption {
         type = types.nullOr types.package;
         default = null;
-        example = literalExpression "inputs.anvil.packages.\${pkgs.system}.anvilctl";
+        example = literalExpression "inputs.anvil.packages.\${pkgs.stdenv.hostPlatform.system}.anvilctl";
         description = ''
           Standalone package providing anvilctl. Required when install is true.
           The daemon package is not a fallback because it includes the media tools.
@@ -97,6 +173,114 @@ in
         default = true;
         description = "Set ANVIL_CONTROL_SOCKET system-wide when installing anvilctl.";
       };
+    };
+
+    web = {
+      enable = mkOption {
+        type = types.bool;
+        default = true;
+        description = ''
+          Serve the web UI and its HTTP API. Libraries, flows, and Arr
+          connections are managed there. Rendered as web.enabled.
+        '';
+      };
+
+      listenAddress = mkOption {
+        type = types.str;
+        default = "127.0.0.1";
+        example = "0.0.0.0";
+        description = ''
+          Address the web UI listens on. Rendered with web.port as web.listen;
+          an IPv6 address gets its brackets. Anything other than a loopback
+          address needs web.passwordFile, or web.allowUnauthenticated.
+        '';
+      };
+
+      port = mkOption {
+        type = types.port;
+        default = 8484;
+        description = ''
+          TCP port the web UI listens on. A port below 1024 fails an
+          assertion: the unit runs without CAP_NET_BIND_SERVICE and cannot
+          bind it. Put a reverse proxy in front to serve the UI on port 80 or
+          443.
+        '';
+      };
+
+      passwordFile = mkOption {
+        type = types.nullOr types.path;
+        default = null;
+        example = "/run/secrets/anvil-web-password";
+        description = ''
+          File holding the single shared web UI password. Rendered as
+          web.password_file. The module passes the path through as written and
+          the daemon reads the file as the service user, so that user or its
+          group must be able to read it. With sops-nix or agenix, set the
+          secret's owner or group to services.anvil.user or
+          services.anvil.group. Keep the file out of /tmp and /var/tmp, which
+          the unit cannot see, and out of the Nix store. Null leaves the web
+          UI without a password, which the daemon accepts on a loopback
+          address only.
+        '';
+      };
+
+      allowUnauthenticated = mkOption {
+        type = types.bool;
+        default = false;
+        description = ''
+          Allow listening on a non-loopback address without a password.
+          Rendered as web.allow_unauthenticated. Anyone who can reach the port
+          can then change libraries and flows, so use this only behind a
+          reverse proxy that authenticates.
+
+          A daemon without a password only answers a request whose Host
+          header is a loopback name, its listen host, or the IP address the
+          connection arrived on. The proxy must therefore send such a Host,
+          for example 127.0.0.1:8484, and pass the browser's host in
+          X-Forwarded-Host, which the daemon compares with the Origin of a
+          request that changes something.
+        '';
+      };
+
+      openFirewall = mkOption {
+        type = types.bool;
+        default = false;
+        description = "Open the web UI's TCP port in the firewall.";
+      };
+    };
+
+    mediaPaths = mkOption {
+      type = types.listOf types.str;
+      default = [ ];
+      example = [
+        "/srv/media"
+        "/srv/downloads"
+      ];
+      description = ''
+        Directories the daemon may write to. List every library root and every
+        download library's handoff directory that is or will be configured in
+        the web UI. A parent directory covers everything below it.
+
+        The unit runs with ProtectSystem=strict, which leaves the rest of the
+        filesystem read-only to it, and the module cannot see what the
+        operator adds in the web UI. The service user also needs ordinary
+        write permission on the directories. Changing this list restarts the
+        service.
+
+        The list is also rendered as daemon.media_roots, without the "-"
+        prefix, without a trailing slash, and with duplicates dropped, unless
+        settings.daemon.media_roots is set. The web UI then
+        refuses a library or handoff directory outside these paths, and its
+        folder picker shows nothing else. With media_roots set to [ ] a
+        library outside these paths can be added and scanned, but its jobs
+        fail with a read-only file system or permission error as soon as
+        Anvil writes the encode beside the source.
+
+        Each path must exist when the service starts, or the unit fails.
+        Prefix a path with "-" to let it be missing. The module also makes
+        the path and download.handoff_path of every legacy settings.libraries
+        entry writable, but does not add them to media_roots.
+      '';
     };
 
     runtimePackages = mkOption {
@@ -142,27 +326,34 @@ in
       example = literalExpression ''
         {
           daemon.log_level = "info";
-          profiles."default-av1".crop = {
-            samples = 0;
-            frame_count = 300;
-            limit = 64;
-            round = 16;
-            reset_count = 0;
-            min_retained_area_percent = 70;
-            min_width = 128;
-            min_height = 128;
-            required_alignment = 2;
-          };
-          libraries.movies = {
-            path = "/srv/media/movies";
-            profile = "default-av1";
-          };
+          daemon.worker_count = 2;
         }
       '';
       description = ''
         Anvil settings written as TOML. Use the snake_case keys from the Anvil
-        reference config. Anvil validates this data. Prefer api_key_file to
-        api_key because literal secrets in Nix enter the Nix store.
+        reference config. Anvil validates this data.
+
+        daemon holds the process settings. Its store_path defaults to
+        /var/lib/anvil/anvil.db and must stay on persistent storage, because
+        the store holds the libraries, flows, and Arr connections made in the
+        web UI. Its directory is created 0700, so control_socket, which
+        defaults to /run/anvil/anvild.sock, must lie outside it. temp_dir
+        defaults to /var/lib/anvil/tmp and only holds scratch.
+        A daemon key from worker_count through log_level that is set here is
+        pinned: the web UI's Settings page shows it read-only. Leave one out to
+        manage it on that page.
+
+        The module fills web from services.anvil.web. Keys set here override
+        those options one by one.
+
+        libraries, profiles, and arrs are legacy. They still pass through, and
+        Anvil imports them into its store once, on the first start. After that
+        it ignores them, so later changes here have no effect. Manage
+        libraries, flows, and Arr connections in the web UI.
+
+        Prefer web.passwordFile to a literal web.password, and api_key_file
+        to api_key in a legacy arrs table, because literal secrets in Nix
+        enter the Nix store.
       '';
     };
 
@@ -170,7 +361,10 @@ in
       extraReadWritePaths = mkOption {
         type = types.listOf types.str;
         default = [ ];
-        description = "More paths that the hardened service can write.";
+        description = ''
+          More paths that the hardened service can write. Library and handoff
+          directories belong in services.anvil.mediaPaths.
+        '';
       };
       extraServiceConfig = mkOption {
         type = types.attrsOf types.anything;
@@ -197,6 +391,75 @@ in
         assertion = !cfg.createGroup || cfg.group != null;
         message = "services.anvil.createGroup requires services.anvil.group.";
       }
+      {
+        assertion = !lib.any (
+          directory: lib.hasPrefix "${directory}/" daemon.store_path
+        ) storeUnsafeDirectories;
+        message = ''
+          services.anvil.settings.daemon.store_path is ${daemon.store_path}. That is on
+          volatile storage or inside temp_dir, which is ${daemon.temp_dir}. The store holds
+          the libraries, flows, and Arr connections made in the web UI. Keep store_path on
+          persistent storage and temp_dir separate from it. The defaults are
+          ${daemonDefaults.store_path} and ${daemonDefaults.temp_dir}.
+        '';
+      }
+      {
+        # Mirrors the daemon's own rule: the store directory is 0700, so the
+        # service group could not reach a socket inside it.
+        assertion = !lib.hasPrefix "${storeDirectory}/" daemon.control_socket;
+        message = ''
+          services.anvil.settings.daemon.control_socket is ${daemon.control_socket}, inside
+          ${storeDirectory}, the directory of store_path. That directory is closed to
+          services.anvil.group because the store can hold Arr API keys, so the group could
+          not reach the socket. Put the socket in a directory of its own. The default is
+          ${daemonDefaults.control_socket}.
+        '';
+      }
+      {
+        assertion = (cfg.settings.daemon or { }) ? media_roots || uncleanMediaRoots == [ ];
+        message = ''
+          services.anvil.mediaPaths has ${lib.concatMapStringsSep ", " (path: "\"${path}\"") uncleanMediaRoots},
+          which the daemon refuses as daemon.media_roots. Write each path absolute and
+          cleaned, without "//", "." or ".." components, such as "/srv/media".
+        '';
+      }
+      {
+        assertion = !web.enabled || webListen != null;
+        message = ''
+          The web UI listen address "${web.listen}" is not host:port with a
+          port from 0 to 65535 (an IPv6 host needs brackets: "[::1]:8484").
+          Set services.anvil.web.listenAddress and web.port, or fix
+          services.anvil.settings.web.listen.
+        '';
+      }
+      {
+        # The unit runs with an empty CapabilityBoundingSet, so not even root
+        # can bind a port below 1024 in it. Without this the mistake shows as
+        # a unit that fails at start with "permission denied".
+        assertion = !web.enabled || webListen == null || webPort == 0 || webPort >= 1024;
+        message = ''
+          The Anvil web UI is set to listen on port ${toString webPort}, and the anvil service
+          cannot bind a port below 1024: it runs without CAP_NET_BIND_SERVICE. Set
+          services.anvil.web.port (or the port of services.anvil.settings.web.listen) to
+          1024 or higher, such as the default 8484, and put a reverse proxy in front of it
+          to serve the UI on port 80 or 443.
+        '';
+      }
+      {
+        # Mirrors the daemon's own startup rule so the mistake surfaces at
+        # evaluation time rather than as a failed unit.
+        assertion =
+          !web.enabled
+          || webListen == null
+          || webLoopback
+          || webHasPassword
+          || web.allow_unauthenticated;
+        message = ''
+          The Anvil web UI listens on ${web.listen}, which is not a loopback address, without a password.
+          Set services.anvil.web.passwordFile, or set services.anvil.web.allowUnauthenticated
+          to accept that anyone who can reach the port controls Anvil.
+        '';
+      }
     ];
 
     environment.etc."anvil/anvil.toml".source = cfg.configFile;
@@ -207,13 +470,26 @@ in
     users.groups = optionalAttrs (cfg.createGroup && cfg.group != null) {
       ${cfg.group} = { };
     };
-    systemd.tmpfiles.rules = map (path: "d ${path} 0750 ${tmpfilesUser} ${tmpfilesGroup} - -") daemonDirectoryPaths;
+    systemd.tmpfiles.rules =
+      map (path: "d ${path} 0700 ${tmpfilesUser} ${tmpfilesGroup} - -") privateDirectoryPaths
+      ++ map (path: "d ${path} 0750 ${tmpfilesUser} ${tmpfilesGroup} - -") socketDirectoryPaths;
+    networking.firewall.allowedTCPPorts = optional (
+      cfg.web.openFirewall && web.enabled && webListen != null
+    ) webPort;
 
-    warnings = optional (cfg.controlClient.install && cfg.group == null) ''
-      services.anvil.controlClient.install is enabled but services.anvil.group is null.
-      The control socket ${daemon.control_socket} uses the service's default group.
-      Set services.anvil.group and add operators to it.
-    '';
+    warnings =
+      optional (cfg.controlClient.install && cfg.group == null) ''
+        services.anvil.controlClient.install is enabled but services.anvil.group is null.
+        The control socket ${daemon.control_socket} uses the service's default group.
+        Set services.anvil.group and add operators to it.
+      ''
+      ++ optional (legacyTables != [ ]) ''
+        services.anvil.settings sets the legacy ${lib.concatStringsSep ", " legacyTables} tables.
+        Anvil imports them into its store once, on the first start, and ignores them
+        after that, so later changes to them here have no effect. Manage libraries,
+        flows, and Arr connections in the web UI, list the directories they use in
+        services.anvil.mediaPaths, and remove these tables once they are imported.
+      '';
 
     systemd.services.anvil = {
       description = "Anvil AV1 encoding daemon";
@@ -232,6 +508,11 @@ in
           ];
           Restart = "on-failure";
           StateDirectory = [ "anvil" "anvil/tmp" ];
+          # The store can hold Arr API keys, so the state directory and its
+          # scratch are closed to the group, like their tmpfiles rules. The
+          # runtime directory holds the control socket, which the group
+          # reaches through it.
+          StateDirectoryMode = "0700";
           RuntimeDirectory = "anvil";
           RuntimeDirectoryMode = "0750";
           UMask = "0027";
@@ -246,7 +527,18 @@ in
           RestrictRealtime = true;
           RestrictSUIDSGID = true;
           LockPersonality = true;
+          # The web UI binds an unprivileged TCP port, which needs no
+          # capability, and the unit sets no PrivateNetwork or IPAddressDeny
+          # that would cut it off.
           CapabilityBoundingSet = "";
+          # AF_UNIX for the control socket, AF_INET and AF_INET6 for the web
+          # UI and Arr calls, AF_NETLINK for the resolver's address lookup.
+          RestrictAddressFamilies = [
+            "AF_UNIX"
+            "AF_INET"
+            "AF_INET6"
+            "AF_NETLINK"
+          ];
           SystemCallArchitectures = "native";
         }
         // optionalAttrs (cfg.user != null) { User = cfg.user; }

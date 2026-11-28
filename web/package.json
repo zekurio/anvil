@@ -1,0 +1,28 @@
+{
+  "name": "anvil-web",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "dev:mock": "VITE_MOCK=1 vite",
+    "build": "vite build",
+    "typecheck": "tsc --noEmit",
+    "preview": "vite preview",
+    "icons": "node scripts/vendor-icons.mjs"
+  },
+  "dependencies": {
+    "@solidjs/router": "2.0.1",
+    "@solidjs/web": "2.0.4",
+    "@ui-sdk/core": "0.1.0-beta.17",
+    "@ui-sdk/solid": "0.1.0-beta.17",
+    "solid-js": "2.0.4"
+  },
+  "devDependencies": {
+    "@solidjs/vite-plugin": "3.0.1",
+    "@types/node": "26.6.11",
+    "lucide-static": "1.82.0",
+    "typescript": "7.0.2",
+    "vite": "8.4.0"
+  }
+}

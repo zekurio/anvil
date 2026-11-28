@@ -191,6 +191,40 @@ func validateAudio(request Request, outputProbe domain.ProbeResult, result *doma
 	result.ExpectedAudioStreamCount = expected
 	if result.OutputAudioStreamCount != expected {
 		addError(result, fmt.Sprintf("output audio stream count %d does not match expected %d", result.OutputAudioStreamCount, expected))
+		return
+	}
+	validateEncodedAudio(request, outputProbe, result)
+}
+
+// validateEncodedAudio checks every re-encoded track against the codec and
+// channel count its plan asked for. Output audio streams are written in plan
+// order, so they pair with the plan by position; copied tracks cannot change
+// and are not checked.
+func validateEncodedAudio(request Request, outputProbe domain.ProbeResult, result *domain.ValidationResult) {
+	plan := request.EncodePlan
+	if plan == nil || !plan.AudioSelectionApplied {
+		return
+	}
+	var outputs []domain.MediaStream
+	for _, stream := range outputProbe.Streams {
+		if stream.Type == "audio" {
+			outputs = append(outputs, stream)
+		}
+	}
+	for position, index := range plan.AudioStreamIndexes {
+		for _, track := range plan.AudioTracks {
+			if track.StreamIndex != index || track.Action != domain.AudioTrackEncode {
+				continue
+			}
+			output := outputs[position]
+			if strings.ToLower(strings.TrimSpace(output.Codec)) != track.Codec {
+				addError(result, fmt.Sprintf("output audio track %d (source stream %d) codec %q does not match expected %q", position, index, output.Codec, track.Codec))
+			}
+			if output.Channels != track.Channels {
+				addError(result, fmt.Sprintf("output audio track %d (source stream %d) has %d channels, expected %d", position, index, output.Channels, track.Channels))
+			}
+			break
+		}
 	}
 }
 

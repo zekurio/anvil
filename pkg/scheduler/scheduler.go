@@ -47,6 +47,10 @@ type Scheduler struct {
 	Interval       time.Duration
 	WorkerIDPrefix string
 	Now            func() time.Time
+	// Reconfigured fires after the libraries changed. A library that was just
+	// resumed, or given more room to run, may have work waiting that no new
+	// job will announce.
+	Reconfigured <-chan struct{}
 
 	mu         sync.Mutex
 	active     map[string]activeAssignment
@@ -98,6 +102,8 @@ func (s *Scheduler) Run(ctx context.Context) error {
 		case <-wake:
 			timer.Stop()
 		case <-workAvailable:
+			timer.Stop()
+		case <-s.Reconfigured:
 			timer.Stop()
 		}
 	}
@@ -176,6 +182,25 @@ func (s *Scheduler) ActiveCount() int {
 	return s.activeCount()
 }
 
+// RunningJobs lists the jobs of a library a worker is running right now. A
+// worker is registered before it starts, which is before its attempt asks the
+// store to start, and unregistered only once Worker.Run has returned, which
+// is after the attempt's cleanup. So a job is listed for the whole life of
+// its attempt, also when the job row already says it is over: a canceled job
+// is terminal the moment the cancel commits, while its worker may still be
+// stopping ffmpeg and removing its part file.
+func (s *Scheduler) RunningJobs(library domain.LibraryName) []domain.JobID {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var jobs []domain.JobID
+	for _, assignment := range s.active {
+		if assignment.library == library {
+			jobs = append(jobs, assignment.jobID)
+		}
+	}
+	return jobs
+}
+
 // CancelJob signals every worker currently running jobID and reports whether
 // any worker was signaled. It is safe to call for unknown or already finished
 // jobs, which makes operator cancellation idempotent.
@@ -250,10 +275,16 @@ func (s *Scheduler) allocator(cfg config.Config) resources.Allocator {
 	return resources.NewAllocator(cfg.Daemon.TotalThreads)
 }
 
+// eligibleLibrariesForCounts lists the libraries a job may be leased from
+// right now. A paused library is left out, so its jobs stay pending while the
+// ones already running finish; so is a library at its concurrency limit.
 func eligibleLibrariesForCounts(cfg config.Config, activeByLibrary map[domain.LibraryName]int) []domain.LibraryName {
 	allowed := make([]domain.LibraryName, 0, len(cfg.Libraries))
 	for libraryName, library := range cfg.Libraries {
 		name := domain.LibraryName(libraryName)
+		if library.Paused {
+			continue
+		}
 		if library.ConcurrencyLimit > 0 && activeByLibrary[name] >= library.ConcurrencyLimit {
 			continue
 		}

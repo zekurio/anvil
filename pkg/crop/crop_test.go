@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/zekurio/anvil/pkg/config"
 	"github.com/zekurio/anvil/pkg/domain"
 )
 
@@ -271,6 +272,15 @@ func TestSpreadOffsets(t *testing.T) {
 	for _, duration := range []float64{0, -1, math.NaN(), math.Inf(1)} {
 		if offsets := spreadOffsets(duration, 0); offsets != nil {
 			t.Fatalf("spreadOffsets(%v) = %v, want none", duration, offsets)
+		}
+	}
+	// A count past the validated ceiling is clamped rather than allocated.
+	if maxSamples != config.MaxCropWindows {
+		t.Fatalf("maxSamples = %d, want config.MaxCropWindows %d", maxSamples, config.MaxCropWindows)
+	}
+	for _, samples := range []int{maxSamples + 1, 1 << 53} {
+		if offsets := spreadOffsets(3600, samples); len(offsets) != maxSamples {
+			t.Fatalf("spreadOffsets(3600, %d) made %d windows, want %d", samples, len(offsets), maxSamples)
 		}
 	}
 }

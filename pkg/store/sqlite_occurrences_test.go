@@ -32,6 +32,7 @@ func TestApplyLibraryScanRequeuesOnlyWhenAllowed(t *testing.T) {
 			})
 
 			library := domain.LibraryName(test.name)
+			mustCreateLibrary(t, state, test.name)
 			first := scanTestEntry(1)
 			result := applyScanForTest(t, ctx, state, library, test.requeueExisting, first)
 			if result.EnqueuedJobs != 1 {
@@ -65,7 +66,7 @@ func scanTestEntry(size int64) ScanEntry {
 
 func applyScanForTest(t *testing.T, ctx context.Context, state *SQLiteStore, library domain.LibraryName, requeueExisting bool, entry ScanEntry) ApplyScanResult {
 	t.Helper()
-	token, err := state.BeginLibraryScan(ctx, library)
+	token, err := state.BeginLibraryScan(ctx, storedLibrary(t, state, string(library)))
 	if err != nil {
 		t.Fatalf("BeginLibraryScan: %v", err)
 	}

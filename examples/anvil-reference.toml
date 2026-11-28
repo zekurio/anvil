@@ -1,24 +1,25 @@
 # Complete Anvil configuration reference. Copy only the settings your deployment needs.
-# Names after profiles, arrs, and libraries are your own non-empty names.
 #
-# The smallest useful configuration is one library:
+# anvil.toml holds the process settings: [daemon] and [web]. Libraries, flows,
+# and Arr connections live in the daemon's store and are created and edited in
+# the web UI. A daemon needs no configuration file at all to start; it then
+# listens on http://127.0.0.1:8484 and keeps its state under the system
+# temporary directory.
 #
-# [libraries.movies]
-# path = "/srv/media/movies"
+# The [daemon] keys from worker_count through log_level can also be changed on
+# the web UI's Settings page, which saves them in the store. A key written in
+# this file pins it: the UI shows it read-only, and only this file changes it.
+# Leave a key out to manage it in the UI. media_roots, the paths, and all of
+# [web] are file-only.
 #
-# A custom profile needs only changed values:
-#
-# [profiles.fast.video]
-# preset = "4"
-#
-# The daemon and default profile sections show defaults. Machine-specific
-# daemon paths and CPU counts use stable examples. Arr, library, and override
-# sections are examples.
+# The [daemon] and [web] sections show defaults. Machine-specific daemon paths
+# and CPU counts use stable examples.
 
 [daemon]
-temp_dir = "/var/lib/anvil/tmp" # Scratch directory for search samples and process logs. Encode artifacts are written on the destination filesystem as <name>.job-<id>.anvil-part: beside the destination for media libraries, under <handoff_path>/.anvil-work for download libraries. store_path and control_socket default to locations inside this directory.
-store_path = "/var/lib/anvil/anvil.db" # SQLite state path. Defaults to anvil.db inside temp_dir; any non-empty path.
-control_socket = "/run/anvil/anvild.sock" # Daemon Unix socket. Defaults to anvild.sock inside temp_dir; must be absolute.
+media_roots = [] # Absolute directory roots the web API may browse and assign to libraries. Empty leaves filesystem browsing and library locations unrestricted. Re-read on SIGHUP.
+temp_dir = "/var/lib/anvil/tmp" # Scratch directory for search samples and process logs. Encode artifacts are written on the destination filesystem as <name>.job-<id>.anvil-part: beside the destination for media libraries, under <handoff_path>/.anvil-work for download libraries. Defaults to anvil inside the system temporary directory.
+store_path = "/var/lib/anvil/anvil.db" # SQLite state path, on persistent storage: the store is the only copy of the libraries, flows, Arr connections, and daemon settings. Defaults to /var/lib/anvil/anvil.db as root, otherwise to anvil/anvil.db in $XDG_STATE_HOME or ~/.local/state; set it when there is no home directory. A missing directory is created 0700.
+control_socket = "/run/anvil/anvild.sock" # Daemon Unix socket. Defaults to anvild.sock inside temp_dir; must be absolute and outside the store's directory.
 worker_count = 2 # Simultaneous jobs. Defaults to the CPU count; integer >= 1.
 total_threads = 8 # Shared encode-thread budget. Defaults to the CPU count; integer >= 0.
 max_threads_per_job = 0 # Per-job thread cap. Zero shares the budget across worker slots; integer >= 0.
@@ -29,8 +30,34 @@ scheduler_interval = "5s" # Queue planning cadence; duration > 0.
 lease_duration = "30m" # Time before an abandoned job lease is recoverable; duration > 0.
 shutdown_policy = "drain" # Let active jobs finish or cancel them; "drain" or "cancel".
 shutdown_timeout = "0s" # Force cancellation after this graceful wait; "0s" waits indefinitely; duration >= 0.
-staging_cleanup_age = "0s" # Remove abandoned staging older than this; "0s" disables cleanup; duration >= 0.
+staging_cleanup_age = "0s" # Remove abandoned staging older than this when the daemon starts, and by default in anvilctl staging cleanup; "0s" disables cleanup; duration >= 0.
 log_level = "info" # Keep logs useful without excessive detail; "debug", "info", "warn", or "error".
+
+[web]
+enabled = true # Serve the web UI and API; false runs the daemon with anvilctl alone.
+listen = "127.0.0.1:8484" # TCP address to listen on; "host:port". Changing it needs a restart.
+# password_file = "/run/secrets/anvil-web" # File holding the single shared password, preferred over password. Its trailing newline is ignored. Re-read on SIGHUP.
+# password = "change-me" # Literal password, redacted by check-config --show. Set this or password_file; with neither, the UI asks for no sign-in.
+allow_unauthenticated = false # Accept a listen address other machines can reach without a password. Only for a network where everyone may change and delete the media.
+
+# ---------------------------------------------------------------------------
+# Import-only sections
+#
+# [profiles], [arrs], and [libraries] are what Anvil was configured with
+# before libraries moved into the store. They still parse, and the first start
+# of a daemon whose store has never seen them imports them once: every profile
+# a library uses becomes a flow that resolves to the same settings, and
+# include, exclude, and ignore_regex become the library's rules. After that
+# import the daemon ignores them and says so in its log at every start. Do not
+# add them to a new installation. A library whose imported flow does not
+# validate, or whose folders overlap another library's or temp_dir, is
+# imported paused. An Arr connection made in the web UI takes a literal key
+# only; api_key_file exists for this import.
+#
+# Names after profiles, arrs, and libraries are your own non-empty names. The
+# default profile section shows defaults; arr, library, and override sections
+# are examples.
+# ---------------------------------------------------------------------------
 
 [profiles.default-av1]
 container = "mkv" # Output container; only "mkv".
@@ -42,19 +69,19 @@ preset = "6" # Trade speed for compression to match the selected encoder; any en
 bit_depth = 10 # Preserve more tonal detail when the encoder supports it; 8 or 10.
 crf_min = 18 # Lowest search CRF; integer no greater than crf_max.
 crf_max = 40 # Highest search CRF; integer no lower than crf_min.
-samples = 0 # Samples per CRF; 0 uses one per 12 minutes, rounded up; short inputs use one whole-file sample.
-sample_duration = "20s" # Length of each search sample; positive Go duration.
+samples = 0 # Fixed sample count per CRF; 0 uses one per 12 minutes, rounded up; integer from 0 through 100. Short inputs use one whole-file sample.
+sample_duration = "20s" # Length of each search sample; positive Go duration, default "20s".
 metric = "vmaf" # Quality metric measured by FFmpeg; "vmaf" or "xpsnr".
 target = 95.0 # Minimum score for metric; number from 0 through 100. Required when metric is "xpsnr" (typical XPSNR target: 35-50).
 min_savings_percent = 20.0 # Minimum estimated video-only savings from sample sizes, including container overhead; number from 0 through 100.
-force_encode_on_no_fit = false # On no fit, use best measured quality within the size limit, or best measured quality overall when no size fits.
+force_encode_on_no_fit = false # On no fit, use the best measured quality within the size limit, or the best measured quality overall if no candidate fits the size limit.
 skip_encode = false # Copy video instead of searching and encoding when policy requires it.
-ffmpeg_args = [] # Encoder option/value pairs shared by search and final encoding; Anvil manages mapping, filters, timing, and rate control.
+ffmpeg_args = [] # Encoder parameter bundles of allow-listed value-only keys and value-only tuning option/value pairs shared by search and final encoding. Files, URLs, devices, filters, mapping, timing, and rate control are not accepted.
 
 [profiles.default-av1.crop]
-seek_offsets = [] # Sample crop candidates at these input offsets; an empty list spreads windows across the input instead; non-negative Go duration strings.
-samples = 0 # Crop windows spread across the input, one per sample slice; 0 uses one per 3 minutes of runtime, clamped to 4-24 windows; 0 or integer >= 2.
-frame_count = 300 # Frames analyzed at each seek offset; integer >= 1.
+seek_offsets = [] # Sample crop candidates at these input offsets; an empty list spreads windows across the input instead; at most 100 non-negative Go duration strings.
+samples = 0 # Crop windows spread across the input, one per sample slice; 0 uses one per 3 minutes of runtime, clamped to 4-24 windows; 0 or integer from 2 through 100.
+frame_count = 300 # Frames analyzed at each seek offset; integer from 1 through 10000.
 limit = 64 # ffmpeg cropdetect black threshold; integer from 1 through 255.
 round = 16 # Round crop width and height to this multiple during detection; integer >= 1.
 reset_count = 0 # Reset cropdetect's largest-area history after this many frames; 0 disables reset; integer >= 0.
@@ -153,7 +180,7 @@ concurrency_limit = 1 # Cap active jobs from this library; 0 means no per-librar
 arr = "tv" # Use this Arr instance for metadata; omit to disable lookup; existing arr name.
 
 [libraries.downloads.download]
-handoff_path = "/srv/imports/tv" # Destination watched by the importer; non-empty path for download libraries. Anvil encodes into <handoff_path>/.anvil-work and only creates the package directory at publish time.
+handoff_path = "/srv/imports/tv" # Destination watched by the importer; non-empty path for download libraries.
 stable_for = "5m" # Fallback quiet period when no completion event is observed; close-write and moved-in transfers enqueue after debounce; duration >= 0.
 package_mode = "auto" # Treat a download as a file or directory; "auto", "directory", or "file".
 handoff_mode = "move" # Copy for safety or move when the downloader no longer needs it; "move" or "copy".

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/zekurio/anvil/pkg/config"
 	"github.com/zekurio/anvil/pkg/domain"
 	replacepkg "github.com/zekurio/anvil/pkg/replace"
 )
@@ -27,6 +28,38 @@ const activeOccurrenceTargetSQL = `EXISTS (
 const inactiveOccurrenceJobError = "input occurrence is no longer current and active"
 
 const defaultCancelReason = "canceled by operator"
+
+// RetryRefusedError reports a job a retry left alone, and which of the
+// reasons applies. A caller that retries many jobs uses it to tell a refusal,
+// which concerns one job, from a failure of the store.
+type RetryRefusedError struct {
+	JobID domain.JobID
+	State domain.JobState
+	// InputChanged is set when the state would allow a retry but the file the
+	// job was created for has changed or gone since: its occurrence is no
+	// longer current and active.
+	InputChanged bool
+	// Denied is set when a scan took the job off the queue because a rule of
+	// its library denies the file. Otherwise the state itself refuses.
+	Denied bool
+}
+
+func (e *RetryRefusedError) Error() string {
+	switch {
+	case e.InputChanged:
+		return fmt.Sprintf("cannot retry job %d: %s", e.JobID, inactiveOccurrenceJobError)
+	case e.Denied:
+		return fmt.Sprintf("cannot retry job %d: a rule of its library denies the file; a scan queues it again once the rules allow it", e.JobID)
+	}
+	return fmt.Sprintf("cannot retry job %d from state %q", e.JobID, e.State)
+}
+
+// deniedByRules reports whether a scan skipped the job because the rules of
+// its library deny the file (scanApplication.skipDeniedJobs): it is skipped,
+// and its reason is a rule's.
+func deniedByRules(job domain.Job) bool {
+	return job.State == domain.JobStateSkipped && config.DeniedByRules(job.LastError)
+}
 
 func (s *SQLiteStore) EnqueueJob(ctx context.Context, input EnqueueJobInput) (domain.Job, bool, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -63,14 +96,20 @@ func retryJobTx(ctx context.Context, tx *sql.Tx, id domain.JobID, now time.Time)
 	switch job.State {
 	case domain.JobStateFailed, domain.JobStateSkipped, domain.JobStateCanceled, domain.JobStateRetrying:
 	default:
-		return domain.Job{}, fmt.Errorf("cannot retry job %d from state %q", id, job.State)
+		return domain.Job{}, &RetryRefusedError{JobID: id, State: job.State}
 	}
 	active, err := jobTargetActiveTx(ctx, tx, id)
 	if err != nil {
 		return domain.Job{}, err
 	}
 	if !active {
-		return domain.Job{}, fmt.Errorf("cannot retry job %d: %s", id, inactiveOccurrenceJobError)
+		return domain.Job{}, &RetryRefusedError{JobID: id, State: job.State, InputChanged: true}
+	}
+	// Queued by hand, the job would be leased against the rules, or skipped
+	// again by the next scan, whichever came first. The rules decide: once
+	// they allow the file, the scan puts the job back by itself.
+	if deniedByRules(job) {
+		return domain.Job{}, &RetryRefusedError{JobID: id, State: job.State, Denied: true}
 	}
 
 	_, err = tx.ExecContext(ctx, `
@@ -641,7 +680,19 @@ WHERE id = ?
 	return job, nil
 }
 
-func (s *SQLiteStore) RecoverStaleJobs(ctx context.Context, maxAttempts int, now time.Time) (int64, error) {
+// StaleRecovery reports what RecoverStaleJobs did.
+type StaleRecovery struct {
+	// Recovered counts every job whose stale lease was released.
+	Recovered int64
+	// Ended lists the jobs that became terminal, failed or skipped, instead
+	// of going back to the queue. A worker that ends a job reclaims the part
+	// file it wrote on the destination filesystem; these jobs ended without
+	// one, and will never run an attempt that would overwrite it, so the
+	// caller has to reclaim it.
+	Ended []domain.JobID
+}
+
+func (s *SQLiteStore) RecoverStaleJobs(ctx context.Context, maxAttempts int, now time.Time) (StaleRecovery, error) {
 	now = defaultNow(now)
 	if maxAttempts < 1 {
 		maxAttempts = 1
@@ -649,7 +700,7 @@ func (s *SQLiteStore) RecoverStaleJobs(ctx context.Context, maxAttempts int, now
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return 0, fmt.Errorf("begin recovery transaction: %w", err)
+		return StaleRecovery{}, fmt.Errorf("begin recovery transaction: %w", err)
 	}
 	defer rollback(tx)
 
@@ -678,15 +729,16 @@ WHERE state = ?
 		string(domain.AttemptStateRunning),
 	}, args...)...)
 	if err != nil {
-		return 0, fmt.Errorf("cancel stale attempts: %w", err)
+		return StaleRecovery{}, fmt.Errorf("cancel stale attempts: %w", err)
 	}
 
-	skipped, err := tx.ExecContext(ctx, `
+	skipped, err := updatedJobIDsTx(ctx, tx, `
 UPDATE jobs
 SET state = ?, lease_owner = '', lease_deadline = NULL, heartbeat_at = NULL,
 	last_error = ?, updated_at = ?, completed_at = ?
 WHERE `+staleWhere+`
 	AND NOT `+activeOccurrenceTargetSQL+`
+RETURNING id
 `, append([]any{
 		string(domain.JobStateSkipped),
 		inactiveOccurrenceJobError,
@@ -694,16 +746,17 @@ WHERE `+staleWhere+`
 		encodeTime(now),
 	}, args...)...)
 	if err != nil {
-		return 0, fmt.Errorf("skip stale jobs with inactive occurrences: %w", err)
+		return StaleRecovery{}, fmt.Errorf("skip stale jobs with inactive occurrences: %w", err)
 	}
 
-	failed, err := tx.ExecContext(ctx, `
+	failed, err := updatedJobIDsTx(ctx, tx, `
 UPDATE jobs
 SET state = ?, lease_owner = '', lease_deadline = NULL, heartbeat_at = NULL,
 	last_error = ?, updated_at = ?, completed_at = ?
 WHERE `+staleWhere+`
 	AND attempt_count >= ?
 	AND `+activeOccurrenceTargetSQL+`
+RETURNING id
 `, append([]any{
 		string(domain.JobStateFailed),
 		"lease expired and retry limit was reached",
@@ -711,7 +764,7 @@ WHERE `+staleWhere+`
 		encodeTime(now),
 	}, append(args, maxAttempts)...)...)
 	if err != nil {
-		return 0, fmt.Errorf("fail stale jobs: %w", err)
+		return StaleRecovery{}, fmt.Errorf("fail stale jobs: %w", err)
 	}
 
 	pending, err := tx.ExecContext(ctx, `
@@ -727,29 +780,39 @@ WHERE `+staleWhere+`
 		encodeTime(now),
 	}, append(args, maxAttempts)...)...)
 	if err != nil {
-		return 0, fmt.Errorf("requeue stale jobs: %w", err)
-	}
-
-	skippedRows, err := skipped.RowsAffected()
-	if err != nil {
-		return 0, fmt.Errorf("skipped recovery rows affected: %w", err)
-	}
-	failedRows, err := failed.RowsAffected()
-	if err != nil {
-		return 0, fmt.Errorf("failed recovery rows affected: %w", err)
+		return StaleRecovery{}, fmt.Errorf("requeue stale jobs: %w", err)
 	}
 	pendingRows, err := pending.RowsAffected()
 	if err != nil {
-		return 0, fmt.Errorf("pending recovery rows affected: %w", err)
+		return StaleRecovery{}, fmt.Errorf("pending recovery rows affected: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
-		return 0, fmt.Errorf("commit recovery transaction: %w", err)
+		return StaleRecovery{}, fmt.Errorf("commit recovery transaction: %w", err)
 	}
 
 	if pendingRows > 0 {
 		s.notifyWork()
 	}
-	return skippedRows + failedRows + pendingRows, nil
+	ended := append(skipped, failed...)
+	return StaleRecovery{Recovered: int64(len(ended)) + pendingRows, Ended: ended}, nil
+}
+
+// updatedJobIDsTx runs an UPDATE of jobs that ends in RETURNING id and
+// returns the ids of the rows it changed.
+func updatedJobIDsTx(ctx context.Context, tx *sql.Tx, query string, args ...any) (ids []domain.JobID, err error) {
+	rows, err := tx.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer closeRows(rows, &err, "close updated job ids")
+	for rows.Next() {
+		var id domain.JobID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
 }
 
 func jobTargetActiveTx(ctx context.Context, tx *sql.Tx, jobID domain.JobID) (bool, error) {

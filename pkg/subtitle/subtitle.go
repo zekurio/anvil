@@ -32,30 +32,77 @@ func (Selector) Select(probe *domain.ProbeResult, profile domain.SubtitleProfile
 		RequestedLanguages: configuredLanguages(profile.LanguagesToKeep),
 		ResolvedLanguages:  selection.LanguagesToKeep,
 	}
+	// Every path below fills in this one record, including the fail_job
+	// fallback that also returns an error.
+	selection.Decision = &decision
 	if len(subtitleStreams) == 0 {
 		decision.Rule = domain.StreamSelectionRuleNoStreams
 		// Every requested language is trivially missing when the source has no
 		// subtitles at all; report it so the warning fires here too.
 		decision.MissingLanguages = domain.MissingRequestedLanguages(selection.LanguagesToKeep, nil)
-		selection.Decision = &decision
 		return selection, nil
 	}
-	if reason, disabled := cleanupDisabled(profile, metadata, selection); disabled {
-		selection.StreamIndexes = streamIndexes(subtitleStreams)
-		decision.Rule = domain.StreamSelectionRuleCleanupDisabled
-		decision.CleanupDisabledReason = reason
-		decision.Streams = keptStreams(subtitleStreams, profile, selection, domain.StreamKeptCleanupDisabled)
-		selection.Decision = &decision
-		return selection, nil
-	}
-
-	keep := languageSet(selection.LanguagesToKeep)
 	decision.Streams = make([]domain.StreamDecision, 0, len(subtitleStreams))
 	for _, stream := range subtitleStreams {
 		record := domain.NewStreamDecision(stream)
 		record.ResolvedLanguage = streamLanguage(stream.Language, selection.OriginalLanguage, profile.UnknownAsOriginal)
+		decision.Streams = append(decision.Streams, record)
+	}
+	if profile.RemoveAll {
+		decision.Rule = domain.StreamSelectionRuleRemoveAll
+		for i := range decision.Streams {
+			decision.Streams[i].Reason = domain.StreamDroppedRemoveAll
+		}
+		return selection, nil
+	}
+
+	// candidates are the positions the remaining rules judge. Image-based
+	// tracks leave before any of them, so neither a disabled cleanup nor a
+	// fallback can bring one back.
+	candidates := make([]int, 0, len(subtitleStreams))
+	judged := make([]domain.StreamDecision, 0, len(subtitleStreams))
+	for i, stream := range subtitleStreams {
+		if profile.DropBitmap && bitmap(stream) {
+			decision.Streams[i].Reason = domain.StreamDroppedBitmap
+			continue
+		}
+		candidates = append(candidates, i)
+		judged = append(judged, decision.Streams[i])
+	}
+	keep := func(position int, reason domain.StreamDecisionReason) {
+		decision.Streams[position].Kept = true
+		decision.Streams[position].Reason = reason
+		selection.StreamIndexes = append(selection.StreamIndexes, subtitleStreams[position].Index)
+	}
+	if len(candidates) == 0 {
+		decision.Rule = domain.StreamSelectionRuleBitmapOnly
+		decision.MissingLanguages = domain.MissingRequestedLanguages(selection.LanguagesToKeep, nil)
+		return selection, nil
+	}
+	if reason, disabled := cleanupDisabled(profile, metadata, selection); disabled {
+		decision.Rule = domain.StreamSelectionRuleCleanupDisabled
+		decision.CleanupDisabledReason = reason
+		for _, position := range candidates {
+			keep(position, domain.StreamKeptCleanupDisabled)
+		}
+		return selection, nil
+	}
+	// A profile without languages keeps every track. That is what it asks
+	// for, not a disabled cleanup, so it is recorded without a warning.
+	if len(selection.LanguagesToKeep) == 0 {
+		decision.Rule = domain.StreamSelectionRuleKeepAll
+		for _, position := range candidates {
+			keep(position, domain.StreamKeptKeepAll)
+		}
+		return selection, nil
+	}
+
+	wanted := languageSet(selection.LanguagesToKeep)
+	for _, position := range candidates {
+		stream := subtitleStreams[position]
+		record := &decision.Streams[position]
 		switch {
-		case !keep[record.ResolvedLanguage]:
+		case !wanted[record.ResolvedLanguage]:
 			record.Reason = domain.StreamDroppedLanguage
 		case !profile.KeepForced && forced(stream):
 			record.Reason = domain.StreamDroppedForced
@@ -64,39 +111,41 @@ func (Selector) Select(probe *domain.ProbeResult, profile domain.SubtitleProfile
 		case !profile.KeepCommentary && commentary(stream):
 			record.Reason = domain.StreamDroppedCommentary
 		default:
-			record.Kept = true
-			record.Reason = keepReason(record, requested, selection.OriginalLanguage)
-			selection.StreamIndexes = append(selection.StreamIndexes, stream.Index)
+			keep(position, keepReason(*record, requested, selection.OriginalLanguage))
 		}
-		decision.Streams = append(decision.Streams, record)
 	}
-	decision.MissingLanguages = domain.MissingRequestedLanguages(selection.LanguagesToKeep, decision.Streams)
+	// A language that only exists as a dropped image-based track is missing.
+	decision.MissingLanguages = domain.MissingRequestedLanguages(selection.LanguagesToKeep, judged)
 	if len(selection.StreamIndexes) > 0 {
 		decision.Rule = domain.StreamSelectionRuleLanguageFilter
-		selection.Decision = &decision
 		return selection, nil
 	}
 
 	switch profile.Fallback {
 	case domain.StreamFallbackFailJob:
 		decision.Rule = domain.StreamSelectionRuleFallbackFailJob
-		selection.Decision = &decision
 		return selection, fmt.Errorf("no subtitle streams matched languages %v", selection.LanguagesToKeep)
 	case domain.StreamFallbackKeepFirst:
 		decision.Rule = domain.StreamSelectionRuleFallbackKeepFirst
-		selection.StreamIndexes = []int{subtitleStreams[0].Index}
-		decision.Streams[0].Kept = true
-		decision.Streams[0].Reason = domain.StreamKeptFallbackKeepFirst
+		keep(candidates[0], domain.StreamKeptFallbackKeepFirst)
 	default:
 		decision.Rule = domain.StreamSelectionRuleFallbackKeepAll
-		selection.StreamIndexes = streamIndexes(subtitleStreams)
-		for i := range decision.Streams {
-			decision.Streams[i].Kept = true
-			decision.Streams[i].Reason = domain.StreamKeptFallbackKeepAll
+		for _, position := range candidates {
+			keep(position, domain.StreamKeptFallbackKeepAll)
 		}
 	}
-	selection.Decision = &decision
 	return selection, nil
+}
+
+// bitmap reports whether the track is image-based. These are the subtitle
+// codecs ffmpeg flags as bitmap, by their ffprobe names.
+func bitmap(stream domain.MediaStream) bool {
+	switch strings.ToLower(strings.TrimSpace(stream.Codec)) {
+	case "hdmv_pgs_subtitle", "dvd_subtitle", "dvb_subtitle", "xsub":
+		return true
+	default:
+		return false
+	}
 }
 
 type Block struct {
@@ -133,6 +182,8 @@ func (Block) Decision(job *pipeline.JobContext) (domain.StreamSelectionDecision,
 	return *job.Subtitles.Decision, true
 }
 
+// cleanupDisabled reports why the language rules cannot be trusted for this
+// job. A profile that names no language at all is not such a case.
 func cleanupDisabled(profile domain.SubtitleProfile, metadata domain.JobMetadata, selection domain.SubtitleSelection) (string, bool) {
 	switch {
 	case metadata.StreamCleanupDisabled:
@@ -141,8 +192,6 @@ func cleanupDisabled(profile domain.SubtitleProfile, metadata domain.JobMetadata
 			reason = "stream cleanup disabled for job"
 		}
 		return reason, true
-	case len(selection.LanguagesToKeep) == 0:
-		return "no languages configured", true
 	case requiresOriginalLanguage(profile) && selection.OriginalLanguage == "":
 		return "original language is unavailable", true
 	default:
@@ -220,18 +269,6 @@ func keepReason(record domain.StreamDecision, requested []requestedLanguage, ori
 	return domain.StreamKeptLanguageMatch
 }
 
-func keptStreams(streams []domain.MediaStream, profile domain.SubtitleProfile, selection domain.SubtitleSelection, reason domain.StreamDecisionReason) []domain.StreamDecision {
-	result := make([]domain.StreamDecision, 0, len(streams))
-	for _, stream := range streams {
-		record := domain.NewStreamDecision(stream)
-		record.ResolvedLanguage = streamLanguage(stream.Language, selection.OriginalLanguage, profile.UnknownAsOriginal)
-		record.Kept = true
-		record.Reason = reason
-		result = append(result, record)
-	}
-	return result
-}
-
 func requiresOriginalLanguage(profile domain.SubtitleProfile) bool {
 	for _, value := range profile.LanguagesToKeep {
 		if strings.EqualFold(strings.TrimSpace(value), OriginalLanguageToken) {
@@ -249,14 +286,6 @@ func subtitleStreams(streams []domain.MediaStream) []domain.MediaStream {
 		}
 	}
 	return result
-}
-
-func streamIndexes(streams []domain.MediaStream) []int {
-	indexes := make([]int, 0, len(streams))
-	for _, stream := range streams {
-		indexes = append(indexes, stream.Index)
-	}
-	return indexes
 }
 
 func streamLanguage(value string, originalLanguage string, unknownAsOriginal bool) string {

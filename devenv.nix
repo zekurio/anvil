@@ -10,6 +10,9 @@ let
       (pkgs.jellyfin-ffmpeg or pkgs.ffmpeg)
     else
       pkgs.ffmpeg;
+  # Node.js and its bundled npm build the web UI under web/. Keep in step with
+  # the Node.js the flake's web package uses.
+  nodePackage = pkgs.nodejs_24;
   devPackages =
     with pkgs;
     [
@@ -23,6 +26,7 @@ let
       gopls
       gotools
       jq
+      nodePackage
       sqlite-interactive
     ];
 in

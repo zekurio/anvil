@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-const currentSchemaVersion = 7
+const currentSchemaVersion = 8
 
 // minUpgradableSchemaVersion is the oldest schema version schemaMigrations can
 // still upgrade in place. Anything older predates the migration chain and is
@@ -21,13 +21,59 @@ const minUpgradableSchemaVersion = 5
 // query. Bump it whenever a migration changes a table or column this package
 // reads, so preflight fails with ErrIncompatibleSchema instead of a raw SQL
 // error from deep inside a query.
-const minReadOnlySchemaVersion = 5
+//
+// It is 8 because preflight reads the libraries it plans against from the
+// libraries table, which version 8 added. A database the daemon has not
+// migrated yet has no libraries to plan against; starting the daemon once
+// migrates it and imports the libraries of anvil.toml.
+const minReadOnlySchemaVersion = 8
 
 const currentSchema = `
 CREATE TABLE schema_migrations (
 	version INTEGER PRIMARY KEY,
 	applied_at TEXT NOT NULL
 );
+
+CREATE TABLE meta (
+	key TEXT PRIMARY KEY,
+	value TEXT NOT NULL
+);
+
+CREATE TABLE flows (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	name TEXT NOT NULL UNIQUE,
+	description TEXT NOT NULL DEFAULT '',
+	revision INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 1),
+	graph_json BLOB NOT NULL,
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL
+);
+
+CREATE TABLE arrs (
+	name TEXT PRIMARY KEY,
+	type TEXT NOT NULL CHECK (type IN ('radarr', 'sonarr')),
+	base_url TEXT NOT NULL,
+	api_key TEXT NOT NULL DEFAULT '',
+	api_key_file TEXT NOT NULL DEFAULT '',
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL
+);
+
+CREATE TABLE libraries (
+	name TEXT PRIMARY KEY,
+	kind TEXT NOT NULL CHECK (kind IN ('media', 'download')),
+	path TEXT NOT NULL,
+	flow_id INTEGER NOT NULL REFERENCES flows(id) ON DELETE RESTRICT,
+	arr_name TEXT REFERENCES arrs(name) ON DELETE RESTRICT,
+	paused INTEGER NOT NULL DEFAULT 0 CHECK (paused IN (0, 1)),
+	settings_json BLOB NOT NULL,
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL
+);
+
+CREATE INDEX libraries_flow_idx ON libraries(flow_id);
+
+CREATE INDEX libraries_arr_idx ON libraries(arr_name) WHERE arr_name IS NOT NULL;
 
 CREATE TABLE library_scans (
 	library_name TEXT PRIMARY KEY,
@@ -111,6 +157,12 @@ CREATE TABLE jobs (
 	created_at TEXT NOT NULL,
 	updated_at TEXT NOT NULL,
 	completed_at TEXT,
+	probe_format TEXT NOT NULL DEFAULT '',
+	probe_video_codec TEXT NOT NULL DEFAULT '',
+	probe_width INTEGER NOT NULL DEFAULT 0,
+	probe_height INTEGER NOT NULL DEFAULT 0,
+	probe_audio_codec TEXT NOT NULL DEFAULT '',
+	probe_audio_channels INTEGER NOT NULL DEFAULT 0,
 	pipeline_context_json BLOB NOT NULL DEFAULT x''
 );
 
@@ -123,6 +175,18 @@ ON jobs(state, priority DESC, created_at ASC, id ASC);
 CREATE INDEX jobs_lease_deadline_idx
 ON jobs(lease_deadline)
 WHERE lease_deadline IS NOT NULL;
+
+CREATE INDEX jobs_library_state_idx
+ON jobs(library_name, state, input_size_bytes, output_size_bytes);
+
+CREATE INDEX jobs_updated_idx
+ON jobs(updated_at DESC, id DESC);
+
+CREATE INDEX jobs_library_updated_idx
+ON jobs(library_name, updated_at DESC, id DESC);
+
+CREATE INDEX jobs_file_idx
+ON jobs(source_id, asset_id, state, updated_at);
 
 CREATE TABLE attempts (
 	id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -207,6 +271,7 @@ type schemaMigration struct {
 var schemaMigrations = []schemaMigration{
 	{version: 6, apply: addCanceledJobState},
 	{version: 7, apply: addSourceScans},
+	{version: 8, apply: upgradeToVersion8},
 }
 
 func (s *SQLiteStore) migrate(ctx context.Context) error {
@@ -460,4 +525,154 @@ func addSourceScans(ctx context.Context, tx *sql.Tx) error {
  PRIMARY KEY (library_name, relative_path)
 );`)
 	return err
+}
+
+// addFlowsLibrariesArrs moves flows, libraries, and Arr connections into the
+// store. It only creates the tables: the libraries of an existing
+// installation still live in anvil.toml at this point and are imported after
+// the store is open (see ImportLegacyConfig), and the default flow is seeded
+// by Open, so the frozen migration never depends on what the default flow
+// currently looks like.
+func addFlowsLibrariesArrs(ctx context.Context, tx *sql.Tx) error {
+	statements := []string{`
+CREATE TABLE meta (
+	key TEXT PRIMARY KEY,
+	value TEXT NOT NULL
+)`, `
+CREATE TABLE flows (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	name TEXT NOT NULL UNIQUE,
+	description TEXT NOT NULL DEFAULT '',
+	revision INTEGER NOT NULL DEFAULT 1 CHECK (revision >= 1),
+	graph_json BLOB NOT NULL,
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL
+)`, `
+CREATE TABLE arrs (
+	name TEXT PRIMARY KEY,
+	type TEXT NOT NULL CHECK (type IN ('radarr', 'sonarr')),
+	base_url TEXT NOT NULL,
+	api_key TEXT NOT NULL DEFAULT '',
+	api_key_file TEXT NOT NULL DEFAULT '',
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL
+)`, `
+CREATE TABLE libraries (
+	name TEXT PRIMARY KEY,
+	kind TEXT NOT NULL CHECK (kind IN ('media', 'download')),
+	path TEXT NOT NULL,
+	flow_id INTEGER NOT NULL REFERENCES flows(id) ON DELETE RESTRICT,
+	arr_name TEXT REFERENCES arrs(name) ON DELETE RESTRICT,
+	paused INTEGER NOT NULL DEFAULT 0 CHECK (paused IN (0, 1)),
+	settings_json BLOB NOT NULL,
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL
+)`, `
+CREATE INDEX libraries_flow_idx ON libraries(flow_id)`, `
+CREATE INDEX libraries_arr_idx ON libraries(arr_name) WHERE arr_name IS NOT NULL`,
+	}
+	for _, statement := range statements {
+		if _, err := tx.ExecContext(ctx, statement); err != nil {
+			return fmt.Errorf("create flows, libraries, and arrs: %w", err)
+		}
+	}
+	return nil
+}
+
+// upgradeToVersion8 is everything version 8 changed. The version was not
+// released between its two halves, so they are one migration.
+func upgradeToVersion8(ctx context.Context, tx *sql.Tx) error {
+	if err := addFlowsLibrariesArrs(ctx, tx); err != nil {
+		return err
+	}
+	return addJobProbeFacts(ctx, tx)
+}
+
+// addJobProbeFacts gives jobs the few probe facts a file list shows as
+// columns of their own, and the indexes the lists and the per-library totals
+// read. A list used to take those facts out of pipeline_context_json, which
+// meant reading and decoding a checkpoint of several kilobytes for every file
+// of a library on every poll.
+//
+// The table is rebuilt rather than altered because of where SQLite puts an
+// added column: at the end of the row, behind the checkpoint. A column behind
+// a large value is only reached by following the value's overflow pages, so
+// the facts would cost as much to read as the checkpoint they replace. The
+// rebuild puts them ahead of it.
+//
+// Existing jobs get their facts from the checkpoint they already hold, in
+// the same statement that copies them. The expressions follow the JSON of
+// domain.ProbeResult as version 8 wrote it: the first video stream that is
+// not an attached picture, and the first audio stream. A job without a
+// readable checkpoint keeps empty facts until its next probe.
+func addJobProbeFacts(ctx context.Context, tx *sql.Tx) error {
+	const stream = `FROM json_each(p.doc, '$.probe.Streams') e WHERE json_extract(e.value, '$.Type') = `
+	const video = stream + `'video' AND COALESCE(json_extract(e.value, '$.Disposition.attached_pic'), 0) = 0 ORDER BY e.key LIMIT 1`
+	const audio = stream + `'audio' ORDER BY e.key LIMIT 1`
+	statements := []string{`
+CREATE TABLE jobs_migration_8 (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	slug TEXT NOT NULL UNIQUE,
+	source_id INTEGER NOT NULL REFERENCES media_sources(id) ON DELETE CASCADE,
+	asset_id INTEGER REFERENCES media_assets(id) ON DELETE CASCADE,
+	library_name TEXT NOT NULL,
+	priority INTEGER NOT NULL DEFAULT 0,
+	state TEXT NOT NULL CHECK (state IN ('pending', 'leased', 'running', 'validating', 'replacing', 'complete', 'failed', 'retrying', 'skipped', 'canceled')),
+	lease_owner TEXT NOT NULL DEFAULT '',
+	lease_deadline TEXT,
+	heartbeat_at TEXT,
+	attempt_count INTEGER NOT NULL DEFAULT 0,
+	last_error TEXT NOT NULL DEFAULT '',
+	input_size_bytes INTEGER NOT NULL DEFAULT 0,
+	output_size_bytes INTEGER NOT NULL DEFAULT 0,
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL,
+	completed_at TEXT,
+	probe_format TEXT NOT NULL DEFAULT '',
+	probe_video_codec TEXT NOT NULL DEFAULT '',
+	probe_width INTEGER NOT NULL DEFAULT 0,
+	probe_height INTEGER NOT NULL DEFAULT 0,
+	probe_audio_codec TEXT NOT NULL DEFAULT '',
+	probe_audio_channels INTEGER NOT NULL DEFAULT 0,
+	pipeline_context_json BLOB NOT NULL DEFAULT x''
+)`, `
+INSERT INTO jobs_migration_8 (
+	id, slug, source_id, asset_id, library_name, priority, state, lease_owner,
+	lease_deadline, heartbeat_at, attempt_count, last_error, input_size_bytes,
+	output_size_bytes, created_at, updated_at, completed_at,
+	probe_format, probe_video_codec, probe_width, probe_height,
+	probe_audio_codec, probe_audio_channels, pipeline_context_json
+)
+SELECT j.id, j.slug, j.source_id, j.asset_id, j.library_name, j.priority, j.state, j.lease_owner,
+	j.lease_deadline, j.heartbeat_at, j.attempt_count, j.last_error, j.input_size_bytes,
+	j.output_size_bytes, j.created_at, j.updated_at, j.completed_at,
+	COALESCE(json_extract(p.doc, '$.probe.FormatName'), ''),
+	COALESCE((SELECT json_extract(e.value, '$.Codec') ` + video + `), ''),
+	COALESCE((SELECT json_extract(e.value, '$.Width') ` + video + `), 0),
+	COALESCE((SELECT json_extract(e.value, '$.Height') ` + video + `), 0),
+	COALESCE((SELECT json_extract(e.value, '$.Codec') ` + audio + `), ''),
+	COALESCE((SELECT json_extract(e.value, '$.Channels') ` + audio + `), 0),
+	j.pipeline_context_json
+FROM jobs j
+JOIN (
+	SELECT id, CASE WHEN json_valid(CAST(pipeline_context_json AS TEXT))
+		THEN CAST(pipeline_context_json AS TEXT) END AS doc
+	FROM jobs
+) p ON p.id = j.id`, `
+DROP TABLE jobs`, `
+ALTER TABLE jobs_migration_8 RENAME TO jobs`, `
+CREATE UNIQUE INDEX jobs_target_idx ON jobs(source_id, ifnull(asset_id, 0))`, `
+CREATE INDEX jobs_state_priority_idx ON jobs(state, priority DESC, created_at ASC, id ASC)`, `
+CREATE INDEX jobs_lease_deadline_idx ON jobs(lease_deadline) WHERE lease_deadline IS NOT NULL`, `
+CREATE INDEX jobs_library_state_idx ON jobs(library_name, state, input_size_bytes, output_size_bytes)`, `
+CREATE INDEX jobs_updated_idx ON jobs(updated_at DESC, id DESC)`, `
+CREATE INDEX jobs_library_updated_idx ON jobs(library_name, updated_at DESC, id DESC)`, `
+CREATE INDEX jobs_file_idx ON jobs(source_id, asset_id, state, updated_at)`,
+	}
+	for _, statement := range statements {
+		if _, err := tx.ExecContext(ctx, statement); err != nil {
+			return fmt.Errorf("rebuild jobs table with probe facts: %w", err)
+		}
+	}
+	return nil
 }

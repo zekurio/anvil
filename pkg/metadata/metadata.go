@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -19,7 +20,14 @@ import (
 	"github.com/zekurio/anvil/pkg/language"
 )
 
-const defaultHTTPTimeout = 15 * time.Second
+const (
+	defaultHTTPTimeout = 15 * time.Second
+	// maxResponseBytes bounds the answer to a lookup of one title.
+	maxResponseBytes = 4 << 20
+	// maxListResponseBytes bounds the full movie or series list, which
+	// passes 4 MiB at around a thousand titles.
+	maxListResponseBytes = 64 << 20
+)
 
 type Resolver struct {
 	Client *http.Client
@@ -64,7 +72,7 @@ func (r Resolver) resolveSonarr(ctx context.Context, policy domain.MetadataProvi
 
 func (r Resolver) resolveArrList(ctx context.Context, policy domain.MetadataProviderPolicy, apiPath string, query map[string]string, inputPath string) (domain.JobMetadata, bool, error) {
 	var items []arrItem
-	if err := r.getJSON(ctx, policy, apiPath, query, &items); err != nil {
+	if err := r.getJSON(ctx, policy, apiPath, query, maxListResponseBytes, &items); err != nil {
 		return domain.JobMetadata{}, false, err
 	}
 	item := bestMatch(items, inputPath)
@@ -83,7 +91,7 @@ func (r Resolver) resolveArrParse(ctx context.Context, policy domain.MetadataPro
 			query["path"] = inputPath
 		}
 		var parsed arrParseResult
-		if err := r.getJSON(ctx, policy, "/api/v3/parse", query, &parsed); err != nil {
+		if err := r.getJSON(ctx, policy, "/api/v3/parse", query, maxResponseBytes, &parsed); err != nil {
 			return domain.JobMetadata{}, false, err
 		}
 		item := parsed.Item(provider)
@@ -97,7 +105,7 @@ func (r Resolver) resolveArrParse(ctx context.Context, policy domain.MetadataPro
 	return domain.JobMetadata{}, false, nil
 }
 
-func (r Resolver) getJSON(ctx context.Context, policy domain.MetadataProviderPolicy, apiPath string, query map[string]string, target any) (err error) {
+func (r Resolver) getJSON(ctx context.Context, policy domain.MetadataProviderPolicy, apiPath string, query map[string]string, limit int, target any) (err error) {
 	if strings.TrimSpace(policy.BaseURL) == "" {
 		return errors.New("metadata base URL is required")
 	}
@@ -127,17 +135,28 @@ func (r Resolver) getJSON(ctx context.Context, policy domain.MetadataProviderPol
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return fmt.Errorf("fetch metadata: unexpected status %s", resp.Status)
 	}
-	if err := json.NewDecoder(resp.Body).Decode(target); err != nil {
+	body, err := io.ReadAll(io.LimitReader(resp.Body, int64(limit)+1))
+	if err != nil {
+		return fmt.Errorf("read metadata response: %w", err)
+	}
+	if len(body) > limit {
+		return fmt.Errorf("decode metadata response from %s: response too large (limit is %d bytes)", apiPath, limit)
+	}
+	if err := json.Unmarshal(body, target); err != nil {
 		return fmt.Errorf("decode metadata response: %w", err)
 	}
 	return nil
 }
 
 func (r Resolver) client() *http.Client {
+	client := http.Client{Timeout: defaultHTTPTimeout}
 	if r.Client != nil {
-		return r.Client
+		client = *r.Client
 	}
-	return &http.Client{Timeout: defaultHTTPTimeout}
+	client.CheckRedirect = func(req *http.Request, _ []*http.Request) error {
+		return fmt.Errorf("refusing metadata redirect to host %q", req.URL.Host)
+	}
+	return &client
 }
 
 func apiKey(policy domain.MetadataProviderPolicy) (string, error) {

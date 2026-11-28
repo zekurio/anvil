@@ -1,0 +1,93 @@
+/* anvil: buttons, inputs, field, switch, checkbox, segmented, tabs. Colours, spacing and radii come from tokens. */
+
+/* button */
+.av-btn { display: inline-flex; align-items: center; justify-content: center; gap: var(--space-2); height: var(--control-md); padding: 0 var(--space-3); border: 1px solid var(--line-control); border-radius: var(--radius-md); background: var(--surface-raised); color: var(--text); font: 500 14px/20px var(--font-sans); cursor: pointer; white-space: nowrap; transition: background-color 100ms ease-out, border-color 100ms ease-out; }
+.av-btn:hover { background: var(--surface-hover); }
+.av-btn:disabled { color: var(--text-disabled); cursor: not-allowed; background: var(--surface-raised); }
+.av-btn-sm { height: var(--control-sm); padding: 0 var(--space-2); font-size: 13px; gap: var(--space-1); }
+.av-btn-icon { width: var(--control-md); padding: 0; }
+.av-btn-sm.av-btn-icon { width: var(--control-sm); }
+.av-btn-primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+.av-btn-primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
+.av-btn-primary:disabled { background: var(--surface-hover); border-color: var(--line); color: var(--text-disabled); }
+.av-btn-ghost { background: transparent; border-color: transparent; color: var(--text-muted); }
+.av-btn-ghost:hover { background: var(--surface-hover); color: var(--text); }
+.av-btn-danger { background: transparent; border-color: transparent; color: var(--danger); }
+.av-btn-danger:hover { background: var(--danger-soft); }
+/* The confirming button of a destructive confirm dialog. */
+.av-btn-danger-outline { background: transparent; border-color: var(--danger); color: var(--danger); }
+.av-btn-danger-outline:hover { background: var(--danger-soft); }
+.av-btn-danger:disabled, .av-btn-danger-outline:disabled, .av-btn-ghost:disabled { background: transparent; color: var(--text-disabled); }
+.av-btn-danger-outline:disabled { border-color: var(--line); }
+/* Links and popup triggers that look like buttons. */
+a.av-btn { box-sizing: border-box; text-decoration: none; }
+.av-btn[aria-disabled="true"] { color: var(--text-disabled); cursor: not-allowed; }
+
+/* inputs */
+.av-input, .av-select { box-sizing: border-box; height: var(--control-md); width: 100%; min-width: 0; padding: 0 var(--space-3); border: 1px solid var(--line-control); border-radius: var(--radius-md); background: var(--surface-raised); color: var(--text); font: 400 14px/20px var(--font-sans); }
+.av-input::placeholder { color: var(--text-muted); }
+.av-input-sm, .av-select-sm { height: var(--control-sm); font-size: 13px; padding: 0 var(--space-2); }
+.av-input.av-mono { font-family: var(--font-mono); font-size: 13px; }
+.av-input[aria-invalid="true"], .av-select[aria-invalid="true"] { border-color: var(--danger); }
+.av-input:disabled, .av-select:disabled { color: var(--text-disabled); border-color: var(--line); }
+.av-input-wrap { position: relative; display: flex; align-items: center; width: 100%; }
+.av-input-wrap .av-icon { position: absolute; left: var(--space-2); color: var(--text-muted); pointer-events: none; }
+.av-input-wrap .av-input-has-icon { padding-left: 32px; }
+.av-input-suffix { position: absolute; right: var(--space-3); color: var(--text-muted); font: 400 12px/16px var(--font-mono); pointer-events: none; }
+.av-select { appearance: none; padding-right: 32px; background-image: none; cursor: pointer; }
+.av-select-wrap { position: relative; display: flex; align-items: center; width: 100%; }
+.av-select-wrap .av-icon { position: absolute; right: var(--space-2); color: var(--text-muted); pointer-events: none; }
+.av-textarea { height: auto; min-height: 64px; padding: 5px var(--space-3); resize: vertical; }
+
+/* token input */
+.av-tokens { box-sizing: border-box; display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-1); width: 100%; min-height: var(--control-md); padding: 3px var(--space-1); border: 1px solid var(--line-control); border-radius: var(--radius-md); background: var(--surface-raised); cursor: text; }
+.av-tokens-invalid { border-color: var(--danger); }
+.av-tokens-disabled { border-color: var(--line); cursor: not-allowed; }
+.av-token { display: inline-flex; align-items: center; gap: 2px; max-width: 100%; height: 22px; padding: 0 2px 0 6px; border-radius: var(--radius-sm); background: var(--neutral-soft); color: var(--text); font: 400 13px/18px var(--font-sans); }
+.av-token-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.av-token-x { display: inline-flex; align-items: center; justify-content: center; flex: none; width: 16px; height: 16px; padding: 0; border: 0; border-radius: var(--radius-sm); background: none; color: var(--text-muted); cursor: pointer; }
+.av-token-x:hover { background: var(--surface-hover); color: var(--text); }
+.av-tokens-input { flex: 1; min-width: 48px; height: 22px; padding: 0 var(--space-1); border: 0; outline: none; background: none; color: var(--text); font: 400 14px/20px var(--font-sans); }
+.av-tokens-input::placeholder { color: var(--text-muted); }
+.av-tokens-hint { flex: none; padding: 0 var(--space-1); font: var(--text-caption); color: var(--text-muted); white-space: nowrap; user-select: none; }
+.av-tokens.av-mono .av-token, .av-tokens.av-mono .av-tokens-input { font-family: var(--font-mono); font-size: 13px; }
+
+/* field */
+.av-field { position: relative; display: flex; flex-direction: column; gap: var(--space-1); min-width: 0; }
+.av-field-label { font: 500 12px/16px var(--font-sans); color: var(--text); }
+.av-field-hint { font: 400 12px/16px var(--font-sans); color: var(--text-muted); }
+.av-field-error { font: 400 12px/16px var(--font-sans); color: var(--danger); display: flex; gap: var(--space-1); align-items: center; }
+.av-field-inline { flex-direction: row; align-items: center; justify-content: space-between; gap: var(--space-4); }
+.av-field-inline .av-field-text { display: flex; flex-direction: column; gap: 2px; }
+
+/* switch */
+.av-switch { position: relative; flex: none; width: 32px; height: 18px; padding: 0; border: 1px solid var(--line-control); border-radius: 9px; background: var(--surface-raised); cursor: pointer; transition: background-color 100ms ease-out; }
+.av-switch::after { content: ""; position: absolute; top: 2px; left: 2px; width: 12px; height: 12px; border-radius: 6px; background: var(--text-muted); transition: transform 100ms ease-out; }
+.av-switch[aria-checked="true"] { background: var(--accent); border-color: var(--accent); }
+.av-switch[aria-checked="true"]::after { transform: translateX(14px); background: var(--on-accent); }
+.av-switch:disabled { opacity: .5; cursor: not-allowed; }
+
+/* checkbox */
+.av-check { appearance: none; margin: 0; width: 16px; height: 16px; border: 1px solid var(--line-control); border-radius: var(--radius-sm); background: var(--surface-raised); cursor: pointer; display: inline-grid; place-content: center; flex: none; }
+.av-check:checked, .av-check:indeterminate { background: var(--accent); border-color: var(--accent); }
+.av-check:checked::after { content: ""; width: 8px; height: 4px; border-left: 2px solid var(--on-accent); border-bottom: 2px solid var(--on-accent); transform: translateY(-1px) rotate(-45deg); }
+.av-check:indeterminate::after { content: ""; width: 8px; height: 2px; background: var(--on-accent); }
+
+/* segmented */
+/* Positioned, like .av-field: UI SDK adds visually hidden, absolutely
+   positioned form inputs next to its controls, and without a positioned
+   ancestor those escape the scrolling region and make the document scroll. */
+.av-seg { position: relative; display: inline-flex; border: 1px solid var(--line-control); border-radius: var(--radius-md); background: var(--surface-raised); padding: 2px; gap: 2px; }
+.av-seg button { display: inline-flex; align-items: center; gap: var(--space-1); height: calc(var(--control-md) - 6px); padding: 0 var(--space-2); border: 0; border-radius: var(--radius-sm); background: transparent; color: var(--text-muted); font: 500 13px/18px var(--font-sans); cursor: pointer; }
+.av-seg button:hover { color: var(--text); }
+.av-seg button[aria-checked="true"] { background: var(--surface-hover); color: var(--text); box-shadow: inset 0 0 0 1px var(--line); }
+.av-seg-sm button { height: calc(var(--control-sm) - 6px); font-size: 12px; }
+
+/* tabs */
+.av-tabs { display: flex; gap: var(--space-4); border-bottom: 1px solid var(--line); padding: 0 var(--space-4); }
+.av-tab { position: relative; display: inline-flex; align-items: center; gap: var(--space-2); height: var(--control-md); padding: 0; border: 0; background: none; color: var(--text-muted); font: 400 14px/20px var(--font-sans); cursor: pointer; }
+a.av-tab { text-decoration: none; }
+.av-tab:hover { color: var(--text); }
+.av-tab[aria-selected="true"] { color: var(--text); }
+.av-tab[aria-selected="true"]::after { content: ""; position: absolute; left: 0; right: 0; bottom: -1px; height: 2px; background: var(--accent); }
+.av-tab-count { font: 400 12px/16px var(--font-mono); color: var(--text-muted); }

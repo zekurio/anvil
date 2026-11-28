@@ -1,0 +1,66 @@
+/* anvil: layouts shared by the Library, Queue and Settings pages. Colours, spacing and radii come from tokens. */
+
+/* a table region: toolbar or bulk bar, the scrolling table, a footer */
+.av-tablearea { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; background: var(--surface); }
+.av-tablearea > .av-table-wrap { flex: 1; min-height: 0; }
+/* Rows from the previous page or filter while the next answer loads. */
+.av-tablearea[aria-busy="true"] .av-table tbody { opacity: 0.6; }
+/* Narrow windows scroll the table sideways instead of crushing the File column. */
+.av-table-wide .av-table { min-width: 920px; }
+.av-table-queue .av-table { min-width: 1000px; }
+.av-tablefoot { display: flex; align-items: center; gap: var(--space-2); min-height: var(--row); padding: 0 var(--space-2) 0 var(--space-4); border-top: 1px solid var(--line); background: var(--surface); font: var(--text-mono-small); color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.av-toolbar-search { width: 280px; flex: 0 1 280px; min-width: 120px; }
+.av-toolbar-select { width: 180px; flex: none; }
+.av-toolbar { flex-wrap: wrap; }
+.av-bulk { flex-wrap: wrap; min-height: var(--control-sm); }
+.av-bulk-note { font: var(--text-caption); color: var(--text-muted); }
+.av-cell-error { color: var(--danger); }
+.av-cell-muted { color: var(--text-muted); }
+/* A size cell: the input right-aligned in a fixed slot, "→ output" after it. */
+.av-size { display: inline-grid; grid-template-columns: 56px auto; gap: var(--space-2); }
+.av-size-in { text-align: right; }
+/* The side sheet lies over the right of the table. The bars above and below it
+   keep their controls clear of it; the table itself runs on underneath. */
+.av-sheet-open .av-toolbar, .av-sheet-open .av-bulk, .av-sheet-open .av-tablefoot { padding-right: calc(var(--sheet) + var(--space-2)); }
+
+/* definition list: label left, value right */
+.av-dl { display: grid; grid-template-columns: 200px minmax(0, 1fr); gap: var(--space-2) var(--space-4); margin: 0; font: var(--text-small); }
+.av-dl dt { color: var(--text-muted); }
+.av-dl dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+.av-dl dd.av-mono, .av-dl dd .av-mono { font: var(--text-mono-small); }
+.av-dl-note { display: block; font: var(--text-caption); color: var(--text-muted); }
+.av-dl-sheet { grid-template-columns: 104px minmax(0, 1fr); }
+.av-danger { color: var(--danger); }
+
+/* notes, sub-headings and plain line lists inside a section */
+.av-note { margin: 0; font: var(--text-caption); color: var(--text-muted); overflow-wrap: anywhere; }
+.av-note-warn { color: var(--warn); }
+.av-sub { display: flex; flex-direction: column; gap: var(--space-2); min-width: 0; }
+.av-sub-title { margin: 0; font: var(--text-label); color: var(--text-muted); }
+.av-lines { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: var(--space-1); font: var(--text-small); overflow-wrap: anywhere; }
+.av-lines-mono { font: var(--text-mono-small); }
+
+/* a page of form sections: flush panels split by lines, never cards */
+.av-surface { background: var(--surface); }
+.av-form { display: flex; flex-direction: column; flex: 1 0 auto; background: var(--surface); }
+.av-formsec { display: grid; grid-template-columns: 220px minmax(0, 560px); gap: var(--space-4) var(--space-5); padding: var(--space-5) var(--space-4); border-bottom: 1px solid var(--line); }
+.av-formsec-head { display: flex; flex-direction: column; gap: var(--space-1); }
+.av-formsec-title { margin: 0; font: var(--text-body-strong); color: var(--text); }
+.av-formsec-text { margin: 0; font: var(--text-caption); color: var(--text-muted); }
+.av-formsec-body { display: flex; flex-direction: column; gap: var(--space-4); min-width: 0; }
+.av-formsec-wide { grid-template-columns: 220px minmax(0, 1fr); }
+.av-formsec-danger .av-formsec-title { color: var(--danger); }
+.av-formbar { position: sticky; bottom: 0; z-index: 2; display: flex; align-items: center; gap: var(--space-2); padding: var(--space-2) var(--space-4); border-top: 1px solid var(--line); background: var(--surface); }
+/* The bar is stuck over the bottom of the page: a field that Tab or a validation error scrolls to must stop above it, not under it. */
+.av-page-body:has(> .av-formbar, > * > .av-formbar) { scroll-padding-bottom: calc(var(--topbar) + var(--space-3)); }
+.av-formbar-state { font: var(--text-caption); color: var(--text-muted); }
+.av-formbar-dirty { color: var(--warn); }
+.av-field-row { display: flex; align-items: center; gap: var(--space-2); }
+.av-field-row > .av-input-wrap, .av-field-row > .av-select-wrap { flex: 1; min-width: 0; }
+.av-narrow { max-width: 200px; }
+.av-readonly { margin: 0; font: var(--text-mono); color: var(--text); overflow-wrap: anywhere; }
+
+@media (max-width: 1100px) {
+  .av-formsec, .av-formsec-wide { grid-template-columns: minmax(0, 1fr); gap: var(--space-3); }
+  .av-dl { grid-template-columns: 160px minmax(0, 1fr); }
+}

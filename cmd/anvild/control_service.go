@@ -25,22 +25,31 @@ type controlServiceDeps struct {
 	startedAt     time.Time
 	activeWorkers func() int
 	cancelJob     func(domain.JobID) bool
+	runningJobs   func(domain.LibraryName) []domain.JobID
 	completion    *scanner.CompletionTracker
 }
 
-// startControlService answers control commands on an already-claimed listener.
-// The returned channel reports a control-plane failure that should stop the
-// daemon; an orderly shutdown closes it without a value.
-func startControlService(ctx context.Context, wg *sync.WaitGroup, listener net.Listener, deps controlServiceDeps) <-chan error {
-	server := controlapi.Server{Service: controlapi.Service{
+// newControlService builds the job service. The control socket and the web
+// API both answer through this one value, so a cancel, a retry, or a scan
+// follows the same rules whichever door it came in by.
+func newControlService(deps controlServiceDeps) controlapi.Service {
+	return controlapi.Service{
 		Store:            deps.store,
 		Scanner:          scanner.Scanner{Store: deps.store, Completion: deps.completion},
 		Config:           deps.config,
 		ActiveWorkers:    deps.activeWorkers,
 		CancelRunningJob: deps.cancelJob,
+		RunningAttempts:  deps.runningJobs,
 		StartedAt:        deps.startedAt,
 		DaemonVersion:    control.BuildVersion,
-	}}
+	}
+}
+
+// startControlService answers control commands on an already-claimed listener.
+// The returned channel reports a control-plane failure that should stop the
+// daemon; an orderly shutdown closes it without a value.
+func startControlService(ctx context.Context, wg *sync.WaitGroup, listener net.Listener, service controlapi.Service) <-chan error {
+	server := controlapi.Server{Service: service}
 	failures := make(chan error, 1)
 	wg.Go(func() {
 		defer close(failures)

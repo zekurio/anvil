@@ -20,6 +20,8 @@ import (
 	"github.com/zekurio/anvil/pkg/crop"
 	"github.com/zekurio/anvil/pkg/domain"
 	"github.com/zekurio/anvil/pkg/ffmpeg"
+	"github.com/zekurio/anvil/pkg/flow"
+	"github.com/zekurio/anvil/pkg/flowstep"
 	"github.com/zekurio/anvil/pkg/marker"
 	"github.com/zekurio/anvil/pkg/pipeline"
 	"github.com/zekurio/anvil/pkg/probe"
@@ -36,9 +38,12 @@ import (
 type Store interface {
 	GetMediaSource(ctx context.Context, id domain.MediaSourceID) (domain.MediaSource, error)
 	GetMediaAsset(ctx context.Context, id domain.MediaAssetID) (domain.MediaAsset, error)
+	GetFlow(ctx context.Context, id int64) (store.Flow, error)
 	StartAttempt(ctx context.Context, jobID domain.JobID, workerID string, resolvedLibrary []byte, resolvedFlow []byte, resolvedProfile []byte, now time.Time) (domain.Attempt, error)
+	SaveAttemptProfile(ctx context.Context, attemptID domain.AttemptID, resolvedProfile []byte) error
 	FinishAttempt(ctx context.Context, attemptID domain.AttemptID, state domain.AttemptState, message string, finishedAt time.Time) (domain.Attempt, error)
 	TransitionJob(ctx context.Context, jobID domain.JobID, to domain.JobState, now time.Time, lastError string) (domain.Job, error)
+	GetJob(ctx context.Context, id domain.JobID) (domain.Job, error)
 	CompleteJobOccurrence(ctx context.Context, input store.CompleteJobOccurrenceInput) (domain.Job, error)
 	HeartbeatJob(ctx context.Context, jobID domain.JobID, workerID string, leaseDeadline time.Time, now time.Time) (domain.Job, error)
 	RecordAttemptEvent(ctx context.Context, event domain.AttemptEvent) (domain.AttemptEvent, error)
@@ -60,6 +65,8 @@ type Runner struct {
 	MetadataResolver  MetadataResolver
 	VerifyFingerprint func(string, domain.FileFingerprint) error
 	Pipeline          pipeline.Runner
+	// Progress receives live progress of running jobs; nil disables tracking.
+	Progress          *ProgressTracker
 	TempDir           string
 	MaxAttempts       int
 	LeaseDuration     time.Duration
@@ -75,35 +82,65 @@ func (r Runner) Run(ctx context.Context, assignment scheduler.Assignment) error 
 		return errors.New("worker config provider is required")
 	}
 
+	// The library and its flow are read once, here, and snapshotted on the
+	// attempt. Everything the attempt does follows from these two values, so
+	// an edit made while it runs takes effect on the next attempt, never
+	// halfway through this one.
 	cfg := r.ConfigProvider()
-	library, profile, resolveErr := cfg.ResolveForLibrary(assignment.Job.LibraryName)
-	resolvedLibrary, resolvedProfile := snapshots(library, profile, resolveErr)
+	library, resolveErr := cfg.ResolveLibrary(assignment.Job.LibraryName)
+	var resolvedLibrary, resolvedFlow []byte
+	var flowSnapshot domain.FlowSnapshot
+	var flowFingerprint string
+	if resolveErr == nil {
+		resolvedLibrary = mustJSON(library)
+		flowSnapshot, flowFingerprint, resolveErr = r.loadFlow(ctx, library)
+		if flowSnapshot.ID != 0 {
+			resolvedFlow = mustJSON(flowSnapshot)
+		}
+	}
 
-	attempt, err := r.Store.StartAttempt(ctx, assignment.Job.ID, assignment.WorkerID, resolvedLibrary, nil, resolvedProfile, r.now())
+	attempt, err := r.Store.StartAttempt(ctx, assignment.Job.ID, assignment.WorkerID, resolvedLibrary, resolvedFlow, nil, r.now())
+	if errors.Is(err, store.ErrNotFound) {
+		// The job is no longer this worker's: it was canceled, or its library
+		// deleted, between the lease and now, or the lease went to another
+		// worker. Nothing has been touched on disk yet, so there is nothing
+		// to undo either.
+		slog.Info("worker attempt not started; the job is no longer leased to this worker", "worker", assignment.WorkerID, "job", assignment.Job.Label(), "library", string(assignment.Job.LibraryName))
+		return nil
+	}
 	if err != nil {
 		return fmt.Errorf("start attempt: %w", err)
 	}
 	slog.Info("worker attempt started", "worker", assignment.WorkerID, "job", assignment.Job.Label(), "attempt", attempt.Number, "library", string(assignment.Job.LibraryName), "threads", assignment.Resources.Threads)
 	stopHeartbeat := r.startHeartbeat(ctx, assignment.Job.ID, assignment.WorkerID, cfg)
 	defer stopHeartbeat()
+	defer r.Progress.Clear(assignment.Job.ID)
 
-	if resolveErr != nil {
-		return r.fail(ctx, assignment.Job, attempt, cfg, resolveErr)
-	}
 	source, asset, err := r.loadOccurrence(ctx, assignment.Job.SourceID, assignment.Job.AssetID)
 	if err != nil {
-		return r.fail(ctx, assignment.Job, attempt, cfg, err)
+		return r.fail(ctx, assignment.Job, attempt, cfg, errors.Join(resolveErr, err))
 	}
-
-	jobContext := pipeline.NewJobContext(assignment.Job, source, asset, library, profile)
+	jobContext := pipeline.NewJobContext(assignment.Job, source, asset, library)
 	jobContext.Attempt = attempt
 	jobContext.Resources = assignment.Resources
+	jobContext.Flow = flowSnapshot
 	inputPath := jobContext.InputPath
 	pipelineRunner := r.Pipeline
-	if recovered, recoverErr := recoverPendingPublish(ctx, pipelineRunner, jobContext); recoverErr != nil {
-		return r.fail(ctx, assignment.Job, attempt, cfg, recoverErr)
-	} else if recovered {
-		return r.finishSuccessful(context.WithoutCancel(ctx), assignment, library, jobContext)
+	// A journaled publish is finished before anything else is looked at. It
+	// needs the library, which names the destination, but neither the flow nor
+	// a profile: the artifact it publishes already exists. A flow that was
+	// deleted or broken since must therefore not keep a half-published file
+	// from being resolved, which is why resolveErr only counts when it left
+	// no library to work with.
+	if resolvedLibrary != nil {
+		if recovered, recoverErr := recoverPendingPublish(ctx, pipelineRunner, jobContext); recoverErr != nil {
+			return r.fail(ctx, assignment.Job, attempt, cfg, recoverErr)
+		} else if recovered {
+			return r.finishSuccessful(context.WithoutCancel(ctx), assignment, library, jobContext)
+		}
+	}
+	if resolveErr != nil {
+		return r.fail(ctx, assignment.Job, attempt, cfg, resolveErr)
 	}
 	if err := r.verifyOccurrenceInput(inputPath, source, asset); err != nil {
 		return r.fail(ctx, assignment.Job, attempt, cfg, err)
@@ -113,7 +150,9 @@ func (r Runner) Run(ctx context.Context, assignment scheduler.Assignment) error 
 		metadata.StreamCleanupDisabled = true
 		metadata.StreamCleanupDisabledReason = err.Error()
 	}
-	disableUnsafeStreamCleanup(profile, &metadata)
+	// The profile is not known yet: the flow step resolves it from the probe,
+	// and then also decides whether stream cleanup is safe without an
+	// original language (flowstep.DisableUnsafeStreamCleanup).
 	initialMetadata := metadata
 	jobContext.Metadata = metadata
 	pipelineRunner.BeforeStep = func(ctx context.Context, step string, job *pipeline.JobContext) error {
@@ -125,8 +164,8 @@ func (r Runner) Run(ctx context.Context, assignment scheduler.Assignment) error 
 		}
 		return nil
 	}
-	contextPersistence := newPipelineContextPersistence(ctx, r.Store, jobContext, resolvedLibrary, resolvedProfile, initialMetadata, r.now)
-	slog.Info("worker pipeline started", "worker", assignment.WorkerID, "job", assignment.Job.Label(), "attempt", attempt.Number, "library", string(library.Name), "profile", string(profile.Name), "input", inputPath)
+	contextPersistence := newPipelineContextPersistence(ctx, r.Store, jobContext, resolvedLibrary, flowFingerprint, initialMetadata, r.now)
+	slog.Info("worker pipeline started", "worker", assignment.WorkerID, "job", assignment.Job.Label(), "attempt", attempt.Number, "library", string(library.Name), "flow", flowSnapshot.Name, "flow_revision", flowSnapshot.Revision, "input", inputPath)
 
 	if pipelineRunner.Events == nil {
 		pipelineRunner.Events = r.Store
@@ -135,17 +174,21 @@ func (r Runner) Run(ctx context.Context, assignment scheduler.Assignment) error 
 		pipelineRunner.StepPersistence = contextPersistence
 	}
 	pipelineCtx := process.WithLogger(ctx, &processLogRecorder{
-		root:      filepath.Join(r.tempDir(cfg), "process-logs"),
+		root:      staging.ProcessLogRoot(r.tempDir(cfg)),
 		jobID:     assignment.Job.ID,
 		jobSlug:   assignment.Job.Slug,
 		attemptID: attempt.ID,
 		attempt:   attempt.Number,
 		events:    r.Store,
+		tracker:   r.Progress,
 		now:       r.now,
 	})
 	if err := pipelineRunner.Run(pipelineCtx, jobContext); err != nil {
 		if errors.Is(err, errAlreadyProcessed) {
 			return r.skipProcessed(context.WithoutCancel(ctx), assignment.Job, attempt)
+		}
+		if errors.Is(err, flowstep.ErrSkipped) {
+			return r.skipByFlow(context.WithoutCancel(ctx), jobContext, cfg)
 		}
 		if !errors.Is(err, replacepkg.ErrPublishPending) {
 			// A pending publish keeps its staging artifact so a resumed job can
@@ -158,6 +201,38 @@ func (r Runner) Run(ctx context.Context, assignment scheduler.Assignment) error 
 	// A finished pipeline is authoritative: the artifact is published, so the
 	// completion bookkeeping must run even if a cancel landed in the meantime.
 	return r.finishSuccessful(context.WithoutCancel(ctx), assignment, library, jobContext)
+}
+
+// loadFlow reads the library's flow and returns the snapshot the attempt
+// keeps, together with a fingerprint of what the flow means. The fingerprint
+// is taken from flow.Canonical, which leaves out positions and labels, so
+// tidying a canvas does not invalidate checkpoints while any change to what
+// the flow does to a file invalidates all of them.
+func (r Runner) loadFlow(ctx context.Context, library domain.Library) (domain.FlowSnapshot, string, error) {
+	stored, err := r.Store.GetFlow(ctx, library.FlowID)
+	if errors.Is(err, store.ErrNotFound) {
+		return domain.FlowSnapshot{}, "", fmt.Errorf("library %q is assigned flow %d, which does not exist", library.Name, library.FlowID)
+	}
+	if err != nil {
+		return domain.FlowSnapshot{}, "", fmt.Errorf("load flow %d of library %q: %w", library.FlowID, library.Name, err)
+	}
+	snapshot := domain.FlowSnapshot{ID: stored.ID, Name: stored.Name, Revision: stored.Revision, Graph: mustJSON(stored.Graph)}
+	fingerprint, err := flowFingerprint(stored.Graph)
+	if err != nil {
+		return snapshot, "", fmt.Errorf("flow %q: %w", stored.Name, err)
+	}
+	return snapshot, fingerprint, nil
+}
+
+// flowFingerprint identifies what a flow means. It fails for a graph with
+// error issues, which has no meaning to identify.
+func flowFingerprint(graph flow.Graph) (string, error) {
+	canonical, err := flow.Canonical(graph)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(canonical)
+	return hex.EncodeToString(sum[:]), nil
 }
 
 var errAlreadyProcessed = errors.New("input has Anvil processed marker")
@@ -181,6 +256,32 @@ func (r Runner) skipProcessed(ctx context.Context, job domain.Job, attempt domai
 		return fmt.Errorf("transition processed input job to skipped: %w", err)
 	}
 	slog.Info("worker skipped processed input", "worker", attempt.WorkerID, "job", job.Label(), "attempt", attempt.Number, "library", string(job.LibraryName))
+	return nil
+}
+
+// skipByFlow ends an attempt whose flow reached a skip node: the attempt
+// succeeded, and the job is skipped with the condition that sent it there as
+// its reason. The file is left as it is.
+//
+// The flow step runs before anything is staged, so this attempt has nothing
+// to clean up. An earlier attempt of the same job may have: one that crashed
+// mid-encode leaves its part file beside the destination, and the next
+// attempt would have overwritten it. A skipped job has no next attempt, so
+// the part is reclaimed here. It cannot belong to a publish in flight; that
+// would have been recovered before the pipeline started.
+func (r Runner) skipByFlow(ctx context.Context, job *pipeline.JobContext, cfg config.Config) error {
+	if destination, err := replacepkg.PlanDestination(job); err == nil {
+		job.DestinationPath = destination
+	}
+	r.cleanupFailedStaging(ctx, job, cfg)
+	reason := flowstep.SkipReason(job.FlowResolution)
+	if _, err := r.Store.FinishAttempt(ctx, job.Attempt.ID, domain.AttemptStateSucceeded, "", r.now()); err != nil {
+		return fmt.Errorf("finish skipped attempt: %w", err)
+	}
+	if _, err := r.Store.TransitionJob(ctx, job.Job.ID, domain.JobStateSkipped, r.now(), reason); err != nil {
+		return fmt.Errorf("transition job skipped by its flow: %w", err)
+	}
+	slog.Info("worker skipped input by flow", "worker", job.Attempt.WorkerID, "job", job.Job.Label(), "attempt", job.Attempt.Number, "library", string(job.Job.LibraryName), "reason", reason)
 	return nil
 }
 
@@ -244,6 +345,9 @@ func (r Runner) loadOccurrence(ctx context.Context, sourceID domain.MediaSourceI
 	return source, asset, nil
 }
 
+// DefaultPipeline is the fixed order of steps every job runs. The flow step
+// sits right after the probe: it needs nothing but the probe, and every step
+// behind it needs the profile it resolves.
 func DefaultPipeline(tempDir string, journal replacepkg.PublishJournal) pipeline.Runner {
 	stageManager := staging.Manager{Root: staging.Root(tempDir)}
 	prober := probe.FFProbe{}
@@ -251,6 +355,7 @@ func DefaultPipeline(tempDir string, journal replacepkg.PublishJournal) pipeline
 	return pipeline.Runner{
 		Blocks: []pipeline.Block{
 			probe.Block{Prober: prober},
+			flowstep.Block{},
 			crop.Block{},
 			audio.Block{},
 			subtitle.Block{},
@@ -341,30 +446,6 @@ func (r Runner) resolveMetadata(ctx context.Context, library domain.Library, sou
 	return metadata, nil
 }
 
-func disableUnsafeStreamCleanup(profile domain.Profile, metadata *domain.JobMetadata) {
-	if metadata == nil || !usesOriginalLanguage(profile) || metadata.OriginalLanguage != "" {
-		return
-	}
-	metadata.StreamCleanupDisabled = true
-	if metadata.StreamCleanupDisabledReason == "" {
-		metadata.StreamCleanupDisabledReason = "original language metadata is unavailable"
-	}
-}
-
-func usesOriginalLanguage(profile domain.Profile) bool {
-	for _, value := range profile.Audio.LanguagesToKeep {
-		if strings.EqualFold(strings.TrimSpace(value), audio.OriginalLanguageToken) {
-			return true
-		}
-	}
-	for _, value := range profile.Subtitles.LanguagesToKeep {
-		if strings.EqualFold(strings.TrimSpace(value), subtitle.OriginalLanguageToken) {
-			return true
-		}
-	}
-	return false
-}
-
 func jobInputSize(job *pipeline.JobContext) int64 {
 	if job.Asset.Fingerprint.SizeBytes > 0 {
 		return job.Asset.Fingerprint.SizeBytes
@@ -405,17 +486,15 @@ func (r Runner) complete(ctx context.Context, job *pipeline.JobContext) error {
 	if _, err := r.Store.CompleteJobOccurrence(ctx, store.CompleteJobOccurrenceInput{
 		JobID: job.Job.ID, AttemptID: job.Attempt.ID,
 		InputSizeBytes: jobInputSize(job), OutputSizeBytes: jobOutputSize(job),
-		SourceMediaRemoved:    sourceMediaRemovedOnCompletion(job),
+		// From the committed publish operation, never from the library: see
+		// pipeline.JobContext.SourceMediaRemoved.
+		SourceMediaRemoved:    job.SourceMediaRemoved,
 		FinalInputFingerprint: finalInputFingerprint(job),
 		CompletedAt:           r.now(),
 	}); err != nil {
 		return fmt.Errorf("complete job occurrence: %w", err)
 	}
 	return nil
-}
-
-func sourceMediaRemovedOnCompletion(job *pipeline.JobContext) bool {
-	return job != nil && job.Library.Kind == domain.LibraryKindDownload && job.Library.Download.CleanupSourceMedia
 }
 
 func finalInputFingerprint(job *pipeline.JobContext) *domain.FileFingerprint {
@@ -455,6 +534,9 @@ func (r Runner) cancel(ctx context.Context, job domain.Job, attempt domain.Attem
 		return fmt.Errorf("finish canceled attempt: %w", err)
 	}
 	if _, err := r.Store.TransitionJob(ctx, job.ID, domain.JobStateCanceled, r.now(), message); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return jobDeleted(job, attempt)
+		}
 		return fmt.Errorf("transition job to canceled: %w", err)
 	}
 	slog.Warn("worker job canceled", "worker", attempt.WorkerID, "job", job.Label(), "attempt", attempt.Number, "library", string(job.LibraryName), "reason", message)
@@ -482,6 +564,9 @@ func (r Runner) fail(ctx context.Context, job domain.Job, attempt domain.Attempt
 	// attempt is the store having recorded the outcome first, not an error.
 	if _, err := r.Store.FinishAttempt(ctx, attempt.ID, domain.AttemptStateFailed, message, r.now()); err != nil && !errors.Is(err, store.ErrNotFound) {
 		return fmt.Errorf("finish failed attempt: %w", err)
+	}
+	if _, err := r.Store.GetJob(ctx, job.ID); errors.Is(err, store.ErrNotFound) {
+		return jobDeleted(job, attempt)
 	}
 	if errors.Is(cause, ErrInputOccurrenceChanged) {
 		slog.Warn("worker input occurrence changed; job skipped", "worker", attempt.WorkerID, "job", job.Label(), "attempt", attempt.Number, "library", string(job.LibraryName), "error", cause)
@@ -512,6 +597,16 @@ func (r Runner) fail(ctx context.Context, job domain.Job, attempt domain.Attempt
 		return fmt.Errorf("transition job to pending: %w", err)
 	}
 	return cause
+}
+
+// jobDeleted ends an attempt whose job row is gone: an operator deleted the
+// job's library, or pruned the job, after a cancel had already made it
+// terminal. There is no outcome left to record. The attempt cleaned up its
+// staging and part file before it got here, which is all a deleted job can
+// still own on disk, so this is reported once and not as an error.
+func jobDeleted(job domain.Job, attempt domain.Attempt) error {
+	slog.Info("worker attempt ended after its job was deleted", "worker", attempt.WorkerID, "job", job.Label(), "attempt", attempt.Number, "library", string(job.LibraryName))
+	return nil
 }
 
 func (r Runner) cleanupFailedStaging(ctx context.Context, job *pipeline.JobContext, cfg config.Config) {
@@ -578,13 +673,6 @@ func (r Runner) startHeartbeat(ctx context.Context, jobID domain.JobID, workerID
 		cancel()
 		wg.Wait()
 	}
-}
-
-func snapshots(library domain.Library, profile domain.Profile, resolveErr error) ([]byte, []byte) {
-	if resolveErr != nil {
-		return nil, nil
-	}
-	return mustJSON(library), mustJSON(profile)
 }
 
 func mustJSON(value any) []byte {

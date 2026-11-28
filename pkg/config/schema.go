@@ -29,6 +29,15 @@ const (
 	DefaultCropRequiredAlignment  = 2
 )
 
+// Upper bounds on settings that set how much work one job does. Each crop
+// window and each search sample is an ffmpeg run, and cropdetect logs a line
+// per frame that has to fit the process output capture.
+const (
+	MaxCropWindows    = 100
+	MaxCropFrameCount = 10000
+	MaxVideoSamples   = 100
+)
+
 const (
 	DefaultScanInterval    = 30 * time.Minute
 	DefaultFSDebounce      = 2 * time.Second
@@ -55,26 +64,87 @@ var DefaultIgnorableGlobs = []string{
 	"**/.nfs*",
 }
 
-// Config is the resolved top-level daemon configuration. Load fills defaults
-// and validates it before use.
+// DefaultWebListen keeps a fresh installation reachable from its own machine
+// only, which is the one place a UI without a password is safe.
+const DefaultWebListen = "127.0.0.1:8484"
+
+// Config is what the daemon runs with. Load fills the process settings of
+// anvil.toml, with defaults, and validates them. Arrs and Libraries are the
+// runtime snapshot of what the store holds: flows, libraries, and Arr
+// connections are created and edited in the web UI, and the daemon copies
+// the latter two in here so that every loop reads one consistent value. Load
+// leaves both empty. The [daemon] keys of DaemonKeys that anvil.toml does not
+// set may also be saved in the web UI; WithDaemonOverrides merges those in.
 type Config struct {
-	Daemon    DaemonConfig             `toml:"daemon"`
-	Arrs      map[string]ArrConfig     `toml:"arrs"`
-	Profiles  map[string]ProfileConfig `toml:"profiles"`
-	Libraries map[string]LibraryConfig `toml:"libraries"`
+	Daemon DaemonConfig `toml:"daemon"`
+	// DaemonSources records where the value of each DaemonKeys key comes
+	// from, when not from its default: SourceFile for a key anvil.toml sets
+	// (Load), SourceFlag for one an anvild option overrides, and SourceStore
+	// for one saved in the web UI (WithDaemonOverrides). Read it through
+	// DaemonSource. Replace the map rather than writing to it: copies of a
+	// Config share it.
+	DaemonSources map[string]string        `toml:"-"`
+	Web           WebConfig                `toml:"web"`
+	Arrs          map[string]ArrConfig     `toml:"-"`
+	Libraries     map[string]LibraryConfig `toml:"-"`
+	// Legacy holds the [arrs], [profiles], and [libraries] tables of
+	// anvil.toml. They are read once, by the import that moves them into the
+	// store, and nothing at runtime looks at them.
+	Legacy LegacyConfig `toml:"-"`
 }
 
-// DaemonConfig contains process-wide runtime settings.
+// LegacyConfig is the part of anvil.toml that moved into the store. Profiles
+// always holds the built-in default profile, whose values are also the
+// defaults of the flow nodes.
+type LegacyConfig struct {
+	Arrs      map[string]ArrConfig           `toml:"arrs,omitempty"`
+	Profiles  map[string]ProfileConfig       `toml:"profiles,omitempty"`
+	Libraries map[string]LegacyLibraryConfig `toml:"libraries,omitempty"`
+	// Sections names the tables the file actually contains, sorted.
+	Sections []string `toml:"-"`
+}
+
+// WebConfig controls the web UI and its JSON API. The UI can replace and
+// delete media files, so anything but a loopback listener needs a password.
+type WebConfig struct {
+	// Serve the web UI and API; false runs the daemon with anvilctl alone.
+	Enabled bool `toml:"enabled"`
+	// TCP address to listen on; "host:port". Changing it needs a restart.
+	Listen string `toml:"listen"`
+	// File holding the single shared password, preferred over password. Its
+	// trailing newline is ignored. Re-read on SIGHUP.
+	PasswordFile string `toml:"password_file"`
+	// Literal password, redacted by check-config --show. Set this or
+	// password_file; with neither, the UI asks for no sign-in.
+	Password string `toml:"password"`
+	// Accept a listen address other machines can reach without a password.
+	// Only for a network where everyone may change and delete the media.
+	AllowUnauthenticated bool `toml:"allow_unauthenticated"`
+}
+
+// DaemonConfig contains process-wide runtime settings. The keys from
+// worker_count through log_level can also be changed in the web UI, unless
+// this file sets them: a key written here pins it. media_roots and the paths
+// are file-only.
 type DaemonConfig struct {
+	// Absolute directory roots the web API may browse and assign to libraries.
+	// Empty leaves filesystem browsing and library locations unrestricted.
+	// Re-read on SIGHUP.
+	MediaRoots []string `toml:"media_roots"`
 	// Scratch directory for search samples and process logs. Encode artifacts
 	// are written on the destination filesystem as <name>.job-<id>.anvil-part:
 	// beside the destination for media libraries, under
-	// <handoff_path>/.anvil-work for download libraries. store_path and
-	// control_socket default to locations inside this directory.
+	// <handoff_path>/.anvil-work for download libraries. Defaults to anvil
+	// inside the system temporary directory.
 	TempDir string `toml:"temp_dir"`
-	// SQLite state path. Defaults to anvil.db inside temp_dir; any non-empty path.
+	// SQLite state path, on persistent storage: the store is the only copy of
+	// the libraries, flows, Arr connections, and daemon settings. Defaults to
+	// /var/lib/anvil/anvil.db as root, otherwise to anvil/anvil.db in
+	// $XDG_STATE_HOME or ~/.local/state; set it when there is no home
+	// directory. A missing directory is created 0700.
 	StorePath string `toml:"store_path"`
-	// Daemon Unix socket. Defaults to anvild.sock inside temp_dir; must be absolute.
+	// Daemon Unix socket. Defaults to anvild.sock inside temp_dir; must be
+	// absolute and outside the store's directory.
 	ControlSocket string `toml:"control_socket"`
 	// Simultaneous jobs. Defaults to the CPU count; integer >= 1.
 	WorkerCount int `toml:"worker_count"`
@@ -96,7 +166,8 @@ type DaemonConfig struct {
 	ShutdownPolicy string `toml:"shutdown_policy"`
 	// Force cancellation after this graceful wait; "0s" waits indefinitely; duration >= 0.
 	ShutdownTimeout Duration `toml:"shutdown_timeout"`
-	// Remove abandoned staging older than this; "0s" disables cleanup; duration >= 0.
+	// Remove abandoned staging older than this when the daemon starts, and by
+	// default in anvilctl staging cleanup; "0s" disables cleanup; duration >= 0.
 	StagingCleanupAge Duration `toml:"staging_cleanup_age"`
 	// Keep logs useful without excessive detail; "debug", "info", "warn", or "error".
 	LogLevel string `toml:"log_level"`
@@ -121,12 +192,14 @@ type ProfileConfig struct {
 // CropConfig controls crop sampling and the safety policy applied to candidates.
 type CropConfig struct {
 	// Sample crop candidates at these input offsets; an empty list spreads
-	// windows across the input instead; non-negative Go duration strings.
+	// windows across the input instead; at most 100 non-negative Go duration
+	// strings.
 	SeekOffsets []Duration `toml:"seek_offsets"`
 	// Crop windows spread across the input, one per sample slice; 0 uses one
-	// per 3 minutes of runtime, clamped to 4-24 windows; 0 or integer >= 2.
+	// per 3 minutes of runtime, clamped to 4-24 windows; 0 or integer from 2
+	// through 100.
 	Samples int `toml:"samples"`
-	// Frames analyzed at each seek offset; integer >= 1.
+	// Frames analyzed at each seek offset; integer from 1 through 10000.
 	FrameCount int `toml:"frame_count"`
 	// ffmpeg cropdetect black threshold; integer from 1 through 255.
 	Limit int `toml:"limit"`
@@ -162,8 +235,8 @@ type VideoConfig struct {
 	CRFMin int `toml:"crf_min"`
 	// Highest search CRF; integer no lower than crf_min.
 	CRFMax int `toml:"crf_max"`
-	// Fixed sample count per CRF; 0 uses one per 12 minutes, rounded up.
-	// Short inputs use one whole-file sample.
+	// Fixed sample count per CRF; 0 uses one per 12 minutes, rounded up;
+	// integer from 0 through 100. Short inputs use one whole-file sample.
 	Samples int `toml:"samples"`
 	// Length of each search sample; positive Go duration, default "20s".
 	SampleDuration Duration `toml:"sample_duration"`
@@ -180,8 +253,10 @@ type VideoConfig struct {
 	ForceEncodeOnNoFit bool `toml:"force_encode_on_no_fit"`
 	// Copy video instead of searching and encoding when policy requires it.
 	SkipEncode bool `toml:"skip_encode"`
-	// Extra encoder option/value pairs shared by search and final encoding.
-	// Stream mapping, filters, timing, and rate control are managed by Anvil.
+	// Encoder parameter bundles of allow-listed value-only keys and value-only
+	// tuning option/value pairs shared by search and final encoding. Files,
+	// URLs, devices, filters, mapping, timing, and rate control are not
+	// accepted.
 	FFmpegArgs []string `toml:"ffmpeg_args"`
 	// Per-source-codec adjustments; see VideoOverrideConfig.
 	Overrides map[string]VideoOverrideConfig `toml:"overrides"`
@@ -272,8 +347,44 @@ type ModeConfig struct {
 	Mode string `toml:"mode"`
 }
 
-// LibraryConfig describes a user-defined media library.
+// LibraryConfig describes one library as the daemon runs it. Libraries live
+// in the store and are edited in the web UI; this is their in-memory shape.
 type LibraryConfig struct {
+	Name string
+	// CreatedAt is when the store created the library. Together with the
+	// name it identifies the stored row: a library deleted and created again
+	// under the same name gets a new one, so work planned from the old row
+	// (a scan, a requeue) is told apart from work meant for the new one. Only
+	// the store sets it; it is not a setting.
+	CreatedAt time.Time
+	// Replace media in place or process downloader output; "media" or
+	// "download". It cannot change once the library exists.
+	Kind string
+	// Absolute root scanned for source files.
+	Path string
+	// FlowID is the flow every file of the library runs through.
+	FlowID int64
+	// Paused keeps scanning and queueing but starts no new job.
+	Paused bool
+	// Override the daemon scan cadence; zero uses daemon.scan_interval.
+	ScanInterval Duration
+	// Prefer higher-priority libraries when work competes.
+	Priority int
+	// Cap active jobs from this library; 0 means no per-library cap.
+	ConcurrencyLimit int
+	// Arr connection used for original-language lookup; empty disables it.
+	Arr string
+	// Rules run top to bottom and the first match decides whether a file is
+	// queued; RuleFallback ("allow" or "deny") decides when none match.
+	Rules        []Rule
+	RuleFallback string
+	Media        MediaLibraryConfig
+	Download     DownloadLibraryConfig
+}
+
+// LegacyLibraryConfig is a [libraries.NAME] table of anvil.toml. It is
+// import-only: see LegacyConfig.
+type LegacyLibraryConfig struct {
 	Name string `toml:"-"`
 	// Replace media in place or process downloader output; "media" or "download".
 	Kind string `toml:"kind"`

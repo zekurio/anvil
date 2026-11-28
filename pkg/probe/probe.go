@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 
 	"github.com/zekurio/anvil/pkg/domain"
 	"github.com/zekurio/anvil/pkg/pipeline"
@@ -212,6 +213,7 @@ type ffprobeJSON struct {
 		Width          int               `json:"width"`
 		Height         int               `json:"height"`
 		PixelFormat    string            `json:"pix_fmt"`
+		AvgFrameRate   string            `json:"avg_frame_rate"`
 		BitRate        string            `json:"bit_rate"`
 		Channels       int               `json:"channels"`
 		ChannelLayout  string            `json:"channel_layout"`
@@ -257,6 +259,7 @@ func parseFFProbe(path string, data []byte) (domain.ProbeResult, error) {
 			Width:          stream.Width,
 			Height:         stream.Height,
 			PixelFormat:    stream.PixelFormat,
+			FrameRate:      parseFFProbeRate(stream.AvgFrameRate),
 			BitRate:        bitRate,
 			Channels:       stream.Channels,
 			ChannelLayout:  stream.ChannelLayout,
@@ -281,6 +284,20 @@ func parseFFProbeFloat(value string) float64 {
 		return 0
 	}
 	return parsed
+}
+
+// parseFFProbeRate reads a rate such as "24000/1001". ffprobe writes "0/0"
+// for a stream without one, which is 0 here.
+func parseFFProbeRate(value string) float64 {
+	numerator, denominator, found := strings.Cut(value, "/")
+	if !found {
+		return max(parseFFProbeFloat(value), 0)
+	}
+	den := parseFFProbeFloat(denominator)
+	if den <= 0 {
+		return 0
+	}
+	return max(parseFFProbeFloat(numerator)/den, 0)
 }
 
 func parseFFProbeInt(value string) int64 {

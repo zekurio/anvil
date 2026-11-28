@@ -1,0 +1,28 @@
+/* anvil: status badge, progress, stat bar. Every value is a token. */
+
+/* status badge */
+.av-badge { display: inline-flex; align-items: center; gap: var(--space-1); height: 20px; padding: 0 6px; border-radius: var(--radius-sm); font: 500 12px/16px var(--font-sans); white-space: nowrap; background: var(--neutral-soft); color: var(--text-muted); }
+.av-badge-running { background: var(--accent-soft); color: var(--accent); }
+.av-badge-done { background: var(--ok-soft); color: var(--ok); }
+.av-badge-failed { background: var(--danger-soft); color: var(--danger); }
+.av-badge-warning { background: var(--warn-soft); color: var(--warn); }
+.av-spin { animation: av-spin 900ms linear infinite; }
+@keyframes av-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .av-spin { animation: none; } .av-btn, .av-switch, .av-switch::after { transition: none; } }
+
+/* progress */
+.av-progress { display: flex; flex-direction: column; gap: var(--space-1); min-width: 160px; }
+.av-progress-track { height: 4px; border-radius: var(--radius-sm); background: var(--neutral-soft); overflow: hidden; }
+.av-progress-bar { height: 100%; background: var(--accent); }
+.av-progress-meta { display: flex; justify-content: space-between; gap: var(--space-2); font: 400 12px/16px var(--font-mono); color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.av-progress-meta b { color: var(--text); font-weight: 500; }
+
+/* stat bar */
+.av-stats { display: flex; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--surface); }
+.av-stat { flex: 1 1 0; min-width: 0; padding: var(--space-2) var(--space-4); border-left: 1px solid var(--line); }
+.av-stat:first-child { border-left: 0; }
+.av-stat-label { font: 400 12px/16px var(--font-sans); color: var(--text-muted); }
+.av-stat-value { font: 500 16px/24px var(--font-mono); color: var(--text); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.av-stat-ok .av-stat-value { color: var(--ok); }
+.av-stat-danger .av-stat-value { color: var(--danger); }
+.av-stat-running .av-stat-value { color: var(--accent); }

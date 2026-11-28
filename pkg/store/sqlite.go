@@ -16,6 +16,10 @@ import (
 var (
 	ErrNotFound           = errors.New("store: not found")
 	ErrIncompatibleSchema = errors.New("store: incompatible database schema; reset the database before starting Anvil")
+	// ErrNotMigrated is what a read-only open answers for a store that an
+	// older anvil wrote and the daemon has not upgraded yet. Nothing is wrong
+	// with such a store: the next daemon start migrates it.
+	ErrNotMigrated = errors.New("store: the store has not been migrated yet")
 	// ErrJobCanceled reports that a job row is already terminally canceled, so
 	// the requested work must not start. It is authoritative even before the
 	// worker's own context observes the cancellation.
@@ -73,9 +77,16 @@ type EnqueueJobInput struct {
 	Now         time.Time
 }
 
+// ScanToken is what BeginLibraryScan hands out: the library row the scan was
+// planned against and the scan's place in that row's sequence.
 type ScanToken struct {
 	LibraryName domain.LibraryName
-	Sequence    int64
+	// LibraryCreatedAt is the identity of the row (see
+	// config.LibraryConfig.CreatedAt). A library deleted and created again
+	// under the same name starts a new sequence, so the sequence alone cannot
+	// tell a scan of the old row from one of the new.
+	LibraryCreatedAt time.Time
+	Sequence         int64
 }
 
 type ScanEntry struct {
@@ -87,35 +98,49 @@ type ScanEntry struct {
 	AssetFingerprint   domain.FileFingerprint
 	Persist            bool
 	Enqueue            bool
+	// DeniedReason is set when the library's rules keep the file out, and
+	// says which rule did. Such an entry is not persisted; if the file is
+	// already tracked, its jobs that only wait are skipped with this reason
+	// (see scanApplication.skipDeniedJobs).
+	DeniedReason string
 }
 
 type ApplyScanInput struct {
 	// SourcePaths limits replacement to these exact paths. Nil selects the full library.
 	SourcePaths     []string
 	LibraryName     domain.LibraryName
-	Priority        int
 	RequeueExisting bool
 	Entries         []ScanEntry
 	CompletedAt     time.Time
 }
 
 type ApplyScanResult struct {
-	Applied      bool
-	Sources      int
-	Assets       int
+	Applied bool
+	Sources int
+	Assets  int
+	// EnqueuedJobs counts new jobs and jobs put back on the queue because
+	// the rules allow their files again.
 	EnqueuedJobs int
 	ExistingJobs int
+	// DeniedJobs lists the waiting jobs this scan skipped because the rules
+	// now deny their files. A job that already ran an attempt can have left
+	// a part file, and no attempt will reclaim it now, so the caller has to
+	// (controlapi.Service.ReclaimEndedJobs).
+	DeniedJobs []domain.JobID
 }
 
 type ForceOccurrenceInput struct {
-	LibraryName        domain.LibraryName
+	LibraryName domain.LibraryName
+	// LibraryCreatedAt is the identity of the library row the path was
+	// planned against (config.LibraryConfig.CreatedAt). A library deleted and
+	// created again under the same name since is not that library.
+	LibraryCreatedAt   time.Time
 	SourceKind         domain.SourceKind
 	SourceRelativePath string
 	SourceFingerprint  domain.FileFingerprint
 	AssetRelativePath  string
 	AssetRole          domain.MediaAssetRole
 	AssetFingerprint   domain.FileFingerprint
-	Priority           int
 	Now                time.Time
 }
 
@@ -138,7 +163,14 @@ type CompleteJobOccurrenceInput struct {
 type JobListFilter struct {
 	LibraryName domain.LibraryName
 	States      []domain.JobState
-	Limit       int
+	// Query keeps jobs whose source or asset path contains it, ignoring
+	// ASCII case.
+	Query string
+	// NewestActivityFirst orders by the last update instead of by creation.
+	NewestActivityFirst bool
+	Limit               int
+	// Offset skips that many jobs of the ordered result; it needs a Limit.
+	Offset int
 }
 
 type LibraryStatsFilter struct {
@@ -177,10 +209,25 @@ func Open(ctx context.Context, path string) (*SQLiteStore, error) {
 	db.SetMaxOpenConns(1)
 
 	store := &SQLiteStore{db: db, workAvailable: make(chan struct{}, 1)}
+	if err := db.PingContext(ctx); err != nil {
+		return nil, closeDBOnError(db, fmt.Errorf("connect sqlite store: %w", err))
+	}
+	if err := secureStoreFiles(path); err != nil {
+		return nil, closeDBOnError(db, err)
+	}
 	if err := store.configure(ctx); err != nil {
 		return nil, closeDBOnError(db, err)
 	}
+	if err := secureStoreFiles(path); err != nil {
+		return nil, closeDBOnError(db, err)
+	}
 	if err := store.migrate(ctx); err != nil {
+		return nil, closeDBOnError(db, err)
+	}
+	if err := store.seedDefaultFlow(ctx); err != nil {
+		return nil, closeDBOnError(db, err)
+	}
+	if err := secureStoreFiles(path); err != nil {
 		return nil, closeDBOnError(db, err)
 	}
 
@@ -220,7 +267,15 @@ func OpenReadOnly(ctx context.Context, path string) (*SQLiteStore, error) {
 	if err != nil {
 		return nil, closeDBOnError(db, err)
 	}
-	if !exists || version < minReadOnlySchemaVersion || version > currentSchemaVersion {
+	switch {
+	case exists && version >= minUpgradableSchemaVersion && version < minReadOnlySchemaVersion:
+		// The daemon would upgrade this store in place. Telling the operator
+		// to reset it, as ErrIncompatibleSchema does, would cost them their
+		// job history for nothing.
+		return nil, closeDBOnError(db, fmt.Errorf("%w: %q is at schema version %d and this anvil reads version %d; start anvild once to migrate it, then run the command again", ErrNotMigrated, path, version, currentSchemaVersion))
+	case exists && version > currentSchemaVersion:
+		return nil, closeDBOnError(db, fmt.Errorf("%w: schema version %d was written by a newer anvil than this one, which reads version %d", ErrIncompatibleSchema, version, currentSchemaVersion))
+	case !exists || version < minReadOnlySchemaVersion:
 		return nil, closeDBOnError(db, fmt.Errorf("%w: read-only schema version %d is outside the supported range %d-%d", ErrIncompatibleSchema, version, minReadOnlySchemaVersion, currentSchemaVersion))
 	}
 	if err := store.requireCoreTables(ctx); err != nil {

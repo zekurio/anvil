@@ -119,3 +119,93 @@ func TestWorkerCompletionWakesScheduler(t *testing.T) {
 		t.Fatalf("next job = %d", next.Job.ID)
 	}
 }
+
+func TestPausedLibrariesAreNotLeased(t *testing.T) {
+	cfg := config.Default()
+	cfg.Libraries = map[string]config.LibraryConfig{
+		"paused": {Paused: true},
+		"open":   {},
+		"full":   {ConcurrencyLimit: 1},
+	}
+	allowed := eligibleLibrariesForCounts(cfg, map[domain.LibraryName]int{"full": 1})
+	if len(allowed) != 1 || allowed[0] != "open" {
+		t.Fatalf("eligible libraries = %v, want only the open one", allowed)
+	}
+
+	// With every library paused there is nothing to lease from. That must
+	// not reach the store as an empty filter, which would mean "any library".
+	cfg.Libraries = map[string]config.LibraryConfig{"media": {Paused: true}}
+	queue := &queueStore{wake: make(chan struct{}, 1)}
+	queue.add(1)
+	worker := heldWorker{started: make(chan Assignment, 1), finish: make(chan struct{})}
+	planner := &Scheduler{Store: queue, Worker: worker, ConfigProvider: func() config.Config { return cfg }}
+	started, err := planner.ScheduleAvailable(context.Background())
+	if err != nil || started != 0 {
+		t.Fatalf("ScheduleAvailable = %d, %v; a paused library's job was started", started, err)
+	}
+	if len(queue.jobs) != 1 {
+		t.Fatal("the pending job of a paused library was leased")
+	}
+
+	// Resuming the library lets the same job run.
+	cfg.Libraries = map[string]config.LibraryConfig{"media": {}}
+	started, err = planner.ScheduleAvailable(context.Background())
+	if err != nil || started != 1 {
+		t.Fatalf("ScheduleAvailable after resume = %d, %v", started, err)
+	}
+	receiveAssignment(t, worker.started)
+	close(worker.finish)
+	planner.Wait()
+}
+
+// windingDownWorker is canceled like any worker, but takes until release to
+// return, the way an attempt stops ffmpeg and removes its part file.
+type windingDownWorker struct {
+	started  chan Assignment
+	canceled chan struct{}
+	release  chan struct{}
+}
+
+func (w windingDownWorker) Run(ctx context.Context, a Assignment) error {
+	w.started <- a
+	<-ctx.Done()
+	close(w.canceled)
+	<-w.release
+	return ctx.Err()
+}
+
+// A canceled job's row is terminal at once, so only the scheduler can say
+// that its worker is still at work. It has to say so until the worker has
+// returned, and not a moment less.
+func TestRunningJobsListsACanceledJobUntilItsWorkerReturns(t *testing.T) {
+	cfg := config.Default()
+	cfg.Daemon.WorkerCount = 1
+	cfg.Libraries = map[string]config.LibraryConfig{"media": {Name: "media"}}
+	state := &queueStore{wake: make(chan struct{}, 1)}
+	worker := windingDownWorker{started: make(chan Assignment, 1), canceled: make(chan struct{}), release: make(chan struct{})}
+	s := &Scheduler{Store: state, Worker: worker, ConfigProvider: func() config.Config { return cfg }, Interval: time.Hour}
+	state.add(7)
+	if started, err := s.ScheduleOnce(context.Background()); err != nil || !started {
+		t.Fatalf("ScheduleOnce = %t, %v", started, err)
+	}
+	receiveAssignment(t, worker.started)
+	if jobs := s.RunningJobs("media"); len(jobs) != 1 || jobs[0] != 7 {
+		t.Fatalf("RunningJobs = %v, want the running job", jobs)
+	}
+	if jobs := s.RunningJobs("other"); len(jobs) != 0 {
+		t.Fatalf("RunningJobs of another library = %v", jobs)
+	}
+
+	if !s.CancelJob(7) {
+		t.Fatal("CancelJob signaled no worker")
+	}
+	<-worker.canceled
+	if jobs := s.RunningJobs("media"); len(jobs) != 1 || jobs[0] != 7 {
+		t.Fatalf("RunningJobs while the canceled worker winds down = %v, want it still listed", jobs)
+	}
+	close(worker.release)
+	s.Wait()
+	if jobs := s.RunningJobs("media"); len(jobs) != 0 {
+		t.Fatalf("RunningJobs after the worker returned = %v", jobs)
+	}
+}
