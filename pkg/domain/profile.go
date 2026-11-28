@@ -13,6 +13,41 @@ type Profile struct {
 	Metadata    MetadataPolicy
 	Attachments AttachmentPolicy
 	Chapters    ChapterPolicy
+	// Publish is how the result reaches its destination. The output node a
+	// flow ends at sets it.
+	Publish PublishPolicy
+}
+
+// PublishMode is what publication does with the result.
+type PublishMode string
+
+const (
+	// PublishReplace swaps the source for the result in place.
+	PublishReplace PublishMode = "replace"
+	// PublishMove publishes the result below another folder and, unless
+	// KeepSource is set, deletes the source afterwards.
+	PublishMove PublishMode = "move"
+)
+
+// PublishPolicy says where and how a result is published. The zero value
+// replaces the source.
+type PublishPolicy struct {
+	Mode PublishMode
+	// Destination is the absolute folder a move publishes below.
+	Destination string
+	// KeepSource leaves the source in place after a move.
+	KeepSource bool
+	// PreserveStructure keeps the library-relative folders below
+	// Destination; otherwise the result lands directly in it.
+	PreserveStructure bool
+	// PruneEmptyDirs removes the folders a deleted source leaves empty,
+	// residue matching the library's ignorable globs included.
+	PruneEmptyDirs bool
+}
+
+// Moves reports whether the policy publishes to another folder.
+func (p PublishPolicy) Moves() bool {
+	return p.Mode == PublishMove
 }
 
 type CropPolicy struct {

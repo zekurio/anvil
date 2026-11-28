@@ -3,10 +3,10 @@
 // come from the catalog.
 
 import type { Component } from "solid-js";
-import { For } from "solid-js";
+import { createSignal, For } from "solid-js";
 
 import type { Field as CatalogField, FieldType, OptionValue } from "../../api";
-import { Checkbox, Input, NumberInput, Segmented, Select, Switch, TokenInput } from "../../ui";
+import { Button, Checkbox, FolderPicker, Input, NumberInput, Segmented, Select, Switch, TokenInput } from "../../ui";
 
 export interface ControlProps {
   field: CatalogField;
@@ -36,6 +36,28 @@ function TextControl(props: ControlProps) {
       value={text(props.value)}
       onInput={(event) => props.onChange(event.currentTarget.value)}
     />
+  );
+}
+
+/** An absolute folder on the daemon's machine: typed, or chosen through GET /fs. */
+function PathControl(props: ControlProps) {
+  const [browsing, setBrowsing] = createSignal(false);
+  return (
+    <div class="av-row av-row-nowrap">
+      <Input id={props.id} mono placeholder={props.field.placeholder} invalid={props.invalid} autocomplete="off" spellcheck={false} value={text(props.value)} onInput={(event) => props.onChange(event.currentTarget.value)} />
+      <Button icon="folder" onClick={() => setBrowsing(true)}>
+        Browse
+      </Button>
+      <FolderPicker
+        open={browsing()}
+        onClose={() => setBrowsing(false)}
+        initialPath={text(props.value) || undefined}
+        onPick={(path) => {
+          props.onChange(path);
+          setBrowsing(false);
+        }}
+      />
+    </div>
   );
 }
 
@@ -127,4 +149,6 @@ export const CONTROLS: Record<FieldType, Component<ControlProps>> = {
   string_list: StringListControl,
   // A Go duration is typed as text; the form checks its shape and the daemon its range.
   duration: TextControl,
+  // The daemon stores the path cleaned; a save checks it against library folders, temp_dir and media_roots.
+  path: PathControl,
 };

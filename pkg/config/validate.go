@@ -10,7 +10,6 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/zekurio/anvil/pkg/domain"
 	"github.com/zekurio/anvil/pkg/ffmpeg"
 	"github.com/zekurio/anvil/pkg/video"
 )
@@ -380,7 +379,7 @@ func (library LegacyLibraryConfig) validate(p *problems, name string, profiles, 
 			p.addf("library %q references unknown arr %q", name, library.Arr)
 		}
 	}
-	if library.Kind != string(domain.LibraryKindDownload) {
+	if library.Kind != "download" {
 		if !slices.Contains(replacementModes, library.Media.ReplacementMode) {
 			p.addf("library %q media.replacement_mode %q is invalid", name, library.Media.ReplacementMode)
 		}

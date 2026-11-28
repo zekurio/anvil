@@ -1,8 +1,9 @@
 // Library routes: CRUD, scan, the file list and requeue.
 
 import type { FileList, FileStatus, JobActionResult, LibraryList, LibraryWrite, RequeueRequest, Rule, ScanResult } from "../../src/api/types.ts";
-import { advance, db, fileView, findLibrary, libraryView, type StoredLibrary } from "../db.ts";
+import { advance, db, DEFAULT_IGNORABLE_GLOBS, fileView, findLibrary, libraryView, pathsOverlap, TEMP_DIR, type StoredLibrary } from "../db.ts";
 import { discoverFiles, type MockFile } from "../fixtures/files.ts";
+import { moveOutputs } from "../flowcheck.ts";
 import { conflict, created, intParam, invalid, noContent, notFound, objectBody, type Context, type Router } from "../http.ts";
 
 const STATUSES: FileStatus[] = ["none", "queued", "running", "done", "failed", "skipped"];
@@ -58,29 +59,40 @@ function rules(value: unknown): Rule[] {
   });
 }
 
-/** The daemon's temp_dir, as GET /settings reports it (handlers/system.ts). */
-const TEMP_DIR = "/var/lib/anvil/staging";
+/** The quiet period an empty stable_for stands for (config.DefaultStableFor), as the daemon writes it back. */
+const DEFAULT_STABLE_FOR = "5m";
+
+// pkg/config ValidatePattern, roughly: no empty pattern and balanced brackets and braces.
+function globs(value: unknown): string[] {
+  if (value === undefined || value === null) return [...DEFAULT_IGNORABLE_GLOBS];
+  if (!Array.isArray(value)) throw invalid("Must be a list of globs.", "ignorable_globs");
+  const list = value.map(String);
+  list.forEach((glob, i) => {
+    const text = glob.trim();
+    const balanced = (open: string, close: string) => text.split(open).length === text.split(close).length;
+    if (text === "" || !balanced("[", "]") || !balanced("{", "}")) throw invalid(`${JSON.stringify(glob)} is not a valid glob. Write a pattern such as "**/*.nfo" or "**/sample*/**".`, `ignorable_globs.${i}`);
+  });
+  return list.length === 0 ? [...DEFAULT_IGNORABLE_GLOBS] : list;
+}
 
 /** Validates a write and fills what it leaves out. `existing` is set on PUT. */
 function parse(write: Partial<LibraryWrite>, existing?: StoredLibrary): LibraryWrite {
   const name = existing?.name ?? write.name;
   if (typeof name !== "string" || !/^[a-z0-9_-]{1,64}$/.test(name)) throw invalid('Must be 1 to 64 characters of a-z, 0-9, "-" and "_".', "name");
   if (existing && write.name !== undefined && write.name !== existing.name) throw invalid("A library cannot be renamed.", "name");
-  const kind = oneOf(write.kind ?? existing?.kind, ["media", "download"] as const, "kind");
-  if (existing && kind !== existing.kind) throw invalid("The kind cannot change after creation.", "kind");
   const path = absolute(write.path, "path");
-  const clash = db.libraries.find((l) => l !== existing && (l.path === path || path.startsWith(`${l.path}/`) || l.path.startsWith(`${path}/`)));
+  if (pathsOverlap(path, TEMP_DIR)) throw invalid(`${path} overlaps ${TEMP_DIR}, where anvil keeps its working files (daemon.temp_dir). A library folder must be outside it.`, "path");
+  const clash = db.libraries.find((l) => l !== existing && pathsOverlap(path, l.path));
   if (clash) throw invalid(`${path} overlaps the library "${clash.name}" at ${clash.path}. Library folders must not contain each other.`, "path");
-  if (path === TEMP_DIR || path.startsWith(`${TEMP_DIR}/`) || TEMP_DIR.startsWith(`${path}/`))
-    throw invalid(`${path} overlaps ${TEMP_DIR}, where anvil keeps its working files (daemon.temp_dir). A library folder must be outside it.`, "path");
+  // A library around a move destination would scan the published files, part files included.
+  const destination = db.flows.flatMap((f) => moveOutputs(f.graph)).find((output) => pathsOverlap(path, output.destination));
+  if (destination) throw invalid(`${path} overlaps ${destination.destination}, a folder a flow moves results to. A library folder must be outside every move destination.`, "path");
   if (!db.flows.some((f) => f.id === write.flow_id)) throw invalid("Choose a flow that exists.", "flow_id");
   const arr = write.arr ?? "";
   if (arr !== "" && !db.arrs.some((a) => a.name === arr)) throw invalid(`No Arr connection is named "${arr}".`, "arr");
 
-  const download = write.download;
   return {
     name,
-    kind,
     path,
     flow_id: write.flow_id as number,
     paused: write.paused === true,
@@ -90,17 +102,10 @@ function parse(write: Partial<LibraryWrite>, existing?: StoredLibrary): LibraryW
     arr,
     rules: rules(write.rules),
     rule_fallback: oneOf(write.rule_fallback ?? "allow", ["allow", "deny"] as const, "rule_fallback"),
-    media: { replacement_mode: oneOf(write.media?.replacement_mode ?? "replace", ["replace", "copy"] as const, "media.replacement_mode") },
-    download: {
-      handoff_path: kind === "download" ? absolute(download?.handoff_path, "download.handoff_path") : "",
-      stable_for: duration(download?.stable_for, "download.stable_for"),
-      package_mode: oneOf(download?.package_mode ?? "auto", ["auto", "directory", "file"] as const, "download.package_mode"),
-      handoff_mode: oneOf(download?.handoff_mode ?? "move", ["copy", "move"] as const, "download.handoff_mode"),
-      preserve_relative_path: download?.preserve_relative_path !== false,
-      cleanup_source_media: download?.cleanup_source_media === true,
-      prune_empty_dirs: download?.prune_empty_dirs !== false,
-      ignorable_globs: Array.isArray(download?.ignorable_globs) ? download.ignorable_globs.map(String) : [],
-    },
+    reprocess: write.reprocess === true,
+    stable_for: duration(write.stable_for, "stable_for") || DEFAULT_STABLE_FOR,
+    package_mode: oneOf(write.package_mode || "file", ["auto", "directory", "file"] as const, "package_mode"),
+    ignorable_globs: globs(write.ignorable_globs),
   };
 }
 

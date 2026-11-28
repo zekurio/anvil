@@ -15,7 +15,6 @@ import { run } from "../../lib/mutate";
 export function toWrite(library: Library): LibraryWrite {
   return {
     name: library.name,
-    kind: library.kind,
     path: library.path,
     flow_id: library.flow_id,
     paused: library.paused,
@@ -25,20 +24,31 @@ export function toWrite(library: Library): LibraryWrite {
     arr: library.arr,
     rules: library.rules,
     rule_fallback: library.rule_fallback,
-    media: library.media,
-    download: library.download,
+    reprocess: library.reprocess,
+    stable_for: library.stable_for,
+    package_mode: library.package_mode,
+    ignorable_globs: library.ignorable_globs,
   };
 }
 
-/** True when starting jobs in this library rewrites the operator's files in place. */
-export function replacesInPlace(library: Pick<LibraryWrite, "kind" | "media">): boolean {
-  return library.kind === "media" && library.media.replacement_mode === "replace";
+/**
+ * True when the flow may rewrite the operator's files in place: it has a
+ * Replace file output. A flow that cannot be read counts as one that does,
+ * so the confirmation errs toward asking.
+ */
+export async function flowReplacesInPlace(flowId: number): Promise<boolean> {
+  try {
+    const flow = await api.flows.get(flowId);
+    return flow.graph.nodes.some((node) => node.type === "output.replace");
+  } catch {
+    return true;
+  }
 }
 
-/** What resuming does, for the confirm dialog of a library that replaces files in place. */
+/** What resuming does, for the confirm dialog of a library whose flow replaces files in place. */
 export function resumeConsequence(pending: number): string {
   const start = pending > 0 ? `${formatCount(pending)} queued ${pending === 1 ? "file starts" : "files start"}` : "Jobs start as scans queue files";
-  return `${start}. Each encode replaces its original file in place, deleting it.`;
+  return `${start}. Where the flow replaces a file, the original is deleted.`;
 }
 
 /** "Scan finished · 12 queued · 3 ignored" */

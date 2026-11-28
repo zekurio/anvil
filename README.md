@@ -4,10 +4,11 @@ Anvil is a self-hosted Linux daemon that re-encodes media libraries with
 FFmpeg. You add folders as libraries, draw a flow that says what happens to
 each file, and Anvil works through the queue. The flow it ships with encodes
 video to AV1 at a quality target. HEVC and H.264 are available too, and a flow
-can copy the video and only clean up audio, subtitles, and metadata. In a media
-library the result replaces the source in place. In a download library it goes
-to the folder your importer watches. Both go through a journaled publish, so a
-crash never leaves a half-written file under a real name.
+can copy the video and only clean up audio, subtitles, and metadata. The flow
+also says where the result goes: it replaces the source in place, or it moves
+to another folder, such as the one your importer watches, and deletes or keeps
+the source. Both go through a journaled publish, so a crash never leaves a
+half-written file under a real name.
 
 Anvil is a smaller alternative to Tdarr and FileFlows, and it is small on
 purpose. It is one daemon binary plus `ffmpeg` and `ffprobe`. Flows are built
@@ -68,8 +69,8 @@ nix run github:zekurio/anvil#anvild -- --config ~/anvil/anvil.toml
 
 Open <http://127.0.0.1:8484>. Then:
 
-1. Choose Add library in the sidebar. Give it a name, a kind, a folder, and
-   the `Default AV1` flow. Leave "Start processing right away" off. The library
+1. Choose Add library in the sidebar. Give it a name, a folder, and the
+   `Default AV1` flow. Leave "Start processing right away" off. The library
    is created paused, and its first scan queues the files without touching
    them.
 2. Open Flows. `Default AV1` searches for an AV1 encode at VMAF 95, crops
@@ -96,25 +97,34 @@ bin/anvilctl jobs
 ### Libraries
 
 A library is a folder Anvil scans, with one flow assigned to it. Its name is 1
-to 64 characters of `a-z`, `0-9`, `-`, and `_`. Name and kind cannot change
-later.
+to 64 characters of `a-z`, `0-9`, `-`, and `_`. The name cannot change later.
 
-A media library holds films or series. With replacement mode `replace`
-the encode takes the source's place as `<name>.mkv`. With `copy` it is
-published beside the source as `<name>.anvil.mkv` and the source stays.
+Where a result goes is the flow's choice, not the library's: its output node
+replaces the source or moves the result to another folder (see
+[Flows](#flows)). A library of films or series usually has a flow that
+replaces. A download folder has one that moves each result to the folder your
+importer watches.
 
-A download library holds finished downloads. Each one is encoded and
-handed off to the folder your importer watches. Its settings cover whether a
-download is a single file or a directory, the handoff mode, whether the source
-media is deleted after a successful handoff, and the quiet period that marks a
-download as complete when Anvil saw no completion event.
+Anvil queues a file once. When a later scan finds the file changed, or a new
+file at a path the library already handled, it records the file as processed
+and leaves it alone, since a replace in place is itself such a change. Turn on
+Reprocess for a folder a downloader writes into, where a new download can
+arrive under an earlier one's name, and Anvil queues those files again. A
+library that reprocesses skips every file that carries Anvil's processed tag,
+so it never loops on its own output.
 
-Library folders must not contain each other, and a handoff folder must sit
-outside every library folder. Anvil refuses a library that breaks this, because
-a file under two libraries would be queued twice. Neither folder may overlap
+The intake settings matter for download folders: whether each top-level folder
+is one package or every file stands alone (the default), the quiet period that
+marks a file as complete when Anvil saw no completion event, and the residue
+globs, such as `*.nfo`, that never hold a package back.
+
+Library folders must not contain each other, and a move destination must sit
+outside every library folder. Anvil refuses a library or a flow that breaks
+this, because a file under two libraries would be queued twice and a library
+around a move destination would scan what Anvil publishes. Neither may overlap
 `daemon.temp_dir`, where Anvil keeps its own working files. When
-`daemon.media_roots` is set, both folders must also lie inside one of those
-roots.
+`daemon.media_roots` is set, library folders and move destinations must also
+lie inside one of those roots.
 
 The scanner picks up `.mkv`, `.mp4`, `.m4v`, `.mov`, `.avi`, `.webm`, `.ts`,
 and `.m2ts` files. It does not queue files with more than one hard link, files
@@ -169,11 +179,15 @@ file right after probing it, on every attempt:
 - An action node sets one part of the plan. When two nodes on a file's path
   set the same part, the last one wins. Encode video and Copy video share the
   video part.
-- An output node ends the flow. Publish result runs the pipeline and
-  publishes. Skip file marks the job skipped and leaves the file alone.
+- An output node ends the flow. Replace file runs the pipeline and swaps the
+  source for the result. Move file runs it and publishes the result to its
+  destination folder, below the same subfolders as in the library unless you
+  turn that off. It deletes the source, and the folders it leaves empty when
+  asked, or keeps the source for a downloader that still seeds it. Skip file
+  marks the job skipped and leaves the file alone.
 
 Whatever no node sets is left alone. A flow that is only Input file and
-Publish result is a remux to MKV. It copies video, audio, and subtitles, and
+Replace file is a remux to MKV. It copies video, audio, and subtitles, and
 keeps every track, title, attachment, and chapter.
 
 Every output of every node on a path has to be connected, and a flow cannot
@@ -187,7 +201,7 @@ input, writes the output as MKV on the destination filesystem, validates it,
 and publishes through the journal. It never overwrites an existing
 destination. It tags the video stream of what it publishes with
 `anvil.processed=true`, and a later job that finds the tag is skipped.
-Requeueing a file in a media library runs it again anyway.
+Requeueing a file runs it again anyway, unless its library reprocesses.
 
 There is no per-file flow override, no scaling node, and no tone mapping.
 
@@ -222,8 +236,11 @@ Action nodes each have one output.
 | `subtitles.remove_all` Remove all subtitles | Drops every subtitle track. | None. |
 | `container.metadata` Clean metadata | Container metadata, track titles, attachments, chapters. | Each is preserve or strip. Track titles can also be standardized, and default to strip. The rest default to preserve. |
 
-`input` Input file starts the flow. `output.publish` Publish result and
-`output.skip` Skip file end it.
+`input` Input file starts the flow. `output.replace` Replace file,
+`output.move` Move file, and `output.skip` Skip file end it. Move file takes a
+destination folder, an absolute path with no default. It keeps the folder
+structure and deletes the source by default, and removes emptied folders only
+when asked.
 
 ### Queue and jobs
 
@@ -414,9 +431,9 @@ never asks an Arr, so it shows this case for every flow that uses `orig`.
 Anvil writes each encode on the destination filesystem as
 `<name>.mkv.job-<id>.anvil-part`. After the validate step it links the file
 into place under its final name. Publishing never copies across filesystems,
-and the destination never appears half-written. Media libraries put the part
-file next to its destination. Download libraries put it under
-`<handoff_path>/.anvil-work` and create the package directory only at publish
+and the destination never appears half-written. Replace file puts the part
+file next to its destination. Move file puts it under
+`<destination>/.anvil-work` and creates the package directory only at publish
 time. An importer that sweeps a package directory after taking one episode
 can't delete a sibling job's unpublished artifact that way. When a crashed
 attempt leaves a part file behind, Anvil removes it once the job retries or is
@@ -426,8 +443,8 @@ Every publish is recorded in a journal before the filesystem changes. The
 stages are `prepared`, `published`, `source_cleaned`, and `committed`, or
 `conflict` when the destination already exists. After a crash, the job's next
 attempt finishes the journaled publish from where it stopped before it looks
-at anything else. Replacing a file in a media library keeps the source beside
-it as `<file>.anvil.bak` until the publish is committed.
+at anything else. Replace file keeps the source beside it as
+`<file>.anvil.bak` until the publish is committed.
 
 Validation is observational. It records findings such as duration drift or
 changed color tags on the job and does not fail it. A missing output file is
@@ -504,8 +521,8 @@ the service user can read. Set `media_roots` to confine both:
 media_roots = ["/srv/media", "/srv/downloads"]
 ```
 
-Library and handoff folders must then resolve, symlinks included, to a path
-inside one of the roots, and the folder picker shows nothing outside them. The
+Library folders and move destinations must then resolve, symlinks included,
+to a path inside one of the roots, and the folder picker shows nothing outside them. The
 NixOS module fills `media_roots` from `mediaPaths`.
 
 Arr API keys are entered in the UI and stored in the database. The API never
@@ -636,10 +653,10 @@ So does a port below 1024, which the unit cannot bind because it runs without
 
 `services.anvil.mediaPaths` lists the directories the daemon may write. The
 unit runs with `ProtectSystem=strict`, and the module cannot see what you add
-in the web UI. List every library folder and every handoff folder, or a
-parent of them. The module also renders the list as `daemon.media_roots`, so
-the web UI refuses a library or handoff folder outside these paths and the
-folder picker shows nothing else. Setting `settings.daemon.media_roots`
+in the web UI. List every library folder and every folder a flow moves
+results to, or a parent of them. The module also renders the list as
+`daemon.media_roots`, so the web UI refuses a library folder or move
+destination outside these paths and the folder picker shows nothing else. Setting `settings.daemon.media_roots`
 yourself replaces that list. With it set to `[]` a library outside
 `mediaPaths` can be added and scanned, but its jobs fail with a read-only
 file system error as soon as Anvil writes the encode. Each path must exist
@@ -751,10 +768,16 @@ On that first start the daemon imports the `[libraries]`, `[profiles]`, and
 - `ignore_regex` and `exclude` become deny rules at the top of the library's
   rule list. `include` becomes allow rules below them with a deny fallback.
 - Libraries keep their names, so their job history stays attached. They are
-  not paused, because they were already running. There are two exceptions. A
-  library whose imported flow does not validate is imported paused, and so is
-  one whose folders overlap another library's or `temp_dir`. Fix the flow or
-  the folders, then resume it. Relative paths are resolved to absolute ones.
+  not paused, because they were already running. There are three
+  exceptions. A library whose imported flow does not validate is imported
+  paused, and so is one whose folders overlap another library's or
+  `temp_dir`. Fix the flow or the folders, then resume it. A library of kind
+  `download` is imported paused with Reprocess on and keeps its
+  `stable_for`, `package_mode`, and `ignorable_globs`. Its flow replaces in
+  place, so change the flow's output to Move file with the old `handoff_path`
+  as its destination before you resume it. The handoff settings and a media
+  library's `replacement_mode` are not imported. Relative paths are resolved
+  to absolute ones.
 - Arr connections keep their `api_key` or `api_key_file`. A connection that
   reads its key from a file keeps doing so until you enter a key in the UI.
 - `validation.duration_tolerance_seconds` has no node, so flows use the
@@ -774,7 +797,7 @@ Afterwards:
    file against a file you know.
 3. Remove the three tables from `anvil.toml`, or from
    `services.anvil.settings`.
-4. On NixOS, list your library and handoff folders in
+4. On NixOS, list your library folders and move destinations in
    `services.anvil.mediaPaths`. The module still grants write access to the
    paths of legacy `settings.libraries` entries, but not to anything you add
    in the web UI. Those legacy paths are not part of `media_roots`, so an

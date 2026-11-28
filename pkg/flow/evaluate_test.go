@@ -143,7 +143,7 @@ func TestEvaluateUsesTheNodeLabelInDecisions(t *testing.T) {
 }
 
 func TestEvaluateInputToPublishIsAPlainRemux(t *testing.T) {
-	g := chain(newNode("in", typeInput, nil), newNode("out", typeOutputPublish, nil))
+	g := chain(newNode("in", typeInput, nil), newNode("out", typeOutputReplace, nil))
 	resolution := mustEvaluate(t, g, probeOf(videoStream("hevc", 1920, 1080)))
 
 	if resolution.Outcome != OutcomeProcess {
@@ -190,6 +190,7 @@ func TestEvaluateInputToPublishIsAPlainRemux(t *testing.T) {
 		"Audio: keep every track; copy",
 		"Subtitles: keep every track",
 		"Container: mkv; keep metadata, track titles, attachments, and chapters",
+		"Output: replace the source in place",
 	}
 	if !slices.Equal(resolution.Plan, wantPlan) {
 		t.Errorf("Plan =\n%s\nwant\n%s", strings.Join(resolution.Plan, "\n"), strings.Join(wantPlan, "\n"))
@@ -214,11 +215,11 @@ func TestEvaluateRejectsAnInvalidGraph(t *testing.T) {
 	tests := map[string]Graph{
 		"empty":       {},
 		"dangling":    chain(newNode("in", typeInput, nil), newNode("encode", typeVideoEncode, nil)),
-		"bad option":  chain(newNode("in", typeInput, nil), newNode("encode", typeVideoEncode, map[string]any{"codec": "vp9"}), newNode("out", typeOutputPublish, nil)),
+		"bad option":  chain(newNode("in", typeInput, nil), newNode("encode", typeVideoEncode, map[string]any{"codec": "vp9"}), newNode("out", typeOutputReplace, nil)),
 		"two errors":  chain(newNode("in", typeInput, nil), newNode("encode", typeVideoEncode, map[string]any{"codec": "vp9", "preset": 6})),
-		"unknown":     chain(newNode("in", typeInput, nil), newNode("x", "nope", nil), newNode("out", typeOutputPublish, nil)),
+		"unknown":     chain(newNode("in", typeInput, nil), newNode("x", "nope", nil), newNode("out", typeOutputReplace, nil)),
 		"cycle":       {Nodes: []Node{newNode("in", typeInput, nil), newNode("a", typeVideoCopy, nil)}, Edges: []Edge{{From: "in", To: "a"}, {From: "a", To: "a"}}},
-		"unknown key": chain(newNode("in", typeInput, map[string]any{"x": 1}), newNode("out", typeOutputPublish, nil)),
+		"unknown key": chain(newNode("in", typeInput, map[string]any{"x": 1}), newNode("out", typeOutputReplace, nil)),
 	}
 	for name, g := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -235,7 +236,7 @@ func TestEvaluateRejectsAnInvalidGraph(t *testing.T) {
 		})
 	}
 	// Warnings do not block evaluation.
-	g := chain(newNode("in", typeInput, nil), newNode("out", typeOutputPublish, nil))
+	g := chain(newNode("in", typeInput, nil), newNode("out", typeOutputReplace, nil))
 	g.Nodes = append(g.Nodes, newNode("spare", typeVideoCopy, nil))
 	if _, err := Evaluate(g, Facts{}); err != nil {
 		t.Errorf("Evaluate() with only a warning: %v", err)
@@ -252,7 +253,7 @@ func TestEvaluateLastNodeOfAPartWins(t *testing.T) {
 		newNode("audio-last", typeAudioKeep, map[string]any{"languages": []string{"jpn"}}),
 		newNode("meta-first", typeContainerMetadata, map[string]any{"metadata": "strip", "chapters": "strip"}),
 		newNode("meta-last", typeContainerMetadata, map[string]any{"track_titles": "standardize"}),
-		newNode("out", typeOutputPublish, nil),
+		newNode("out", typeOutputReplace, nil),
 	)
 	profile := mustEvaluate(t, viaJSON(t, g), probeOf()).Profile
 
@@ -269,7 +270,7 @@ func TestEvaluateLastNodeOfAPartWins(t *testing.T) {
 	}
 
 	// A copy after an encode wins the same way.
-	g = chain(newNode("in", typeInput, nil), newNode("encode", typeVideoEncode, map[string]any{"preset": "4"}), newNode("copy", typeVideoCopy, nil), newNode("out", typeOutputPublish, nil))
+	g = chain(newNode("in", typeInput, nil), newNode("encode", typeVideoEncode, map[string]any{"preset": "4"}), newNode("copy", typeVideoCopy, nil), newNode("out", typeOutputReplace, nil))
 	resolution := mustEvaluate(t, g, probeOf())
 	if !resolution.Profile.Video.SkipEncode || resolution.Plan[0] != "Video: copy" {
 		t.Errorf("Video = %+v, Plan = %q", resolution.Profile.Video, resolution.Plan[0])
@@ -287,7 +288,7 @@ func TestEvaluateBranchesRejoin(t *testing.T) {
 			newNode("copy", typeVideoCopy, nil),
 			newNode("encode", typeVideoEncode, nil),
 			newNode("audio", typeAudioKeep, map[string]any{"languages": []string{"orig", "eng"}}),
-			newNode("out", typeOutputPublish, nil),
+			newNode("out", typeOutputReplace, nil),
 		},
 		Edges: []Edge{
 			{From: "audio", To: "out"},
@@ -343,7 +344,7 @@ func TestEvaluateActionNodesSetTheirPartOfTheProfile(t *testing.T) {
 		newNode("subtitles", typeSubtitlesKeep, map[string]any{"languages": []string{"eng"}, "keep_forced": true, "keep_sdh": true, "keep_commentary": true, "fallback": "fail_job", "unknown_as_original": true}),
 		newNode("images", typeSubtitlesDropImage, nil),
 		newNode("metadata", typeContainerMetadata, map[string]any{"metadata": "strip", "track_titles": "standardize", "attachments": "strip", "chapters": "strip"}),
-		newNode("out", typeOutputPublish, nil),
+		newNode("out", typeOutputReplace, nil),
 	)
 	resolution := mustEvaluate(t, viaJSON(t, g), probeOf())
 
@@ -379,6 +380,7 @@ func TestEvaluateActionNodesSetTheirPartOfTheProfile(t *testing.T) {
 		"Audio: keep orig, eng; encode truehd, dts to opus at 64 kb/s per channel; downmix above stereo to aac at 80 kb/s per channel",
 		"Subtitles: keep eng, including forced, SDH, commentary; drop image-based",
 		"Container: mkv; strip metadata; standardize track titles; strip attachments; strip chapters",
+		"Output: replace the source in place",
 	}
 	if !slices.Equal(resolution.Plan, wantPlan) {
 		t.Errorf("Plan =\n%s\nwant\n%s", strings.Join(resolution.Plan, "\n"), strings.Join(wantPlan, "\n"))
@@ -394,7 +396,7 @@ func TestEvaluateFixedCRFAndRemainingNodes(t *testing.T) {
 		newNode("downmix", typeAudioDownmix, nil),
 		newNode("subtitles", typeSubtitlesKeep, map[string]any{"languages": []string{"eng"}}),
 		newNode("remove", typeSubtitlesRemoveAll, nil),
-		newNode("out", typeOutputPublish, nil),
+		newNode("out", typeOutputReplace, nil),
 	)
 	resolution := mustEvaluate(t, viaJSON(t, g), probeOf())
 	video := resolution.Profile.Video
@@ -419,6 +421,7 @@ func TestEvaluateFixedCRFAndRemainingNodes(t *testing.T) {
 		"Audio: keep every track; encode every track to flac; downmix above 5.1 to eac3 at 96 kb/s per channel",
 		"Subtitles: remove all",
 		"Container: mkv; keep metadata, track titles, attachments, and chapters",
+		"Output: replace the source in place",
 	}
 	if !slices.Equal(resolution.Plan, wantPlan) {
 		t.Errorf("Plan =\n%s\nwant\n%s", strings.Join(resolution.Plan, "\n"), strings.Join(wantPlan, "\n"))
@@ -434,13 +437,14 @@ func TestEvaluatePlanReadsLikeTheDryRun(t *testing.T) {
 		newNode("subtitles", typeSubtitlesKeep, map[string]any{"languages": []string{"eng"}}),
 		newNode("images", typeSubtitlesDropImage, nil),
 		newNode("metadata", typeContainerMetadata, map[string]any{"track_titles": "standardize"}),
-		newNode("out", typeOutputPublish, nil),
+		newNode("out", typeOutputReplace, nil),
 	)
 	want := []string{
 		"Video: encode to av1 with libsvtav1, preset 6, 10-bit, VMAF 95 target (CRF 18–40)",
 		"Audio: keep orig, eng; encode truehd, dts to eac3 at 96 kb/s per channel",
 		"Subtitles: keep eng; drop image-based",
 		"Container: mkv; standardize track titles",
+		"Output: replace the source in place",
 	}
 	if got := mustEvaluate(t, g, probeOf()).Plan; !slices.Equal(got, want) {
 		t.Errorf("Plan =\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
@@ -485,7 +489,7 @@ func TestEvaluateCropNeedsAnEncode(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			nodes := append([]Node{newNode("in", typeInput, nil)}, test.nodes...)
-			resolution := mustEvaluate(t, chain(append(nodes, newNode("out", typeOutputPublish, nil))...), probeOf())
+			resolution := mustEvaluate(t, chain(append(nodes, newNode("out", typeOutputReplace, nil))...), probeOf())
 			if resolution.Profile.Crop.Disabled == test.wantCrop {
 				t.Errorf("Crop.Disabled = %t", resolution.Profile.Crop.Disabled)
 			}
@@ -534,7 +538,9 @@ func TestSummaries(t *testing.T) {
 		{typeSubtitlesRemoveAll, nil, "every subtitle track"},
 		{typeContainerMetadata, nil, "keep metadata · strip titles"},
 		{typeContainerMetadata, map[string]any{"metadata": "strip", "track_titles": "standardize", "attachments": "strip", "chapters": "strip"}, "strip metadata · standardize titles · no attachments · no chapters"},
-		{typeOutputPublish, nil, "replace in place, or hand off"},
+		{typeOutputReplace, nil, "replace the source in place"},
+		{typeOutputMove, nil, "no folder set · delete source"},
+		{typeOutputMove, map[string]any{"destination": "/srv/imports/tv/", "keep_source": true}, "/srv/imports/tv · keep source"},
 		{typeOutputSkip, nil, "leave the file untouched"},
 	}
 	covered := map[string]bool{}

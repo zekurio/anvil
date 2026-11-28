@@ -12,7 +12,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/zekurio/anvil/pkg/domain"
 	"github.com/zekurio/anvil/pkg/video"
 )
 
@@ -345,7 +344,7 @@ func resolveLibrary(name string, raw rawLibraryConfig) (LegacyLibraryConfig, err
 		Arr:              raw.Arr,
 		Media:            raw.Media,
 	}
-	if kind != string(domain.LibraryKindDownload) {
+	if kind != "download" {
 		library.Media.ReplacementMode = orDefault(library.Media.ReplacementMode, DefaultReplacementMode)
 		return library, nil
 	}
@@ -363,8 +362,8 @@ func resolveLibrary(name string, raw rawLibraryConfig) (LegacyLibraryConfig, err
 	return library, nil
 }
 
-// EffectiveIgnorableGlobs returns the residue globs of a download library:
-// the given list, or the built-in default when it is empty.
+// EffectiveIgnorableGlobs returns the residue globs of a library: the given
+// list, or the built-in default when it is empty.
 func EffectiveIgnorableGlobs(globs []string) []string {
 	if len(globs) == 0 {
 		return append([]string(nil), DefaultIgnorableGlobs...)

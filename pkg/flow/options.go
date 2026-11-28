@@ -3,6 +3,7 @@ package flow
 import (
 	"fmt"
 	"math"
+	"path"
 	"regexp"
 	"slices"
 	"sort"
@@ -162,6 +163,15 @@ func decodeValue(field Field, value any) (any, string) {
 		text, ok := value.(string)
 		if !ok {
 			return nil, "Must be text."
+		}
+		return text, ""
+	case FieldPath:
+		text, ok := value.(string)
+		if !ok {
+			return nil, "Must be a folder path."
+		}
+		if text = strings.TrimSpace(text); text != "" {
+			text = path.Clean(text)
 		}
 		return text, ""
 	case FieldBool:

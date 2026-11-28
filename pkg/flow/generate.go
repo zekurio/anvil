@@ -128,7 +128,7 @@ func FromProfile(p domain.Profile) Graph {
 		"attachments":  valueOr(string(p.Attachments.Mode), config.DefaultMetadataMode),
 		"chapters":     valueOr(string(p.Chapters.Mode), config.DefaultMetadataMode),
 	})
-	shared("publish", typeOutputPublish, nil)
+	shared("publish", typeOutputReplace, nil)
 	return l.graph
 }
 

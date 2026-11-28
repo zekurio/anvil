@@ -40,8 +40,9 @@ import (
 // keeps every request independently bounded and cancellable, and removes any
 // need for stream state, request ids, or pipelining rules.
 //
-// Version 2 added library.list and flow.list.
-const ProtocolVersion uint16 = 2
+// Version 2 added library.list and flow.list. Version 3 replaced a library's
+// kind and handoff path with reprocess.
+const ProtocolVersion uint16 = 3
 
 const (
 	// FrameHeaderSize is the fixed magic+version+length prefix of every frame.

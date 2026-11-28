@@ -351,7 +351,7 @@ func (w *inotifyFilesystemWatcher) handleEvent(ctx context.Context, wd int, mask
 	markedAt := time.Now().UTC()
 	for _, path := range targets {
 		libraries := w.relevantLibraries(path, isDir, isDir && movedIn)
-		if completionEvent && slices.ContainsFunc(libraries, func(library filesystemLibrary) bool { return library.config.IsDownload() }) {
+		if completionEvent && len(libraries) > 0 {
 			w.markCompletion(path, isDir, markedAt)
 		}
 		for _, library := range libraries {
@@ -359,7 +359,7 @@ func (w *inotifyFilesystemWatcher) handleEvent(ctx context.Context, wd int, mask
 			if isDir && !library.config.GroupsPackages() {
 				trigger.Path = ""
 			}
-			if completionEvent && library.config.IsDownload() && w.completion != nil {
+			if completionEvent && w.completion != nil {
 				trigger.Reason = "transfer-complete"
 				trigger.Completed = true
 			}

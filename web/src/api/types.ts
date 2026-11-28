@@ -70,7 +70,8 @@ export interface Section {
   fields: Field[];
 }
 
-export type FieldType = "string" | "int" | "float" | "bool" | "enum" | "enum_list" | "string_list" | "duration";
+/** "duration" is a Go duration string such as "20s"; "path" an absolute folder path, stored cleaned. */
+export type FieldType = "string" | "int" | "float" | "bool" | "enum" | "enum_list" | "string_list" | "duration" | "path";
 
 export interface Field {
   key: string;
@@ -373,8 +374,8 @@ export interface ErrorBody {
   /**
    * Names the request field at fault, when there is exactly one: the path of
    * the field in the request body, object keys and 0-based list indexes joined
-   * by dots ("name", "flow_id", "media.replacement_mode",
-   * "download.handoff_path", "rules.2.value", "download.ignorable_globs.0"),
+   * by dots ("name", "flow_id", "stable_for", "rules.2.value",
+   * "ignorable_globs.0"),
    * or the name of a query parameter. A taken name answers "conflict" with
    * field "name"; every other conflict carries no field.
    */
@@ -614,14 +615,14 @@ export interface LibraryList {
   libraries: Library[];
 }
 
-export type LibraryKind = "media" | "download";
 export type RuleAction = "allow" | "deny";
+/** "directory" and "auto" make each top-level folder one package, a loose file its own; "file" makes every file its own package. */
+export type PackageMode = "auto" | "directory" | "file";
 
+/** How a library is published is not a library setting: the output node its flow ends at decides. */
 export interface LibraryWrite {
   /** 1-64 characters of a-z, 0-9, "-", and "_". The identity; never changes. */
   name: string;
-  /** Cannot change after creation. */
-  kind: LibraryKind;
   /** Absolute root that is scanned. */
   path: string;
   flow_id: number;
@@ -638,8 +639,14 @@ export interface LibraryWrite {
   /** Run top to bottom; the first match decides. */
   rules: Rule[];
   rule_fallback: RuleAction;
-  media: MediaOptions;
-  download: DownloadOptions;
+  /** Queues a file a scan finds changed, or written again at a path the library has seen before, as a download folder needs. Off, such a file is recorded as processed and only a requeue runs it. */
+  reprocess: boolean;
+  /** Quiet period before a file is queued when no completion event was seen. "" means the default of 5m, "0s" queues at once. */
+  stable_for: string;
+  /** "file" by default. */
+  package_mode: PackageMode;
+  /** Residue patterns excluded from discovery and removable when a move prunes emptied folders. Empty means the built-in list; responses carry the effective list. */
+  ignorable_globs: string[];
 }
 
 export interface Library extends LibraryWrite {
@@ -664,24 +671,6 @@ export interface Rule {
   field: RuleField;
   op: RuleOp;
   value: string;
-}
-
-export interface MediaOptions {
-  /** "replace" swaps the source for the encode; "copy" publishes it beside the source. */
-  replacement_mode: "replace" | "copy";
-}
-
-export interface DownloadOptions {
-  /** Absolute directory the importer watches. */
-  handoff_path: string;
-  /** Quiet period before a download counts as complete. */
-  stable_for: string;
-  package_mode: "auto" | "directory" | "file";
-  handoff_mode: "copy" | "move";
-  preserve_relative_path: boolean;
-  cleanup_source_media: boolean;
-  prune_empty_dirs: boolean;
-  ignorable_globs: string[];
 }
 
 export interface LibraryStats {

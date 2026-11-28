@@ -456,13 +456,36 @@ export const NODE_TYPES: NodeType[] = [
   },
 
   {
-    id: "output.publish",
+    id: "output.replace",
     kind: "output",
     group: "Output",
-    label: "Publish result",
-    description: "Publishes the result as the library is set up, in place or by handoff.",
+    label: "Replace file",
+    description: "Swaps the source for the result in place.",
     outputs: [],
     sections: [],
+  },
+  {
+    id: "output.move",
+    kind: "output",
+    group: "Output",
+    label: "Move file",
+    description: "Publishes the result to another folder, such as the one an importer watches, and deletes the source.",
+    outputs: [],
+    sections: [
+      section("Destination", [
+        { key: "destination", label: "Folder", type: "path", default: "", mono: true, placeholder: "/srv/imports/tv" },
+        { key: "preserve_structure", label: "Keep folder structure", type: "bool", hint: "Recreates the folders below the library root. Off puts every file directly in the folder.", default: true },
+        { key: "keep_source", label: "Keep source", type: "bool", hint: "Leaves the source in place, for a downloader that still seeds it.", default: false },
+        {
+          key: "prune_empty_dirs",
+          label: "Remove emptied folders",
+          type: "bool",
+          hint: "Deletes the folders the source leaves behind, with residue that matches the library's ignorable globs.",
+          default: false,
+          visible_when: when("keep_source", false),
+        },
+      ]),
+    ],
   },
   {
     id: "output.skip",

@@ -75,9 +75,8 @@ type Error struct {
 	Message string `json:"message"`
 	// Field names the request field at fault, when there is exactly one. It
 	// is the path of the field in the request body: object keys and 0-based
-	// list indexes joined by dots, as in "name", "flow_id",
-	// "media.replacement_mode", "download.handoff_path", "rules.2.value", or
-	// "download.ignorable_globs.0". For a query parameter it is the
+	// list indexes joined by dots, as in "name", "flow_id", "stable_for",
+	// "rules.2.value", or "ignorable_globs.0". For a query parameter it is the
 	// parameter's name. A name that is already taken answers CodeConflict
 	// with Field "name"; every other conflict carries no field.
 	Field string `json:"field,omitempty"`
@@ -403,9 +402,6 @@ type Library struct {
 type LibraryWrite struct {
 	// Name is 1-64 characters of a-z, 0-9, "-", and "_".
 	Name string `json:"name"`
-	// Kind is "media" (encode in place) or "download" (hand off to an
-	// importer). It cannot change after creation.
-	Kind string `json:"kind"`
 	// Path is the absolute root that is scanned.
 	Path string `json:"path"`
 	// FlowID is the flow every file of this library runs through.
@@ -423,10 +419,23 @@ type LibraryWrite struct {
 	Arr string `json:"arr"`
 	// Rules run top to bottom and the first match decides whether a file is
 	// queued; RuleFallback ("allow" or "deny") decides when none match.
-	Rules        []Rule          `json:"rules"`
-	RuleFallback string          `json:"rule_fallback"`
-	Media        MediaOptions    `json:"media"`
-	Download     DownloadOptions `json:"download"`
+	Rules        []Rule `json:"rules"`
+	RuleFallback string `json:"rule_fallback"`
+	// Reprocess queues a file a scan finds changed, or written again at a
+	// path the library has seen before, as a download folder needs. Off,
+	// such a file is recorded as processed and only a requeue runs it.
+	Reprocess bool `json:"reprocess"`
+	// StableFor is the quiet period a file must go without changes before
+	// it is queued, when no completion event was seen; "" is the default
+	// of 5m, "0s" queues at once.
+	StableFor string `json:"stable_for"`
+	// PackageMode is "auto", "directory", or "file": whether each
+	// top-level folder is one package or each file stands alone.
+	PackageMode string `json:"package_mode"`
+	// IgnorableGlobs are residue patterns excluded from discovery and
+	// removable when a move prunes emptied folders; empty uses the
+	// built-in list.
+	IgnorableGlobs []string `json:"ignorable_globs"`
 }
 
 // Rule allows or denies files at scan time. Fields and operators:
@@ -440,29 +449,6 @@ type Rule struct {
 	Field  string `json:"field"`
 	Op     string `json:"op"`
 	Value  string `json:"value"`
-}
-
-// MediaOptions applies to libraries of kind "media".
-type MediaOptions struct {
-	// ReplacementMode is "replace" (swap the source for the encode) or
-	// "copy" (publish the encode beside the source).
-	ReplacementMode string `json:"replacement_mode"`
-}
-
-// DownloadOptions applies to libraries of kind "download".
-type DownloadOptions struct {
-	// HandoffPath is the absolute directory the importer watches.
-	HandoffPath string `json:"handoff_path"`
-	// StableFor is the quiet period before a download counts as complete.
-	StableFor string `json:"stable_for"`
-	// PackageMode is "auto", "directory", or "file".
-	PackageMode string `json:"package_mode"`
-	// HandoffMode is "copy" or "move".
-	HandoffMode          string   `json:"handoff_mode"`
-	PreserveRelativePath bool     `json:"preserve_relative_path"`
-	CleanupSourceMedia   bool     `json:"cleanup_source_media"`
-	PruneEmptyDirs       bool     `json:"prune_empty_dirs"`
-	IgnorableGlobs       []string `json:"ignorable_globs"`
 }
 
 // LibraryStats summarizes a library for its stat bar.

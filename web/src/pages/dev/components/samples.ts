@@ -60,7 +60,7 @@ export const FLOW_NODES: FlowCanvasNode[] = [
   { id: "remux", kind: "container", x: 64, y: 256, title: "Remux to mkv", summary: "copy all streams · mkv" },
   { id: "enc", kind: "video", x: 512, y: 256, title: "Encode video", summary: "hevc_qsv · global_quality 22" },
   { id: "aud", kind: "audio", x: 512, y: 368, title: "Keep audio", summary: "eng, jpn · aac 2.0 fallback" },
-  { id: "out", kind: "output", x: 288, y: 480, title: "Replace original", summary: "only if smaller · keep 7 d" },
+  { id: "out", kind: "output", x: 288, y: 480, title: "Replace file", summary: "replace the source in place" },
 ];
 
 export const FLOW_EDGES: FlowCanvasEdge[] = [
@@ -81,7 +81,7 @@ export const PALETTE: { label: string; items: PaletteItem[] }[] = [
   { label: "Audio", items: [item("audio", "Keep audio tracks"), item("audio", "Encode audio"), item("audio", "Downmix to stereo")] },
   { label: "Subtitles", items: [item("subtitles", "Keep subtitles"), item("subtitles", "Extract to file")] },
   { label: "Container", items: [item("container", "Remux"), item("container", "Reorder streams")] },
-  { label: "Output", items: [item("output", "Replace original"), item("output", "Move to folder")] },
+  { label: "Output", items: [item("output", "Replace file"), item("output", "Move file"), item("output", "Skip file")] },
   { label: "Tools", items: [item("command", "Run command")] },
 ];
 

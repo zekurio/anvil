@@ -270,7 +270,7 @@ func (a *scanApplication) applySource(ctx context.Context, group *scanSourceGrou
 		}
 	}
 	// A path the library has seen before is recorded as processed instead of
-	// queued, unless the library requeues existing paths (download libraries).
+	// queued, unless the library requeues existing paths (Reprocess).
 	skipKnown := known && !a.input.RequeueExisting
 
 	replaced := found && (source.Kind != group.kind || source.Kind == domain.SourceKindFile && !fingerprintsEqual(source.Fingerprint, group.fingerprint))

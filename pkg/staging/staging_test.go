@@ -26,7 +26,7 @@ func TestStageBlockLeavesLegacyArtifactForMaintenance(t *testing.T) {
 	if _, err := os.Stat(legacy); err != nil {
 		t.Fatalf("protected legacy artifact: %v", err)
 	}
-	wantOutput := replace.ArtifactPath(job.Library, destination, replace.PartJobLabel(job.Job.ID))
+	wantOutput := replace.ArtifactPath(job.Profile.Publish, destination, replace.PartJobLabel(job.Job.ID))
 	if job.OutputPath != wantOutput {
 		t.Fatalf("OutputPath = %q, want %q", job.OutputPath, wantOutput)
 	}
@@ -43,15 +43,11 @@ func stagingTestJob(t *testing.T) (*pipeline.JobContext, string) {
 			Kind:         domain.SourceKindFile,
 			RelativePath: "movie.mp4",
 		},
-		Library: domain.Library{
-			Kind: domain.LibraryKindDownload,
-			Path: sourceRoot,
-			Download: domain.DownloadLibraryPolicy{
-				HandoffPath:          handoffRoot,
-				PreserveRelativePath: true,
-			},
+		Library: domain.Library{Path: sourceRoot},
+		Profile: domain.Profile{
+			Name: "encode", Container: "mkv",
+			Publish: domain.PublishPolicy{Mode: domain.PublishMove, Destination: handoffRoot, PreserveStructure: true},
 		},
-		Profile:   domain.Profile{Name: "encode", Container: "mkv"},
 		InputPath: filepath.Join(sourceRoot, "movie.mp4"),
 	}
 	return job, filepath.Join(handoffRoot, "movie.mkv")

@@ -50,7 +50,7 @@ func libraryConfig(write LibraryWrite) (config.LibraryConfig, error) {
 	if err != nil {
 		return config.LibraryConfig{}, err
 	}
-	stableFor, err := parseDuration("download.stable_for", write.Download.StableFor, config.DefaultStableFor)
+	stableFor, err := parseDuration("stable_for", write.StableFor, config.DefaultStableFor)
 	if err != nil {
 		return config.LibraryConfig{}, err
 	}
@@ -63,7 +63,6 @@ func libraryConfig(write LibraryWrite) (config.LibraryConfig, error) {
 	}
 	library := config.LibraryConfig{
 		Name:             write.Name,
-		Kind:             strings.TrimSpace(write.Kind),
 		Path:             cleanPath(write.Path),
 		FlowID:           write.FlowID,
 		Paused:           write.Paused,
@@ -73,17 +72,10 @@ func libraryConfig(write LibraryWrite) (config.LibraryConfig, error) {
 		Arr:              strings.TrimSpace(write.Arr),
 		Rules:            rules,
 		RuleFallback:     strings.TrimSpace(write.RuleFallback),
-		Media:            config.MediaLibraryConfig{ReplacementMode: strings.TrimSpace(write.Media.ReplacementMode)},
-		Download: config.DownloadLibraryConfig{
-			HandoffPath:          cleanPath(write.Download.HandoffPath),
-			StableFor:            config.Duration{Duration: stableFor},
-			PackageMode:          strings.TrimSpace(write.Download.PackageMode),
-			HandoffMode:          strings.TrimSpace(write.Download.HandoffMode),
-			PreserveRelativePath: write.Download.PreserveRelativePath,
-			CleanupSourceMedia:   write.Download.CleanupSourceMedia,
-			PruneEmptyDirs:       write.Download.PruneEmptyDirs,
-			IgnorableGlobs:       write.Download.IgnorableGlobs,
-		},
+		Reprocess:        write.Reprocess,
+		StableFor:        config.Duration{Duration: stableFor},
+		PackageMode:      strings.TrimSpace(write.PackageMode),
+		IgnorableGlobs:   write.IgnorableGlobs,
 	}
 	return library.WithDefaults(), nil
 }
@@ -105,9 +97,8 @@ func libraryWrite(library config.LibraryConfig) LibraryWrite {
 	for _, rule := range library.Rules {
 		rules = append(rules, Rule{Action: rule.Action, Field: rule.Field, Op: rule.Op, Value: rule.Value})
 	}
-	write := LibraryWrite{
+	return LibraryWrite{
 		Name:             library.Name,
-		Kind:             library.Kind,
 		Path:             library.Path,
 		FlowID:           library.FlowID,
 		Paused:           library.Paused,
@@ -117,21 +108,11 @@ func libraryWrite(library config.LibraryConfig) LibraryWrite {
 		Arr:              library.Arr,
 		Rules:            rules,
 		RuleFallback:     config.NormalizeRuleFallback(library.RuleFallback),
-		Media:            MediaOptions{ReplacementMode: library.Media.ReplacementMode},
-		Download: DownloadOptions{
-			HandoffPath:          library.Download.HandoffPath,
-			PackageMode:          library.Download.PackageMode,
-			HandoffMode:          library.Download.HandoffMode,
-			PreserveRelativePath: library.Download.PreserveRelativePath,
-			CleanupSourceMedia:   library.Download.CleanupSourceMedia,
-			PruneEmptyDirs:       library.Download.PruneEmptyDirs,
-			IgnorableGlobs:       append([]string{}, library.Download.IgnorableGlobs...),
-		},
+		Reprocess:        library.Reprocess,
+		StableFor:        durationText(library.StableFor.Duration),
+		PackageMode:      library.PackageMode,
+		IgnorableGlobs:   append([]string{}, library.IgnorableGlobs...),
 	}
-	if library.IsDownload() {
-		write.Download.StableFor = durationText(library.Download.StableFor.Duration)
-	}
-	return write
 }
 
 func libraryStats(overview store.LibraryOverview) LibraryStats {

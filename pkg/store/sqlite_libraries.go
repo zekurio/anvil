@@ -14,10 +14,6 @@ import (
 	replacepkg "github.com/zekurio/anvil/pkg/replace"
 )
 
-// ErrImmutable reports an update that tried to change a part of a library
-// that is fixed once it exists: its kind.
-var ErrImmutable = errors.New("store: the value cannot change after creation")
-
 // Library is a stored library: its settings in the shape every loop of the
 // daemon reads them in, plus when the row was last written. When it was
 // created is part of the settings (config.LibraryConfig.CreatedAt), because
@@ -30,27 +26,18 @@ type Library struct {
 // librarySettings is the JSON kept in libraries.settings_json: everything
 // about a library no query filters, joins, or sorts on.
 type librarySettings struct {
-	ScanInterval     string                  `json:"scan_interval"`
-	Priority         int                     `json:"priority"`
-	ConcurrencyLimit int                     `json:"concurrency_limit"`
-	Rules            []config.Rule           `json:"rules"`
-	RuleFallback     string                  `json:"rule_fallback"`
-	ReplacementMode  string                  `json:"replacement_mode"`
-	Download         libraryDownloadSettings `json:"download"`
+	ScanInterval     string        `json:"scan_interval"`
+	Priority         int           `json:"priority"`
+	ConcurrencyLimit int           `json:"concurrency_limit"`
+	Rules            []config.Rule `json:"rules"`
+	RuleFallback     string        `json:"rule_fallback"`
+	Reprocess        bool          `json:"reprocess"`
+	StableFor        string        `json:"stable_for"`
+	PackageMode      string        `json:"package_mode"`
+	IgnorableGlobs   []string      `json:"ignorable_globs"`
 }
 
-type libraryDownloadSettings struct {
-	HandoffPath          string   `json:"handoff_path"`
-	StableFor            string   `json:"stable_for"`
-	PackageMode          string   `json:"package_mode"`
-	HandoffMode          string   `json:"handoff_mode"`
-	PreserveRelativePath bool     `json:"preserve_relative_path"`
-	CleanupSourceMedia   bool     `json:"cleanup_source_media"`
-	PruneEmptyDirs       bool     `json:"prune_empty_dirs"`
-	IgnorableGlobs       []string `json:"ignorable_globs"`
-}
-
-const libraryColumns = `name, kind, path, flow_id, arr_name, paused, settings_json, created_at, updated_at`
+const libraryColumns = `name, path, flow_id, arr_name, paused, settings_json, created_at, updated_at`
 
 func (s *SQLiteStore) ListLibraries(ctx context.Context) ([]Library, error) {
 	return listLibraries(ctx, s.db)
@@ -119,16 +106,16 @@ func createLibraryTx(ctx context.Context, tx *sql.Tx, library config.LibraryConf
 		return Library{}, err
 	}
 	if _, err := tx.ExecContext(ctx, `
-INSERT INTO libraries (name, kind, path, flow_id, arr_name, paused, settings_json, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-`, name, library.Kind, library.Path, library.FlowID, nullableName(library.Arr), library.Paused, settings, encodeTime(now), encodeTime(now)); err != nil {
+INSERT INTO libraries (name, path, flow_id, arr_name, paused, settings_json, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+`, name, library.Path, library.FlowID, nullableName(library.Arr), library.Paused, settings, encodeTime(now), encodeTime(now)); err != nil {
 		return Library{}, fmt.Errorf("create library %q: %w", name, err)
 	}
 	return getLibrary(ctx, tx, name)
 }
 
 // UpdateLibrary replaces a library's settings. The name is its identity and
-// the kind decides how its media is published, so neither changes.
+// does not change.
 func (s *SQLiteStore) UpdateLibrary(ctx context.Context, library config.LibraryConfig, now time.Time) (Library, error) {
 	settings, err := encodeLibrarySettings(library)
 	if err != nil {
@@ -142,9 +129,6 @@ func (s *SQLiteStore) UpdateLibrary(ctx context.Context, library config.LibraryC
 	current, err := getLibrary(ctx, tx, library.Name)
 	if err != nil {
 		return Library{}, err
-	}
-	if current.Kind != library.Kind {
-		return Library{}, fmt.Errorf("%w: library %q is a %s library", ErrImmutable, current.Name, current.Kind)
 	}
 	if err := libraryReferencesExistTx(ctx, tx, library); err != nil {
 		return Library{}, err
@@ -564,28 +548,21 @@ func encodeLibrarySettings(library config.LibraryConfig) ([]byte, error) {
 		ConcurrencyLimit: library.ConcurrencyLimit,
 		Rules:            library.Rules,
 		RuleFallback:     config.NormalizeRuleFallback(library.RuleFallback),
-		ReplacementMode:  library.Media.ReplacementMode,
-		Download: libraryDownloadSettings{
-			HandoffPath:          library.Download.HandoffPath,
-			PackageMode:          library.Download.PackageMode,
-			HandoffMode:          library.Download.HandoffMode,
-			PreserveRelativePath: library.Download.PreserveRelativePath,
-			CleanupSourceMedia:   library.Download.CleanupSourceMedia,
-			PruneEmptyDirs:       library.Download.PruneEmptyDirs,
-			IgnorableGlobs:       library.Download.IgnorableGlobs,
-		},
+		Reprocess:        library.Reprocess,
+		PackageMode:      library.PackageMode,
+		IgnorableGlobs:   library.IgnorableGlobs,
 	}
 	if library.ScanInterval.Duration > 0 {
 		settings.ScanInterval = library.ScanInterval.String()
 	}
-	if library.IsDownload() {
-		settings.Download.StableFor = library.Download.StableFor.String()
+	if library.StableFor.Duration > 0 {
+		settings.StableFor = library.StableFor.String()
 	}
 	if settings.Rules == nil {
 		settings.Rules = []config.Rule{}
 	}
-	if settings.Download.IgnorableGlobs == nil {
-		settings.Download.IgnorableGlobs = []string{}
+	if settings.IgnorableGlobs == nil {
+		settings.IgnorableGlobs = []string{}
 	}
 	data, err := json.Marshal(settings)
 	if err != nil {
@@ -599,7 +576,7 @@ func scanLibrary(row scanner) (Library, error) {
 	var arr sql.NullString
 	var raw []byte
 	var createdAt, updatedAt string
-	err := row.Scan(&item.Name, &item.Kind, &item.Path, &item.FlowID, &arr, &item.Paused, &raw, &createdAt, &updatedAt)
+	err := row.Scan(&item.Name, &item.Path, &item.FlowID, &arr, &item.Paused, &raw, &createdAt, &updatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Library{}, ErrNotFound
 	}
@@ -614,7 +591,7 @@ func scanLibrary(row scanner) (Library, error) {
 	if err != nil {
 		return Library{}, fmt.Errorf("library %q scan_interval: %w", item.Name, err)
 	}
-	stableFor, err := parseStoredDuration(settings.Download.StableFor)
+	stableFor, err := parseStoredDuration(settings.StableFor)
 	if err != nil {
 		return Library{}, fmt.Errorf("library %q stable_for: %w", item.Name, err)
 	}
@@ -627,16 +604,12 @@ func scanLibrary(row scanner) (Library, error) {
 		item.Rules = []config.Rule{}
 	}
 	item.RuleFallback = config.NormalizeRuleFallback(settings.RuleFallback)
-	item.Media.ReplacementMode = settings.ReplacementMode
-	item.Download = config.DownloadLibraryConfig{
-		HandoffPath:          settings.Download.HandoffPath,
-		StableFor:            config.Duration{Duration: stableFor},
-		PackageMode:          settings.Download.PackageMode,
-		HandoffMode:          settings.Download.HandoffMode,
-		PreserveRelativePath: settings.Download.PreserveRelativePath,
-		CleanupSourceMedia:   settings.Download.CleanupSourceMedia,
-		PruneEmptyDirs:       settings.Download.PruneEmptyDirs,
-		IgnorableGlobs:       settings.Download.IgnorableGlobs,
+	item.Reprocess = settings.Reprocess
+	item.StableFor = config.Duration{Duration: stableFor}
+	item.PackageMode = settings.PackageMode
+	item.IgnorableGlobs = settings.IgnorableGlobs
+	if item.IgnorableGlobs == nil {
+		item.IgnorableGlobs = []string{}
 	}
 	item.CreatedAt = parseTime(createdAt)
 	item.UpdatedAt = parseTime(updatedAt)

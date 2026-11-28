@@ -54,7 +54,7 @@ func (s Service) RemoveParts(ctx context.Context, deleted []store.DeletedJob) {
 		if conflict != nil && conflict.Stage != replacepkg.PublishStageConflict {
 			continue
 		}
-		destinations, err := stagedDestinations(staged.Job, staged.Source, staged.Asset, staged.Attempts)
+		destinations, err := replacepkg.StagedDestinations(staged.Job, staged.Source, staged.Asset, staged.Attempts)
 		if err != nil {
 			// What did resolve is still worth reclaiming.
 			slog.Warn("some staged destinations of a deleted job could not be resolved; its part files there stay", "job", job.ID, "error", err)
@@ -96,9 +96,9 @@ func (s Service) ReclaimEndedJobs(ctx context.Context, jobs []domain.JobID) {
 // removeStagedParts removes a job's own part files at every destination its
 // attempts staged at, and the legacy unscoped part beside each destination
 // unless an unresolved publish journal owns it.
-func (s Service) removeStagedParts(ctx context.Context, jobID domain.JobID, destinations []stagedDestination) {
+func (s Service) removeStagedParts(ctx context.Context, jobID domain.JobID, destinations []replacepkg.StagedDestination) {
 	for _, destination := range destinations {
-		if err := replacepkg.CleanupPartFiles(destination.Library, destination.Path, replacepkg.PartJobLabel(jobID)); err != nil {
+		if err := replacepkg.CleanupPartFiles(destination.Publish, destination.Path, replacepkg.PartJobLabel(jobID)); err != nil {
 			slog.Warn("job part cleanup failed", "job", jobID, "destination", destination.Path, "error", err)
 		}
 		if err := replacepkg.CleanupLegacyPartFiles(ctx, s.Store, destination.Path); err != nil {

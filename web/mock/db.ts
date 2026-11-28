@@ -4,6 +4,7 @@
 import type { Arr, DaemonValues, FileFacts, FileStatus, JobState, Library, LibraryFile, LibraryStats, LibraryWrite, Progress } from "../src/api/types.ts";
 import { generateFiles, type MockFile } from "./fixtures/files.ts";
 import { initialFlows, type StoredFlow } from "./fixtures/flows.ts";
+import { publishPolicy, type Publish } from "./flowcheck.ts";
 
 export const VERSION = "0.5.0";
 export const WORKERS = 2;
@@ -16,32 +17,30 @@ export interface StoredLibrary extends LibraryWrite {
 
 export interface StoredArr extends Omit<Arr, "libraries"> {}
 
-const DEFAULT_DOWNLOAD: LibraryWrite["download"] = {
-  handoff_path: "",
-  stable_for: "",
-  package_mode: "auto",
-  handoff_mode: "move",
-  preserve_relative_path: true,
-  cleanup_source_media: false,
-  prune_empty_dirs: true,
-  ignorable_globs: [],
-};
+/** The daemon's temp_dir, as GET /settings reports it (handlers/system.ts). */
+export const TEMP_DIR = "/var/lib/anvil/staging";
+
+/** pkg/config.DefaultIgnorableGlobs: what an empty ignorable_globs stands for. */
+export const DEFAULT_IGNORABLE_GLOBS = ["**/samples/**", "**/sample*/**", "**/*sample*", "**/*.txt", "**/*.url", "**/*.sfv", "**/*.srr", "**/*.nzb", "**/__MACOSX/**", "**/.DS_Store", "**/.nfs*"];
+
+/** Whether two cleaned absolute paths are the same or one contains the other, compared lexically as pkg/config does. */
+export function pathsOverlap(a: string, b: string): boolean {
+  const within = (path: string, root: string) => path === root || path.startsWith(root.endsWith("/") ? root : `${root}/`);
+  return within(a, b) || within(b, a);
+}
 
 function initialLibraries(now: number): StoredLibrary[] {
   const at = (minutesAgo: number) => new Date(now - minutesAgo * 60_000).toISOString();
-  const base = { paused: false, priority: 0, concurrency_limit: 0, scan_interval: "", arr: "", rule_fallback: "allow" as const };
+  const base = { paused: false, priority: 0, concurrency_limit: 0, scan_interval: "", arr: "", rule_fallback: "allow" as const, reprocess: false, stable_for: "5m", package_mode: "file" as const, ignorable_globs: DEFAULT_IGNORABLE_GLOBS };
   return [
     {
       ...base,
       name: "anime",
-      kind: "media",
       path: "/media/anime",
       flow_id: 1,
       arr: "sonarr",
       paused: true,
       rules: [],
-      media: { replacement_mode: "replace" },
-      download: DEFAULT_DOWNLOAD,
       last_scan_at: at(18),
       created_at: at(60 * 24 * 2),
       updated_at: at(60 * 24 * 2),
@@ -49,9 +48,9 @@ function initialLibraries(now: number): StoredLibrary[] {
     {
       ...base,
       name: "downloads",
-      kind: "download",
       path: "/downloads/complete",
-      flow_id: 1,
+      // "Hand off to Sonarr": its flow moves every result to /downloads/import.
+      flow_id: 4,
       priority: 10,
       concurrency_limit: 1,
       scan_interval: "2m",
@@ -61,8 +60,10 @@ function initialLibraries(now: number): StoredLibrary[] {
         { action: "allow", field: "extension", op: "is", value: "mkv, mp4" },
       ],
       rule_fallback: "deny",
-      media: { replacement_mode: "replace" },
-      download: { ...DEFAULT_DOWNLOAD, handoff_path: "/downloads/import", stable_for: "45s", ignorable_globs: ["*.nfo", "*.txt", "**/Sample/**"] },
+      reprocess: true,
+      stable_for: "5m",
+      package_mode: "auto",
+      ignorable_globs: ["*.nfo", "*.txt", "**/Sample/**"],
       last_scan_at: at(1),
       created_at: at(60 * 24 * 30),
       updated_at: at(60 * 24 * 4),
@@ -70,7 +71,6 @@ function initialLibraries(now: number): StoredLibrary[] {
     {
       ...base,
       name: "movies",
-      kind: "media",
       path: "/media/movies",
       flow_id: 1,
       arr: "radarr",
@@ -80,13 +80,11 @@ function initialLibraries(now: number): StoredLibrary[] {
         { action: "allow", field: "extension", op: "is", value: "mkv, mp4, avi, m2ts" },
         { action: "deny", field: "size", op: "lt", value: "200 MB" },
       ],
-      media: { replacement_mode: "replace" },
-      download: DEFAULT_DOWNLOAD,
       last_scan_at: at(4),
       created_at: at(60 * 24 * 41),
       updated_at: at(60 * 24 * 9),
     },
-    { ...base, name: "tv", kind: "media", path: "/media/tv", flow_id: 1, arr: "sonarr", rules: [], media: { replacement_mode: "copy" }, download: DEFAULT_DOWNLOAD, last_scan_at: at(26), created_at: at(60 * 24 * 38), updated_at: at(60 * 24 * 12) },
+    { ...base, name: "tv", path: "/media/tv", flow_id: 1, arr: "sonarr", rules: [], last_scan_at: at(26), created_at: at(60 * 24 * 38), updated_at: at(60 * 24 * 12) },
   ];
 }
 
@@ -103,7 +101,7 @@ export const db = {
     { name: "sonarr", type: "sonarr", base_url: "http://sonarr.lan:8989", api_key_file: "", api_key_set: true },
   ] as StoredArr[],
   nextJobId: 4200,
-  nextFlowId: 4,
+  nextFlowId: 5,
   /** The [daemon] values saved in the web UI (PUT /settings/daemon). */
   daemonSettings: {} as Partial<DaemonValues>,
 };
@@ -220,6 +218,12 @@ export function absolutePath(file: MockFile): string {
   return `${findLibrary(file.library)?.path ?? ""}/${file.path}`;
 }
 
+/** How the library's flow publishes the file now. A file the flow skips, or a library without a flow, counts as replaced in place. */
+export function publishOf(file: MockFile): Publish {
+  const flow = db.flows.find((f) => f.id === findLibrary(file.library)?.flow_id);
+  return (flow && publishPolicy(flow.graph, factsOf(file))) ?? { mode: "replace", destination: "", keep_source: false, preserve_structure: false, prune_empty_dirs: false };
+}
+
 const RESOLUTION_LABEL: Record<number, string> = { 2160: "2160p", 1080: "1080p", 720: "720p", 480: "480p" };
 
 const LAYOUT: Record<number, string> = { 1: "1.0", 2: "2.0", 6: "5.1", 8: "7.1" };
@@ -228,8 +232,8 @@ const LAYOUT: Record<number, string> = { 1: "1.0", 2: "2.0", 6: "5.1", 8: "7.1" 
 export function fileView(file: MockFile): LibraryFile {
   const probed = file.status !== "none" && file.job_state !== "pending";
   const first = file.audio[0];
-  // A media library replaces the file in place: what a scan finds afterwards is the output.
-  const replaced = file.output_size_bytes !== undefined && file.output_size_bytes > 0 && findLibrary(file.library)?.kind === "media";
+  // A replacement swaps the file in place: what a scan finds afterwards is the output.
+  const replaced = file.output_size_bytes !== undefined && file.output_size_bytes > 0 && publishOf(file).mode === "replace";
   return {
     source_id: file.source_id,
     asset_id: file.source_id,

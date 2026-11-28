@@ -72,7 +72,7 @@ func TestPartialDiscoveryAndPackageSidecars(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	lib := config.LibraryConfig{Kind: "download"}
+	lib := config.LibraryConfig{PackageMode: "auto"}
 	candidates, stats, _, err := discoverPaths(context.Background(), root, lib, nil, []string{"one"})
 	if err != nil {
 		t.Fatal(err)
@@ -85,7 +85,7 @@ func TestPartialDiscoveryAndPackageSidecars(t *testing.T) {
 			t.Fatal("package sidecar missing")
 		}
 	}
-	lib.Kind = "media"
+	lib.PackageMode = "file"
 	_, stats, _, err = discoverCandidates(context.Background(), root, lib, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -104,7 +104,7 @@ func TestPartialDiscoveryHonorsExcludedAncestorDirectory(t *testing.T) {
 	if err := os.WriteFile(file, []byte("video"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	library := config.LibraryConfig{Kind: "media", Rules: []config.Rule{{Action: config.RuleDeny, Field: config.RuleFieldPath, Op: config.RuleOpMatches, Value: "ignored/"}}}
+	library := config.LibraryConfig{Rules: []config.Rule{{Action: config.RuleDeny, Field: config.RuleFieldPath, Op: config.RuleOpMatches, Value: "ignored/"}}}
 	for _, paths := range [][]string{nil, {"ignored/film.mkv"}} {
 		candidates, _, _, err := discoverPaths(context.Background(), root, library, nil, paths)
 		if err != nil {

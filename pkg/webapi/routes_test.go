@@ -113,11 +113,11 @@ func TestEveryRoute(t *testing.T) {
 
 	// Libraries.
 	library := want[Library](t, f.send(http.MethodPost, "/api/v1/libraries", LibraryWrite{
-		Name: "movies", Kind: "media", Path: f.media + "/", FlowID: created.ID, Arr: "radarr",
+		Name: "movies", Path: f.media + "/", FlowID: created.ID, Arr: "radarr",
 		Rules: []Rule{{Action: "deny", Field: "extension", Op: "is", Value: "nfo"}},
 	}), http.StatusCreated)
 	if library.Path != f.media || library.FlowName != "Skip HEVC" || library.RuleFallback != "allow" ||
-		library.Media.ReplacementMode != "replace" || len(library.Rules) != 1 || library.Download.IgnorableGlobs == nil {
+		library.PackageMode != "file" || library.StableFor != "5m" || library.Reprocess || len(library.Rules) != 1 || len(library.IgnorableGlobs) == 0 {
 		t.Fatalf("library = %+v", library)
 	}
 	if got := f.config().Libraries["movies"]; got.Path != f.media {
@@ -264,7 +264,7 @@ func TestMediaRootsConfineBrowsingAndLibraryWrites(t *testing.T) {
 		t.Fatalf("media root parent = %q, want none", root.Parent)
 	}
 
-	write := LibraryWrite{Name: "outside", Kind: "media", Path: outside, FlowID: f.defaultFlow().ID}
+	write := LibraryWrite{Name: "outside", Path: outside, FlowID: f.defaultFlow().ID}
 	problem := wantError(t, f.send(http.MethodPost, "/api/v1/libraries", write), http.StatusBadRequest, CodeInvalid)
 	if problem.Field != "path" {
 		t.Fatalf("outside library error = %+v", problem)
@@ -280,7 +280,7 @@ func TestLibraryOutsideMediaRootsCanStillBePaused(t *testing.T) {
 	roots := t.TempDir()
 	f.configure(func(cfg *config.Config) { cfg.Daemon.MediaRoots = []string{roots} })
 
-	write := LibraryWrite{Name: "movies", Kind: "media", Path: f.media, FlowID: f.defaultFlow().ID, Paused: true}
+	write := LibraryWrite{Name: "movies", Path: f.media, FlowID: f.defaultFlow().ID, Paused: true}
 	if got := want[Library](t, f.send(http.MethodPut, "/api/v1/libraries/movies", write), http.StatusOK); !got.Paused {
 		t.Fatalf("library = %+v, want it paused", got)
 	}
@@ -338,7 +338,21 @@ func TestJobDetailShowsTheFlowTheAttemptRan(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	attempt, err := f.state.StartAttempt(ctx, job.ID, "worker-1", nil, snapshot, nil, now)
+	// Where the job publishes comes from the library snapshot and the
+	// profile the attempt recorded, not from the flow as it is now.
+	library, err := f.config().ResolveLibrary("movies")
+	if err != nil {
+		t.Fatal(err)
+	}
+	librarySnapshot, err := json.Marshal(library)
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile, err := json.Marshal(domain.Profile{Name: "Skip HEVC", Container: "mkv", Publish: domain.PublishPolicy{Mode: domain.PublishReplace}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	attempt, err := f.state.StartAttempt(ctx, job.ID, "worker-1", librarySnapshot, snapshot, profile, now)
 	if err != nil {
 		t.Fatal(err)
 	}

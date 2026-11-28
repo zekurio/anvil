@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -14,6 +15,7 @@ import (
 	"github.com/zekurio/anvil/pkg/flow"
 	"github.com/zekurio/anvil/pkg/flowstep"
 	"github.com/zekurio/anvil/pkg/pipeline"
+	replacepkg "github.com/zekurio/anvil/pkg/replace"
 	"github.com/zekurio/anvil/pkg/scheduler"
 	"github.com/zekurio/anvil/pkg/store"
 )
@@ -31,11 +33,13 @@ func (b probeBlock) Run(_ context.Context, job *pipeline.JobContext) error {
 	return nil
 }
 
-// recordingBlock notes that the pipeline reached it and with which profile.
+// recordingBlock notes that the pipeline reached it and with which profile,
+// then fails with err when it is set.
 type recordingBlock struct {
 	name     string
 	reached  *int
 	profiles *[]domain.Profile
+	err      error
 }
 
 func (b recordingBlock) Name() string { return b.name }
@@ -43,7 +47,7 @@ func (b recordingBlock) Name() string { return b.name }
 func (b recordingBlock) Run(_ context.Context, job *pipeline.JobContext) error {
 	*b.reached++
 	*b.profiles = append(*b.profiles, job.Profile)
-	return nil
+	return b.err
 }
 
 // skipHEVC publishes everything except HEVC sources, which it skips.
@@ -55,7 +59,7 @@ func skipHEVC() flow.Graph {
 			{ID: "skip", Type: "output.skip"},
 			{ID: "encode", Type: "video.encode", Options: map[string]any{"quality_mode": "fixed", "crf": 30, "preset": "10"}},
 			{ID: "audio", Type: "audio.keep", Options: map[string]any{"languages": []string{"orig"}}},
-			{ID: "publish", Type: "output.publish"},
+			{ID: "publish", Type: "output.replace"},
 		},
 		Edges: []flow.Edge{
 			{From: "in", To: "is-hevc"},
@@ -74,6 +78,8 @@ type flowFixture struct {
 	cfg      config.Config
 	reached  int
 	profiles []domain.Profile
+	// failAfterFlow, when set, fails every attempt that gets past the flow.
+	failAfterFlow error
 }
 
 func newFlowFixture(t *testing.T) *flowFixture {
@@ -92,7 +98,7 @@ func newFlowFixture(t *testing.T) *flowFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	library := config.LibraryConfig{Name: "movies", Kind: "media", Path: "/media/movies", FlowID: created.ID, Media: config.MediaLibraryConfig{ReplacementMode: "replace"}}
+	library := config.LibraryConfig{Name: "movies", Path: "/media/movies", FlowID: created.ID}.WithDefaults()
 	stored, err := state.CreateLibrary(ctx, library, time.Now())
 	if err != nil {
 		t.Fatal(err)
@@ -148,7 +154,7 @@ func (f *flowFixture) attempt(codec string) (domain.Job, domain.Attempt, error) 
 		Pipeline: pipeline.Runner{Blocks: []pipeline.Block{
 			probeBlock{probe: probe},
 			flowstep.Block{},
-			recordingBlock{name: "after-flow", reached: &f.reached, profiles: &f.profiles},
+			recordingBlock{name: "after-flow", reached: &f.reached, profiles: &f.profiles, err: f.failAfterFlow},
 		}},
 	}
 	runErr := runner.Run(ctx, scheduler.Assignment{Job: *leased, WorkerID: "w1"})
@@ -236,11 +242,13 @@ func TestFlowProcessResolvesTheProfileForLaterSteps(t *testing.T) {
 	if err := json.Unmarshal(attempt.ResolvedProfile, &recorded); err != nil {
 		t.Fatalf("resolved profile %q: %v", attempt.ResolvedProfile, err)
 	}
-	if recorded.Video.CRF != 30 || recorded.Video.QualityMode != domain.VideoQualityFixed {
+	// The publish policy is recorded with the rest: it is what cleanup reads
+	// to find where an attempt staged its artifact.
+	if recorded.Video.CRF != 30 || recorded.Video.QualityMode != domain.VideoQualityFixed || recorded.Publish.Mode != domain.PublishReplace {
 		t.Fatalf("recorded profile = %+v", recorded)
 	}
 	resolution, _ := f.resolution(attempt)
-	if resolution.Outcome != domain.FlowOutcomeProcess || strings.Join(resolution.Path, ",") != "in,is-hevc,encode,audio,publish" || len(resolution.Plan) != 4 {
+	if resolution.Outcome != domain.FlowOutcomeProcess || strings.Join(resolution.Path, ",") != "in,is-hevc,encode,audio,publish" || len(resolution.Plan) != 5 {
 		t.Fatalf("resolution = %+v", resolution)
 	}
 }
@@ -330,6 +338,48 @@ func TestRetryFollowsTheEditedFlow(t *testing.T) {
 	var snapshot domain.FlowSnapshot
 	if err := json.Unmarshal(attempt.ResolvedFlow, &snapshot); err != nil || snapshot.Revision != 2 {
 		t.Fatalf("second attempt ran revision %d, %v", snapshot.Revision, err)
+	}
+}
+
+// A part file an earlier attempt left in the folder its flow moved to is
+// reclaimed when a later attempt is skipped by the flow, although the flow
+// that skips the file names no folder at all.
+func TestFlowSkipReclaimsThePartAnEarlierMoveLeft(t *testing.T) {
+	f := newFlowFixture(t)
+	folder := t.TempDir()
+	moving := skipHEVC()
+	moving.Nodes[5] = flow.Node{ID: "publish", Type: "output.move", Options: map[string]any{"destination": folder}}
+	if _, err := f.state.UpdateFlow(context.Background(), f.flowID, store.FlowInput{Name: "Skip HEVC", Graph: moving}, 1, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	f.failAfterFlow = errors.New("encoder crashed")
+	job, _, err := f.run("film.mkv", "h264")
+	if err == nil || job.State != domain.JobStatePending {
+		t.Fatalf("first attempt: %s, %v", job.State, err)
+	}
+	// The crash left its part where the move stages it.
+	move := domain.PublishPolicy{Mode: domain.PublishMove, Destination: folder, PreserveStructure: true}
+	part := replacepkg.ArtifactPath(move, filepath.Join(folder, "film.mkv"), replacepkg.PartJobLabel(job.ID))
+	if err := os.MkdirAll(filepath.Dir(part), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(part, []byte("partial encode"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// The operator swaps the branches, so the retry skips the h264 source.
+	skipping := skipHEVC()
+	skipping.Edges[1].Port, skipping.Edges[2].Port = 1, 0
+	if _, err := f.state.UpdateFlow(context.Background(), f.flowID, store.FlowInput{Name: "Skip HEVC", Graph: skipping}, 2, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	f.failAfterFlow = nil
+	job, _, err = f.attempt("h264")
+	if err != nil || job.State != domain.JobStateSkipped {
+		t.Fatalf("second attempt: %s (%s), %v", job.State, job.LastError, err)
+	}
+	if _, err := os.Stat(part); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the part the move left is still there: %v", err)
 	}
 }
 

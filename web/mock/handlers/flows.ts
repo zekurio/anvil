@@ -1,10 +1,10 @@
 // Node catalog and flow routes.
 
-import type { Flow, FlowCheckRequest, FlowList, FlowSummary, FlowTestRequest, FlowWrite, Graph, NodeTypes } from "../../src/api/types.ts";
-import { absolutePath, db, factsOf } from "../db.ts";
+import type { Flow, FlowCheckRequest, FlowList, FlowSummary, FlowTestRequest, FlowWrite, Graph, Issue, NodeTypes } from "../../src/api/types.ts";
+import { absolutePath, db, factsOf, pathsOverlap, TEMP_DIR } from "../db.ts";
 import { NODE_TYPES } from "../fixtures/catalog.ts";
 import type { StoredFlow } from "../fixtures/flows.ts";
-import { checkGraph, testGraph } from "../flowcheck.ts";
+import { checkGraph, moveOutputs, testGraph } from "../flowcheck.ts";
 import { conflict, created, HttpError, invalid, noContent, notFound, objectBody, type Context, type Router } from "../http.ts";
 
 function summary(flow: StoredFlow): FlowSummary {
@@ -44,7 +44,27 @@ function validate(write: FlowWrite, self?: StoredFlow): string {
     const count = Object.values(check.nodes).filter((n) => n.invalid).length;
     throw new HttpError(422, "invalid_flow", count > 0 ? `${count} ${count === 1 ? "node needs" : "nodes need"} attention before the flow can be saved.` : "The flow cannot be saved yet.", undefined, check.issues);
   }
+  checkMoveTargets(write.graph, self ? moveOutputs(self.graph).map((output) => output.destination) : []);
   return name;
+}
+
+/**
+ * As pkg/webapi checkMoveTargets: a move output may not publish into temp_dir
+ * or a library folder (config.MoveDestinationConflicts). The mock daemon sets
+ * no media_roots. A folder the stored flow already moves to is not checked
+ * again; `kept` lists those.
+ */
+function checkMoveTargets(graph: Graph, kept: string[]): void {
+  const issues: Issue[] = [];
+  for (const { node, destination } of moveOutputs(graph)) {
+    if (kept.includes(destination)) continue;
+    const add = (message: string) => issues.push({ severity: "error", node_id: node, field: "destination", message });
+    if (pathsOverlap(destination, TEMP_DIR)) add(`${destination} overlaps ${TEMP_DIR}, where anvil keeps its working files (daemon.temp_dir). A move destination must be outside it.`);
+    for (const library of [...db.libraries].sort((a, b) => a.name.localeCompare(b.name))) {
+      if (pathsOverlap(destination, library.path)) add(`${destination} overlaps the library "${library.name}" at ${library.path}. A move destination must be outside every library folder.`);
+    }
+  }
+  if (issues.length > 0) throw new HttpError(422, "invalid_flow", "Fix the problems in this flow before saving it.", undefined, issues);
 }
 
 function uniqueName(base: string): string {

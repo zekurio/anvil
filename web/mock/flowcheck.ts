@@ -75,6 +75,20 @@ const choiceLabels = (field: Field) => (field.choices ?? []).map((c) => c.label)
 const hasChoice = (field: Field, value: string) => (field.choices ?? []).some((c) => c.value === value);
 const isStringList = (value: unknown): value is string[] => Array.isArray(value) && value.every((entry) => typeof entry === "string");
 
+/** Go's path.Clean: one slash between elements, no "." elements, ".." resolved lexically. */
+function cleanPath(text: string): string {
+  const absolute = text.startsWith("/");
+  const parts: string[] = [];
+  for (const part of text.split("/")) {
+    if (part === "" || part === ".") continue;
+    if (part !== "..") parts.push(part);
+    else if (parts.length > 0 && parts[parts.length - 1] !== "..") parts.pop();
+    else if (!absolute) parts.push("..");
+  }
+  const joined = parts.join("/");
+  return absolute ? `/${joined}` : joined || ".";
+}
+
 function decodeValue(field: Field, value: unknown): { value?: OptionValue; message?: string } {
   switch (field.type) {
     case "string":
@@ -94,6 +108,11 @@ function decodeValue(field: Field, value: unknown): { value?: OptionValue; messa
     case "duration": {
       const seconds = typeof value === "string" ? parseDuration(value) : undefined;
       return seconds === undefined ? { message: 'Must be a duration such as "20s".' } : { value: seconds };
+    }
+    case "path": {
+      if (typeof value !== "string") return { message: "Must be a folder path." };
+      const text = value.trim();
+      return { value: text === "" ? "" : cleanPath(text) };
     }
     case "enum":
       return typeof value === "string" && hasChoice(field, value) ? { value } : { message: `Must be one of: ${choiceLabels(field)}.` };
@@ -263,7 +282,47 @@ const CHECKS: Record<string, (o: Options) => Problem[]> = {
   "audio.keep": (o) => blankEntries(o, "languages"),
   "audio.encode": (o) => blankEntries(o, "source_codecs"),
   "subtitles.keep": (o) => blankEntries(o, "languages"),
+  "output.move": (o) => {
+    const destination = o.text("destination");
+    if (destination === "") return [{ field: "destination", message: "Enter the folder to move the result to, as an absolute path such as /srv/imports/tv." }];
+    if (!destination.startsWith("/")) return [{ field: "destination", message: `${quote(destination)} is not an absolute path. Enter one that starts with /, such as /srv/imports/tv.` }];
+    if (destination === "/") return [{ field: "destination", message: "The folder cannot be the filesystem root. Enter a folder such as /srv/imports/tv." }];
+    return [];
+  },
 };
+
+/** The output nodes that publish a result; output.skip is the other way to end a flow. */
+const PUBLISHING = new Set(["output.replace", "output.move"]);
+
+/** domain.PublishPolicy: how a result reaches its destination. The output node a flow ends at sets it. */
+export interface Publish {
+  mode: "replace" | "move";
+  /** The absolute folder a move publishes below; empty for a replacement. */
+  destination: string;
+  keep_source: boolean;
+  /** Keeps the library-relative folders below destination. */
+  preserve_structure: boolean;
+  /** Removes the folders a deleted source leaves empty. Never set together with keep_source. */
+  prune_empty_dirs: boolean;
+}
+
+const REPLACE: Publish = { mode: "replace", destination: "", keep_source: false, preserve_structure: false, prune_empty_dirs: false };
+
+function publishOf(type: string, o: Options): Publish | undefined {
+  if (type === "output.replace") return REPLACE;
+  if (type !== "output.move") return undefined;
+  return { mode: "move", destination: o.text("destination"), keep_source: o.on("keep_source"), preserve_structure: o.on("preserve_structure"), prune_empty_dirs: !o.on("keep_source") && o.on("prune_empty_dirs") };
+}
+
+/** Every move output of a graph that names a folder, cleaned, in node order: flow.MoveDestinations with the node each comes from. */
+export function moveOutputs(graph: Graph): { node: string; destination: string }[] {
+  const type = NODE_TYPE_BY_ID.get("output.move");
+  if (!type) return [];
+  return graph.nodes.filter((node) => node.type === type.id).flatMap((node) => {
+    const destination = decodeOptions(type, node.options).options.text("destination");
+    return destination === "" ? [] : [{ node: node.id, destination }];
+  });
+}
 
 const ENCODERS: Record<string, Record<string, string>> = {
   software: { av1: "libsvtav1", hevc: "libx265", h264: "libx264" },
@@ -315,7 +374,8 @@ const SUMMARIES: Record<string, (o: Options) => string> = {
     for (const key of ["attachments", "chapters"]) if (o.text(key) === "strip") parts.push(`no ${key}`);
     return parts.join(DOT);
   },
-  "output.publish": () => "replace in place, or hand off",
+  "output.replace": () => "replace the source in place",
+  "output.move": (o) => [o.text("destination") || "no folder set", o.on("keep_source") ? "keep source" : "delete source"].join(DOT),
   "output.skip": () => "leave the file untouched",
 };
 
@@ -466,7 +526,7 @@ function analyze(graph: Graph): Analysis {
       if (type === "video.encode") current.encodes = true;
       else if (type === "video.copy") current.encodes = false;
       else if (type === "video.crop") current.crop = current.node;
-      else if (type === "output.publish" && !current.encodes && current.crop) useless.add(current.crop);
+      else if (type !== undefined && PUBLISHING.has(type) && !current.encodes && current.crop) useless.add(current.crop);
       for (const target of a.targets.get(current.node) ?? []) stack.push({ node: target, encodes: current.encodes, crop: current.crop });
     }
     for (const node of graph.nodes) {
@@ -578,6 +638,8 @@ interface Plan {
   dropBitmap: boolean;
   removeAll: boolean;
   metadata?: Options;
+  /** Set by the publishing output the walk ends at. */
+  publish?: Publish;
 }
 
 const audioTarget = (o: Options) => (o.text("codec") === "flac" ? "flac" : audioBitrate(o) === 0 ? `${o.text("codec")} at the encoder's default bitrate` : `${o.text("codec")} at ${audioBitrate(o)} kb/s per channel`);
@@ -620,7 +682,17 @@ function planLines(plan: Plan): string[] {
   if (meta?.text("chapters") === "strip") container.push("strip chapters");
   if (container.length === 1) container.push("keep metadata, track titles, attachments, and chapters");
 
-  return [video, `Audio: ${audio.join("; ")}`, subtitles, `Container: ${container.join("; ")}`];
+  return [video, `Audio: ${audio.join("; ")}`, subtitles, `Container: ${container.join("; ")}`, outputLine(plan.publish ?? REPLACE)];
+}
+
+function outputLine(publish: Publish): string {
+  if (publish.mode !== "move") return "Output: replace the source in place";
+  let line = `Output: move to ${publish.destination}`;
+  if (!publish.preserve_structure) line += ", without the library's folders";
+  if (publish.keep_source) line += "; keep the source";
+  else if (publish.prune_empty_dirs) line += "; delete the source and the folders it leaves empty";
+  else line += "; delete the source";
+  return line;
 }
 
 const BITMAP_SUBTITLES = ["hdmv_pgs_subtitle", "dvd_subtitle", "dvb_subtitle"];
@@ -670,10 +742,16 @@ function command(plan: Plan, file: FileFacts): string[] {
   return args;
 }
 
+interface Walk {
+  outcome: Outcome;
+  path: string[];
+  decisions: string[];
+  plan: Plan;
+}
+
 /** Walks a graph for one file. The graph must have no error issues. */
-export function testGraph(graph: Graph, file: FileFacts): FlowTest {
+function walk(graph: Graph, file: FileFacts): Walk {
   const a = analyze(graph);
-  const check = checkGraph(graph);
   const path: string[] = [];
   const decisions: string[] = [];
   const plan: Plan = { crop: false, dropBitmap: false, removeAll: false };
@@ -703,12 +781,23 @@ export function testGraph(graph: Graph, file: FileFacts): FlowTest {
     else if (type.id === "subtitles.remove_all") plan.removeAll = true;
     else if (type.id === "container.metadata") plan.metadata = o;
     if (type.kind === "output") {
-      outcome = type.id === "output.publish" ? "process" : "skip";
+      plan.publish = publishOf(type.id, o);
+      outcome = PUBLISHING.has(type.id) ? "process" : "skip";
       break;
     }
     id = a.targets.get(id)?.[port] ?? "";
   }
+  return { outcome, path, decisions, plan };
+}
 
+export function testGraph(graph: Graph, file: FileFacts): FlowTest {
+  const { outcome, path, decisions, plan } = walk(graph, file);
   const skip = outcome === "skip";
-  return { check, outcome, path, decisions, file, plan: skip ? ["File: skip, leave it untouched"] : planLines(plan), command: skip ? [] : command(plan, file) };
+  return { check: checkGraph(graph), outcome, path, decisions, file, plan: skip ? ["File: skip, leave it untouched"] : planLines(plan), command: skip ? [] : command(plan, file) };
+}
+
+/** How a graph publishes one file, or undefined when the file is skipped. */
+export function publishPolicy(graph: Graph, file: FileFacts): Publish | undefined {
+  const { outcome, plan } = walk(graph, file);
+  return outcome === "process" ? (plan.publish ?? REPLACE) : undefined;
 }

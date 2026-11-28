@@ -14,6 +14,7 @@ import (
 	"github.com/zekurio/anvil/internal/textout"
 	"github.com/zekurio/anvil/pkg/config"
 	"github.com/zekurio/anvil/pkg/domain"
+	"github.com/zekurio/anvil/pkg/flow"
 	"github.com/zekurio/anvil/pkg/pipeline"
 	replacepkg "github.com/zekurio/anvil/pkg/replace"
 	"github.com/zekurio/anvil/pkg/scanner"
@@ -25,6 +26,7 @@ type preflightStore interface {
 	FindMediaSourceByPath(context.Context, domain.LibraryName, string) (domain.MediaSource, bool, error)
 	FindMediaAssetByPath(context.Context, domain.MediaSourceID, string) (domain.MediaAsset, bool, error)
 	FindJobForTarget(context.Context, domain.MediaSourceID, domain.MediaAssetID) (domain.Job, bool, error)
+	GetFlow(context.Context, int64) (store.Flow, error)
 }
 
 type preflightReport struct {
@@ -62,9 +64,9 @@ type preflightCandidate struct {
 }
 
 type preflightLibrary struct {
-	Name string `json:"name"`
-	Kind string `json:"kind"`
-	Root string `json:"root"`
+	Name      string `json:"name"`
+	Root      string `json:"root"`
+	Reprocess bool   `json:"reprocess"`
 }
 
 type preflightSource struct {
@@ -114,7 +116,6 @@ type preflightPaths struct {
 type preflightPublish struct {
 	Action             string            `json:"action"`
 	Mode               string            `json:"mode,omitempty"`
-	CopyPath           string            `json:"copy_path,omitempty"`
 	ReplaceTarget      string            `json:"replace_target,omitempty"`
 	ReplacementBackup  string            `json:"replacement_backup,omitempty"`
 	HandoffDestination string            `json:"handoff_destination,omitempty"`
@@ -214,9 +215,16 @@ func buildPreflightReport(ctx context.Context, cfg config.Config, opts options, 
 		if err != nil {
 			return preflightReport{}, fmt.Errorf("preflight library %q: %w", name, err)
 		}
+		publish, publishWarnings, err := preflightLibraryPublish(ctx, state, library)
+		if err != nil {
+			return preflightReport{}, fmt.Errorf("preflight library %q: %w", name, err)
+		}
+		for _, warning := range publishWarnings {
+			appendUnique(&report.Warnings, fmt.Sprintf("%s: %s", name, warning))
+		}
 		report.Summary.Libraries++
 		for _, candidate := range plan.Candidates {
-			item, err := buildPreflightCandidate(ctx, cfg, state, candidate, library)
+			item, err := buildPreflightCandidate(ctx, cfg, state, candidate, library, publish)
 			if err != nil {
 				return preflightReport{}, err
 			}
@@ -235,7 +243,29 @@ func buildPreflightReport(ctx context.Context, cfg config.Config, opts options, 
 	return report, nil
 }
 
-func buildPreflightCandidate(ctx context.Context, cfg config.Config, state preflightStore, candidate scanner.CandidatePlan, library domain.Library) (preflightCandidate, error) {
+// preflightLibraryPublish picks the publish policy preflight plans a
+// library's files with. The flow decides it per file from facts only a probe
+// has, so preflight takes the first way the flow can publish and says so
+// when there is more than one.
+func preflightLibraryPublish(ctx context.Context, state preflightStore, library domain.Library) (domain.PublishPolicy, []string, error) {
+	if state == nil {
+		return domain.PublishPolicy{}, nil, nil
+	}
+	stored, err := state.GetFlow(ctx, library.FlowID)
+	if err != nil {
+		return domain.PublishPolicy{}, nil, fmt.Errorf("load flow %d: %w", library.FlowID, err)
+	}
+	policies := flow.PublishPolicies(stored.Graph)
+	switch len(policies) {
+	case 0:
+		return domain.PublishPolicy{}, []string{fmt.Sprintf("flow %q never publishes a result; every file would be skipped", stored.Name)}, nil
+	case 1:
+		return policies[0], nil, nil
+	}
+	return policies[0], []string{fmt.Sprintf("flow %q publishes in %d ways depending on the file; the plans below show its first output", stored.Name, len(policies))}, nil
+}
+
+func buildPreflightCandidate(ctx context.Context, cfg config.Config, state preflightStore, candidate scanner.CandidatePlan, library domain.Library, publish domain.PublishPolicy) (preflightCandidate, error) {
 	source := domain.MediaSource{
 		LibraryName:  candidate.LibraryName,
 		Kind:         candidate.SourceKind,
@@ -287,6 +317,7 @@ func buildPreflightCandidate(ctx context.Context, cfg config.Config, state prefl
 		return preflightCandidate{}, err
 	}
 	jobContext := pipeline.NewJobContext(domain.Job{}, source, asset, library)
+	jobContext.Profile.Publish = publish
 	jobContext.StagingDir = stagingDir
 	inputPath := jobContext.InputPath
 	destination, err := replacepkg.PlanDestination(jobContext)
@@ -294,13 +325,13 @@ func buildPreflightCandidate(ctx context.Context, cfg config.Config, state prefl
 		return preflightCandidate{}, err
 	}
 	jobContext.DestinationPath = destination
-	jobContext.OutputPath = replacepkg.ArtifactPath(library, destination, "<new>")
+	jobContext.OutputPath = replacepkg.ArtifactPath(publish, destination, "<new>")
 
 	item := preflightCandidate{
 		Library: preflightLibrary{
-			Name: string(library.Name),
-			Kind: string(library.Kind),
-			Root: library.Path,
+			Name:      string(library.Name),
+			Root:      library.Path,
+			Reprocess: library.Reprocess,
 		},
 		Source: preflightSource{
 			RelativePath: candidate.SourceRelativePath,
@@ -330,7 +361,7 @@ func buildPreflightCandidate(ctx context.Context, cfg config.Config, state prefl
 		},
 		Cleanup: preflightCleanupPlan(library, jobContext),
 	}
-	item.Publish, item.Warnings = preflightPublishPlan(library, jobContext)
+	item.Publish, item.Warnings = preflightPublishPlan(jobContext)
 	item.Warnings = append(item.Warnings, preflightCleanupWarnings(item.Cleanup)...)
 	item.Warnings = append(item.Warnings, preflightExcludeWarnings(candidate)...)
 	item.Description = preflightDescription(item.Status)
@@ -388,34 +419,34 @@ func matchStoredOccurrence(ctx context.Context, state preflightStore, candidate 
 	return nil
 }
 
-// preflightCleanupWarnings spells out which destructive download cleanup a
-// publish would perform.
+// preflightCleanupWarnings spells out which destructive source cleanup a
+// move would perform.
 func preflightCleanupWarnings(cleanup preflightCleanup) []string {
 	if !cleanup.DownloadCleanupSource {
 		return nil
 	}
-	warnings := []string{"download cleanup_source_media=true would remove source media after handoff"}
+	warnings := []string{"the move deletes the source media after it publishes"}
 	if !cleanup.DownloadPruneEmptyDirs {
 		return warnings
 	}
 	switch {
 	case cleanup.DownloadCleanupPlanError != "":
-		warnings = append(warnings, "download residue cleanup planning failed: "+cleanup.DownloadCleanupPlanError)
+		warnings = append(warnings, "residue cleanup planning failed: "+cleanup.DownloadCleanupPlanError)
 	case len(cleanup.DownloadCleanupBlockers) > 0:
-		warnings = append(warnings, fmt.Sprintf("download residue cleanup is blocked by %d unignorable or unsafe package entries; no package residue or directories would be removed", len(cleanup.DownloadCleanupBlockers)))
+		warnings = append(warnings, fmt.Sprintf("residue cleanup is blocked by %d unignorable or unsafe package entries; no package residue or directories would be removed", len(cleanup.DownloadCleanupBlockers)))
 	default:
-		warnings = append(warnings, "download prune_empty_dirs=true would prune empty parent directories after journaled source and residue cleanup")
+		warnings = append(warnings, "the move prunes the folders the source leaves empty, after journaled source and residue cleanup")
 		if len(cleanup.DownloadCleanupEntries) > 0 {
-			warnings = append(warnings, fmt.Sprintf("download residue cleanup would journal and remove %d explicitly ignorable package files", len(cleanup.DownloadCleanupEntries)))
+			warnings = append(warnings, fmt.Sprintf("residue cleanup would journal and remove %d explicitly ignorable package files", len(cleanup.DownloadCleanupEntries)))
 		}
 	}
 	return warnings
 }
 
-func preflightPublishPlan(library domain.Library, job *pipeline.JobContext) (preflightPublish, []string) {
+func preflightPublishPlan(job *pipeline.JobContext) (preflightPublish, []string) {
 	publish := preflightPublish{Action: "none"}
 	var warnings []string
-	if library.Kind == domain.LibraryKindDownload {
+	if job.Profile.Publish.Moves() {
 		plan, err := replacepkg.PlanHandoff(job)
 		if err != nil {
 			return preflightPublish{Action: "error", Plan: map[string]string{"error": err.Error()}}, warnings
@@ -423,50 +454,45 @@ func preflightPublishPlan(library domain.Library, job *pipeline.JobContext) (pre
 		publish.Action = "handoff"
 		publish.Mode = plan.Action
 		publish.HandoffDestination = plan.Destination
-		publish.Destructive = plan.Mode == domain.HandoffModeMove
-		if plan.Mode == domain.HandoffModeMove {
-			warnings = append(warnings, "download handoff mode is move; encoded output is moved to the handoff destination")
-		}
+		publish.Destructive = plan.CleanupSourceMedia
 		return publish, warnings
 	}
-	plan, err := replacepkg.PlanReplacement(job.InputPath, filepath.Ext(job.DestinationPath), library.Media.ReplacementMode)
+	plan, err := replacepkg.PlanReplacement(job.InputPath, filepath.Ext(job.DestinationPath))
 	if err != nil {
 		return preflightPublish{Action: "error", Plan: map[string]string{"error": err.Error()}}, warnings
 	}
-	publish.Action = plan.Action
-	publish.Mode = string(plan.Mode)
-	publish.CopyPath = plan.CopyPath
+	publish.Action = "replace"
+	publish.Mode = "replace"
 	publish.ReplaceTarget = plan.ReplaceTarget
 	publish.ReplacementBackup = plan.BackupPath
-	publish.Destructive = plan.Action == "replace"
-	if plan.Action == "replace" {
-		warnings = append(warnings, "media replacement mode is replace; source media would be moved through an .anvil.bak backup and replaced")
-	}
+	publish.Destructive = true
+	warnings = append(warnings, "the flow replaces in place; source media would be moved through an .anvil.bak backup and replaced")
 	return publish, warnings
 }
 
 func preflightCleanupPlan(library domain.Library, job *pipeline.JobContext) preflightCleanup {
 	var cleanup preflightCleanup
-	if library.Kind != domain.LibraryKindDownload {
+	plan, err := replacepkg.PlanHandoff(job)
+	if !job.Profile.Publish.Moves() || err != nil {
 		return cleanup
 	}
 	cleanup.DownloadCleanupTriggered = true
-	cleanup.DownloadCleanupSource = library.Download.CleanupSourceMedia
-	cleanup.DownloadPruneEmptyDirs = library.Download.PruneEmptyDirs
+	cleanup.DownloadCleanupSource = plan.CleanupSourceMedia
+	cleanup.DownloadPruneEmptyDirs = plan.PruneEmptyDirs
 	cleanup.DownloadSourceMediaPath = job.InputPath
 	cleanup.DownloadPruneStart = filepath.Dir(job.InputPath)
 	if !cleanup.DownloadCleanupSource || !cleanup.DownloadPruneEmptyDirs {
 		return cleanup
 	}
-	plan, err := replacepkg.PlanResidueCleanup(library.Path, job.InputPath, library.Download.IgnorableGlobs)
+	residue, err := replacepkg.PlanResidueCleanup(library.Path, job.InputPath, library.IgnorableGlobs)
 	if err != nil {
 		cleanup.DownloadCleanupPlanError = err.Error()
 		return cleanup
 	}
-	cleanup.DownloadPruneStart = plan.Start
-	cleanup.DownloadCleanupEntries = append([]replacepkg.CleanupEntry(nil), plan.Entries...)
-	cleanup.DownloadCleanupDirs = append([]replacepkg.CleanupEntry(nil), plan.Directories...)
-	cleanup.DownloadCleanupBlockers = append([]replacepkg.CleanupBlocker(nil), plan.Blockers...)
+	cleanup.DownloadPruneStart = residue.Start
+	cleanup.DownloadCleanupEntries = append([]replacepkg.CleanupEntry(nil), residue.Entries...)
+	cleanup.DownloadCleanupDirs = append([]replacepkg.CleanupEntry(nil), residue.Directories...)
+	cleanup.DownloadCleanupBlockers = append([]replacepkg.CleanupBlocker(nil), residue.Blockers...)
 	return cleanup
 }
 
@@ -572,7 +598,7 @@ func writePreflightReport(out io.Writer, report preflightReport) error {
 				item.Asset.SizeBytes,
 				item.Asset.ModTime.Format(time.RFC3339),
 			)
-			w.Printf("  library: kind=%s root=%s\n", item.Library.Kind, item.Library.Root)
+			w.Printf("  library: root=%s reprocess=%t\n", item.Library.Root, item.Library.Reprocess)
 			w.Printf("  source: %s kind=%s size=%d mod=%s asset: %s\n",
 				item.Source.RelativePath,
 				item.Source.Kind,
@@ -599,19 +625,19 @@ func writePreflightReport(out io.Writer, report preflightReport) error {
 				item.Cleanup.DownloadPruneEmptyDirs,
 			)
 			if item.Cleanup.DownloadCleanupTriggered {
-				w.Printf("  download cleanup: source=%s prune_start=%s\n", item.Cleanup.DownloadSourceMediaPath, item.Cleanup.DownloadPruneStart)
+				w.Printf("  source cleanup: source=%s prune_start=%s\n", item.Cleanup.DownloadSourceMediaPath, item.Cleanup.DownloadPruneStart)
 			}
 			if item.Cleanup.DownloadCleanupPlanError != "" {
-				w.Printf("  download residue cleanup planning error: %s\n", item.Cleanup.DownloadCleanupPlanError)
+				w.Printf("  residue cleanup planning error: %s\n", item.Cleanup.DownloadCleanupPlanError)
 			}
 			for _, entry := range item.Cleanup.DownloadCleanupEntries {
-				w.Printf("  download residue cleanup planned: %s\n", entry.Path)
+				w.Printf("  residue cleanup planned: %s\n", entry.Path)
 			}
 			for _, directory := range item.Cleanup.DownloadCleanupDirs {
-				w.Printf("  download empty directory cleanup planned: %s\n", directory.Path)
+				w.Printf("  empty directory cleanup planned: %s\n", directory.Path)
 			}
 			for _, blocker := range item.Cleanup.DownloadCleanupBlockers {
-				w.Printf("  download residue cleanup blocker: %s: %s\n", blocker.Path, blocker.Reason)
+				w.Printf("  residue cleanup blocker: %s: %s\n", blocker.Path, blocker.Reason)
 			}
 			for _, warning := range item.Warnings {
 				w.Printf("  warning: %s\n", warning)
@@ -622,12 +648,10 @@ func writePreflightReport(out io.Writer, report preflightReport) error {
 
 func writePreflightPublish(w *textout.Writer, publish preflightPublish) {
 	switch publish.Action {
-	case "copy":
-		w.Printf("  publish: copy %s\n", publish.CopyPath)
 	case "replace":
 		w.Printf("  publish: replace target=%s backup=%s\n", publish.ReplaceTarget, publish.ReplacementBackup)
 	case "handoff":
-		w.Printf("  publish: handoff mode=%s destination=%s\n", publish.Mode, publish.HandoffDestination)
+		w.Printf("  publish: move mode=%s destination=%s\n", publish.Mode, publish.HandoffDestination)
 	case "error":
 		w.Printf("  publish: error %v\n", publish.Plan)
 	default:

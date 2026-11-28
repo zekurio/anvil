@@ -18,17 +18,17 @@ import (
 
 // A publish that was interrupted is finished by the next attempt from its
 // journal. Whether the source media is gone afterwards was decided when the
-// operation was journaled, and the library may have been edited since: the
-// completion has to record what the operation did, not what the library says
+// operation was journaled, and the flow may have been edited since: the
+// completion has to record what the operation did, not what the flow says
 // now.
 func TestRecoveredPublishCompletesFromTheJournaledOperation(t *testing.T) {
 	tests := []struct {
 		name            string
 		journaledRemove bool
-		libraryRemoves  bool
+		flowRemoves     bool
 	}{
-		{"the source was removed, and the library no longer removes sources", true, false},
-		{"the source was kept, and the library now removes sources", false, true},
+		{"the source was removed, and the flow no longer removes sources", true, false},
+		{"the source was kept, and the flow now removes sources", false, true},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -49,18 +49,22 @@ func TestRecoveredPublishCompletesFromTheJournaledOperation(t *testing.T) {
 					t.Error(err)
 				}
 			})
-			graph := flow.Graph{
-				Nodes: []flow.Node{{ID: "in", Type: "input"}, {ID: "out", Type: "output.publish"}},
-				Edges: []flow.Edge{{From: "in", To: "out"}},
+			moveGraph := func(removes bool) flow.Graph {
+				return flow.Graph{
+					Nodes: []flow.Node{
+						{ID: "in", Type: "input"},
+						{ID: "out", Type: "output.move", Options: map[string]any{"destination": handoff, "keep_source": !removes}},
+					},
+					Edges: []flow.Edge{{From: "in", To: "out"}},
+				}
 			}
-			created, err := state.CreateFlow(ctx, store.FlowInput{Name: "Remux", Graph: graph}, time.Now())
+			created, err := state.CreateFlow(ctx, store.FlowInput{Name: "Remux", Graph: moveGraph(test.journaledRemove)}, time.Now())
 			if err != nil {
 				t.Fatal(err)
 			}
 			library := config.LibraryConfig{
-				Name: "downloads", Kind: "download", Path: downloads, FlowID: created.ID,
-				Download: config.DownloadLibraryConfig{HandoffPath: handoff, PackageMode: "file", HandoffMode: "move", CleanupSourceMedia: test.journaledRemove},
-			}
+				Name: "downloads", Path: downloads, FlowID: created.ID, Reprocess: true, PackageMode: "file",
+			}.WithDefaults()
 			stored, err := state.CreateLibrary(ctx, library, time.Now())
 			if err != nil {
 				t.Fatal(err)
@@ -98,8 +102,10 @@ func TestRecoveredPublishCompletesFromTheJournaledOperation(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			// The operator edits the library before the daemon is back.
-			library.Download.CleanupSourceMedia = test.libraryRemoves
+			// The operator edits the flow before the daemon is back.
+			if _, err := state.UpdateFlow(ctx, created.ID, store.FlowInput{Name: "Remux", Graph: moveGraph(test.flowRemoves)}, created.Revision, time.Now()); err != nil {
+				t.Fatal(err)
+			}
 			cfg := config.Default()
 			cfg.Libraries = map[string]config.LibraryConfig{"downloads": library}
 			runner := Runner{

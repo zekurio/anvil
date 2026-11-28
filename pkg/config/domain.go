@@ -87,12 +87,14 @@ func (c Config) StagingCleanupAge() time.Duration {
 
 // Runtime converts a TOML library into the shape the daemon runs libraries
 // in. include, exclude, and ignore_regex become the equivalent rule list; the
-// flow is left for the importer to assign from the profile name.
+// flow is left for the importer to assign from the profile name. A download
+// library keeps its intake settings and reprocesses what it finds again; its
+// handoff settings have no place on a library any more (a flow's move output
+// says where a result goes), so the importer pauses it.
 func (l LegacyLibraryConfig) Runtime() LibraryConfig {
 	rules, fallback := LegacyRules(l.Include, l.Exclude, l.IgnoreRegex)
-	return LibraryConfig{
+	library := LibraryConfig{
 		Name:             l.Name,
-		Kind:             l.Kind,
 		Path:             l.Path,
 		ScanInterval:     l.ScanInterval,
 		Priority:         l.Priority,
@@ -100,15 +102,25 @@ func (l LegacyLibraryConfig) Runtime() LibraryConfig {
 		Arr:              l.Arr,
 		Rules:            rules,
 		RuleFallback:     fallback,
-		Media:            l.Media,
-		Download:         l.Download,
 	}
+	if l.IsDownload() {
+		library.Reprocess = true
+		library.StableFor = l.Download.StableFor
+		library.PackageMode = l.Download.PackageMode
+		library.IgnorableGlobs = l.Download.IgnorableGlobs
+	}
+	return library.WithDefaults()
+}
+
+// IsDownload reports whether the TOML library processed downloader output
+// and handed it off instead of replacing media in place.
+func (l LegacyLibraryConfig) IsDownload() bool {
+	return l.Kind == "download"
 }
 
 func (l LibraryConfig) ToDomain(arr ArrConfig) domain.Library {
 	return domain.Library{
 		Name:   domain.LibraryName(l.Name),
-		Kind:   domain.LibraryKind(l.Kind),
 		Path:   l.Path,
 		FlowID: l.FlowID,
 		Metadata: domain.MetadataProviderPolicy{
@@ -117,19 +129,8 @@ func (l LibraryConfig) ToDomain(arr ArrConfig) domain.Library {
 			APIKey:     arr.APIKey,
 			APIKeyFile: arr.APIKeyFile,
 		},
-		Media: domain.MediaLibraryPolicy{
-			ReplacementMode: domain.ReplacementMode(l.Media.ReplacementMode),
-		},
-		Download: domain.DownloadLibraryPolicy{
-			HandoffPath:          l.Download.HandoffPath,
-			StableFor:            l.Download.StableFor.Duration,
-			PackageMode:          domain.DownloadPackageMode(l.Download.PackageMode),
-			HandoffMode:          domain.HandoffMode(l.Download.HandoffMode),
-			PreserveRelativePath: l.Download.PreserveRelativePath,
-			CleanupSourceMedia:   l.Download.CleanupSourceMedia,
-			PruneEmptyDirs:       l.Download.PruneEmptyDirs,
-			IgnorableGlobs:       append([]string(nil), l.Download.IgnorableGlobs...),
-		},
+		Reprocess:      l.Reprocess,
+		IgnorableGlobs: append([]string(nil), l.IgnorableGlobs...),
 	}
 }
 
@@ -214,6 +215,9 @@ func (p ProfileConfig) ToDomain() domain.Profile {
 		Chapters: domain.ChapterPolicy{
 			Mode: domain.MetadataMode(p.Chapters.Mode),
 		},
+		// A TOML profile has no say in publication; the flow it becomes
+		// replaces in place.
+		Publish: domain.PublishPolicy{Mode: domain.PublishReplace},
 	}
 }
 

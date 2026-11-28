@@ -106,9 +106,18 @@ export function createLiveCheck(draft: FlowDraft, seed: LiveCheckSeed) {
     hint(id: string, summary: string): void {
       hints.set(id, summary);
     },
-    /** Shows issues the daemon reported another way, e.g. with a refused save. */
+    /**
+     * Shows issues the daemon reported another way, next to those of the last
+     * check. A refused save may name problems the check cannot see, such as a
+     * move destination that overlaps a library folder; the next check, after
+     * an edit, replaces them.
+     */
     report(issues: Issue[]): void {
-      setCheck((last) => ({ valid: !issues.some((issue) => issue.severity === "error"), issues, nodes: last.nodes }));
+      const same = (a: Issue, b: Issue) => a.severity === b.severity && a.node_id === b.node_id && a.field === b.field && a.message === b.message;
+      setCheck((last) => {
+        const merged = [...last.issues, ...issues.filter((issue) => !last.issues.some((known) => same(known, issue)))];
+        return { valid: !merged.some((issue) => issue.severity === "error"), issues: merged, nodes: last.nodes };
+      });
     },
   };
 }

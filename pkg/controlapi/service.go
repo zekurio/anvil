@@ -2,7 +2,6 @@ package controlapi
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -14,6 +13,7 @@ import (
 	"github.com/zekurio/anvil/pkg/config"
 	"github.com/zekurio/anvil/pkg/control"
 	"github.com/zekurio/anvil/pkg/domain"
+	"github.com/zekurio/anvil/pkg/flow"
 	"github.com/zekurio/anvil/pkg/mediapath"
 	"github.com/zekurio/anvil/pkg/pipeline"
 	replacepkg "github.com/zekurio/anvil/pkg/replace"
@@ -179,7 +179,11 @@ func (s Service) ListJobs(ctx context.Context, query control.JobQuery) (control.
 		response.Jobs = append(response.Jobs, item)
 	}
 	if selector.AbsolutePath != "" && response.Matched == 0 {
-		response.PathOutsideLibraries = !pathUnderAnyLibrary(cfg, selector.AbsolutePath)
+		destinations, err := s.moveDestinations(ctx)
+		if err != nil {
+			return control.JobListResponse{}, err
+		}
+		response.PathOutsideLibraries = !pathUnderAnyLibrary(cfg, destinations, selector.AbsolutePath)
 	}
 	if query.WithSelection {
 		if err := s.attachStreamSelections(ctx, response.Jobs); err != nil {
@@ -190,13 +194,18 @@ func (s Service) ListJobs(ctx context.Context, query control.JobQuery) (control.
 }
 
 // pathUnderAnyLibrary reports whether an absolute path lies under a configured
-// library root or one of its handoff destinations. A path under none of them
+// library root or a folder a flow moves results to. A path under none of them
 // almost certainly cannot match a job, which is a different answer from "no job
 // matched" and has to stay distinguishable from it.
 //
 // Containment is lexical, matching how paths are compared everywhere else here,
 // so the flag can never contradict matched_on.
-func pathUnderAnyLibrary(cfg config.Config, absolutePath string) bool {
+func pathUnderAnyLibrary(cfg config.Config, moveDestinations []string, absolutePath string) bool {
+	for _, destination := range moveDestinations {
+		if pathUnderRoot(destination, absolutePath) {
+			return true
+		}
+	}
 	for name := range cfg.Libraries {
 		library, ok := cfg.FindLibrary(domain.LibraryName(name))
 		if !ok {
@@ -205,11 +214,21 @@ func pathUnderAnyLibrary(cfg config.Config, absolutePath string) bool {
 		if pathUnderRoot(library.Path, absolutePath) {
 			return true
 		}
-		if pathUnderRoot(library.Download.HandoffPath, absolutePath) {
-			return true
-		}
 	}
 	return false
+}
+
+// moveDestinations lists the folders every stored flow moves results to.
+func (s Service) moveDestinations(ctx context.Context) ([]string, error) {
+	flows, err := s.Store.ListFlows(ctx)
+	if err != nil {
+		return nil, err
+	}
+	var destinations []string
+	for _, stored := range flows {
+		destinations = append(destinations, flow.MoveDestinations(stored.Graph)...)
+	}
+	return destinations, nil
 }
 
 // assetKeyPath drops the asset key for a job that has no asset, so a match can
@@ -386,54 +405,11 @@ func (s Service) cleanupOrphanedPart(ctx context.Context, jobID domain.JobID) {
 		log("list attempts", err)
 		return
 	}
-	destinations, destErr := stagedDestinations(job, source, asset, attempts)
+	destinations, destErr := replacepkg.StagedDestinations(job, source, asset, attempts)
 	if destErr != nil {
 		log("resolve some staged destinations", destErr)
 	}
 	s.removeStagedParts(ctx, jobID, destinations)
-}
-
-// stagedDestination is a publish destination together with the library
-// snapshot that placed it, which also decides where its part file was written.
-type stagedDestination struct {
-	Library domain.Library
-	Path    string
-}
-
-// stagedDestinations reports every destination the job's attempts staged at.
-// The destination is fixed by the stage step under the attempt's resolved
-// config, so the persisted per-attempt snapshots — not the current runtime
-// config, which a reload may have changed or removed since — decide where an
-// orphaned part file can be.
-func stagedDestinations(job domain.Job, source domain.MediaSource, asset domain.MediaAsset, attempts []domain.Attempt) ([]stagedDestination, error) {
-	var destinations []stagedDestination
-	seen := make(map[string]struct{})
-	var errs []error
-	for _, attempt := range attempts {
-		// The profile is recorded once the flow step has resolved it, which
-		// is before anything is staged. An attempt without one never staged.
-		if len(attempt.ResolvedLibrary) == 0 || len(attempt.ResolvedProfile) == 0 {
-			continue
-		}
-		var library domain.Library
-		if err := json.Unmarshal(attempt.ResolvedLibrary, &library); err != nil {
-			errs = append(errs, fmt.Errorf("decode attempt %d resolved library: %w", attempt.Number, err))
-			continue
-		}
-		destination, err := replacepkg.PlanDestination(pipeline.NewJobContext(job, source, asset, library))
-		if err != nil {
-			errs = append(errs, fmt.Errorf("plan destination for attempt %d: %w", attempt.Number, err))
-			continue
-		}
-		// Two snapshots can plan the same destination from different handoff
-		// roots, and the part path follows the root, so dedup on the part.
-		part := replacepkg.ArtifactPath(library, destination, replacepkg.PartJobLabel(job.ID))
-		if _, ok := seen[part]; !ok {
-			seen[part] = struct{}{}
-			destinations = append(destinations, stagedDestination{Library: library, Path: destination})
-		}
-	}
-	return destinations, errors.Join(errs...)
 }
 
 // resolveJobReferences turns operator-supplied job references into ids. Both
@@ -569,11 +545,14 @@ func (s Service) jobResponse(ctx context.Context, cfg config.Config, summary sto
 	if err != nil {
 		return control.JobResponse{}, jobPathKeys{}, false, err
 	}
+	var planned domain.PublishPolicy
 	if hasOperation {
 		item.DestinationPath = filepath.Clean(operation.DestinationPath)
 		item.PublishStage = string(operation.Stage)
 	} else if libraryOK {
-		item.DestinationPath = plannedDestination(cfg, summary.Job, source, asset)
+		if item.DestinationPath, planned, err = s.plannedDestination(ctx, summary.Job, source, asset); err != nil {
+			return control.JobResponse{}, jobPathKeys{}, false, err
+		}
 	}
 	keys := jobPathKeys{
 		relative: uniquePaths(
@@ -595,9 +574,9 @@ func (s Service) jobResponse(ctx context.Context, cfg config.Config, summary sto
 				path: filepath.Join(operation.HandoffRoot, filepath.FromSlash(source.RelativePath)),
 				side: control.PathMatchDestinationDirectory,
 			})
-		} else if !hasOperation && libraryOK && library.Download.PreserveRelativePath && strings.TrimSpace(library.Download.HandoffPath) != "" {
+		} else if !hasOperation && planned.Moves() && planned.PreserveStructure {
 			packageDestinations = append(packageDestinations, absolutePathKey{
-				path: filepath.Join(library.Download.HandoffPath, filepath.FromSlash(source.RelativePath)),
+				path: filepath.Join(planned.Destination, filepath.FromSlash(source.RelativePath)),
 				side: control.PathMatchDestinationDirectory,
 			})
 		}
@@ -624,16 +603,26 @@ func (s Service) jobOccurrence(ctx context.Context, job domain.Job) (domain.Medi
 	return source, asset, nil
 }
 
-func plannedDestination(cfg config.Config, job domain.Job, source domain.MediaSource, asset domain.MediaAsset) string {
-	library, err := cfg.ResolveLibrary(job.LibraryName)
+// plannedDestination is where the job's latest attempt that resolved a
+// profile would publish, with the policy behind it. A job no attempt has
+// resolved yet has no planned destination: the flow decides it per file.
+func (s Service) plannedDestination(ctx context.Context, job domain.Job, source domain.MediaSource, asset domain.MediaAsset) (string, domain.PublishPolicy, error) {
+	attempts, err := s.Store.ListAttemptsForJob(ctx, job.ID)
 	if err != nil {
-		return ""
+		return "", domain.PublishPolicy{}, err
 	}
-	destination, err := replacepkg.PlanDestination(pipeline.NewJobContext(job, source, asset, library))
-	if err != nil {
-		return ""
+	for index := len(attempts) - 1; index >= 0; index-- {
+		jobContext, ok, err := replacepkg.AttemptJobContext(job, source, asset, attempts[index])
+		if err != nil || !ok {
+			continue
+		}
+		destination, err := replacepkg.PlanDestination(jobContext)
+		if err != nil {
+			return "", domain.PublishPolicy{}, nil
+		}
+		return filepath.Clean(destination), jobContext.Profile.Publish, nil
 	}
-	return filepath.Clean(destination)
+	return "", domain.PublishPolicy{}, nil
 }
 
 // newError builds a structured control error with the daemon's own wording.

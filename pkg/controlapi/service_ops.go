@@ -456,17 +456,21 @@ func (s Service) CleanupStaging(ctx context.Context, request control.StagingClea
 		Protected: result.Protected, Errors: result.Errors, ProtectedJobs: result.ProtectedJobs,
 	}
 	if request.LegacyParts {
-		var roots []string
+		destinations, err := s.moveDestinations(ctx)
+		if err != nil {
+			return response, fmt.Errorf("list move destinations for legacy cleanup: %w", err)
+		}
+		roots := make([]string, 0, len(cfg.Libraries)+len(destinations))
 		for _, library := range cfg.Libraries {
-			root := library.Path
-			if library.IsDownload() {
-				root = library.Download.HandoffPath
-			}
+			roots = append(roots, library.Path)
+		}
+		roots = append(roots, destinations...)
+		for index, root := range roots {
 			absolute, err := filepath.Abs(root)
 			if err != nil {
 				return response, fmt.Errorf("resolve legacy cleanup root: %w", err)
 			}
-			roots = append(roots, absolute)
+			roots[index] = absolute
 		}
 		legacy, err := replace.SweepLegacyParts(ctx, s.Store, replace.LegacySweepOptions{
 			Roots: roots, OlderThan: age, Now: s.now(), DryRun: request.DryRun,

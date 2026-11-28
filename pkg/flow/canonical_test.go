@@ -26,7 +26,7 @@ func canonicalSample() Graph {
 			{ID: "copy", Type: typeVideoCopy, X: 64, Y: 256},
 			{ID: "encode", Type: typeVideoEncode, X: 512, Y: 256, Options: map[string]any{"preset": "4", "target": 93.5, "ffmpeg_args": []any{"-g", "240"}}},
 			{ID: "audio", Type: typeAudioKeep, X: 288, Y: 368, Options: map[string]any{"languages": []any{"orig", "eng"}}},
-			{ID: "out", Type: typeOutputPublish, X: 288, Y: 480},
+			{ID: "out", Type: typeOutputReplace, X: 288, Y: 480},
 		},
 		Edges: []Edge{
 			{From: "in", To: "check"},
@@ -43,13 +43,13 @@ func TestCanonicalForm(t *testing.T) {
 	g := chain(
 		Node{ID: "in", Type: typeInput, Label: "Start", X: 16, Y: 16},
 		Node{ID: "check", Type: typeCheckBitrate, Options: map[string]any{"kbps": 4000.0}},
-		Node{ID: "out", Type: typeOutputPublish},
+		Node{ID: "out", Type: typeOutputReplace},
 	)
 	g.Edges = append(g.Edges, Edge{From: "check", Port: 1, To: "out"})
 	want := `{"nodes":[` +
 		`{"id":"check","type":"check.bitrate","options":{"kbps":4000,"op":"above"}},` +
 		`{"id":"in","type":"input","options":{}},` +
-		`{"id":"out","type":"output.publish","options":{}}],` +
+		`{"id":"out","type":"output.replace","options":{}}],` +
 		`"edges":[{"from":"check","port":0,"to":"out"},{"from":"check","port":1,"to":"out"},{"from":"in","port":0,"to":"check"}]}`
 	if got := canonical(t, g); got != want {
 		t.Errorf("Canonical() =\n%s\nwant\n%s", got, want)
@@ -92,7 +92,7 @@ func TestCanonicalIgnoresLayoutLabelsAndOrder(t *testing.T) {
 		{"id":"copy","type":"video.copy","x":0,"y":0},
 		{"id":"encode","type":"video.encode","x":0,"y":0,"options":{"ffmpeg_args":["-g","240"],"target":93.5,"preset":"4"}},
 		{"id":"audio","type":"audio.keep","x":0,"y":0,"options":{"languages":["orig","eng"]}},
-		{"id":"out","type":"output.publish","x":0,"y":0}],
+		{"id":"out","type":"output.replace","x":0,"y":0}],
 		"edges":[
 		{"from":"in","port":0,"to":"check"},{"from":"check","port":0,"to":"copy"},{"from":"check","port":1,"to":"encode"},
 		{"from":"copy","port":0,"to":"audio"},{"from":"encode","port":0,"to":"audio"},{"from":"audio","port":0,"to":"out"}]}`

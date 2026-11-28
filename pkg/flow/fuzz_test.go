@@ -73,7 +73,7 @@ func TestGarbageOptionValuesNeverPanic(t *testing.T) {
 			for _, field := range section.Fields {
 				for _, value := range garbage() {
 					node := newNode("n", def.ID, map[string]any{field.Key: value})
-					g := chain(newNode("in", typeInput, nil), node, newNode("out", typeOutputPublish, nil))
+					g := chain(newNode("in", typeInput, nil), node, newNode("out", typeOutputReplace, nil))
 					if def.Kind == KindCondition {
 						g.Edges = append(g.Edges, Edge{From: "n", Port: 1, To: "out"})
 					}
@@ -160,7 +160,7 @@ func TestRandomValidGraphsEvaluate(t *testing.T) {
 		for i := 1; i <= count; i++ {
 			g.Nodes = append(g.Nodes, newNode("n"+string(rune('a'+i)), middle[random.Intn(len(middle))].ID, nil))
 		}
-		g.Nodes = append(g.Nodes, newNode("publish", typeOutputPublish, nil), newNode("skip", typeOutputSkip, nil))
+		g.Nodes = append(g.Nodes, newNode("publish", typeOutputReplace, nil), newNode("skip", typeOutputSkip, nil))
 		for i, node := range g.Nodes[:count+1] {
 			for port := range nodeDefsByID[node.Type].Outputs {
 				target := i + 1 + random.Intn(len(g.Nodes)-i-1)

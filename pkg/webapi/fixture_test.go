@@ -286,7 +286,7 @@ func skipHEVC() flow.Graph {
 			{ID: "skip", Type: "output.skip"},
 			{ID: "encode", Type: "video.encode", Options: map[string]any{"quality_mode": "fixed", "crf": 30, "preset": "10"}},
 			{ID: "audio", Type: "audio.keep", Options: map[string]any{"languages": []string{"orig"}}},
-			{ID: "publish", Type: "output.publish"},
+			{ID: "publish", Type: "output.replace"},
 		},
 		Edges: []flow.Edge{
 			{From: "in", To: "is-hevc"},
@@ -295,6 +295,17 @@ func skipHEVC() flow.Graph {
 			{From: "encode", To: "audio"},
 			{From: "audio", To: "publish"},
 		},
+	}
+}
+
+// moveTo is a remux that moves every file to folder and deletes the source.
+func moveTo(folder string) flow.Graph {
+	return flow.Graph{
+		Nodes: []flow.Node{
+			{ID: "in", Type: "input"},
+			{ID: "move", Type: "output.move", Options: map[string]any{"destination": folder}},
+		},
+		Edges: []flow.Edge{{From: "in", To: "move"}},
 	}
 }
 
@@ -312,7 +323,7 @@ func (f *fixture) defaultFlow() FlowSummary {
 func (f *fixture) mediaLibrary(name string, flowID int64) Library {
 	f.t.Helper()
 	return want[Library](f.t, f.send(http.MethodPost, "/api/v1/libraries", LibraryWrite{
-		Name: name, Kind: "media", Path: f.media, FlowID: flowID,
+		Name: name, Path: f.media, FlowID: flowID,
 	}), http.StatusCreated)
 }
 

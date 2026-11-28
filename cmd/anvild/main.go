@@ -494,7 +494,7 @@ func logConfiguredWork(cfg config.Config) {
 	}
 
 	for name, library := range cfg.Libraries {
-		slog.Info("library loaded", "name", name, "kind", library.Kind, "path", library.Path, "flow_id", library.FlowID, "paused", library.Paused, "scan_interval", cfg.ScanIntervalForLibrary(domain.LibraryName(name)))
+		slog.Info("library loaded", "name", name, "reprocess", library.Reprocess, "path", library.Path, "flow_id", library.FlowID, "paused", library.Paused, "scan_interval", cfg.ScanIntervalForLibrary(domain.LibraryName(name)))
 	}
 	slog.Info("scanner, scheduler, worker, and built-in media pipeline are enabled")
 }

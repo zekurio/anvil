@@ -63,6 +63,9 @@ const (
 	FieldStringList FieldType = "string_list"
 	// FieldDuration is a JSON string holding a Go duration such as "20s".
 	FieldDuration FieldType = "duration"
+	// FieldPath is a JSON string holding an absolute folder path, edited
+	// with the daemon's folder picker. It is stored cleaned.
+	FieldPath FieldType = "path"
 )
 
 // Field describes one option of a node type.

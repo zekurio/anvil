@@ -63,20 +63,24 @@ type Monitor struct {
 // scanIdentity is everything about a library that decides what a scan finds.
 // Pausing a library or reassigning its flow changes none of it.
 type scanIdentity struct {
-	Kind         string
-	Path         string
-	Rules        []config.Rule
-	RuleFallback string
-	Download     config.DownloadLibraryConfig
+	Path           string
+	Rules          []config.Rule
+	RuleFallback   string
+	Reprocess      bool
+	StableFor      config.Duration
+	PackageMode    string
+	IgnorableGlobs []string
 }
 
 func scanIdentityOf(library config.LibraryConfig) scanIdentity {
 	return scanIdentity{
-		Kind:         library.Kind,
-		Path:         library.Path,
-		Rules:        library.Rules,
-		RuleFallback: config.NormalizeRuleFallback(library.RuleFallback),
-		Download:     library.Download,
+		Path:           library.Path,
+		Rules:          library.Rules,
+		RuleFallback:   config.NormalizeRuleFallback(library.RuleFallback),
+		Reprocess:      library.Reprocess,
+		StableFor:      library.StableFor,
+		PackageMode:    library.PackageMode,
+		IgnorableGlobs: library.IgnorableGlobs,
 	}
 }
 
@@ -338,13 +342,13 @@ func (m *Monitor) triggerDue(cfg config.Config, library config.LibraryConfig, tr
 }
 
 func (m *Monitor) stabilityRetryDue(cfg config.Config, library config.LibraryConfig, result ScanResult) (time.Time, bool) {
-	if result.SkippedUnstable <= 0 || !library.IsDownload() {
+	if result.SkippedUnstable <= 0 {
 		return time.Time{}, false
 	}
 	now := m.now()
 	due := result.NextStableAt
 	if due.IsZero() {
-		stableFor := downloadStableFor(library)
+		stableFor := library.StableFor.Duration
 		if stableFor <= 0 {
 			return time.Time{}, false
 		}
@@ -371,13 +375,6 @@ func (m *Monitor) debounce(cfg config.Config) time.Duration {
 func filesystemReason(reason string) bool {
 	reason = strings.TrimSpace(reason)
 	return reason == "filesystem" || strings.HasPrefix(reason, "filesystem-")
-}
-
-func downloadStableFor(library config.LibraryConfig) time.Duration {
-	if !library.IsDownload() {
-		return 0
-	}
-	return library.Download.StableFor.Duration
 }
 
 func (m *Monitor) reconcileInterval(cfg config.Config) time.Duration {

@@ -46,7 +46,7 @@ src/
   ui/         the design system: components, styles/, fonts/, vendored icons
   shell/      app frame: sidebar, connection banner, sign-in, shared polled data
   features/   what several pages share: jobs/ (job sheet, bulk bar, the words for steps and reasons),
-              libraries/ (scan, the PUT body), layout/ (pager, form sections, row selection, form bar)
+              libraries/ (scan, the PUT body, the reprocess and intake fields), layout/ (pager, form sections, row selection, form bar)
   pages/      one directory per route; index.tsx default-exports the page
   routes.tsx  the route table
 mock/         dev-only fake API (Vite plugin); never part of a build
