@@ -99,7 +99,7 @@ export default function QueuePage() {
           </Button>
         </Show>
       </Topbar>
-      <div class={["av-workspace", { "av-sheet-open": jobId() !== undefined }]}>
+      <div class="av-workspace">
         <div class="av-queue">
           <RunningJobs queued={queued()} activeId={jobId()} onOpen={open} />
           <JobsTable activeId={jobId()} onOpen={open} />

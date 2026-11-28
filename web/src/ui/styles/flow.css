@@ -31,7 +31,9 @@
 .av-canvas-zoom { min-width: 44px; text-align: center; font: 400 12px/16px var(--font-mono); color: var(--text-muted); }
 
 /* side sheet */
-.av-sheet { position: absolute; top: 0; right: 0; bottom: 0; width: var(--sheet); max-width: 100%; display: flex; flex-direction: column; background: var(--surface); border-left: 1px solid var(--line); box-shadow: var(--shadow-overlay); z-index: 5; }
+/* Modal, over the .av-scrim: the full height of the window on its right edge. */
+.av-sheet { box-sizing: border-box; position: fixed; top: 0; right: 0; bottom: 0; left: auto; width: min(var(--sheet), 100vw); height: auto; max-height: none; margin: 0; padding: 0; display: flex; flex-direction: column; background: var(--surface); color: var(--text); font: var(--text-body); border: 0; border-left: 1px solid var(--line); box-shadow: var(--shadow-overlay); }
+.av-sheet::backdrop { background: transparent; }
 .av-sheet-head { display: flex; align-items: flex-start; gap: var(--space-3); padding: var(--space-3) var(--space-3) var(--space-3) var(--space-4); border-bottom: 1px solid var(--line); }
 .av-sheet-head > .av-icon { margin-top: 4px; color: var(--text-muted); }
 .av-sheet-titles { flex: 1; min-width: 0; }

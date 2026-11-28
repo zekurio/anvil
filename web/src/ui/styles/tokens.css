@@ -25,7 +25,7 @@
   --canvas-dot: #2c2e33; /* Dot grid on surface-sunken, one dot per grid step. */
   --edge: var(--line-control); /* Flow edges between ports at rest. */
   --edge-active: var(--accent); /* Edges on the path of the selected or running node. */
-  --scrim: rgba(0, 0, 0, 0.6); /* Behind confirm dialogs only. The side sheet never has a scrim. */
+  --scrim: rgba(0, 0, 0, 0.6); /* Behind dialogs and the side sheet. */
   --shadow-overlay: 0 8px 24px rgba(0, 0, 0, 0.5); /* Menus, dialogs and the side sheet. Nothing resting on the page gets a shadow. */
   --shadow-drag: 0 4px 12px rgba(0, 0, 0, 0.45); /* A node or rule row while it is being dragged. */
 }

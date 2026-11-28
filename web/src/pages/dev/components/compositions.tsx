@@ -56,7 +56,7 @@ export function LibraryComposition() {
 
 /** The design package's FlowEditor page, rebuilt from the ported components for a 1:1 comparison. */
 export function FlowEditorComposition() {
-  const [selected, setSelected] = createSignal<string | null>("enc");
+  const [selected, setSelected] = createSignal<string | null>(null);
   return (
     <div class="av-main av-main-full">
       <Topbar title="HEVC 1080p" meta={<span style={{ color: "var(--warn)" }}>Draft {"·"} 2 unsaved changes</span>}>

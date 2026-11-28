@@ -201,7 +201,7 @@ export function EncodeSheet(props: { onClose?: () => void }) {
 }
 
 export function Flow() {
-  const [selected, setSelected] = createSignal<string | null>("enc");
+  const [selected, setSelected] = createSignal<string | null>(null);
   return (
     <Section id="flow" title="Flow">
       <Item title="FlowNode">

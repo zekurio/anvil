@@ -19,9 +19,6 @@
 /* A size cell: the input right-aligned in a fixed slot, "→ output" after it. */
 .av-size { display: inline-grid; grid-template-columns: 56px auto; gap: var(--space-2); }
 .av-size-in { text-align: right; }
-/* The side sheet lies over the right of the table. The bars above and below it
-   keep their controls clear of it; the table itself runs on underneath. */
-.av-sheet-open .av-toolbar, .av-sheet-open .av-bulk, .av-sheet-open .av-tablefoot { padding-right: calc(var(--sheet) + var(--space-2)); }
 
 /* definition list: label left, value right */
 .av-dl { display: grid; grid-template-columns: 200px minmax(0, 1fr); gap: var(--space-2) var(--space-4); margin: 0; font: var(--text-small); }
