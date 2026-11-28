@@ -1,8 +1,8 @@
 import type { JSX } from "@solidjs/web";
+import { Dialog as DialogRoot, DialogBackdrop, DialogClose, DialogContent, DialogTitle } from "@ui-sdk/solid/dialog";
 import { createSignal, For, Show } from "solid-js";
 
 import { shellQuote } from "../lib/shell";
-import { Button } from "./button";
 import { Icon, type IconName } from "./icon";
 
 /* ---------- SheetSection ---------- */
@@ -51,37 +51,39 @@ export interface SideSheetProps {
 }
 
 /**
- * The one place where details are edited. Docked right inside a
- * `position: relative` parent and fills its height. It never dims or blocks
- * the page: Esc closes it while focus is inside.
+ * The one place where details are edited. A modal panel the full height of
+ * the window, on its right edge, over a scrim: the page behind is inert, Tab
+ * stays inside, and Escape, a press on the scrim, or the close button closes
+ * it and returns focus to where it came from.
  */
 export function SideSheet(props: SideSheetProps) {
   return (
-    <Show when={props.open !== false}>
-      <aside
-        class="av-sheet"
-        aria-label={props.title}
-        onKeyDown={(event) => {
-          if (event.key !== "Escape" || event.defaultPrevented) return;
-          props.onClose?.();
-        }}
-      >
+    <DialogRoot
+      open={props.open !== false}
+      onOpenChange={(open) => {
+        if (!open) props.onClose?.();
+      }}
+    >
+      <DialogBackdrop class="av-scrim" />
+      <DialogContent class="av-sheet" initialFocus="content">
         <header class="av-sheet-head">
           <Show when={props.icon}>{(name) => <Icon name={name()} size={16} />}</Show>
           <div class="av-sheet-titles">
-            <h2 class="av-sheet-title">{props.title}</h2>
+            <DialogTitle class="av-sheet-title">{props.title}</DialogTitle>
             <Show when={props.subtitle}>
               <div class="av-sheet-sub">{props.subtitle}</div>
             </Show>
           </div>
-          <Button variant="ghost" size="sm" icon="x" label="Close" class="av-sheet-x" onClick={() => props.onClose?.()} />
+          <DialogClose class="av-btn av-btn-ghost av-btn-sm av-btn-icon av-sheet-x" aria-label="Close" title="Close">
+            <Icon name="x" size={14} />
+          </DialogClose>
         </header>
         <div class="av-sheet-body">{props.children}</div>
         <Show when={props.footer}>
           <footer class="av-sheet-foot">{props.footer}</footer>
         </Show>
-      </aside>
-    </Show>
+      </DialogContent>
+    </DialogRoot>
   );
 }
 

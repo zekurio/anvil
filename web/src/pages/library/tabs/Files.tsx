@@ -114,7 +114,7 @@ export function FilesTab(props: { name: string; library: Library | undefined }) 
   ];
 
   return (
-    <div class={["av-workspace", { "av-sheet-open": opened() !== null }]}>
+    <div class="av-workspace">
       <div class="av-tablearea av-table-wide">
         <Show
           when={selection.count() > 0}

@@ -47,7 +47,7 @@ export function HistoryTab(props: { name: string }) {
   ];
 
   return (
-    <div class={["av-workspace", { "av-sheet-open": opened() !== null }]}>
+    <div class="av-workspace">
       <div class="av-tablearea av-table-queue">
         <Errored fallback={(error, reset) => <ErrorState title="The history could not be loaded" error={error()} onRetry={reset} />}>
           <Loading fallback={<LoadingRows label="Loading history" />}>

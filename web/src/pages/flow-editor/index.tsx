@@ -1,9 +1,10 @@
-import { useNavigate, useParams } from "@solidjs/router";
+import { useParams } from "@solidjs/router";
 import { createMemo, createSignal, flush, isPending, onSettled, Show } from "solid-js";
 
 import "./editor.css";
 
 import { api, createQuery, keys, type ApiError, type FlowWrite, type Issue } from "../../api";
+import { useAppNavigate } from "../../lib/base";
 import { useUnsavedChanges } from "../../lib/guard";
 import { run } from "../../lib/mutate";
 import { useTitle } from "../../lib/title";
@@ -75,7 +76,7 @@ function Editor(props: { data: Loaded; onReload: () => void }) {
   const isNew = flowId === null;
   const editor = createEditor({ flowId, doc: data.doc, saved: data.saved, catalog: data.catalog, seed: data.seed, handoff: data.handoff });
   const draft = editor.draft;
-  const navigate = useNavigate();
+  const navigate = useAppNavigate();
   const { flows, libraries } = useAppData();
 
   let revision = data.flow?.revision ?? 0;

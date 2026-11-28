@@ -1,10 +1,10 @@
-import { useNavigate } from "@solidjs/router";
 import { createSignal, Errored, flush, Loading, Show } from "solid-js";
 
 import { api, createQuery, errorMessage, invalidate, keys, type ApiError, type Arr, type DownloadOptions, type Library, type LibraryWrite, type Settings } from "../../../api";
 import { FormBar, FormSection } from "../../../features/layout/Form";
 import { homeTarget } from "../../../features/libraries/home";
 import { replacesInPlace, resumeConsequence, toWrite } from "../../../features/libraries/library";
+import { useAppNavigate } from "../../../lib/base";
 import { createDraft } from "../../../lib/draft";
 import { formatCount, formatGoDuration, plural } from "../../../lib/format";
 import { useUnsavedChanges } from "../../../lib/guard";
@@ -293,7 +293,7 @@ function deleteConsequence(library: Library): string {
 
 /** Asks for the library's name before deleting it, and keeps the daemon's refusal on screen. */
 function DeleteLibraryDialog(props: { library: Library; onClose: () => void; onDeleted: () => void }) {
-  const navigate = useNavigate();
+  const navigate = useAppNavigate();
   const { libraries } = useAppData();
   const [typed, setTyped] = createSignal("");
   const [refusal, setRefusal] = createSignal<string | null>(null);

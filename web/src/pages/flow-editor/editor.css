@@ -1,9 +1,9 @@
 /* The flow editor page: top bar, stage, node options, issues, test result. Colours, spacing and radii come from tokens. */
 
-/* stage: the canvas, with the side sheet docked over its right edge */
+/* stage: the canvas */
 .fe-stage { position: relative; flex: 1; min-width: 0; }
 /* Firefox draws light scrollbars unless told otherwise; these keep the palette and the sheet on the theme. */
-.av-palette-list, .fe-stage .av-sheet-body, .fe-problems-pop { scrollbar-width: thin; scrollbar-color: var(--line-control) transparent; }
+.av-palette-list, .av-sheet-body, .fe-problems-pop { scrollbar-width: thin; scrollbar-color: var(--line-control) transparent; }
 .fe-ghost-off { opacity: 0.5; }
 /* The same static accent line a navigation in flight draws across the top. */
 .fe-reloading { position: fixed; top: 0; left: 0; right: 0; z-index: 6; height: 2px; background: var(--accent); }

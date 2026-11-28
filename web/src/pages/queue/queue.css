@@ -15,13 +15,6 @@
 .av-running-library { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-muted); }
 .av-running-step { white-space: nowrap; color: var(--text); }
 .av-running-empty { padding: var(--space-3) var(--space-4); border-top: 1px solid var(--line); font: var(--text-small); color: var(--text-muted); }
-/* A sentence, not a row of figures: it wraps beside the open side sheet at any width. */
-.av-sheet-open .av-running-empty, .av-sheet-open .av-running-head { padding-right: calc(var(--sheet) + var(--space-4)); }
-
-@media (min-width: 1200px) {
-  /* Wide enough to keep the progress of running jobs clear of the open side sheet. */
-  .av-sheet-open .av-running-row { padding-right: calc(var(--sheet) + var(--space-4)); grid-template-columns: minmax(0, 1fr) 96px 120px minmax(160px, 220px); }
-}
 
 @media (max-width: 1100px) {
   .av-running-row { grid-template-columns: minmax(0, 1fr) 96px 120px minmax(160px, 220px); gap: var(--space-3); }
