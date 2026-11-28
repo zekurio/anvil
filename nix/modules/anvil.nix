@@ -55,6 +55,9 @@ let
           "${cfg.web.listenAddress}:${toString cfg.web.port}";
       allow_unauthenticated = cfg.web.allowUnauthenticated;
     }
+    // optionalAttrs (cfg.web.basePath != "") {
+      base_path = cfg.web.basePath;
+    }
     // optionalAttrs (cfg.web.passwordFile != null) {
       password_file = toString cfg.web.passwordFile;
     };
@@ -221,6 +224,18 @@ in
           the unit cannot see, and out of the Nix store. Null leaves the web
           UI without a password, which the daemon accepts on a loopback
           address only.
+        '';
+      };
+
+      basePath = mkOption {
+        type = types.str;
+        default = "";
+        example = "/anvil";
+        description = ''
+          URL path the UI and API are served under, for a reverse proxy that
+          serves Anvil beside other sites on one host. Rendered as
+          web.base_path. The proxy must pass the path on unchanged, without
+          stripping it. Empty serves from the root.
         '';
       };
 

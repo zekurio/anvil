@@ -54,13 +54,13 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) (int, any, error)
 	}
 	// The cookie is set through the request's own response writer by the
 	// wrapper below; a handler only returns a body.
-	http.SetCookie(w, sessionCookieFor(r, session))
+	http.SetCookie(w, sessionCookieFor(r, s.BasePath, session))
 	return ok(Session{AuthRequired: true, Authenticated: true})
 }
 
 func (s *Server) logout(w http.ResponseWriter, r *http.Request) (int, any, error) {
 	s.auth.logout(r)
-	http.SetCookie(w, sessionCookieFor(r, ""))
+	http.SetCookie(w, sessionCookieFor(r, s.BasePath, ""))
 	return noContent()
 }
 

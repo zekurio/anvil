@@ -8,6 +8,7 @@
 import { createRouter, type RouteDefinition } from "@solidjs/router";
 import { lazy } from "solid-js";
 
+import { BASE_PATH } from "./lib/base";
 import { AppShell, BareShell } from "./shell/AppShell";
 
 export const LIBRARY_TABS = ["files", "rules", "history", "settings"] as const;
@@ -19,6 +20,7 @@ const INTEGER = /^\d+$/;
 const devRoutes: RouteDefinition[] = import.meta.env.DEV ? [{ path: "/_dev/components", component: lazy(() => import("./pages/dev/components")) }] : [];
 
 export const Router = createRouter({
+  base: BASE_PATH,
   routes: [
     {
       path: "/flows",

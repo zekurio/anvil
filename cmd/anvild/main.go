@@ -360,6 +360,7 @@ func runDaemon(ctx context.Context, cfg config.Config, opts options) error {
 	if cfg.Web.Enabled {
 		webServer = newWebServer(webClaimed.password, webServiceDeps{
 			store: state, jobs: jobs, runtime: runtimeCfg, progress: progress, configPath: opts.configPath,
+			basePath: cfg.Web.BasePath,
 		})
 		startWebService(serviceCtx, &wg, webClaimed.listener, webServer, cfg)
 	} else {
@@ -739,6 +740,9 @@ func validateReload(current config.Config, next config.Config) error {
 	}
 	if next.Web.Enabled && current.Web.Listen != next.Web.Listen {
 		return fmt.Errorf("web.listen changes require restart: %q -> %q", current.Web.Listen, next.Web.Listen)
+	}
+	if next.Web.Enabled && current.Web.BasePath != next.Web.BasePath {
+		return fmt.Errorf("web.base_path changes require restart: %q -> %q", current.Web.BasePath, next.Web.BasePath)
 	}
 	return nil
 }

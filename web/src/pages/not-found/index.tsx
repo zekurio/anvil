@@ -1,3 +1,4 @@
+import { appHref } from "../../lib/base";
 import { useTitle } from "../../lib/title";
 import { EmptyState, LinkButton, Topbar } from "../../ui";
 
@@ -8,7 +9,7 @@ export default function NotFoundPage() {
     <>
       <Topbar title="Not found" />
       <EmptyState title="This page does not exist" description="Check the address, or pick a view from the navigation.">
-        <LinkButton href="/">Open the first library</LinkButton>
+        <LinkButton href={appHref("/")}>Open the first library</LinkButton>
       </EmptyState>
     </>
   );

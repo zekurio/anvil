@@ -109,6 +109,10 @@ type Server struct {
 	// a build is actually there.
 	UI      fs.FS
 	UIBuilt bool
+	// BasePath is the URL path everything is served under, such as "/anvil",
+	// without a trailing slash; empty serves from the root. It must be a
+	// valid web.base_path.
+	BasePath string
 	// ConfigPath is shown on the settings page.
 	ConfigPath string
 	Version    string
@@ -168,7 +172,7 @@ func (s *Server) Serve(ctx context.Context, listener net.Listener) error {
 }
 
 // Handler returns the HTTP handler: the API under /api/v1 and the UI
-// everywhere else.
+// everywhere else, both under BasePath.
 func (s *Server) Handler() http.Handler {
 	api := http.NewServeMux()
 	route := func(pattern string, h handler) {
@@ -236,7 +240,32 @@ func (s *Server) Handler() http.Handler {
 			ui.ServeHTTP(w, r)
 		}
 	})
-	return s.recoverPanics(securityHeaders(contentSecurityPolicy(index), s.logRequests(s.guardHost(root))))
+	return s.recoverPanics(securityHeaders(contentSecurityPolicy(index), s.logRequests(s.guardHost(s.underBase(root)))))
+}
+
+// underBase serves next under BasePath with the prefix taken off, so every
+// route below sees the paths it would see at the root. The base itself
+// redirects to the base with a slash, which is where the page lives, and
+// anything outside the base is not this daemon's.
+func (s *Server) underBase(next http.Handler) http.Handler {
+	if s.BasePath == "" {
+		return next
+	}
+	stripped := http.StripPrefix(s.BasePath, next)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == s.BasePath:
+			target := s.BasePath + "/"
+			if r.URL.RawQuery != "" {
+				target += "?" + r.URL.RawQuery
+			}
+			http.Redirect(w, r, target, http.StatusPermanentRedirect)
+		case strings.HasPrefix(r.URL.Path, s.BasePath+"/"):
+			stripped.ServeHTTP(w, r)
+		default:
+			http.NotFound(w, r)
+		}
+	})
 }
 
 // recoverPanics turns a panic in a handler into a 500 and one error log. The

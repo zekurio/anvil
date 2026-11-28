@@ -17,6 +17,7 @@ type rawConfig struct {
 type rawWebConfig struct {
 	Enabled              *bool  `toml:"enabled"`
 	Listen               string `toml:"listen"`
+	BasePath             string `toml:"base_path"`
 	PasswordFile         string `toml:"password_file"`
 	Password             string `toml:"password"`
 	AllowUnauthenticated bool   `toml:"allow_unauthenticated"`

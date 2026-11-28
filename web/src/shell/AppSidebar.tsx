@@ -1,6 +1,7 @@
 import { useLocation } from "@solidjs/router";
 import { Show } from "solid-js";
 
+import { appHref, appPath } from "../lib/base";
 import { formatCount, joinDot, plural } from "../lib/format";
 import { setTheme, theme } from "../lib/theme";
 import { Button, Sidebar, type SidebarItem } from "../ui";
@@ -37,22 +38,22 @@ export function AppSidebar() {
 
   const items = (): SidebarItem[] => [
     { section: "Libraries" },
-    ...libraries().map((library): SidebarItem => ({ id: `library:${library.name}`, label: library.name, icon: "library-big", count: formatCount(library.stats.pending), href: `/libraries/${encodeURIComponent(library.name)}` })),
+    ...libraries().map((library): SidebarItem => ({ id: `library:${library.name}`, label: library.name, icon: "library-big", count: formatCount(library.stats.pending), href: appHref(`/libraries/${encodeURIComponent(library.name)}`) })),
     { id: ADD_LIBRARY, label: "Add library", icon: "plus" },
     { section: "Processing" },
-    { id: "flows", label: "Flows", icon: "workflow", href: "/flows" },
-    { id: "queue", label: "Queue", icon: "list-video", count: formatCount(queued()), href: "/queue" },
+    { id: "flows", label: "Flows", icon: "workflow", href: appHref("/flows") },
+    { id: "queue", label: "Queue", icon: "list-video", count: formatCount(queued()), href: appHref("/queue") },
     { section: "System" },
-    { id: "settings", label: "Settings", icon: "settings", href: "/settings" },
+    { id: "settings", label: "Settings", icon: "settings", href: appHref("/settings") },
   ];
 
   const version = () => (/^\d/.test(status().version) ? `v${status().version}` : status().version);
 
   return (
     <Sidebar
-      home="/"
+      home={appHref("/")}
       items={items()}
-      value={currentItem(location.pathname)}
+      value={currentItem(appPath(location.pathname))}
       onChange={(id) => {
         if (id === ADD_LIBRARY) openAddLibrary();
       }}

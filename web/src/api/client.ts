@@ -1,8 +1,9 @@
 import { createSignal } from "solid-js";
 
+import { BASE_PATH } from "../lib/base";
 import type { ErrorBody, ErrorCode, Issue } from "./types";
 
-const BASE = "/api/v1";
+const BASE = `${BASE_PATH}/api/v1`;
 const UNREACHABLE = "Cannot reach the anvil daemon.";
 
 /** A failed request. `code` is the daemon's error code, or "network" when no response arrived. */

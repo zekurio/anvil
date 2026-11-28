@@ -25,7 +25,10 @@ The JSON API is available under /api/v1, and anvilctl works as usual.
 `
 
 // indexPage returns the page every UI route is answered with, or nil when the
-// binary carries no build. It is served exactly as built. The Content
+// binary carries no build. It is served as built, except that its
+// <base href="/"> names BasePath: the build refers to its files relative to
+// that element, and the frontend takes its router and API base from it, so
+// one build serves under any path. The Content
 // Security Policy blocks inline style elements, which the UI kit writes by
 // default; web/index.html carries a <meta property="csp-nonce"> without a
 // nonce, which makes the kit build its sheets through the CSSOM instead.
@@ -38,8 +41,19 @@ func (s *Server) indexPage() []byte {
 		slog.Error("the embedded web UI has no readable index.html", "error", err)
 		return nil
 	}
-	return page
+	if s.BasePath == "" {
+		return page
+	}
+	if !bytes.Contains(page, rootBase) {
+		slog.Error("the embedded web UI has no <base href=\"/\">, so it cannot be served under web.base_path", "base_path", s.BasePath)
+		return page
+	}
+	// BasePath holds only characters that need no escaping in an attribute.
+	return bytes.Replace(page, rootBase, []byte(`<base href="`+s.BasePath+`/"`), 1)
 }
+
+// rootBase is how the built page names the root as its base.
+var rootBase = []byte(`<base href="/"`)
 
 // uiHandler serves the built frontend. Hashed files under /assets/ never
 // change, so browsers may keep them forever; index.html names those files, so

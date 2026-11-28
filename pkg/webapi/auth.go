@@ -182,13 +182,14 @@ func (a *auth) logout(r *http.Request) {
 }
 
 // sessionCookieFor builds the cookie that carries a session. An empty value
-// clears it. Secure is set whenever the browser reached the daemon over
-// HTTPS, directly or through a proxy that says so.
-func sessionCookieFor(r *http.Request, value string) *http.Cookie {
+// clears it. Its path is the base the daemon is served under, so another site
+// behind the same host never receives it. Secure is set whenever the browser
+// reached the daemon over HTTPS, directly or through a proxy that says so.
+func sessionCookieFor(r *http.Request, base, value string) *http.Cookie {
 	cookie := &http.Cookie{
 		Name:     sessionCookie,
 		Value:    value,
-		Path:     "/",
+		Path:     base + "/",
 		HttpOnly: true,
 		SameSite: http.SameSiteStrictMode,
 		Secure:   r.TLS != nil || strings.EqualFold(strings.TrimSpace(r.Header.Get("X-Forwarded-Proto")), "https"),

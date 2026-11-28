@@ -2,6 +2,9 @@
 <html lang="en" data-theme="dark">
   <head>
     <meta charset="utf-8" />
+    <!-- The daemon rewrites this to web.base_path, such as /anvil/. Every file
+         and route of the build resolves against it (see src/lib/base.ts). -->
+    <base href="/" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="color-scheme" content="dark light" />
     <!-- The daemon's Content-Security-Policy allows no inline style element.

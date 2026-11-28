@@ -298,6 +298,12 @@ func TestWebValidation(t *testing.T) {
 		{name: "no port", web: WebConfig{Enabled: true, Listen: "127.0.0.1"}, want: "write host:port"},
 		{name: "bad port", web: WebConfig{Enabled: true, Listen: "127.0.0.1:http"}, want: "invalid port"},
 		{name: "disabled is not checked", web: WebConfig{Listen: "nonsense"}},
+		{name: "base path", web: WebConfig{Enabled: true, Listen: "127.0.0.1:1", BasePath: "/tools/anvil-1.0_x~"}},
+		{name: "relative base path", web: WebConfig{Enabled: true, Listen: "127.0.0.1:1", BasePath: "anvil"}, want: "web.base_path"},
+		{name: "base path with an empty segment", web: WebConfig{Enabled: true, Listen: "127.0.0.1:1", BasePath: "//anvil"}, want: "web.base_path"},
+		{name: "base path with a dot segment", web: WebConfig{Enabled: true, Listen: "127.0.0.1:1", BasePath: "/a/../b"}, want: "web.base_path"},
+		{name: "base path that needs escaping", web: WebConfig{Enabled: true, Listen: "127.0.0.1:1", BasePath: `/a"b`}, want: "web.base_path"},
+		{name: "base path with a query", web: WebConfig{Enabled: true, Listen: "127.0.0.1:1", BasePath: "/a?b"}, want: "web.base_path"},
 	}
 	for _, test := range tests {
 		var p problems

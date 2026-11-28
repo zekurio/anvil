@@ -5,6 +5,7 @@ import { Popover, PopoverContent, PopoverTitle, PopoverTrigger } from "@ui-sdk/s
 import { For, Show } from "solid-js";
 
 import type { Issue } from "../../api";
+import { appHref } from "../../lib/base";
 import { plural } from "../../lib/format";
 import { Button, Icon } from "../../ui";
 import type { Editor } from "./editor";
@@ -113,7 +114,7 @@ export function EditorTopbar(props: EditorTopbarProps) {
 
   return (
     <header class="av-topbar fe-topbar">
-      <a class="av-btn av-btn-ghost av-btn-icon av-topbar-back" href="/flows" aria-label="Back to flows" title="Back to flows">
+      <a class="av-btn av-btn-ghost av-btn-icon av-topbar-back" href={appHref("/flows")} aria-label="Back to flows" title="Back to flows">
         <Icon name="arrow-left" size={16} />
       </a>
       <div class="av-topbar-titles">

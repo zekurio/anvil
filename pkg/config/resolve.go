@@ -35,6 +35,7 @@ func resolve(raw rawConfig, host stateHost) (Config, error) {
 		Web: WebConfig{
 			Enabled:              valueOr(raw.Web.Enabled, true),
 			Listen:               orDefault(raw.Web.Listen, DefaultWebListen),
+			BasePath:             strings.TrimRight(strings.TrimSpace(raw.Web.BasePath), "/"),
 			PasswordFile:         strings.TrimSpace(raw.Web.PasswordFile),
 			Password:             raw.Web.Password,
 			AllowUnauthenticated: raw.Web.AllowUnauthenticated,

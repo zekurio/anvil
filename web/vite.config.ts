@@ -26,6 +26,9 @@ function keepGitkeep(): Plugin {
 export default defineConfig(({ command }) => {
   const mock = command === "serve" && process.env.VITE_MOCK === "1";
   return {
+    // The build names its files relative to the page's <base href>, which the
+    // daemon points at web.base_path, so one build serves under any path.
+    base: command === "build" ? "./" : "/",
     plugins: [solid(), keepGitkeep(), mock && mockApi({ auth: process.env.VITE_MOCK_AUTH === "1" })],
     // ui-sdk throws in development when its core is pre-bundled apart from the
     // copy @ui-sdk/solid loads.

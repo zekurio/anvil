@@ -1,6 +1,7 @@
 import { createMemo, createSignal, For, Loading, onSettled, Show } from "solid-js";
 
 import type { JobFlow, NodeType } from "../../api";
+import { appHref } from "../../lib/base";
 import { FlowCanvas, NODE_HEIGHT, NODE_WIDTH, type FlowCanvasNode, type NodeKind } from "../../ui";
 
 /** The node types of the daemon by id. */
@@ -21,7 +22,7 @@ export function JobFlowSection(props: { flow: JobFlow; catalog: NodeCatalog }) {
       <dl class="av-dl av-dl-sheet">
         <dt>Flow</dt>
         <dd>
-          <a class="av-link" href={`/flows/${props.flow.flow_id}`}>
+          <a class="av-link" href={appHref(`/flows/${props.flow.flow_id}`)}>
             {props.flow.flow_name}
           </a>{" "}
           <span class="av-muted">revision {props.flow.revision}</span>

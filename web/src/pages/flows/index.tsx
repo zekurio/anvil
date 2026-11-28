@@ -1,6 +1,7 @@
 import { useNavigate } from "@solidjs/router";
 
 import { api, invalidate, keys, type ApiError, type FlowSummary } from "../../api";
+import { appHref } from "../../lib/base";
 import { formatCount, formatDateTime, formatRelative } from "../../lib/format";
 import { run } from "../../lib/mutate";
 import { useTitle } from "../../lib/title";
@@ -90,7 +91,7 @@ export default function FlowsPage() {
   return (
     <>
       <Topbar title="Flows">
-        <LinkButton variant="primary" icon="plus" href="/flows/new">
+        <LinkButton variant="primary" icon="plus" href={appHref("/flows/new")}>
           New flow
         </LinkButton>
       </Topbar>
@@ -103,7 +104,7 @@ export default function FlowsPage() {
           onRowClick={(flow) => navigate(`/flows/${flow.id}`)}
           empty={
             <EmptyState icon="workflow" title="No flows">
-              <LinkButton variant="primary" icon="plus" href="/flows/new">
+              <LinkButton variant="primary" icon="plus" href={appHref("/flows/new")}>
                 New flow
               </LinkButton>
             </EmptyState>

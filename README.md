@@ -487,6 +487,12 @@ Anvil does not speak TLS. Put a reverse proxy in front for HTTPS:
 - If the proxy does the authentication and Anvil has no password, the proxy
   must send a loopback `Host` such as `127.0.0.1:8484` together with
   `X-Forwarded-Host`.
+- To serve Anvil under a path beside other sites on one host, such as
+  `https://admin.example.com/anvil/`, set `web.base_path = "/anvil"` and pass
+  the path on unchanged: do not strip the prefix. The daemon then answers only
+  under that path, redirects `/anvil` to `/anvil/`, and scopes the session
+  cookie to it. In Caddy, that is `handle /anvil*` with a plain
+  `reverse_proxy`, not `handle_path`.
 
 Without `daemon.media_roots`, someone who is signed in can point a library at
 any directory the service user can write, and Anvil will then replace files
@@ -523,8 +529,8 @@ The control socket is the other way in. The daemon creates it with mode
 `anvil.toml` holds the process settings and nothing else. `[daemon]` has the
 paths, the media roots, worker and thread counts, intervals, shutdown
 behavior, and log level.
-`[web]` has `enabled`, `listen`, `password_file`, `password`, and
-`allow_unauthenticated`. Libraries, flows, and Arr connections live in the
+`[web]` has `enabled`, `listen`, `base_path`, `password_file`, `password`,
+and `allow_unauthenticated`. Libraries, flows, and Arr connections live in the
 SQLite store and are edited in the web UI.
 
 The `[daemon]` keys from `worker_count` through `log_level` can also be
@@ -562,8 +568,8 @@ Changes made in the web UI apply at once, except `staging_cleanup_age`, whose
 sweep runs when the daemon starts. `SIGHUP` re-reads `anvil.toml`, merges the
 values saved in the UI back in, and applies most daemon settings in place, and
 it re-reads the password file.
-Changing `store_path`, `temp_dir`, `control_socket`, `web.enabled`, or
-`web.listen` needs a restart. A reload that changes one of them, or that
+Changing `store_path`, `temp_dir`, `control_socket`, `web.enabled`,
+`web.listen`, or `web.base_path` needs a restart. A reload that changes one of them, or that
 names a password file the daemon cannot read, is rejected as a whole and the
 old settings stay in force.
 
@@ -620,8 +626,8 @@ control socket in `/run/anvil`, and adds Jellyfin's ffmpeg to the service
 inside a `0750` directory owned by `services.anvil.group`. Membership in that group is what grants `anvilctl`
 access. Installing `anvilctl` grants nothing.
 
-`services.anvil.web` has `enable`, `listenAddress`, `port`, `passwordFile`,
-`allowUnauthenticated`, and `openFirewall`. The defaults are `127.0.0.1` and
+`services.anvil.web` has `enable`, `listenAddress`, `port`, `basePath`,
+`passwordFile`, `allowUnauthenticated`, and `openFirewall`. The defaults are `127.0.0.1` and
 `8484`. The service user must be able to read the password file. Keep it out
 of `/tmp`, `/var/tmp`, and the Nix store. A non-loopback address without a
 password fails at evaluation time, the same way the daemon would refuse it.

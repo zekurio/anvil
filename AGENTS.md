@@ -549,6 +549,10 @@ createEffect(() => {
 - Pages live in `web/src/pages/<name>/index.tsx` with one entry in
   `web/src/routes.tsx`. What several pages share lives in `web/src/features`.
   `web/src/shell` is the app frame.
+- `[web] base_path` serves the UI and API under a path. The daemon rewrites
+  the `<base href="/">` of `index.html`, the build is relative to it, and
+  `lib/base` derives the router and API base from it. Anchors take
+  `appHref(...)`; `navigate` needs nothing.
 - Reads go through `createQuery` with a key from `api/keys.ts`. Writes go
   through `run` from `lib/mutate`, which refetches and then toasts. Forms over
   polled data use `createDraft`.
