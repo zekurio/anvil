@@ -1,4 +1,4 @@
-import { useNavigate, useParams } from "@solidjs/router";
+import { useParams } from "@solidjs/router";
 import { createMemo, createSignal, Errored, For, isPending, Loading, Show } from "solid-js";
 
 import { api, createQuery, keys, POLL_LIST, type Job, type JobQuery, type JobState, type Progress } from "../../api";
@@ -11,6 +11,7 @@ import { JobBadge, StepProgress } from "../../features/jobs/parts";
 import { Pager } from "../../features/layout/Pager";
 import { loadPage } from "../../features/layout/paging";
 import { createSelection } from "../../features/layout/selection";
+import { useAppNavigate } from "../../lib/base";
 import { createDebounced } from "../../lib/debounce";
 import { formatCount, joinDot, plural } from "../../lib/format";
 import { useTitle } from "../../lib/title";
@@ -45,7 +46,7 @@ const fileName = (path: string) => path.slice(path.lastIndexOf("/") + 1);
 /** The queue: running jobs with live progress, then every job, filtered and paged. /queue/:jobId opens that job in the side sheet. */
 export default function QueuePage() {
   const params = useParams();
-  const navigate = useNavigate();
+  const navigate = useAppNavigate();
   const { status } = useAppData();
   const jobId = () => (params.jobId ? Number(params.jobId) : undefined);
   useTitle(() => (params.jobId ? `Job ${params.jobId}` : "Queue"));

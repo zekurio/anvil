@@ -1,7 +1,7 @@
-import { useNavigate } from "@solidjs/router";
 import { createEffect, Show } from "solid-js";
 
 import { homeTarget } from "../../features/libraries/home";
+import { useAppNavigate } from "../../lib/base";
 import { useTitle } from "../../lib/title";
 import { openAddLibrary } from "../../shell/AddLibraryDialog";
 import { useAppData } from "../../shell/data";
@@ -10,7 +10,7 @@ import { Button, EmptyState, Topbar } from "../../ui";
 /** "/" has no view of its own: it opens the first library that has files, or says how to add one. */
 export default function Home() {
   const { libraries } = useAppData();
-  const navigate = useNavigate();
+  const navigate = useAppNavigate();
   useTitle(() => "Libraries");
 
   createEffect(

@@ -552,7 +552,8 @@ createEffect(() => {
 - `[web] base_path` serves the UI and API under a path. The daemon rewrites
   the `<base href="/">` of `index.html`, the build is relative to it, and
   `lib/base` derives the router and API base from it. Anchors take
-  `appHref(...)`; `navigate` needs nothing.
+  `appHref(...)`, and navigation goes through `useAppNavigate()`: the
+  router never adds its base to a path that starts with `/`.
 - Reads go through `createQuery` with a key from `api/keys.ts`. Writes go
   through `run` from `lib/mutate`, which refetches and then toasts. Forms over
   polled data use `createDraft`.

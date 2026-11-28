@@ -1,8 +1,8 @@
-import { useNavigate } from "@solidjs/router";
 import { createSignal, createStore, Show } from "solid-js";
 
 import { api, keys, type ApiError, type LibraryKind, type LibraryWrite } from "../api";
 import { scanLibrary } from "../features/libraries/library";
+import { useAppNavigate } from "../lib/base";
 import { run } from "../lib/mutate";
 import { Banner, Button, Dialog, Field, FolderPicker, Input, Segmented, Select, Switch } from "../ui";
 import { useAppData } from "./data";
@@ -75,7 +75,7 @@ export function AddLibraryDialog() {
 
 function AddLibraryForm() {
   const { flows } = useAppData();
-  const navigate = useNavigate();
+  const navigate = useAppNavigate();
   const [draft, setDraft] = createStore<Draft>({ ...EMPTY });
   const [errors, setErrors] = createStore<Record<string, string | undefined>>({});
   const [general, setGeneral] = createSignal<string | null>(null);

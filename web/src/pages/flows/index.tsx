@@ -1,7 +1,6 @@
-import { useNavigate } from "@solidjs/router";
 
 import { api, invalidate, keys, type ApiError, type FlowSummary } from "../../api";
-import { appHref } from "../../lib/base";
+import { appHref, useAppNavigate } from "../../lib/base";
 import { formatCount, formatDateTime, formatRelative } from "../../lib/format";
 import { run } from "../../lib/mutate";
 import { useTitle } from "../../lib/title";
@@ -17,7 +16,7 @@ function listNames(names: string[]): string {
 /** The list of flows. A row opens the flow in the editor. */
 export default function FlowsPage() {
   const { flows, status } = useAppData();
-  const navigate = useNavigate();
+  const navigate = useAppNavigate();
   useTitle(() => "Flows");
 
   /** Why a flow cannot be deleted. There is no way to force it: its libraries need another flow first. */

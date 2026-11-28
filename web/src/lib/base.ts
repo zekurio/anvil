@@ -1,3 +1,5 @@
+import { useNavigate, type NavigateOptions } from "@solidjs/router";
+
 // The daemon can serve the UI under a path such as /anvil (web.base_path). It
 // writes that path into the page's <base href>, so one build works under any
 // path: the build names its files relative to the base element, and the app
@@ -8,8 +10,9 @@
 export const BASE_PATH = new URL(document.baseURI).pathname.replace(/\/+$/, "");
 
 /**
- * The href of an app path such as "/flows". navigate() adds the base itself;
- * a plain anchor needs this, or it leaves the app for the host's root.
+ * The href of an app path such as "/flows". The router never adds its base to
+ * a path that starts with "/", so an anchor needs this, or it leaves the app
+ * for the host's root. navigate() needs it too; useAppNavigate adds it.
  */
 export function appHref(path: string): string {
   return BASE_PATH + path;
@@ -19,4 +22,10 @@ export function appHref(path: string): string {
 export function appPath(pathname: string): string {
   if (!BASE_PATH || !pathname.startsWith(BASE_PATH)) return pathname;
   return pathname.slice(BASE_PATH.length) || "/";
+}
+
+/** navigate() for app paths such as "/flows": it adds the base, which the router's own navigate() leaves off. */
+export function useAppNavigate(): (path: string, options?: Partial<NavigateOptions>) => void {
+  const navigate = useNavigate();
+  return (path, options) => navigate(appHref(path), options);
 }
