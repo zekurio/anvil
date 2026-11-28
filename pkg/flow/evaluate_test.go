@@ -611,7 +611,7 @@ func TestDescribe(t *testing.T) {
 func TestEvaluateVAAPIWithEncoderDefaults(t *testing.T) {
 	graph := chain(newNode("in", typeInput, nil),
 		newNode("encode", typeVideoEncode, map[string]any{"accelerator": "vaapi", "quality_mode": "fixed"}),
-		newNode("out", typeOutputPublish, nil))
+		newNode("out", typeOutputReplace, nil))
 	result, err := Evaluate(graph, Facts{})
 	if err != nil {
 		t.Fatal(err)

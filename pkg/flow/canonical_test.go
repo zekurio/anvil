@@ -215,7 +215,7 @@ func TestCanonicalIsValidJSONWithSortedContent(t *testing.T) {
 
 func TestCanonicalEncoderDefaults(t *testing.T) {
 	graph := func(options map[string]any) Graph {
-		return chain(newNode("in", typeInput, nil), newNode("encode", typeVideoEncode, options), newNode("out", typeOutputPublish, nil))
+		return chain(newNode("in", typeInput, nil), newNode("encode", typeVideoEncode, options), newNode("out", typeOutputReplace, nil))
 	}
 	canonical := func(options map[string]any) string {
 		t.Helper()
