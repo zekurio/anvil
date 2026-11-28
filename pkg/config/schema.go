@@ -145,6 +145,10 @@ type DaemonConfig struct {
 	// <destination>/.anvil-work when it moves the result. Defaults to anvil
 	// inside the system temporary directory.
 	TempDir string `toml:"temp_dir"`
+
+	// DRM render node for VAAPI and QSV. Empty uses /dev/dri/renderD128
+	// for VAAPI and FFmpeg's automatic device selection for QSV. File-only.
+	RenderDevice string `toml:"render_device"`
 	// SQLite state path, on persistent storage: the store is the only copy of
 	// the libraries, flows, Arr connections, and daemon settings. Defaults to
 	// /var/lib/anvil/anvil.db as root, otherwise to anvil/anvil.db in
@@ -234,8 +238,7 @@ type VideoConfig struct {
 	Codec string `toml:"codec"`
 	// Encoder backend; "software", "qsv", "vaapi", or "amf".
 	Accelerator string `toml:"accelerator"`
-	// Trade speed for compression to match the selected encoder; any
-	// encoder-supported string.
+	// Speed setting supported by the selected encoder. Empty uses its default.
 	Preset string `toml:"preset"`
 	// Preserve more tonal detail when the encoder supports it; 8 or 10.
 	BitDepth int `toml:"bit_depth"`

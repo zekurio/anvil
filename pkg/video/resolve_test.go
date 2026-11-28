@@ -10,7 +10,7 @@ func TestQualityRange(t *testing.T) {
 		{"libsvtav1", 1, 63},
 		{"libx265", 0, 51},
 		{"libx264", 0, 51},
-		{"av1_qsv", 1, 255},
+		{"av1_qsv", 1, 51},
 		{"hevc_qsv", 1, 51},
 		{"h264_vaapi", 1, 51},
 		{"av1_vaapi", 1, 255},
@@ -22,12 +22,32 @@ func TestQualityRange(t *testing.T) {
 			t.Errorf("QualityRange(%q) = %d-%d, want %d-%d", tt.encoder, lowest, highest, tt.lowest, tt.highest)
 		}
 	}
-	// Every encoder Anvil can resolve has a range that qualityArgs can use.
-	for accelerator, codecs := range encoders {
-		for codec, encoder := range codecs {
-			if lowest, highest := QualityRange(encoder); lowest < 0 || highest <= lowest {
-				t.Errorf("%s/%s encoder %s has range %d-%d", accelerator, codec, encoder, lowest, highest)
-			}
+}
+
+func TestEncoderRegistry(t *testing.T) {
+	seen := map[string]bool{}
+	for _, e := range Encoders() {
+		byCodec, ok := LookupEncoder(e.Codec, e.Backend)
+		if !ok || byCodec.Name != e.Name || seen[e.Name] {
+			t.Fatalf("invalid or duplicate registry entry: %+v", e)
+		}
+		seen[e.Name] = true
+		if e.Quality.Min > e.Quality.Default || e.Quality.Default > e.Quality.Max ||
+			e.Quality.SearchMin < e.Quality.Min || e.Quality.SearchMax > e.Quality.Max ||
+			e.Quality.SearchMin >= e.Quality.SearchMax || !e.Speed.Accepts(e.Speed.Default) {
+			t.Fatalf("invalid defaults for %s", e.Name)
+		}
+	}
+	if len(seen) != 12 {
+		t.Fatalf("got %d encoders, want 12", len(seen))
+	}
+	e, ok := LookupEncoder("H.265", " QSV ")
+	if !ok || e.Name != "hevc_qsv" || CanonicalCodec(e.Name) != "hevc" {
+		t.Fatalf("alias lookup = %+v, %t", e, ok)
+	}
+	for _, name := range []string{"av1_nvenc", "hevc_videotoolbox"} {
+		if _, ok := LookupEncoder(name, ""); ok {
+			t.Errorf("unexpected encoder for %s", name)
 		}
 	}
 }

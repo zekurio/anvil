@@ -19,6 +19,7 @@
 media_roots = [] # Absolute directory roots the web API may browse and assign to libraries. Empty leaves filesystem browsing and library locations unrestricted. Re-read on SIGHUP.
 temp_dir = "/var/lib/anvil/tmp" # Scratch directory for search samples and process logs. Encode artifacts are written on the destination filesystem as <name>.job-<id>.anvil-part: beside the destination when a flow replaces the file, under <destination>/.anvil-work when it moves the result. Defaults to anvil inside the system temporary directory.
 store_path = "/var/lib/anvil/anvil.db" # SQLite state path, on persistent storage: the store is the only copy of the libraries, flows, Arr connections, and daemon settings. Defaults to /var/lib/anvil/anvil.db as root, otherwise to anvil/anvil.db in $XDG_STATE_HOME or ~/.local/state; set it when there is no home directory. A missing directory is created 0700.
+render_device = "" # Absolute DRM render node. Empty uses /dev/dri/renderD128 for VAAPI and automatic device selection for QSV. File-only.
 control_socket = "/run/anvil/anvild.sock" # Daemon Unix socket. Defaults to anvild.sock inside temp_dir; must be absolute and outside the store's directory.
 worker_count = 2 # Simultaneous jobs. Defaults to the CPU count; integer >= 1.
 total_threads = 8 # Shared encode-thread budget. Defaults to the CPU count; integer >= 0.
@@ -71,7 +72,7 @@ container = "mkv" # Output container; only "mkv".
 [profiles.default-av1.video]
 codec = "av1" # Output video codec; "av1", "hevc"/"h265", or "h264"/"avc".
 accelerator = "software" # Encoder backend; "software", "qsv", "vaapi", or "amf".
-preset = "6" # Trade speed for compression to match the selected encoder; any encoder-supported string.
+preset = "6" # Speed setting supported by the selected encoder. Empty uses its default.
 bit_depth = 10 # Preserve more tonal detail when the encoder supports it; 8 or 10.
 crf_min = 18 # Lowest search CRF; integer no greater than crf_max.
 crf_max = 40 # Highest search CRF; integer no lower than crf_min.

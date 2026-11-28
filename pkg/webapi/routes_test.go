@@ -17,6 +17,7 @@ import (
 
 	"github.com/zekurio/anvil/pkg/config"
 	"github.com/zekurio/anvil/pkg/domain"
+	"github.com/zekurio/anvil/pkg/ffmpeg"
 	"github.com/zekurio/anvil/pkg/flow"
 	"github.com/zekurio/anvil/pkg/flowstep"
 	"github.com/zekurio/anvil/pkg/store"
@@ -294,7 +295,7 @@ func TestLibraryOutsideMediaRootsCanStillBePaused(t *testing.T) {
 // that maps over a list must never meet null.
 func TestListsAreNeverNull(t *testing.T) {
 	f := newFixture(t, "", nil)
-	for _, path := range []string{"/api/v1/status", "/api/v1/settings", "/api/v1/libraries", "/api/v1/arrs", "/api/v1/jobs", "/api/v1/flows", "/api/v1/node-types"} {
+	for _, path := range []string{"/api/v1/status", "/api/v1/settings", "/api/v1/libraries", "/api/v1/arrs", "/api/v1/jobs", "/api/v1/flows", "/api/v1/node-types", "/api/v1/encoders"} {
 		recorder := f.get(path)
 		if recorder.Code != http.StatusOK || strings.Contains(recorder.Body.String(), "null") {
 			t.Errorf("GET %s = %d %s, want no null", path, recorder.Code, recorder.Body.String())
@@ -668,6 +669,31 @@ func TestRetrySkipNamesTheStoresRefusal(t *testing.T) {
 		skip := retrySkip(request, 7, fmt.Errorf("retry job: %w", refusal))
 		if skip.ID != 7 || skip.Reason != reason || skip.Detail == "" {
 			t.Errorf("refusal %+v reported as %+v, want reason %q with a detail", *refusal, skip, reason)
+		}
+	}
+}
+
+func TestEncoderCapabilitiesWarnWithoutBlockingSave(t *testing.T) {
+	f := newFixture(t, "", nil)
+	report := ffmpeg.EncoderCapabilities{State: ffmpeg.EncoderProbeReady, RenderDevice: "/dev/dri/renderD128",
+		Encoders: []ffmpeg.EncoderCapability{{
+			Name: "libsvtav1", Codec: "av1", Backend: "software", QualityLabel: "CRF", Reason: "ffmpeg has no libsvtav1 encoder.",
+			BitDepths: []ffmpeg.BitDepthCapability{{BitDepth: 10, Reason: "ffmpeg has no libsvtav1 encoder."}},
+		}},
+	}
+	f.server.EncoderCapabilities = func() ffmpeg.EncoderCapabilities { return report }
+	got := want[Encoders](t, f.get("/api/v1/encoders"), http.StatusOK)
+	if got.State != report.State || got.RenderDevice != report.RenderDevice || len(got.Encoders) != 1 || len(got.Encoders[0].BitDepths) != 1 {
+		t.Fatalf("GET /encoders = %+v", got)
+	}
+	graph := flow.Default()
+	expected := flow.Issue{Severity: flow.SeverityWarning, NodeID: "video", Field: "accelerator", Message: "ffmpeg has no libsvtav1 encoder."}
+	for _, check := range []FlowCheck{
+		want[FlowCheck](t, f.send(http.MethodPost, "/api/v1/flows/check", FlowCheckRequest{Graph: graph}), http.StatusOK),
+		want[Flow](t, f.send(http.MethodPost, "/api/v1/flows", FlowWrite{Name: "Other host", Graph: graph}), http.StatusCreated).Check,
+	} {
+		if !check.Valid || !slices.Contains(check.Issues, expected) || check.Nodes["video"].Invalid {
+			t.Errorf("check = %+v", check)
 		}
 	}
 }

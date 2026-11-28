@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/zekurio/anvil/pkg/video"
 )
 
 func TestCatalogListsEveryNodeTypeInPaletteOrder(t *testing.T) {
@@ -307,4 +309,41 @@ func mustDecode(t *testing.T, name string, field Field) any {
 		t.Fatalf("%s default: %s", name, message)
 	}
 	return value
+}
+
+func TestEncoderFieldVariants(t *testing.T) {
+	def := nodeDefsByID[typeVideoEncode]
+	fields := map[string]Field{}
+	for _, section := range def.Sections {
+		for _, field := range section.Fields {
+			fields[field.Key] = field
+		}
+	}
+	for _, key := range []string{"preset", "bit_depth", "crf", "crf_min", "crf_max", "ffmpeg_args"} {
+		field := fields[key]
+		if len(field.Variants) != len(video.Encoders()) {
+			t.Fatalf("%s has %d variants", key, len(field.Variants))
+		}
+		for _, variant := range field.Variants {
+			for _, condition := range variant.When {
+				testField := field
+				testField.VisibleWhen = &condition
+				checkFieldVisibility(t, key, testField, fields)
+			}
+			checkFieldDefault(t, key, applyVariant(field, variant))
+		}
+	}
+	for _, encoder := range video.Encoders() {
+		t.Run(encoder.Name, func(t *testing.T) {
+			o, problems := decodeOptions(def, map[string]any{"codec": encoder.Codec, "accelerator": encoder.Backend})
+			if len(problems) != 0 {
+				t.Fatal(problems)
+			}
+			if o.text("preset") != encoder.Speed.Default || o.whole("crf") != encoder.Quality.Default ||
+				o.whole("crf_min") != encoder.Quality.SearchMin || o.whole("crf_max") != encoder.Quality.SearchMax ||
+				!slices.Contains(encoder.BitDepths, encodeSettings(o).BitDepth) {
+				t.Errorf("defaults for %s: %+v", encoder.Name, o)
+			}
+		})
+	}
 }

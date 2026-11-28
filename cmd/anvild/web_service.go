@@ -86,16 +86,17 @@ func (c webClaim) release() error {
 func newWebServer(password string, deps webServiceDeps) *webapi.Server {
 	ui, built := web.Dist()
 	server := &webapi.Server{
-		Store:      deps.store,
-		Jobs:       deps.jobs,
-		Config:     deps.runtime.Get,
-		Refresh:    deps.runtime.Refresh,
-		Progress:   deps.progress,
-		UI:         ui,
-		UIBuilt:    built,
-		BasePath:   deps.basePath,
-		ConfigPath: deps.configPath,
-		Version:    control.BuildVersion,
+		Store:               deps.store,
+		Jobs:                deps.jobs,
+		Config:              deps.runtime.Get,
+		EncoderCapabilities: deps.runtime.Encoders,
+		Refresh:             deps.runtime.Refresh,
+		Progress:            deps.progress,
+		UI:                  ui,
+		UIBuilt:             built,
+		BasePath:            deps.basePath,
+		ConfigPath:          deps.configPath,
+		Version:             control.BuildVersion,
 	}
 	server.SetPassword(password)
 	return server

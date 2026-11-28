@@ -288,7 +288,7 @@ func TestValidateOptions(t *testing.T) {
 			name:     "string field",
 			nodeType: typeVideoEncode,
 			options:  `{"preset": 6}`,
-			want:     []Issue{problem("n", "preset", "Must be text.")},
+			want:     []Issue{problem("n", "preset", "Must be one of: 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13.")},
 		},
 		{
 			name:     "int field given text",
@@ -306,7 +306,7 @@ func TestValidateOptions(t *testing.T) {
 			name:     "int field out of range",
 			nodeType: typeVideoEncode,
 			options:  `{"quality_mode": "fixed", "crf": 300}`,
-			want:     []Issue{problem("n", "crf", "Must be between 0 and 255.")},
+			want:     []Issue{problem("n", "crf", "Must be between 1 and 63 for libsvtav1.")},
 		},
 		{
 			name:     "int field below its only bound",
@@ -342,7 +342,7 @@ func TestValidateOptions(t *testing.T) {
 			name:     "enum field given a number",
 			nodeType: typeVideoEncode,
 			options:  `{"bit_depth": 10}`,
-			want:     []Issue{problem("n", "bit_depth", "Must be one of: 10-bit, 8-bit.")},
+			want:     []Issue{problem("n", "bit_depth", "Must be one of: 8-bit, 10-bit.")},
 		},
 		{
 			name:     "enum list field given one value",
@@ -372,7 +372,7 @@ func TestValidateOptions(t *testing.T) {
 			name:     "null is not a value",
 			nodeType: typeVideoEncode,
 			options:  `{"preset": null}`,
-			want:     []Issue{problem("n", "preset", "Must be text.")},
+			want:     []Issue{problem("n", "preset", "Must be one of: 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13.")},
 		},
 		{
 			name:     "empty required list",
@@ -422,7 +422,7 @@ func TestValidateOptions(t *testing.T) {
 			name:     "config rule: managed ffmpeg option",
 			nodeType: typeVideoEncode,
 			options:  `{"ffmpeg_args": ["-crf", "20"]}`,
-			want:     []Issue{problem("n", "ffmpeg_args", `Option "-crf" is not accepted; accepted: encoder parameter bundles (-svtav1-params, -x265-params, -x264-params) of value-only keys, or value-only tuning options (-tune, -profile:v, -level, -g, -keyint_min, -bf, -refs, -sc_threshold, -aq-mode, -aq-strength, -rc-lookahead, -b_strategy, -look_ahead, -look_ahead_depth, -extbrc, -low_power, -async_depth, -adaptive_i, -adaptive_b, -quality).`)},
+			want:     []Issue{problem("n", "ffmpeg_args", `Option "-crf" is not accepted by libsvtav1; accepted: -g, -svtav1-params.`)},
 		},
 		{
 			name:     "config rule: managed encoder param",
@@ -434,7 +434,7 @@ func TestValidateOptions(t *testing.T) {
 			name:     "config rule: ffmpeg options come in pairs",
 			nodeType: typeVideoEncode,
 			options:  `{"ffmpeg_args": ["-g"]}`,
-			want:     []Issue{problem("n", "ffmpeg_args", `Must contain option/value pairs; invalid option "-g"; accepted: encoder parameter bundles (-svtav1-params, -x265-params, -x264-params) of value-only keys, or value-only tuning options (-tune, -profile:v, -level, -g, -keyint_min, -bf, -refs, -sc_threshold, -aq-mode, -aq-strength, -rc-lookahead, -b_strategy, -look_ahead, -look_ahead_depth, -extbrc, -low_power, -async_depth, -adaptive_i, -adaptive_b, -quality).`)},
+			want:     []Issue{problem("n", "ffmpeg_args", `Must contain option/value pairs; invalid option "-g"; accepted for libsvtav1: -g, -svtav1-params.`)},
 		},
 		{
 			name:     "config rule: xpsnr needs a target",
@@ -445,7 +445,7 @@ func TestValidateOptions(t *testing.T) {
 		{
 			name:     "fixed CRF outside what the encoder accepts",
 			nodeType: typeVideoEncode,
-			options:  `{"codec": "hevc", "quality_mode": "fixed", "crf": 60}`,
+			options:  `{"codec": "hevc", "preset": "medium", "quality_mode": "fixed", "crf": 60}`,
 			want:     []Issue{problem("n", "crf", "Must be between 0 and 51 for libx265.")},
 		},
 		{
@@ -457,16 +457,31 @@ func TestValidateOptions(t *testing.T) {
 		{
 			name:     "search range outside what the encoder accepts",
 			nodeType: typeVideoEncode,
-			options:  `{"codec": "h264", "accelerator": "qsv", "crf_min": 0, "crf_max": 60}`,
+			options:  `{"codec": "h264", "accelerator": "qsv", "preset": "medium", "bit_depth": "8", "crf_min": 0, "crf_max": 60}`,
 			want: []Issue{
 				problem("n", "crf_min", "Must be between 1 and 51 for h264_qsv."),
 				problem("n", "crf_max", "Must be between 1 and 51 for h264_qsv."),
 			},
 		},
 		{
+			name:     "stored preset and depth are invalid for the new encoder",
+			nodeType: typeVideoEncode,
+			options:  `{"codec": "h264", "accelerator": "qsv", "preset": "6", "bit_depth": "10"}`,
+			want: []Issue{
+				problem("n", "preset", "Must be one of: veryfast, faster, fast, medium, slow, slower, veryslow."),
+				problem("n", "bit_depth", "Must be one of: 8-bit."),
+			},
+		},
+		{
+			name:     "search bound comparisons use the encoder label",
+			nodeType: typeVideoEncode,
+			options:  `{"accelerator": "vaapi", "crf_min": 190}`,
+			want:     []Issue{problem("n", "crf_min", "Must be less than or equal to Highest QP.")},
+		},
+		{
 			name:     "hidden search range is not checked in fixed mode",
 			nodeType: typeVideoEncode,
-			options:  `{"codec": "hevc", "quality_mode": "fixed", "crf": 22, "crf_max": 200}`,
+			options:  `{"codec": "hevc", "preset": "medium", "quality_mode": "fixed", "crf": 22, "crf_max": 200}`,
 		},
 		{
 			name:     "xpsnr target no encode reaches",
@@ -530,7 +545,7 @@ func TestValidateOptions(t *testing.T) {
 		{
 			name:     "negative number as an option value",
 			nodeType: typeVideoEncode,
-			options:  `{"ffmpeg_args": ["-g", "-1", "-bf", "-1"]}`,
+			options:  `{"ffmpeg_args": ["-g", "-1"]}`,
 		},
 		{
 			// The field's own range says so before the rule gets a say: the
@@ -592,7 +607,7 @@ func TestValidateOptions(t *testing.T) {
 			options:  `{"zzz": 1, "aaa": 1, "ffmpeg_args": ["-map", "0"], "codec": "theora"}`,
 			want: []Issue{
 				problem("n", "codec", "Must be one of: AV1, HEVC (H.265), H.264."),
-				problem("n", "ffmpeg_args", `Option "-map" is not accepted; accepted: encoder parameter bundles (-svtav1-params, -x265-params, -x264-params) of value-only keys, or value-only tuning options (-tune, -profile:v, -level, -g, -keyint_min, -bf, -refs, -sc_threshold, -aq-mode, -aq-strength, -rc-lookahead, -b_strategy, -look_ahead, -look_ahead_depth, -extbrc, -low_power, -async_depth, -adaptive_i, -adaptive_b, -quality).`),
+				problem("n", "ffmpeg_args", `Option "-map" is not accepted by libsvtav1; accepted: -g, -svtav1-params.`),
 				problem("n", "aaa", `"aaa" is not an option of this node. Remove it.`),
 				problem("n", "zzz", `"zzz" is not an option of this node. Remove it.`),
 			},
@@ -701,7 +716,7 @@ func TestMessagesNameFieldsByLabel(t *testing.T) {
 				if !strings.Contains(field.Key, "_") {
 					continue
 				}
-				got := nameFields(def, "must be less than or equal to "+field.Key+", and "+field.Key+"_other stays")
+				got := nameFields(def, nil, "must be less than or equal to "+field.Key+", and "+field.Key+"_other stays")
 				want := "must be less than or equal to " + field.Label + ", and " + field.Key + "_other stays"
 				if got != want {
 					t.Errorf("%s.%s: nameFields = %q, want %q", def.ID, field.Key, got, want)

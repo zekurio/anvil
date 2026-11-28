@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/zekurio/anvil/pkg/config"
+	"github.com/zekurio/anvil/pkg/ffmpeg"
 	"github.com/zekurio/anvil/pkg/store"
 )
 
@@ -65,8 +66,14 @@ func withStoreSnapshot(ctx context.Context, loaded config.Config, state snapshot
 // monitor, the filesystem watcher, and the scheduler learn of the change
 // without waiting for a tick.
 type runtimeConfig struct {
-	mu  sync.RWMutex
-	cfg config.Config
+	mu       sync.RWMutex
+	cfg      config.Config
+	encoders ffmpeg.EncoderCapabilities
+
+	// Probe bookkeeping is serialized by refreshMu.
+	probeEncoders func(context.Context, string) ffmpeg.EncoderCapabilities
+	cancelProbe   context.CancelFunc
+	probeWorkers  sync.WaitGroup
 
 	// refreshMu serializes rebuilds, so an older read can never overwrite
 	// the result of a newer one. It also guards loaded.
@@ -135,12 +142,42 @@ func (r *runtimeConfig) rebuild(ctx context.Context, loaded config.Config) error
 	}
 	r.mu.Lock()
 	r.cfg = next
+	if r.probeEncoders != nil && (r.encoders.State == "" || r.encoders.RenderDevice != next.Daemon.RenderDevice) {
+		r.startEncoderProbe(ctx, next.Daemon.RenderDevice)
+	}
 	r.mu.Unlock()
 	if r.logLevel != nil {
 		r.logLevel.Set(level)
 	}
 	r.changed()
 	return nil
+}
+
+func (r *runtimeConfig) Encoders() ffmpeg.EncoderCapabilities {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.encoders
+}
+
+// startEncoderProbe runs under mu so the new render device and probing state
+// become visible together.
+func (r *runtimeConfig) startEncoderProbe(ctx context.Context, renderDevice string) {
+	if r.cancelProbe != nil {
+		r.cancelProbe()
+	}
+	probeCtx, cancel := context.WithCancel(ctx)
+	r.cancelProbe = cancel
+	r.encoders = ffmpeg.EncoderCapabilities{
+		State: ffmpeg.EncoderProbeProbing, RenderDevice: renderDevice, Encoders: []ffmpeg.EncoderCapability{},
+	}
+	r.probeWorkers.Go(func() {
+		report := r.probeEncoders(probeCtx, renderDevice)
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		if probeCtx.Err() == nil {
+			r.encoders = report
+		}
+	})
 }
 
 func (r *runtimeConfig) changed() {

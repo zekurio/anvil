@@ -5,6 +5,7 @@ import (
 
 	"github.com/zekurio/anvil/pkg/config"
 	"github.com/zekurio/anvil/pkg/control"
+	"github.com/zekurio/anvil/pkg/ffmpeg"
 	"github.com/zekurio/anvil/pkg/flow"
 )
 
@@ -24,6 +25,7 @@ import (
 //	PUT    /api/v1/settings/daemon            DaemonSettingsWrite -> Settings
 //	GET    /api/v1/fs?path=&files=            Directory
 //
+//	GET    /api/v1/encoders                   Encoders
 //	GET    /api/v1/node-types                 NodeTypes
 //	GET    /api/v1/flows                      FlowList
 //	POST   /api/v1/flows                      FlowWrite -> Flow (201)
@@ -726,3 +728,7 @@ type ArrWrite struct {
 	// empty string clears it.
 	APIKey *string `json:"api_key"`
 }
+
+// Encoders reports host availability. Only a ready response gives
+// conclusive availability, and an encoder is available if any depth is.
+type Encoders = ffmpeg.EncoderCapabilities

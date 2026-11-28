@@ -212,3 +212,40 @@ func TestCanonicalIsValidJSONWithSortedContent(t *testing.T) {
 		}
 	}
 }
+
+func TestCanonicalEncoderDefaults(t *testing.T) {
+	graph := func(options map[string]any) Graph {
+		return chain(newNode("in", typeInput, nil), newNode("encode", typeVideoEncode, options), newNode("out", typeOutputPublish, nil))
+	}
+	canonical := func(options map[string]any) string {
+		t.Helper()
+		data, err := Canonical(graph(options))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(data)
+	}
+	implicit := canonical(map[string]any{"codec": "h264", "accelerator": "qsv"})
+	explicit := map[string]any{"codec": "h264", "accelerator": "qsv", "preset": "medium", "bit_depth": "8", "crf_min": 18, "crf_max": 36}
+	if data := canonical(explicit); implicit != data {
+		t.Errorf("implicit and explicit search defaults differ:\n%s\n%s", implicit, data)
+	}
+	explicit["preset"] = ""
+	if data := canonical(explicit); implicit != data {
+		t.Errorf("legacy empty preset changed the canonical form: %s", data)
+	}
+	explicit["crf_max"] = 37
+	if data := canonical(explicit); implicit == data {
+		t.Error("changing the search range left the canonical form unchanged")
+	}
+	fixed := map[string]any{"codec": "av1", "accelerator": "vaapi", "quality_mode": "fixed"}
+	implicit = canonical(fixed)
+	fixed["crf"] = 110
+	if data := canonical(fixed); implicit != data {
+		t.Errorf("implicit and explicit fixed defaults differ:\n%s\n%s", implicit, data)
+	}
+	fixed["crf"] = 111
+	if data := canonical(fixed); implicit == data {
+		t.Error("changing fixed quality left the canonical form unchanged")
+	}
+}

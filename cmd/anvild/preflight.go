@@ -14,6 +14,7 @@ import (
 	"github.com/zekurio/anvil/internal/textout"
 	"github.com/zekurio/anvil/pkg/config"
 	"github.com/zekurio/anvil/pkg/domain"
+	"github.com/zekurio/anvil/pkg/ffmpeg"
 	"github.com/zekurio/anvil/pkg/flow"
 	"github.com/zekurio/anvil/pkg/pipeline"
 	replacepkg "github.com/zekurio/anvil/pkg/replace"
@@ -162,6 +163,28 @@ func runPreflightCommand(ctx context.Context, cfg config.Config, opts options) e
 	}
 	if opts.jsonOutput {
 		return textout.WriteJSON(os.Stdout, report)
+	}
+	capabilities := (ffmpeg.EncoderProber{}).Probe(ctx, cfg.Daemon.RenderDevice)
+	if err := textout.WriteTable(os.Stdout, func(w *textout.Writer) {
+		w.Printf("Encoder probe: %s (render device: %s)\n", capabilities.State, capabilities.RenderDevice)
+		if capabilities.Reason != "" {
+			w.Println(capabilities.Reason)
+		}
+		var rows [][]string
+		for _, encoder := range capabilities.Encoders {
+			for _, depth := range encoder.BitDepths {
+				available := "Yes"
+				if !depth.Available {
+					available = "No"
+				}
+				rows = append(rows, []string{encoder.Name, encoder.QualityLabel, fmt.Sprint(depth.BitDepth), available, depth.Reason})
+			}
+		}
+		if len(rows) > 0 {
+			w.Table([]string{"Encoder", "Quality", "Bit depth", "Available", "Reason"}, rows)
+		}
+	}); err != nil {
+		return err
 	}
 	return writePreflightReport(os.Stdout, report)
 }

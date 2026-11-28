@@ -23,6 +23,7 @@ func SampleArgs(plan domain.EncodePlan) []string {
 	// Do not use inputArgs here: QSV and software decoders can emit different
 	// frames at a copied GOP boundary. Decode the same packets with the same
 	// default software decoder used by ffprobe and the metric, even for QSV.
+	args = append(args, deviceArgs(plan)...)
 	args = append(args, "-threads", strconv.Itoa(max(plan.Threads, 1)), "-i", plan.InputPath,
 		"-map", "0:v:0")
 	// Cutting a reordered GOP can leave gaps near the end of a sample. QSV
@@ -33,12 +34,7 @@ func SampleArgs(plan domain.EncodePlan) []string {
 	if crop := ReferenceFilter(plan); crop != "" {
 		filter += "," + crop
 	}
-	if video.EncoderAccelerator(plan.VideoCodec) == video.AcceleratorQSV {
-		// QSV encoders upload software frames internally. Pin the input format
-		// to the requested depth instead of letting negotiation choose 8-bit.
-		filter += ",format=" + video.QSVVPPFormat(plan.BitDepth)
-	}
-	args = append(args, videoOutputArgs(plan, filter)...)
+	args = append(args, videoOutputArgs(plan, softwareInputFilter(plan, filter))...)
 	return append(args, "-an", "-sn", "-dn", "-map_metadata", "-1", "-map_chapters", "-1", "-f", "matroska", plan.OutputPath)
 }
 
@@ -124,19 +120,6 @@ func keySet(keys ...string) map[string]bool {
 	return set
 }
 
-// encoderOptions is the small set of value-only encoder controls accepted
-// across Anvil's software, QSV, VAAPI, and AMF encoders. None names a file,
-// URL, device, stream selector, or filter graph.
-var encoderOptions = map[string]bool{
-	"tune": true, "profile": true, "level": true,
-	"g": true, "keyint_min": true, "bf": true, "refs": true, "sc_threshold": true,
-	"aq-mode": true, "aq-strength": true, "rc-lookahead": true, "b_strategy": true,
-	"look_ahead": true, "look_ahead_depth": true, "extbrc": true, "low_power": true,
-	"async_depth": true, "adaptive_i": true, "adaptive_b": true, "quality": true,
-}
-
-const acceptedEncoderArgs = "encoder parameter bundles (-svtav1-params, -x265-params, -x264-params) of value-only keys, or value-only tuning options (-tune, -profile:v, -level, -g, -keyint_min, -bf, -refs, -sc_threshold, -aq-mode, -aq-strength, -rc-lookahead, -b_strategy, -look_ahead, -look_ahead_depth, -extbrc, -low_power, -async_depth, -adaptive_i, -adaptive_b, -quality)"
-
 // managedParamsKeys are encoder-params keys that select quality, rate control,
 // or speed, which Anvil owns for the search and final encode. They are not in
 // any allow-list; naming them only gives the refusal a clearer reason. Keys
@@ -154,25 +137,34 @@ var negativeNumber = regexp.MustCompile(`^-[0-9]+(\.[0-9]+)?$`)
 
 // ValidateEncoderArgs prevents extra options from changing what is searched,
 // overriding the selected quality, or introducing additional inputs/outputs.
-func ValidateEncoderArgs(args []string) error {
+func ValidateEncoderArgs(encoder string, args []string) error {
+	settings, _ := video.EncoderByName(valueOr(encoder, "libsvtav1"))
+	accepted := slices.Clone(settings.TuningOptions)
+	if settings.ParamsOption != "" {
+		accepted = append(accepted, settings.ParamsOption)
+	}
+	for i := range accepted {
+		accepted[i] = "-" + accepted[i]
+	}
+	options := strings.Join(accepted, ", ")
 	for i := 0; i < len(args); i += 2 {
 		key := args[i]
 		if !strings.HasPrefix(key, "-") || key == "-" || i+1 == len(args) {
-			return fmt.Errorf("ffmpeg_args must contain option/value pairs; invalid option %q; accepted: %s", key, acceptedEncoderArgs)
+			return fmt.Errorf("ffmpeg_args must contain option/value pairs; invalid option %q; accepted for %s: %s", key, settings.Name, options)
 		}
 		name := strings.SplitN(strings.TrimLeft(key, "-"), ":", 2)[0]
 		value := args[i+1]
 		if strings.HasPrefix(value, "-") && !negativeNumber.MatchString(value) {
 			return fmt.Errorf("ffmpeg_args value %q for option %q must not begin with \"-\" unless it is a negative number", value, key)
 		}
-		if _, bundle := encoderParams[name]; bundle {
+		if name == settings.ParamsOption && name != "" {
 			if err := validateEncoderParams(name, value); err != nil {
 				return fmt.Errorf("ffmpeg_args option %q: %w", key, err)
 			}
 			continue
 		}
-		if !encoderOptions[name] {
-			return fmt.Errorf("ffmpeg_args option %q is not accepted; accepted: %s", key, acceptedEncoderArgs)
+		if !slices.Contains(settings.TuningOptions, name) {
+			return fmt.Errorf("ffmpeg_args option %q is not accepted by %s; accepted: %s", key, settings.Name, options)
 		}
 	}
 	return nil

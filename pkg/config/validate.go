@@ -90,6 +90,9 @@ func (c Config) Validate() error {
 }
 
 func (d DaemonConfig) validate(p *problems) {
+	if d.RenderDevice != "" && (!filepath.IsAbs(d.RenderDevice) || strings.ContainsAny(d.RenderDevice, ",\x00")) {
+		p.addf("daemon.render_device must be an absolute device path without commas or NUL bytes")
+	}
 	seenRoots := make(map[string]bool, len(d.MediaRoots))
 	for i, root := range d.MediaRoots {
 		switch {
@@ -270,9 +273,7 @@ func (v VideoConfig) Problems() []Problem {
 	if v.SampleDuration.Duration <= 0 {
 		found = append(found, problemf("sample_duration", "must be positive", "video.sample_duration must be positive"))
 	}
-	if err := ffmpeg.ValidateEncoderArgs(v.FFmpegArgs); err != nil {
-		found = append(found, problemf("ffmpeg_args", strings.TrimPrefix(err.Error(), "ffmpeg_args "), "video.%s", err))
-	}
+	found = append(found, encoderProblems(v.Codec, v.Accelerator, v.Preset, v.BitDepth, v.FFmpegArgs)...)
 	if v.Samples < 0 || v.Samples > MaxVideoSamples {
 		found = append(found, problemf("samples", fmt.Sprintf("must be between 0 and %d", MaxVideoSamples), "video.samples must be between 0 and %d", MaxVideoSamples))
 	}
@@ -290,11 +291,41 @@ func (v VideoConfig) Problems() []Problem {
 	return found
 }
 
+func encoderProblems(codec, backend, preset string, depth int, args []string) []Problem {
+	encoder, ok := video.LookupEncoder(codec, backend)
+	if !ok {
+		return nil
+	}
+	var found []Problem
+	if !encoder.Speed.Accepts(preset) {
+		var rule string
+		switch {
+		case encoder.Speed.Option == "":
+			rule = fmt.Sprintf("must be empty for %s, which has no preset", encoder.Name)
+		case len(encoder.Speed.Choices) > 0:
+			rule = fmt.Sprintf("must be one of %s for %s", strings.Join(encoder.Speed.Choices, ", "), encoder.Name)
+		default:
+			rule = fmt.Sprintf("must be an integer between %d and %d for %s", encoder.Speed.Min, encoder.Speed.Max, encoder.Name)
+		}
+		found = append(found, problemf("preset", rule, "video.preset %q %s", preset, rule))
+	}
+	if video.ValidBitDepth(depth) && !slices.Contains(encoder.BitDepths, depth) {
+		rule := fmt.Sprintf("must be %d for %s", encoder.BitDepths[0], encoder.Name)
+		found = append(found, problemf("bit_depth", rule, "video.bit_depth %d %s", depth, rule))
+	}
+	if err := ffmpeg.ValidateEncoderArgs(encoder.Name, args); err != nil {
+		found = append(found, problemf("ffmpeg_args", strings.TrimPrefix(err.Error(), "ffmpeg_args "), "video.%s", err))
+	}
+	return found
+}
+
 // validate checks one override against the base video settings it inherits
 // from, because several constraints only hold for the effective values.
 func (o VideoOverrideConfig) validate(p *problems, prefix string, base VideoConfig) {
-	if err := ffmpeg.ValidateEncoderArgs(o.FFmpegArgs); err != nil {
-		p.addf("%s.%s", prefix, err)
+	args := append(slices.Clone(base.FFmpegArgs), o.FFmpegArgs...)
+	for _, problem := range encoderProblems(valueOr(o.Codec, base.Codec), valueOr(o.Accelerator, base.Accelerator),
+		valueOr(o.Preset, base.Preset), valueOr(o.BitDepth, base.BitDepth), args) {
+		p.addf("%s.%s", prefix, strings.TrimPrefix(problem.text, "video."))
 	}
 	if o.Codec != nil {
 		switch {

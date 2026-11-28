@@ -10,6 +10,7 @@ export const keys = {
   status: ["status"],
   settings: ["settings"],
   nodeTypes: ["node-types"],
+  encoders: ["encoders"],
   fs: (path: string, files: boolean) => ["fs", path, files],
 
   flows: ["flows"],

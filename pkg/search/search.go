@@ -134,7 +134,7 @@ func validatePlan(plan domain.EncodePlan) error {
 	if !finite(plan.MinSavingsPercent) || plan.MinSavingsPercent < 0 || plan.MinSavingsPercent > 100 {
 		return errors.New("search savings target must be finite and between 0 and 100")
 	}
-	return ffmpeg.ValidateEncoderArgs(plan.FFmpegArgs)
+	return ffmpeg.ValidateEncoderArgs(plan.VideoCodec, plan.FFmpegArgs)
 }
 
 const noFitReason = "CRF search found no candidate satisfying quality and size constraints"
@@ -336,7 +336,7 @@ func (Block) Name() string { return "crf-search" }
 func (b Block) Run(ctx context.Context, job *pipeline.JobContext) error {
 	plan, err := ffmpeg.BuildPlanFromRequest(ffmpeg.BuildPlanRequest{
 		Profile: job.Profile, InputPath: job.InputPath, OutputPath: job.OutputPath,
-		Resources: job.Resources, Metadata: job.Metadata, Probe: job.Probe,
+		Resources: job.Resources, RenderDevice: job.RenderDevice, Metadata: job.Metadata, Probe: job.Probe,
 	})
 	if err != nil {
 		return err

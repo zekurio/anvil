@@ -55,7 +55,6 @@ func TestProfileProblemsKeepCheckConfigWording(t *testing.T) {
 		`profile "default-av1" CRF values must be non-negative`,
 		`profile "default-av1" crf_min must be less than or equal to crf_max`,
 		`profile "default-av1" video.sample_duration must be positive`,
-		`profile "default-av1" video.ffmpeg_args option "-crf" is not accepted; accepted: encoder parameter bundles (-svtav1-params, -x265-params, -x264-params) of value-only keys, or value-only tuning options (-tune, -profile:v, -level, -g, -keyint_min, -bf, -refs, -sc_threshold, -aq-mode, -aq-strength, -rc-lookahead, -b_strategy, -look_ahead, -look_ahead_depth, -extbrc, -low_power, -async_depth, -adaptive_i, -adaptive_b, -quality)`,
 		`profile "default-av1" video.samples must be between 0 and 100`,
 		`profile "default-av1" video.target must be set when metric is "xpsnr" (typical targets are 35-50)`,
 		`profile "default-av1" min_savings_percent must be between 0 and 100`,
@@ -123,4 +122,45 @@ func TestProblemsBoundTheWorkOfAJob(t *testing.T) {
 
 func sameProblem(a, b Problem) bool {
 	return a.Field == b.Field && a.Rule == b.Rule
+}
+
+func TestEncoderProblemsUseEffectiveSettings(t *testing.T) {
+	base := Default().Legacy.Profiles[DefaultProfileName].Video
+	base.Preset = "6"
+	base.FFmpegArgs = []string{"-svtav1-params", "lp=2"}
+	override := VideoOverrideConfig{Codec: new("h264"), Accelerator: new("qsv")}
+	var problems problems
+	override.validate(&problems, "video.overrides.vp9", base)
+	got := strings.Join(problems, "\n")
+	for _, want := range []string{
+		`video.overrides.vp9.preset "6" must be one of veryfast, faster, fast, medium, slow, slower, veryslow for h264_qsv`,
+		"video.overrides.vp9.bit_depth 10 must be 8 for h264_qsv",
+		`video.overrides.vp9.ffmpeg_args option "-svtav1-params" is not accepted by h264_qsv`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("got %q, want %q", got, want)
+		}
+	}
+}
+
+func TestRenderDeviceIsFileOnlyAndAbsolute(t *testing.T) {
+	for _, tt := range []struct {
+		device string
+		valid  bool
+	}{
+		{"", true},
+		{"/dev/dri/renderD129", true},
+		{"dev/dri/renderD129", false},
+		{"/dev/dri/renderD129,driver=foo", false},
+	} {
+		cfg := Default()
+		cfg.Daemon.RenderDevice = tt.device
+		err := cfg.Validate()
+		if (err == nil) != tt.valid || err != nil && !strings.Contains(err.Error(), "daemon.render_device") {
+			t.Errorf("Validate with render_device %q = %v", tt.device, err)
+		}
+	}
+	if slices.ContainsFunc(DaemonKeys(), func(key DaemonKey) bool { return key.Key == "render_device" }) {
+		t.Fatal("render_device is writable through daemon overrides")
+	}
 }

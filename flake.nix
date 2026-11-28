@@ -130,9 +130,11 @@
             cp -r --no-preserve=mode ${web} web/dist
             test -f web/dist/index.html
           '';
+          # Let a NixOS service use FFmpeg built with the same glibc as its GPU
+          # drivers. Keep the bundled tools on PATH for standalone installs.
           wrapDaemon = ''
             wrapProgram "$out/bin/anvild" \
-              --prefix PATH : "${lib.makeBinPath runtimePackages}"
+              --suffix PATH : "${lib.makeBinPath runtimePackages}"
           '';
         in
         rec {

@@ -5,11 +5,11 @@
 import { Dynamic } from "@solidjs/web";
 import { createEffect, createMemo, createSignal, For, Show } from "solid-js";
 
-import type { Field as CatalogField, GraphNode, Issue, OptionValue } from "../../api";
+import { api, createQuery, keys, type EncoderCapability, type Field as CatalogField, type GraphNode, type Issue, type OptionValue } from "../../api";
 import { Button, Field, Icon, Input, NODE_KINDS, SheetSection, SideSheet } from "../../ui";
 import { CONTROLS } from "./controls";
 import type { Editor } from "./editor";
-import { effectiveOptions, fieldsOf, isGoDuration, isVisible } from "./graph";
+import { dependentOptions, effectiveOptions, fieldsOf, isGoDuration, isVisible, resolveField, sameOptionValue, type ResolvedField } from "./graph";
 
 /** A request to bring one option of a node into view and put the cursor in it. */
 export interface FieldFocus {
@@ -70,11 +70,57 @@ function NodeOptions(props: { editor: Editor; id: string; focus: FieldFocus | nu
     const current = type();
     return current ? effectiveOptions(current, node()) : new Map<string, OptionValue>();
   });
-  const shown = (field: CatalogField) => isVisible(field, values());
-  /** What the control shows: the stored value even when it is not valid, so it can be corrected; a missing key shows the default. */
-  const stored = (field: CatalogField): OptionValue => {
+  /** The host's encoder report, asked only for the one node type whose options depend on it. */
+  const host = type()?.id === "video.encode" ? createQuery(() => keys.encoders, api.encoders) : undefined;
+  const resolvedOf = (field: CatalogField): ResolvedField => resolveField(field, values());
+  /**
+   * A field is on screen while `visible_when` allows it and its variant does
+   * not hide it. A hidden field is shown anyway when the node stores a value
+   * there: the daemon still validates that value, so the operator needs a way
+   * to fix or reset it.
+   */
+  const shown = (field: CatalogField) => {
+    const resolved = resolvedOf(field);
+    return isVisible(resolved, values()) && (!resolved.hidden || node().options?.[field.key] !== undefined);
+  };
+  /** What the control shows: the stored value even when it is not valid, so it can be corrected; a missing key shows the resolved default. */
+  const stored = (field: ResolvedField): OptionValue => {
     const own = node().options?.[field.key];
     return own === undefined ? field.default : own;
+  };
+
+  /** The encoder behind the selected codec and backend, when the host's report knows it. */
+  const selectedEncoder = (): EncoderCapability | undefined => {
+    const report = host?.();
+    if (report?.state !== "ready") return undefined;
+    const codec = values().get("codec");
+    const backend = values().get("accelerator");
+    return report.encoders.find((encoder) => encoder.codec === codec && encoder.backend === backend);
+  };
+  /** Marks a backend whose encoder for this codec is unavailable here. The choice stays selectable: a flow may run elsewhere. */
+  const withAvailability = (field: ResolvedField): ResolvedField => {
+    const report = host?.();
+    if (field.key !== "accelerator" || report?.state !== "ready") return field;
+    const codec = values().get("codec");
+    return {
+      ...field,
+      choices: (field.choices ?? []).map((choice) => {
+        const encoder = report.encoders.find((candidate) => candidate.codec === codec && candidate.backend === choice.value);
+        return encoder && !encoder.available ? { ...choice, label: `${choice.label} (not available here)` } : choice;
+      }),
+    };
+  };
+  /** Why the selected encoder or bit depth cannot run here, in the probe's own words. */
+  const availabilityWarning = (field: ResolvedField): string | undefined => {
+    const report = host?.();
+    if (report?.state !== "ready") return undefined;
+    const encoder = selectedEncoder();
+    if (!encoder) return undefined;
+    if (!encoder.available) return field.key === "accelerator" ? (encoder.reason ?? "This encoder is not available on this host.") : undefined;
+    if (field.key !== "bit_depth") return undefined;
+    const depth = Number(values().get("bit_depth"));
+    const capability = encoder.bit_depths.find((candidate) => candidate.bit_depth === depth);
+    return capability && !capability.available ? (capability.reason ?? "This bit depth is not available on this host.") : undefined;
   };
 
   const fields = createMemo(() => {
@@ -83,7 +129,7 @@ function NodeOptions(props: { editor: Editor; id: string; focus: FieldFocus | nu
   });
   const issues = () => editor.check.issuesOf(id);
   const shownKeys = createMemo(() => new Set(fields().filter(shown).map((field) => field.key)));
-  const fieldError = (field: CatalogField): string | undefined => {
+  const fieldError = (field: ResolvedField): string | undefined => {
     const reported = issues().find((issue) => issue.field === field.key && issue.severity === "error")?.message;
     if (reported) return reported;
     // Known before the daemon answers: the same words it uses.
@@ -94,6 +140,12 @@ function NodeOptions(props: { editor: Editor; id: string; focus: FieldFocus | nu
   const nodeIssues = createMemo(() => issues().filter((issue) => !issue.field || !shownKeys().has(issue.field)));
   /** An option the node stores but its type does not have. Only removing it fixes that. */
   const isStray = (issue: Issue) => !!issue.field && node().options?.[issue.field] !== undefined && !fields().some((field) => field.key === issue.field);
+  /** Writes one option, dropping the stored options its new value invalidates, in the same undo step. */
+  const change = (field: CatalogField, value: OptionValue) => {
+    if (sameOptionValue(values().get(field.key), value)) return;
+    const current = type();
+    draft.setOption(id, field.key, value, current ? dependentOptions(current, field.key) : []);
+  };
 
   /* A collapsed section opens, and stays open, once something in it needs attention. */
   const [opened, setOpened] = createSignal<ReadonlySet<string>>(new Set());
@@ -102,7 +154,7 @@ function NodeOptions(props: { editor: Editor; id: string; focus: FieldFocus | nu
   createEffect(
     () =>
       (type()?.sections ?? [])
-        .filter((section) => section.fields.some((field) => shown(field) && fieldError(field)))
+        .filter((section) => section.fields.some((field) => shown(field) && fieldError(resolvedOf(field))))
         .map((section) => section.title)
         .join("\n"),
     (titles) => {
@@ -167,7 +219,6 @@ function NodeOptions(props: { editor: Editor; id: string; focus: FieldFocus | nu
       </Show>
 
       <section class="av-sec fe-about">
-        <div class="fe-about-type">{type()?.label ?? node().type}</div>
         <p class="fe-about-text">{type()?.description ?? "Unknown node type. Delete it or replace it with one from the palette."}</p>
         <Field label="Label" htmlFor={controlId(id, "label")}>
           <Input id={controlId(id, "label")} autocomplete="off" placeholder={type()?.label} value={node().label ?? ""} onInput={(event) => draft.setLabel(id, event.currentTarget.value)} />
@@ -182,19 +233,34 @@ function NodeOptions(props: { editor: Editor; id: string; focus: FieldFocus | nu
                 {(row) => (
                   <div class={{ "av-grid-2": row().fields[0]?.half }}>
                     <For each={row().fields} keyed={(field) => field.key}>
-                      {(field) => (
-                        <Field label={field().label} htmlFor={controlId(id, field().key)} hint={field().hint} error={fieldError(field())} inline={field().type === "bool"}>
-                          <Dynamic
-                            component={CONTROLS[field().type]}
-                            field={field()}
-                            value={stored(field())}
-                            id={controlId(id, field().key)}
-                            invalid={!!fieldError(field())}
-                            half={row().fields.length > 1 || !!field().half}
-                            onChange={(value: OptionValue) => draft.setOption(id, field().key, value)}
-                          />
-                        </Field>
-                      )}
+                      {(field) => {
+                        const resolved = () => resolvedOf(field());
+                        return (
+                          <Field
+                            label={resolved().label}
+                            htmlFor={controlId(id, field().key)}
+                            hint={resolved().hint}
+                            warning={availabilityWarning(resolved())}
+                            error={fieldError(resolved())}
+                            inline={resolved().type === "bool"}
+                          >
+                            <Dynamic
+                              component={CONTROLS[resolved().type]}
+                              field={withAvailability(resolved())}
+                              value={stored(resolved())}
+                              id={controlId(id, field().key)}
+                              invalid={!!fieldError(resolved())}
+                              half={row().fields.length > 1 || !!resolved().half}
+                              onChange={(value: OptionValue) => change(field(), value)}
+                            />
+                            <Show when={resolved().hidden && node().options?.[field().key] !== undefined}>
+                              <Button variant="ghost" size="sm" class="fe-field-reset" onClick={() => draft.removeOption(id, field().key)}>
+                                Reset
+                              </Button>
+                            </Show>
+                          </Field>
+                        );
+                      }}
                     </For>
                   </div>
                 )}

@@ -205,6 +205,7 @@ func resolveDaemon(raw rawDaemonConfig, host stateHost) DaemonConfig {
 	return DaemonConfig{
 		MediaRoots:        slices.Clone(raw.MediaRoots),
 		TempDir:           tempDir,
+		RenderDevice:      raw.RenderDevice,
 		StorePath:         storePath,
 		ControlSocket:     controlSocket,
 		WorkerCount:       valueOr(raw.WorkerCount, cpus),
@@ -237,6 +238,14 @@ func resolveProfile(name string, raw rawProfileConfig) (ProfileConfig, error) {
 		target = DefaultTargetVMAF
 	}
 
+	codec := normalizeConfigVideoCodec(orDefault(raw.Video.Codec, "av1"))
+	backend := video.ResolveAccelerator(raw.Video.Accelerator)
+	encoder, ok := video.LookupEncoder(codec, backend)
+	depth := video.DefaultBitDepth
+	if ok && len(encoder.BitDepths) == 1 {
+		depth = encoder.BitDepths[0]
+	}
+
 	return ProfileConfig{
 		Name:      name,
 		Container: normalizeContainer(orDefault(raw.Container, "mkv")),
@@ -253,12 +262,12 @@ func resolveProfile(name string, raw rawProfileConfig) (ProfileConfig, error) {
 			RequiredAlignment:  valueOr(raw.Crop.RequiredAlignment, DefaultCropRequiredAlignment),
 		},
 		Video: VideoConfig{
-			Codec:              normalizeConfigVideoCodec(orDefault(raw.Video.Codec, "av1")),
-			Accelerator:        video.NormalizeAccelerator(orDefault(raw.Video.Accelerator, "software")),
-			Preset:             orDefault(raw.Video.Preset, "6"),
-			BitDepth:           valueOr(raw.Video.BitDepth, video.DefaultBitDepth),
-			CRFMin:             valueOr(raw.Video.CRFMin, DefaultCRFMin),
-			CRFMax:             valueOr(raw.Video.CRFMax, DefaultCRFMax),
+			Codec:              codec,
+			Accelerator:        backend,
+			Preset:             orDefault(raw.Video.Preset, encoder.Speed.Default),
+			BitDepth:           valueOr(raw.Video.BitDepth, depth),
+			CRFMin:             valueOr(raw.Video.CRFMin, encoder.Quality.SearchMin),
+			CRFMax:             valueOr(raw.Video.CRFMax, encoder.Quality.SearchMax),
 			Samples:            valueOr(raw.Video.Samples, 0),
 			SampleDuration:     valueOr(raw.Video.SampleDuration, Duration{Duration: 20 * time.Second}),
 			Metric:             metric,

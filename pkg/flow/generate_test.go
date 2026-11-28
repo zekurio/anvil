@@ -48,6 +48,7 @@ skip_encode = true
 [profiles.p.video.overrides.h264]
 codec = "h265"
 accelerator = "qsv"
+preset = "medium"
 bit_depth = 8
 crf_min = 20
 crf_max = 30
@@ -75,7 +76,6 @@ func representativeProfiles(t *testing.T) map[string]domain.Profile {
 [profiles.p.video]
 codec = "hevc"
 accelerator = "vaapi"
-preset = "slow"
 bit_depth = 8
 crf_min = 1
 crf_max = 51
@@ -369,6 +369,8 @@ func TestFromProfileRoundTripsWhatAFlowResolves(t *testing.T) {
 	if !slices.Equal(ids, want) {
 		t.Errorf("nodes = %v, want %v", ids, want)
 	}
+	profile.Video.Preset = "medium"
+	profile.Video.CRFMax = 36
 	if got := mustEvaluate(t, g, probeOf()).Profile; !reflect.DeepEqual(got, profile) {
 		t.Errorf("Profile =\n%+v\nwant\n%+v", got, profile)
 	}
@@ -457,7 +459,7 @@ func TestDefaultIsAFreshGraph(t *testing.T) {
 	first.Nodes[1].Options["preset"] = "0"
 	first.Nodes[0].ID = "changed"
 	first.Edges[0].To = "changed"
-	if second := Default(); second.Nodes[1].Options["preset"] != "6" || second.Nodes[0].ID != "input" || second.Edges[0].To != "video" {
+	if second := Default(); second.Nodes[1].Options["preset"] != nil || second.Nodes[0].ID != "input" || second.Edges[0].To != "video" {
 		t.Errorf("Default() shares state between calls: %+v", second)
 	}
 }

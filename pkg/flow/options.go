@@ -71,10 +71,17 @@ func decodeOptionsWithWarnings(def nodeDef, raw map[string]any) (options, []opti
 	flagged := map[string]bool{}
 	for _, section := range def.Sections {
 		for _, field := range section.Fields {
+			field = resolveField(field, decoded)
 			decoded[field.Key], _ = decodeValue(field, field.Default)
 			value, set := raw[field.Key]
 			if !set || !visible(field, decoded) {
 				continue
+			}
+			if field.normalize != nil {
+				value, set = field.normalize(value)
+				if !set {
+					continue
+				}
 			}
 			value, message := decodeValue(field, value)
 			if message != "" {
@@ -90,7 +97,7 @@ func decodeOptionsWithWarnings(def nodeDef, raw map[string]any) (options, []opti
 		// would only be judging the default that stands in for it.
 		for _, problem := range def.check(decoded) {
 			if !flagged[problem.Field] {
-				problem.Message = nameFields(def, problem.Message)
+				problem.Message = nameFields(def, decoded, problem.Message)
 				problems = append(problems, problem)
 			}
 		}
@@ -113,7 +120,7 @@ func decodeOptionsWithWarnings(def nodeDef, raw map[string]any) (options, []opti
 	if def.warn != nil {
 		for _, warning := range def.warn(decoded) {
 			if !slices.ContainsFunc(problems, func(problem optionProblem) bool { return problem.Field == warning.Field }) {
-				warning.Message = nameFields(def, warning.Message)
+				warning.Message = nameFields(def, decoded, warning.Message)
 				warnings = append(warnings, warning)
 			}
 		}
@@ -130,7 +137,7 @@ func decodeOptionsWithWarnings(def nodeDef, raw map[string]any) (options, []opti
 //
 // Only keys with an underscore are replaced. Those are never ordinary words,
 // while "metric" or "limit" may simply be part of the sentence.
-func nameFields(def nodeDef, message string) string {
+func nameFields(def nodeDef, decoded options, message string) string {
 	if !strings.Contains(message, "_") {
 		return message
 	}
@@ -142,7 +149,7 @@ func nameFields(def nodeDef, message string) string {
 			// \b treats the underscore as part of a word, so crf_max does not
 			// match inside another key.
 			key := regexp.MustCompile(`\b` + regexp.QuoteMeta(field.Key) + `\b`)
-			message = key.ReplaceAllLiteralString(message, field.Label)
+			message = key.ReplaceAllLiteralString(message, resolveField(field, decoded).Label)
 		}
 	}
 	return message
@@ -210,6 +217,14 @@ func decodeValue(field Field, value any) (any, string) {
 		return duration, ""
 	case FieldEnum:
 		text, ok := value.(string)
+		// A variant with no choices can keep a default for a control
+		// that does not apply to the current settings.
+		if len(field.Choices) == 0 {
+			if ok && text == field.Default {
+				return text, ""
+			}
+			return nil, "Remove this option. It has no choices for the current settings."
+		}
 		if !ok || !hasChoice(field, text) {
 			return nil, "Must be one of: " + choiceLabels(field) + "."
 		}
@@ -281,21 +296,25 @@ func stringList(value any) ([]string, bool) {
 }
 
 func rangeMessage(field Field, number float64) string {
+	end := "."
+	if field.rangeContext != "" {
+		end = " for " + field.rangeContext + "."
+	}
 	below := field.Min != nil && (number < *field.Min || field.MinExclusive && number == *field.Min)
 	above := field.Max != nil && number > *field.Max
 	switch {
 	case !below && !above:
 		return ""
 	case field.MinExclusive && field.Max != nil:
-		return fmt.Sprintf("Must be greater than %s and at most %s.", formatNumber(*field.Min), formatNumber(*field.Max))
+		return fmt.Sprintf("Must be greater than %s and at most %s%s", formatNumber(*field.Min), formatNumber(*field.Max), end)
 	case field.MinExclusive:
-		return fmt.Sprintf("Must be greater than %s.", formatNumber(*field.Min))
+		return fmt.Sprintf("Must be greater than %s%s", formatNumber(*field.Min), end)
 	case field.Min != nil && field.Max != nil:
-		return fmt.Sprintf("Must be between %s and %s.", formatNumber(*field.Min), formatNumber(*field.Max))
+		return fmt.Sprintf("Must be between %s and %s%s", formatNumber(*field.Min), formatNumber(*field.Max), end)
 	case field.Min != nil:
-		return fmt.Sprintf("Must be at least %s.", formatNumber(*field.Min))
+		return fmt.Sprintf("Must be at least %s%s", formatNumber(*field.Min), end)
 	default:
-		return fmt.Sprintf("Must be at most %s.", formatNumber(*field.Max))
+		return fmt.Sprintf("Must be at most %s%s", formatNumber(*field.Max), end)
 	}
 }
 
@@ -316,4 +335,41 @@ func choiceLabels(field Field) string {
 // formatNumber prints a number the way an operator typed it: 95, not 95.000000.
 func formatNumber(number float64) string {
 	return strconv.FormatFloat(number, 'f', -1, 64)
+}
+
+func resolveField(field Field, decoded options) Field {
+	for _, variant := range field.Variants {
+		if !slices.ContainsFunc(variant.When, func(condition Visibility) bool {
+			return !slices.Contains(condition.In, decoded[condition.Key])
+		}) {
+			return applyVariant(field, variant)
+		}
+	}
+	return field
+}
+
+func applyVariant(field Field, variant FieldVariant) Field {
+	if variant.Label != "" {
+		field.Label = variant.Label
+	}
+	if variant.Hint != "" {
+		field.Hint = variant.Hint
+	}
+	if variant.Choices != nil {
+		field.Choices = variant.Choices
+	}
+	if variant.Min != nil {
+		field.Min = variant.Min
+		field.rangeContext = variant.rangeContext
+	}
+	if variant.Max != nil {
+		field.Max = variant.Max
+	}
+	if variant.Default != nil {
+		field.Default = variant.Default
+	}
+	if variant.Placeholder != "" {
+		field.Placeholder = variant.Placeholder
+	}
+	return field
 }

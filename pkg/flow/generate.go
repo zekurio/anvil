@@ -30,7 +30,24 @@ const (
 // audio and subtitle track, and apply the default metadata policy.
 func Default() Graph {
 	defaults, _ := config.Default().FindProfile(config.DefaultProfileName)
-	return FromProfile(defaults.ToDomain())
+	graph := FromProfile(defaults.ToDomain())
+	for _, node := range graph.Nodes {
+		if node.Type != typeVideoEncode {
+			continue
+		}
+		encoder, ok := video.LookupEncoder(defaults.Video.Codec, defaults.Video.Accelerator)
+		if !ok {
+			continue
+		}
+		for key, value := range map[string]any{
+			"preset": encoder.Speed.Default, "crf_min": encoder.Quality.SearchMin, "crf_max": encoder.Quality.SearchMax,
+		} {
+			if node.Options[key] == value {
+				delete(node.Options, key)
+			}
+		}
+	}
+	return graph
 }
 
 // FromProfile converts a resolved TOML profile into a flow that resolves to
@@ -216,9 +233,11 @@ func encodeOptions(settings domain.VideoProfile) map[string]any {
 	values := map[string]any{
 		"codec":       video.CanonicalCodec(settings.Codec),
 		"accelerator": video.ResolveAccelerator(settings.Accelerator),
-		"preset":      settings.Preset,
 		"bit_depth":   strconv.Itoa(video.NormalizeBitDepth(settings.BitDepth)),
 		"ffmpeg_args": optionList(settings.FFmpegArgs),
+	}
+	if settings.Preset != "" {
+		values["preset"] = settings.Preset
 	}
 	if settings.QualityMode == domain.VideoQualityFixed {
 		values["quality_mode"] = string(domain.VideoQualityFixed)

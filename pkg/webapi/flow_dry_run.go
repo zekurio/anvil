@@ -40,7 +40,7 @@ func (s *Server) testFlow(_ http.ResponseWriter, r *http.Request) (int, any, err
 	}
 	graph := normalizeGraph(request.Graph)
 	result := FlowTest{
-		Check: flowCheck(graph), Path: []string{}, Decisions: []string{}, Plan: []string{}, Command: []string{},
+		Check: s.flowCheck(graph), Path: []string{}, Decisions: []string{}, Plan: []string{}, Command: []string{},
 		File: FileFacts{Audio: []StreamFacts{}, Subtitles: []StreamFacts{}},
 	}
 	input, resolved, err := s.dryRunInput(request.Path)
@@ -197,14 +197,15 @@ func (s *Server) dryRunCommand(profile domain.Profile, input string, probed doma
 		threads = 1 + (daemon.TotalThreads-1)/max(daemon.WorkerCount, 1)
 	}
 	plan, err := ffmpeg.BuildPlanFromRequest(ffmpeg.BuildPlanRequest{
-		Profile:    profile,
-		InputPath:  input,
-		OutputPath: outputPlaceholder,
-		Resources:  domain.ResourceAllocation{Threads: threads},
-		Audio:      &audioSelection,
-		Subtitles:  &subtitleSelection,
-		Metadata:   metadata,
-		Probe:      &probed,
+		Profile:      profile,
+		RenderDevice: daemon.RenderDevice,
+		InputPath:    input,
+		OutputPath:   outputPlaceholder,
+		Resources:    domain.ResourceAllocation{Threads: threads},
+		Audio:        &audioSelection,
+		Subtitles:    &subtitleSelection,
+		Metadata:     metadata,
+		Probe:        &probed,
 	})
 	if err != nil {
 		return nil, nil, err
