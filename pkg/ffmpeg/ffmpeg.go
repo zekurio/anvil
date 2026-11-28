@@ -31,7 +31,7 @@ func (e Encoder) Encode(ctx context.Context, plan domain.EncodePlan) (process.Re
 	if plan.OutputPath == "" {
 		return process.Result{}, errors.New("encode output path is required")
 	}
-	if err := ValidateEncoderArgs(plan.FFmpegArgs); err != nil {
+	if err := ValidateEncoderArgs(plan.VideoCodec, plan.FFmpegArgs); err != nil {
 		return process.Result{}, err
 	}
 	if err := validateAudioTracks(plan); err != nil {
@@ -52,15 +52,16 @@ func (e Encoder) Encode(ctx context.Context, plan domain.EncodePlan) (process.Re
 // Search, Audio, Subtitles, and Probe are optional; nil means that pipeline
 // stage has not produced a result for this job.
 type BuildPlanRequest struct {
-	Profile    domain.Profile
-	InputPath  string
-	OutputPath string
-	Resources  domain.ResourceAllocation
-	Search     *domain.SearchResult
-	Audio      *domain.AudioSelection
-	Subtitles  *domain.SubtitleSelection
-	Metadata   domain.JobMetadata
-	Probe      *domain.ProbeResult
+	RenderDevice string
+	Profile      domain.Profile
+	InputPath    string
+	OutputPath   string
+	Resources    domain.ResourceAllocation
+	Search       *domain.SearchResult
+	Audio        *domain.AudioSelection
+	Subtitles    *domain.SubtitleSelection
+	Metadata     domain.JobMetadata
+	Probe        *domain.ProbeResult
 }
 
 // BuildPlanFromRequest builds the ffmpeg encode plan for request.
@@ -73,16 +74,18 @@ func BuildPlanFromRequest(request BuildPlanRequest) (domain.EncodePlan, error) {
 		return domain.EncodePlan{}, errors.New("source video stream is required to apply video overrides")
 	}
 	video := domain.EffectiveVideoProfile(request.Profile, request.Metadata, inputVideo.Codec)
-	if err := ValidateEncoderArgs(video.FFmpegArgs); err != nil {
+	encoder := videocodec.ResolveEncoder(video.Codec, video.Accelerator)
+	if err := ValidateEncoderArgs(encoder, video.FFmpegArgs); err != nil {
 		return domain.EncodePlan{}, err
 	}
-	videoCopy, videoCopyReason := videoCopyState(video, inputVideo, request.Search)
+	videoCopy, videoCopyReason := VideoCopyState(video, inputVideo, request.Search)
 	crf := selectedCRF(video, videoCopy, request.Search)
 	plan := domain.EncodePlan{
 		InputPath:            request.InputPath,
 		OutputPath:           request.OutputPath,
 		ProfileName:          request.Profile.Name,
-		VideoCodec:           videocodec.ResolveEncoder(video.Codec, video.Accelerator),
+		VideoCodec:           encoder,
+		RenderDevice:         request.RenderDevice,
 		InputVideoCodec:      inputVideo.Codec,
 		InputPixelFormat:     inputVideo.PixelFormat,
 		InputWidth:           inputVideo.Width,
@@ -147,7 +150,8 @@ func (request BuildPlanRequest) validate() error {
 	return nil
 }
 
-func videoCopyState(video domain.VideoProfile, source domain.MediaStream, search *domain.SearchResult) (bool, string) {
+// VideoCopyState reports whether the source video stream will be copied.
+func VideoCopyState(video domain.VideoProfile, source domain.MediaStream, search *domain.SearchResult) (bool, string) {
 	videoCopy := false
 	videoCopyReason := ""
 	if video.SkipEncode {
@@ -206,6 +210,7 @@ func Args(plan domain.EncodePlan) []string {
 		"-stats_period", "5",
 		"-progress", "pipe:1",
 	}
+	args = append(args, deviceArgs(plan)...)
 	args = append(args, inputArgs(plan)...)
 	args = append(args, "-i", plan.InputPath)
 	args = append(args, mapArgs(plan)...)
@@ -328,15 +333,16 @@ func attachedPicStreams(probe *domain.ProbeResult) []string {
 
 func buildPlanRequest(job *pipeline.JobContext) BuildPlanRequest {
 	return BuildPlanRequest{
-		Profile:    job.Profile,
-		InputPath:  job.InputPath,
-		OutputPath: job.OutputPath,
-		Resources:  job.Resources,
-		Search:     job.Search,
-		Audio:      job.Audio,
-		Subtitles:  job.Subtitles,
-		Metadata:   job.Metadata,
-		Probe:      job.Probe,
+		Profile:      job.Profile,
+		RenderDevice: job.RenderDevice,
+		InputPath:    job.InputPath,
+		OutputPath:   job.OutputPath,
+		Resources:    job.Resources,
+		Search:       job.Search,
+		Audio:        job.Audio,
+		Subtitles:    job.Subtitles,
+		Metadata:     job.Metadata,
+		Probe:        job.Probe,
 	}
 }
 
@@ -348,16 +354,23 @@ func inputArgs(plan domain.EncodePlan) []string {
 	if !ok {
 		return nil
 	}
-	return []string{
+	args := []string{
 		"-hwaccel", "qsv",
 		"-hwaccel_output_format", "qsv",
 		"-c:v", decoder,
 	}
+	if plan.RenderDevice != "" {
+		args = append(args, "-hwaccel_device", "anvil")
+	}
+	return args
 }
 
 func videoFilter(plan domain.EncodePlan) string {
+	if plan.VideoCopy {
+		return ""
+	}
 	if qsvInputPipeline(plan) {
-		format := videocodec.QSVVPPFormat(plan.BitDepth)
+		format := planEncoder(plan).SurfaceFormat(plan.BitDepth)
 		if noCropFilter(plan) {
 			return videocodec.QSVFormatFilter(format)
 		}
@@ -365,10 +378,7 @@ func videoFilter(plan domain.EncodePlan) string {
 			return filter
 		}
 	}
-	if noCropFilter(plan) {
-		return ""
-	}
-	return plan.CropFilter
+	return softwareInputFilter(plan, ReferenceFilter(plan))
 }
 
 func noCropFilter(plan domain.EncodePlan) bool {
@@ -394,10 +404,14 @@ func qsvInputPipeline(plan domain.EncodePlan) bool {
 	if plan.Accelerator != videocodec.AcceleratorQSV {
 		return false
 	}
-	if videocodec.EncoderAccelerator(plan.VideoCodec) != videocodec.AcceleratorQSV {
+	if planEncoder(plan).Device != "qsv" {
 		return false
 	}
 	_, ok := videocodec.QSVDecoder(plan.InputVideoCodec)
+	if !ok || noCropFilter(plan) {
+		return ok
+	}
+	_, ok = videocodec.QSVCropFilter(plan.CropFilter, planEncoder(plan).SurfaceFormat(plan.BitDepth))
 	return ok
 }
 
@@ -446,8 +460,9 @@ func videoArgs(plan domain.EncodePlan) []string {
 		"-c:v", valueOr(plan.VideoCodec, "libsvtav1"),
 	}
 	args = append(args, qualityArgs(plan)...)
-	if plan.Preset != "" {
-		args = append(args, "-preset", plan.Preset)
+	speed := planEncoder(plan).Speed
+	if speed.Option != "" {
+		args = append(args, speed.Option, valueOr(plan.Preset, speed.Default))
 	}
 	if pixelFormat := finalPixelFormat(plan); pixelFormat != "" {
 		args = append(args, "-pix_fmt", pixelFormat)
@@ -460,8 +475,12 @@ func videoArgs(plan domain.EncodePlan) []string {
 }
 
 func finalPixelFormat(plan domain.EncodePlan) string {
-	if videocodec.EncoderAccelerator(plan.VideoCodec) == videocodec.AcceleratorQSV {
+	encoder := planEncoder(plan)
+	if encoder.Device != "" {
 		return ""
+	}
+	if format := encoder.SurfaceFormat(plan.BitDepth); format != "" {
+		return format
 	}
 	if plan.PixelFormat != "" {
 		return plan.PixelFormat
@@ -501,14 +520,12 @@ func qualityArgs(plan domain.EncodePlan) []string {
 		return nil
 	}
 	value := strconv.Itoa(plan.CRF)
-	switch videocodec.EncoderAccelerator(plan.VideoCodec) {
-	case videocodec.AcceleratorQSV, videocodec.AcceleratorVAAPI:
-		return []string{"-global_quality", value}
-	case videocodec.AcceleratorAMF:
-		return []string{"-rc", "cqp", "-qp_i", value, "-qp_p", value, "-qp_b", value}
-	default:
-		return []string{"-crf", value}
+	quality := planEncoder(plan).Quality
+	args := append([]string(nil), quality.Setup...)
+	for _, option := range quality.Options {
+		args = append(args, option, value)
 	}
+	return args
 }
 
 func subtitleArgs() []string {

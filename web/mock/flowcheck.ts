@@ -115,6 +115,11 @@ function decodeValue(field: Field, value: unknown): { value?: OptionValue; messa
       return { value: text === "" ? "" : cleanPath(text) };
     }
     case "enum":
+      // A variant with no choices can keep a default for a control that does
+      // not apply to the current settings.
+      if ((field.choices ?? []).length === 0) {
+        return typeof value === "string" && value === field.default ? { value } : { message: "Remove this option. It has no choices for the current settings." };
+      }
       return typeof value === "string" && hasChoice(field, value) ? { value } : { message: `Must be one of: ${choiceLabels(field)}.` };
     case "enum_list": {
       if (!isStringList(value) || value.some((entry) => !hasChoice(field, entry))) return { message: `Must be a list of: ${choiceLabels(field)}.` };
@@ -128,6 +133,23 @@ function decodeValue(field: Field, value: unknown): { value?: OptionValue; messa
   }
 }
 
+/** Applies the first variant whose conditions all match the values decoded so far (pkg/flow/options.go resolveField). */
+function resolveField(field: Field, decoded: Options): Field {
+  for (const variant of field.variants ?? []) {
+    if (!variant.when.every((condition) => condition.in.includes(decoded.values.get(condition.key) ?? null))) continue;
+    const resolved = { ...field };
+    if (variant.label !== undefined) resolved.label = variant.label;
+    if (variant.hint !== undefined) resolved.hint = variant.hint;
+    if (variant.choices !== undefined) resolved.choices = variant.choices;
+    if (variant.min !== undefined) resolved.min = variant.min;
+    if (variant.max !== undefined) resolved.max = variant.max;
+    if (variant.default !== undefined) resolved.default = variant.default;
+    if (variant.placeholder !== undefined) resolved.placeholder = variant.placeholder;
+    return resolved;
+  }
+  return field;
+}
+
 function visible(field: Field, decoded: Options): boolean {
   const when = field.visible_when;
   if (!when) return true;
@@ -139,9 +161,12 @@ function decodeOptions(type: NodeType, raw: Record<string, OptionValue> = {}): {
   const problems: Problem[] = [];
   const flagged = new Set<string>();
   for (const field of type.sections.flatMap((s) => s.fields)) {
-    options.values.set(field.key, decodeValue(field, field.default).value ?? null);
-    if (!(field.key in raw) || !visible(field, options)) continue;
-    const decoded = decodeValue(field, raw[field.key]);
+    // Fields decode in catalog order, and a variant reads the fields before
+    // it: by now codec and accelerator hold what the node means.
+    const resolved = resolveField(field, options);
+    options.values.set(field.key, decodeValue(resolved, resolved.default).value ?? null);
+    if (!(field.key in raw) || !visible(resolved, options)) continue;
+    const decoded = decodeValue(resolved, raw[field.key]);
     if (decoded.message) {
       problems.push({ field: field.key, message: decoded.message });
       flagged.add(field.key);
@@ -331,6 +356,18 @@ const ENCODERS: Record<string, Record<string, string>> = {
   amf: { av1: "av1_amf", hevc: "hevc_amf", h264: "h264_amf" },
 };
 const encoderOf = (o: Options) => ENCODERS[o.text("accelerator")]?.[o.text("codec")] ?? "libsvtav1";
+/** The option each encoder takes its preset with (pkg/video/encoders.go); VAAPI has none. */
+const SPEED: Record<string, { option: string; default: string }> = {
+  libsvtav1: { option: "-preset", default: "6" },
+  libx265: { option: "-preset", default: "medium" },
+  libx264: { option: "-preset", default: "medium" },
+  av1_qsv: { option: "-preset", default: "medium" },
+  hevc_qsv: { option: "-preset", default: "medium" },
+  h264_qsv: { option: "-preset", default: "medium" },
+  av1_amf: { option: "-quality", default: "balanced" },
+  hevc_amf: { option: "-quality", default: "balanced" },
+  h264_amf: { option: "-quality", default: "balanced" },
+};
 const layoutName = (channels: string) => (channels === "2" ? "stereo" : "5.1");
 const audioBitrate = (o: Options) => (o.text("codec") === "flac" ? 0 : o.number("bitrate_kbps_per_channel"));
 
@@ -717,7 +754,11 @@ function command(plan: Plan, file: FileFacts): string[] {
     const o = plan.video;
     const software = o.text("accelerator") === "software";
     if (plan.crop) args.push("-vf", "{crop}");
-    args.push("-c:v", encoderOf(o), "-preset", o.text("preset").trim() || "medium", software ? "-crf" : "-global_quality", o.text("quality_mode") === "fixed" ? String(o.number("crf")) : "{crf}");
+    const encoder = encoderOf(o);
+    const speed = SPEED[encoder];
+    args.push("-c:v", encoder);
+    if (speed) args.push(speed.option, o.text("preset").trim() || speed.default);
+    args.push(software ? "-crf" : "-global_quality", o.text("quality_mode") === "fixed" ? String(o.number("crf")) : "{crf}");
     args.push("-pix_fmt", o.text("bit_depth") === "8" ? "yuv420p" : "yuv420p10le", ...o.list("ffmpeg_args"));
   } else args.push("-c:v", "copy");
 

@@ -105,6 +105,11 @@ type Field struct {
 	// VisibleWhen hides the field unless another field of the same node
 	// currently has one of the listed values.
 	VisibleWhen *Visibility `json:"visible_when,omitempty"`
+	// Variants may depend on the effective values of earlier fields.
+	Variants []FieldVariant `json:"variants,omitempty"`
+
+	normalize    func(any) (any, bool)
+	rangeContext string
 }
 
 // Choice is one allowed value of an enum field.
@@ -117,4 +122,20 @@ type Choice struct {
 type Visibility struct {
 	Key string `json:"key"`
 	In  []any  `json:"in"`
+}
+
+// FieldVariant overrides a field when all its sibling conditions match.
+// The first matching variant wins. Hidden affects presentation only.
+type FieldVariant struct {
+	When        []Visibility `json:"when"`
+	Label       string       `json:"label,omitempty"`
+	Hint        string       `json:"hint,omitempty"`
+	Choices     []Choice     `json:"choices,omitzero"`
+	Min         *float64     `json:"min,omitempty"`
+	Max         *float64     `json:"max,omitempty"`
+	Default     any          `json:"default,omitempty"`
+	Placeholder string       `json:"placeholder,omitempty"`
+	Hidden      bool         `json:"hidden,omitempty"`
+
+	rangeContext string
 }

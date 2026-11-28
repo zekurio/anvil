@@ -10,7 +10,7 @@
 import { createMemo, createSignal, type Accessor } from "solid-js";
 
 import type { GraphEdge, GraphNode, OptionValue } from "../../api";
-import { countChanges, freshId, type Doc } from "./graph";
+import { countChanges, freshId, sameOptionValue, type Doc } from "./graph";
 
 /** One undo step: the document as it was before the edit. */
 interface Step {
@@ -184,9 +184,19 @@ export function createDraft(initial: Doc, savedDoc: Doc | null, history?: Pick<D
       );
     },
 
-    setOption(id: string, key: string, value: OptionValue): void {
+    /**
+     * Sets one option and drops the stored keys the change invalidates, in
+     * the same undo step, so they fall back to the defaults of what they now
+     * describe.
+     */
+    setOption(id: string, key: string, value: OptionValue, drop: readonly string[] = []): void {
       commit(
-        mapNode(id, (node) => ({ ...node, options: { ...node.options, [key]: value } })),
+        mapNode(id, (node) => {
+          if (sameOptionValue(node.options?.[key], value) && drop.every((candidate) => node.options?.[candidate] === undefined)) return node;
+          const options = { ...node.options, [key]: value };
+          for (const dropped of drop) delete options[dropped];
+          return { ...node, options };
+        }),
         { coalesce: `option:${id}:${key}` },
       );
     },

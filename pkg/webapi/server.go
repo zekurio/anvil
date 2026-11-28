@@ -21,6 +21,7 @@ import (
 	"github.com/zekurio/anvil/pkg/control"
 	"github.com/zekurio/anvil/pkg/controlapi"
 	"github.com/zekurio/anvil/pkg/domain"
+	"github.com/zekurio/anvil/pkg/ffmpeg"
 	"github.com/zekurio/anvil/pkg/probe"
 	"github.com/zekurio/anvil/pkg/store"
 )
@@ -104,7 +105,8 @@ type Server struct {
 	// Progress may be nil: no job then reports live progress.
 	Progress ProgressSource
 	// Prober defaults to ffprobe.
-	Prober Prober
+	Prober              Prober
+	EncoderCapabilities func() ffmpeg.EncoderCapabilities
 	// UI is the built frontend rooted at its index.html; UIBuilt says whether
 	// a build is actually there.
 	UI      fs.FS
@@ -187,6 +189,7 @@ func (s *Server) Handler() http.Handler {
 	route("PUT /api/v1/settings/daemon", s.updateDaemonSettings)
 	route("GET /api/v1/fs", s.listDirectory)
 
+	route("GET /api/v1/encoders", s.encoders)
 	route("GET /api/v1/node-types", s.nodeTypes)
 	route("GET /api/v1/flows", s.listFlows)
 	route("POST /api/v1/flows", s.createFlow)

@@ -822,6 +822,10 @@ Nix, install Go 1.26.4 or newer, Node.js 22.12 or newer, and the media tools
 above, and use the same `make` targets. `make lint` runs `golangci-lint`
 inside `nix develop`.
 
+For VAAPI tests in the dev shell, use a Mesa driver built against the shell's
+glibc. Set `LIBVA_DRIVERS_PATH` to the directory containing the pinned
+nixpkgs Mesa driver, for example `<mesa>/lib/dri`.
+
 ```sh
 make all        # web UI, then bin/anvild and bin/anvilctl
 make build      # the two binaries, without Node.js and without the UI

@@ -56,7 +56,7 @@ func (s *Server) flowResponse(ctx context.Context, stored store.Flow) (Flow, err
 		return Flow{}, err
 	}
 	graph := normalizeGraph(stored.Graph)
-	return Flow{FlowSummary: flowSummary(stored, usage[stored.ID]), Graph: graph, Check: flowCheck(graph)}, nil
+	return Flow{FlowSummary: flowSummary(stored, usage[stored.ID]), Graph: graph, Check: s.flowCheck(graph)}, nil
 }
 
 // flowID reads the {id} of a flow route.
@@ -94,7 +94,7 @@ func (s *Server) getFlow(_ http.ResponseWriter, r *http.Request) (int, any, erro
 
 // flowInput validates what a create or update carries. A graph with error
 // issues is refused with every issue, so the editor can mark the nodes.
-func flowInput(write FlowWrite) (store.FlowInput, error) {
+func (s *Server) flowInput(write FlowWrite) (store.FlowInput, error) {
 	name := strings.TrimSpace(write.Name)
 	switch {
 	case name == "":
@@ -103,7 +103,7 @@ func flowInput(write FlowWrite) (store.FlowInput, error) {
 		return store.FlowInput{}, invalidf("name", "A flow name can have at most %d characters.", maxFlowNameLength)
 	}
 	graph := normalizeGraph(write.Graph)
-	if check := flowCheck(graph); !check.Valid {
+	if check := s.flowCheck(graph); !check.Valid {
 		return store.FlowInput{}, &apiError{
 			status: http.StatusUnprocessableEntity, code: CodeInvalidFlow, issues: check.Issues,
 			message: "Fix the problems in this flow before saving it.",
@@ -117,7 +117,7 @@ func (s *Server) createFlow(_ http.ResponseWriter, r *http.Request) (int, any, e
 	if err := decodeBody(r, &write); err != nil {
 		return fail(err)
 	}
-	input, err := flowInput(write)
+	input, err := s.flowInput(write)
 	if err != nil {
 		return fail(err)
 	}
@@ -205,7 +205,7 @@ func (s *Server) updateFlow(_ http.ResponseWriter, r *http.Request) (int, any, e
 	if err := decodeBody(r, &write); err != nil {
 		return fail(err)
 	}
-	input, err := flowInput(write)
+	input, err := s.flowInput(write)
 	if err != nil {
 		return fail(err)
 	}
@@ -301,7 +301,7 @@ func (s *Server) checkFlow(_ http.ResponseWriter, r *http.Request) (int, any, er
 	if err := decodeBody(r, &request); err != nil {
 		return fail(err)
 	}
-	return ok(flowCheck(normalizeGraph(request.Graph)))
+	return ok(s.flowCheck(normalizeGraph(request.Graph)))
 }
 
 // flowIssues lists the error issues of a stored flow in one sentence, for a

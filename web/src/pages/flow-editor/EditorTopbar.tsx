@@ -9,7 +9,7 @@ import { appHref } from "../../lib/base";
 import { plural } from "../../lib/format";
 import { Button, Icon } from "../../ui";
 import type { Editor } from "./editor";
-import { fieldsOf } from "./graph";
+import { effectiveOptions, fieldsOf, resolveField } from "./graph";
 
 export interface EditorTopbarProps {
   editor: Editor;
@@ -54,7 +54,8 @@ function Problems(props: Pick<EditorTopbarProps, "editor" | "issuesOpen" | "onIs
     if (!node) return "The flow";
     const type = editor.typeOf(node);
     const field = issue.field && type ? fieldsOf(type).find((candidate) => candidate.key === issue.field) : undefined;
-    return field ? `${editor.titleOf(node)} · ${field.label}` : editor.titleOf(node);
+    const label = field && type ? resolveField(field, effectiveOptions(type, node)).label : field?.label;
+    return label ? `${editor.titleOf(node)} · ${label}` : editor.titleOf(node);
   };
 
   return (

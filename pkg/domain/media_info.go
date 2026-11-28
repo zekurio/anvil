@@ -171,6 +171,7 @@ type CropResult struct {
 }
 
 type EncodePlan struct {
+	RenderDevice             string
 	InputPath                string
 	OutputPath               string
 	ProfileName              ProfileName

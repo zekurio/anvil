@@ -1,8 +1,10 @@
 // The node catalog served by GET /node-types: a port of pkg/flow/nodes.go,
-// conditions.go and actions.go. Ids, option keys, defaults, outputs, groups,
-// labels and hints are the daemon's; change them there first.
+// conditions.go and actions.go, with the encoder variants of the video.encode
+// node built from the registry in pkg/video/encoders.go. Ids, option keys,
+// defaults, outputs, groups, labels and hints are the daemon's; change them
+// there first.
 
-import type { Choice, Field, NodeType, OptionValue, Section, Visibility } from "../../src/api/types.ts";
+import type { Choice, Field, FieldVariant, NodeType, OptionValue, Section, Visibility } from "../../src/api/types.ts";
 
 const choice = (value: string, label: string): Choice => ({ value, label });
 const when = (key: string, ...values: OptionValue[]): Visibility => ({ key, in: values });
@@ -101,6 +103,136 @@ const preserveOrStrip = (key: string, label: string): Field => ({
   half: true,
 });
 
+/* ---------- video.encode (pkg/flow/actions.go, pkg/video/encoders.go) ---------- */
+
+interface MockSpeed {
+  /** The ffmpeg option the preset goes to; empty when the encoder has none. */
+  option: string;
+  default: string;
+  choices?: string[];
+  min?: number;
+  max?: number;
+}
+
+interface MockQuality {
+  label: string;
+  min: number;
+  max: number;
+  default: number;
+  searchMin: number;
+  searchMax: number;
+}
+
+interface MockEncoder {
+  name: string;
+  codec: string;
+  backend: string;
+  speed: MockSpeed;
+  quality: MockQuality;
+  bitDepths: number[];
+  /** The encoder's parameter bundle, without the leading "-". */
+  paramsOption: string;
+  tuning: string[];
+}
+
+const x26xSpeed = (): MockSpeed => ({ option: "-preset", default: "medium", choices: ["ultrafast", "superfast", "veryfast", "faster", "fast", "medium", "slow", "slower", "veryslow", "placebo"] });
+const qsvSpeed = (): MockSpeed => ({ option: "-preset", default: "medium", choices: ["veryfast", "faster", "fast", "medium", "slow", "slower", "veryslow"] });
+const amfSpeed = (): MockSpeed => ({ option: "-quality", default: "balanced", choices: ["speed", "balanced", "quality"] });
+const amfAV1Speed = (): MockSpeed => ({ option: "-quality", default: "balanced", choices: ["speed", "balanced", "quality", "high_quality"] });
+const noSpeed = (): MockSpeed => ({ option: "", default: "" });
+
+const crf = (): MockQuality => ({ label: "CRF", min: 0, max: 51, default: 23, searchMin: 18, searchMax: 36 });
+
+/** The encoder registry of pkg/video/encoders.go: same order, same choices, same limits. */
+const MOCK_ENCODERS: MockEncoder[] = [
+  { name: "libsvtav1", codec: "av1", backend: "software", speed: { option: "-preset", default: "6", min: 0, max: 13 }, quality: { label: "CRF", min: 1, max: 63, default: 28, searchMin: 18, searchMax: 40 }, bitDepths: [8, 10], paramsOption: "svtav1-params", tuning: ["g"] },
+  { name: "libx265", codec: "hevc", backend: "software", speed: x26xSpeed(), quality: crf(), bitDepths: [8, 10], paramsOption: "x265-params", tuning: ["g", "bf", "refs", "tune", "profile"] },
+  { name: "libx264", codec: "h264", backend: "software", speed: x26xSpeed(), quality: crf(), bitDepths: [8, 10], paramsOption: "x264-params", tuning: ["g", "keyint_min", "bf", "refs", "sc_threshold", "tune", "profile", "level", "aq-mode", "aq-strength", "rc-lookahead", "b_strategy"] },
+  { name: "av1_qsv", codec: "av1", backend: "qsv", speed: qsvSpeed(), quality: { label: "ICQ", min: 1, max: 51, default: 23, searchMin: 18, searchMax: 36 }, bitDepths: [8, 10], paramsOption: "", tuning: ["g", "bf", "refs", "profile", "low_power", "async_depth", "b_strategy", "extbrc", "look_ahead_depth", "adaptive_i", "adaptive_b"] },
+  { name: "hevc_qsv", codec: "hevc", backend: "qsv", speed: qsvSpeed(), quality: { label: "ICQ", min: 1, max: 51, default: 23, searchMin: 18, searchMax: 36 }, bitDepths: [8, 10], paramsOption: "", tuning: ["g", "bf", "refs", "profile", "low_power", "async_depth", "b_strategy", "extbrc", "look_ahead_depth", "adaptive_i", "adaptive_b"] },
+  { name: "h264_qsv", codec: "h264", backend: "qsv", speed: qsvSpeed(), quality: { label: "ICQ", min: 1, max: 51, default: 23, searchMin: 18, searchMax: 36 }, bitDepths: [8], paramsOption: "", tuning: ["g", "bf", "refs", "profile", "low_power", "async_depth", "b_strategy", "extbrc", "look_ahead_depth", "adaptive_i", "adaptive_b", "look_ahead"] },
+  { name: "av1_vaapi", codec: "av1", backend: "vaapi", speed: noSpeed(), quality: { label: "QP", min: 1, max: 255, default: 110, searchMin: 70, searchMax: 170 }, bitDepths: [8, 10], paramsOption: "", tuning: ["g", "bf", "refs", "profile", "level", "low_power", "async_depth"] },
+  { name: "hevc_vaapi", codec: "hevc", backend: "vaapi", speed: noSpeed(), quality: { label: "QP", min: 1, max: 51, default: 23, searchMin: 18, searchMax: 36 }, bitDepths: [8, 10], paramsOption: "", tuning: ["g", "bf", "refs", "profile", "level", "low_power", "async_depth"] },
+  { name: "h264_vaapi", codec: "h264", backend: "vaapi", speed: noSpeed(), quality: { label: "QP", min: 1, max: 51, default: 23, searchMin: 18, searchMax: 36 }, bitDepths: [8], paramsOption: "", tuning: ["g", "bf", "refs", "profile", "level", "low_power", "async_depth", "quality"] },
+  { name: "av1_amf", codec: "av1", backend: "amf", speed: amfAV1Speed(), quality: { label: "QP", min: 0, max: 255, default: 110, searchMin: 70, searchMax: 170 }, bitDepths: [8, 10], paramsOption: "", tuning: ["g", "profile", "level", "async_depth"] },
+  { name: "hevc_amf", codec: "hevc", backend: "amf", speed: amfSpeed(), quality: { label: "QP", min: 0, max: 51, default: 23, searchMin: 18, searchMax: 36 }, bitDepths: [8, 10], paramsOption: "", tuning: ["g", "profile", "level", "async_depth"] },
+  { name: "h264_amf", codec: "h264", backend: "amf", speed: amfSpeed(), quality: { label: "QP", min: 0, max: 51, default: 23, searchMin: 18, searchMax: 36 }, bitDepths: [8], paramsOption: "", tuning: ["g", "profile", "level", "async_depth", "bf", "refs"] },
+];
+
+type EncoderFieldKey = "preset" | "bit_depth" | "crf" | "crf_min" | "crf_max" | "ffmpeg_args";
+/** One encoder's answer about a field, before its condition is attached. */
+type EncoderVariant = Omit<FieldVariant, "when">;
+
+const DEFAULT_BIT_DEPTH = 10;
+
+/** pkg/flow/actions.go encoderFieldVariant: what one encoder changes about one field. */
+function encoderVariant(key: EncoderFieldKey, encoder: MockEncoder): EncoderVariant {
+  const quality = encoder.quality;
+  switch (key) {
+    case "preset": {
+      const choices = (encoder.speed.choices ?? []).map((value) => choice(value, value));
+      if (encoder.speed.option !== "" && choices.length === 0) for (let n = encoder.speed.min ?? 0; n <= (encoder.speed.max ?? 0); n++) choices.push(choice(String(n), String(n)));
+      return { choices, default: encoder.speed.default, ...(encoder.speed.option === "" ? { hidden: true } : {}) };
+    }
+    case "bit_depth": {
+      const choices = encoder.bitDepths.map((depth) => choice(String(depth), `${depth}-bit`));
+      const depth = encoder.bitDepths.includes(DEFAULT_BIT_DEPTH) ? DEFAULT_BIT_DEPTH : (encoder.bitDepths[0] ?? 8);
+      return { choices, default: String(depth), ...(choices.length === 1 ? { hidden: true } : {}) };
+    }
+    case "crf":
+      return { label: quality.label, min: quality.min, max: quality.max, default: quality.default };
+    case "crf_min":
+      return { label: `Lowest ${quality.label}`, min: quality.min, max: quality.max, default: quality.searchMin };
+    case "crf_max":
+      return { label: `Highest ${quality.label}`, min: quality.min, max: quality.max, default: quality.searchMax };
+    case "ffmpeg_args": {
+      const accepts = [...(encoder.paramsOption === "" ? [] : [`-${encoder.paramsOption}`]), ...encoder.tuning.map((option) => `-${option}`)];
+      const first = accepts[0];
+      if (first === undefined) return { hidden: true };
+      return { placeholder: first, hint: `Enter each option and value separately. Accepted options: ${accepts.join(", ")}.` };
+    }
+  }
+}
+
+/** pkg/flow/actions.go applyVariant, over a copy. */
+function applyVariant(field: Field, variant: EncoderVariant): Field {
+  const next = { ...field };
+  if (variant.label !== undefined) next.label = variant.label;
+  if (variant.hint !== undefined) next.hint = variant.hint;
+  if (variant.choices !== undefined) next.choices = variant.choices;
+  if (variant.min !== undefined) next.min = variant.min;
+  if (variant.max !== undefined) next.max = variant.max;
+  if (variant.default !== undefined) next.default = variant.default;
+  if (variant.placeholder !== undefined) next.placeholder = variant.placeholder;
+  return next;
+}
+
+/** A field whose choices, bounds and default follow the encoder: the fallback is applied over the base, then one variant per encoder. */
+function encoderField(key: EncoderFieldKey, base: Field): Field {
+  const fallback = MOCK_ENCODERS[0];
+  const resolved = fallback ? applyVariant(base, encoderVariant(key, fallback)) : base;
+  return {
+    ...resolved,
+    variants: MOCK_ENCODERS.map((encoder) => ({ ...encoderVariant(key, encoder), when: [when("codec", encoder.codec), when("accelerator", encoder.backend)] })),
+  };
+}
+
+const videoEncoderFields = () =>
+  section("Encoder", [
+    { key: "codec", label: "Codec", type: "enum", default: "av1", choices: [choice("av1", "AV1"), choice("hevc", "HEVC (H.265)"), choice("h264", "H.264")], half: true },
+    {
+      key: "accelerator",
+      label: "Encoder backend",
+      type: "enum",
+      default: "software",
+      choices: [choice("software", "Software"), choice("qsv", "Intel Quick Sync"), choice("vaapi", "VAAPI"), choice("amf", "AMD AMF")],
+      half: true,
+    },
+    encoderField("preset", { key: "preset", label: "Preset", type: "enum", default: "", mono: true, half: true }),
+    encoderField("bit_depth", { key: "bit_depth", label: "Bit depth", type: "enum", default: "", segmented: true, half: true }),
+  ]);
+
+
 export const NODE_TYPES: NodeType[] = [
   {
     id: "input",
@@ -195,35 +327,13 @@ export const NODE_TYPES: NodeType[] = [
     kind: "video",
     group: "Video",
     label: "Encode video",
-    description: "Re-encodes the video. With a quality target, anvil picks the highest CRF whose samples still meet it.",
+    description: "With a quality target, anvil picks the highest encoder setting that meets it.",
     outputs: [""],
     sections: [
-      section("Encoder", [
-        { key: "codec", label: "Codec", type: "enum", default: "av1", choices: [choice("av1", "AV1"), choice("hevc", "HEVC (H.265)"), choice("h264", "H.264")], half: true },
-        {
-          key: "accelerator",
-          label: "Encoder backend",
-          type: "enum",
-          default: "software",
-          choices: [choice("software", "Software"), choice("qsv", "Intel Quick Sync"), choice("vaapi", "VAAPI"), choice("amf", "AMD AMF")],
-          half: true,
-        },
-        { key: "preset", label: "Preset", type: "string", hint: "libsvtav1 takes 0 to 13. Lower is slower and smaller.", default: "6", mono: true, half: true },
-        { key: "bit_depth", label: "Bit depth", type: "enum", default: "10", choices: [choice("10", "10-bit"), choice("8", "8-bit")], segmented: true, half: true },
-      ]),
+      videoEncoderFields(),
       section("Quality", [
-        { key: "quality_mode", label: "Quality", type: "enum", default: "search", choices: [choice("search", "Quality target"), choice("fixed", "Fixed CRF")], segmented: true },
-        {
-          key: "crf",
-          label: "CRF",
-          type: "int",
-          hint: "Lower is better quality and a larger file.",
-          default: 28,
-          min: 0,
-          max: 255,
-          mono: true,
-          visible_when: when("quality_mode", "fixed"),
-        },
+        { key: "quality_mode", label: "Mode", type: "enum", default: "search", choices: [choice("search", "Quality target"), choice("fixed", "Fixed quality")], segmented: true },
+        encoderField("crf", { key: "crf", label: "CRF", type: "int", hint: "Lower is better quality and a larger file.", default: 0, mono: true, visible_when: when("quality_mode", "fixed") }),
         { key: "metric", label: "Metric", type: "enum", default: "vmaf", choices: [choice("vmaf", "VMAF"), choice("xpsnr", "XPSNR")], half: true, visible_when: search() },
         {
           key: "target",
@@ -237,8 +347,8 @@ export const NODE_TYPES: NodeType[] = [
           half: true,
           visible_when: search(),
         },
-        { key: "crf_min", label: "Lowest CRF", type: "int", default: 18, min: 0, max: 255, mono: true, half: true, visible_when: search() },
-        { key: "crf_max", label: "Highest CRF", type: "int", default: 40, min: 0, max: 255, mono: true, half: true, visible_when: search() },
+        encoderField("crf_min", { key: "crf_min", label: "Lowest CRF", type: "int", default: 0, mono: true, half: true, visible_when: search() }),
+        encoderField("crf_max", { key: "crf_max", label: "Highest CRF", type: "int", default: 0, mono: true, half: true, visible_when: search() }),
         {
           key: "min_savings_percent",
           label: "Smallest saving worth encoding",
@@ -253,9 +363,9 @@ export const NODE_TYPES: NodeType[] = [
         },
         {
           key: "on_no_fit",
-          label: "When no CRF fits",
+          label: "When no setting fits",
           type: "enum",
-          hint: "A CRF fits when it meets both the target and the saving.",
+          hint: "A setting must meet both the quality target and the minimum saving.",
           default: "copy",
           choices: [choice("copy", "Copy the video"), choice("encode", "Encode anyway")],
           segmented: true,
@@ -265,17 +375,9 @@ export const NODE_TYPES: NodeType[] = [
       section(
         "Advanced",
         [
-          { key: "samples", label: "Samples per CRF", type: "int", hint: "0 uses one sample per 12 minutes of runtime.", default: 0, min: 0, max: 100, mono: true, half: true, visible_when: search() },
+          { key: "samples", label: "Samples per quality value", type: "int", hint: "0 uses one sample per 12 minutes of runtime.", default: 0, min: 0, max: 100, mono: true, half: true, visible_when: search() },
           { key: "sample_duration", label: "Sample length", type: "duration", default: "20s", mono: true, half: true, visible_when: search() },
-          {
-            key: "ffmpeg_args",
-            label: "Extra encoder arguments",
-            type: "string_list",
-            hint: "An option and its value are separate entries, such as -g then 240. Only encoder parameter bundles and value-only tuning options are allowed.",
-            default: [],
-            mono: true,
-            placeholder: "-svtav1-params",
-          },
+          encoderField("ffmpeg_args", { key: "ffmpeg_args", label: "Extra encoder arguments", type: "string_list", default: [], mono: true }),
         ],
         { collapsible: true, collapsed: true },
       ),

@@ -135,21 +135,22 @@ func videoPlan(profile domain.Profile, cropWanted bool) string {
 		}
 		return "Video: copy"
 	}
-	parts := []string{"encode to " + settings.Codec + " with " + video.ResolveEncoder(settings.Codec, settings.Accelerator)}
+	encoder, _ := video.LookupEncoder(settings.Codec, settings.Accelerator)
+	parts := []string{"encode to " + settings.Codec + " with " + encoder.Name}
 	if settings.Preset != "" {
 		parts = append(parts, "preset "+settings.Preset)
 	}
 	parts = append(parts, fmt.Sprintf("%d-bit", settings.BitDepth))
 	fixed := settings.QualityMode == domain.VideoQualityFixed
 	if fixed {
-		parts = append(parts, fmt.Sprintf("CRF %d", settings.CRF))
+		parts = append(parts, fmt.Sprintf("%s %d", encoder.Quality.Label, settings.CRF))
 	} else {
-		parts = append(parts, fmt.Sprintf("%s %s target (CRF %d–%d)",
-			strings.ToUpper(string(settings.Metric)), formatNumber(settings.Target), settings.CRFMin, settings.CRFMax))
+		parts = append(parts, fmt.Sprintf("%s %s target (%s %d–%d)",
+			strings.ToUpper(string(settings.Metric)), formatNumber(settings.Target), encoder.Quality.Label, settings.CRFMin, settings.CRFMax))
 	}
 	plan := "Video: " + strings.Join(parts, ", ")
 	if !fixed && settings.ForceEncodeOnNoFit {
-		plan += "; encode anyway when no CRF fits"
+		plan += "; encode anyway when no " + encoder.Quality.Label + " fits"
 	}
 	if !profile.Crop.Disabled {
 		plan += "; crop black bars"

@@ -246,7 +246,7 @@ func TestEvaluateRejectsAnInvalidGraph(t *testing.T) {
 func TestEvaluateLastNodeOfAPartWins(t *testing.T) {
 	g := chain(
 		newNode("in", typeInput, nil),
-		newNode("first", typeVideoEncode, map[string]any{"preset": "4", "codec": "hevc", "ffmpeg_args": []string{"-g", "240"}}),
+		newNode("first", typeVideoEncode, map[string]any{"preset": "fast", "codec": "hevc", "ffmpeg_args": []string{"-g", "240"}}),
 		newNode("copy", typeVideoCopy, nil),
 		newNode("last", typeVideoEncode, map[string]any{"preset": "8"}),
 		newNode("audio-first", typeAudioKeep, map[string]any{"languages": []string{"eng"}, "keep_commentary": true}),
@@ -332,7 +332,7 @@ func TestEvaluateActionNodesSetTheirPartOfTheProfile(t *testing.T) {
 		newNode("encode", typeVideoEncode, map[string]any{
 			"codec": "hevc", "accelerator": "qsv", "preset": "veryslow", "bit_depth": "8",
 			"metric": "xpsnr", "target": 42.5, "crf_min": 20, "crf_max": 30, "min_savings_percent": 35,
-			"on_no_fit": "encode", "samples": 4, "sample_duration": "30s", "ffmpeg_args": []string{"-look_ahead", "1"},
+			"on_no_fit": "encode", "samples": 4, "sample_duration": "30s", "ffmpeg_args": []string{"-look_ahead_depth", "1"},
 		}),
 		newNode("crop", typeVideoCrop, map[string]any{
 			"min_retained_area_percent": 60.5, "samples": 8, "frame_count": 120, "seek_offsets": []string{"5m", "1h10m"},
@@ -353,7 +353,7 @@ func TestEvaluateActionNodesSetTheirPartOfTheProfile(t *testing.T) {
 		Codec: "hevc", Accelerator: "qsv", Preset: "veryslow", BitDepth: 8,
 		CRFMin: 20, CRFMax: 30, Samples: 4, SampleDuration: 30 * time.Second,
 		Metric: domain.QualityMetricXPSNR, Target: 42.5, MinSavingsPercent: 35,
-		ForceEncodeOnNoFit: true, FFmpegArgs: []string{"-look_ahead", "1"},
+		ForceEncodeOnNoFit: true, FFmpegArgs: []string{"-look_ahead_depth", "1"},
 	}
 	want.Crop = domain.CropPolicy{
 		SeekOffsets: []time.Duration{5 * time.Minute, 70 * time.Minute}, Samples: 8, FrameCount: 120,
@@ -376,7 +376,7 @@ func TestEvaluateActionNodesSetTheirPartOfTheProfile(t *testing.T) {
 	}
 
 	wantPlan := []string{
-		"Video: encode to hevc with hevc_qsv, preset veryslow, 8-bit, XPSNR 42.5 target (CRF 20–30); encode anyway when no CRF fits; crop black bars",
+		"Video: encode to hevc with hevc_qsv, preset veryslow, 8-bit, XPSNR 42.5 target (ICQ 20–30); encode anyway when no ICQ fits; crop black bars",
 		"Audio: keep orig, eng; encode truehd, dts to opus at 64 kb/s per channel; downmix above stereo to aac at 80 kb/s per channel",
 		"Subtitles: keep eng, including forced, SDH, commentary; drop image-based",
 		"Container: mkv; strip metadata; standardize track titles; strip attachments; strip chapters",
@@ -417,7 +417,7 @@ func TestEvaluateFixedCRFAndRemainingNodes(t *testing.T) {
 		t.Error("RemoveAll is not set")
 	}
 	wantPlan := []string{
-		"Video: encode to hevc with hevc_qsv, 10-bit, CRF 22",
+		"Video: encode to hevc with hevc_qsv, preset medium, 10-bit, ICQ 22",
 		"Audio: keep every track; encode every track to flac; downmix above 5.1 to eac3 at 96 kb/s per channel",
 		"Subtitles: remove all",
 		"Container: mkv; keep metadata, track titles, attachments, and chapters",
@@ -521,7 +521,7 @@ func TestSummaries(t *testing.T) {
 		{typeCheckAudioCodec, nil, "audio.codec in truehd, dts"},
 		{typeCheckAudioChannels, map[string]any{"more_than": "6"}, "audio.channels above 6"},
 		{typeVideoEncode, nil, "libsvtav1 · vmaf 95 · preset 6"},
-		{typeVideoEncode, map[string]any{"codec": "hevc", "accelerator": "qsv", "quality_mode": "fixed", "crf": 22, "preset": ""}, "hevc_qsv · crf 22"},
+		{typeVideoEncode, map[string]any{"codec": "hevc", "accelerator": "qsv", "quality_mode": "fixed", "crf": 22, "preset": ""}, "hevc_qsv · ICQ 22 · preset medium"},
 		{typeVideoEncode, map[string]any{"codec": "h264", "metric": "xpsnr", "target": 42.5, "preset": "slow"}, "libx264 · xpsnr 42.5 · preset slow"},
 		{typeVideoCopy, nil, "keep the source video stream"},
 		{typeVideoCrop, nil, "keep at least 70% · limit 64"},
@@ -605,5 +605,22 @@ func TestDescribe(t *testing.T) {
 		if got := Describe(test.probe); got != test.want {
 			t.Errorf("%s: Describe() = %+v, want %+v", test.name, got, test.want)
 		}
+	}
+}
+
+func TestEvaluateVAAPIWithEncoderDefaults(t *testing.T) {
+	graph := chain(newNode("in", typeInput, nil),
+		newNode("encode", typeVideoEncode, map[string]any{"accelerator": "vaapi", "quality_mode": "fixed"}),
+		newNode("out", typeOutputReplace, nil))
+	result, err := Evaluate(graph, Facts{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := result.Profile.Video; got.Preset != "" || got.BitDepth != 10 || got.CRF != 110 ||
+		got.CRFMin != 70 || got.CRFMax != 170 {
+		t.Errorf("unexpected VAAPI settings: %+v", got)
+	}
+	if !slices.Contains(result.Plan, "Video: encode to av1 with av1_vaapi, 10-bit, QP 110") {
+		t.Errorf("unexpected plan: %v", result.Plan)
 	}
 }

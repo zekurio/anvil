@@ -20,6 +20,7 @@ let
     temp_dir = "/var/lib/anvil/tmp";
     store_path = "/var/lib/anvil/anvil.db";
     control_socket = "/run/anvil/anvild.sock";
+    render_device = cfg.renderDevice;
   };
   # The daemon refuses a media root that is not absolute, cleaned, and unique,
   # and would crash-loop on one. A trailing slash and the same path with and
@@ -262,6 +263,16 @@ in
         default = false;
         description = "Open the web UI's TCP port in the firewall.";
       };
+    };
+
+    renderDevice = mkOption {
+      type = types.str;
+      default = "";
+      example = "/dev/dri/renderD129";
+      description = ''
+        Absolute DRM render node for VAAPI and QSV. Empty selects
+        /dev/dri/renderD128 for VAAPI and automatic selection for QSV.
+      '';
     };
 
     mediaPaths = mkOption {
@@ -535,6 +546,7 @@ in
           ReadWritePaths = readWritePaths;
           NoNewPrivileges = true;
           PrivateTmp = true;
+          SupplementaryGroups = [ "render" "video" ];
           ProtectSystem = "strict";
           ProtectControlGroups = true;
           ProtectKernelLogs = true;

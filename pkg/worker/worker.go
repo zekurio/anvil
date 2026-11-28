@@ -122,6 +122,7 @@ func (r Runner) Run(ctx context.Context, assignment scheduler.Assignment) error 
 		return r.fail(ctx, assignment.Job, attempt, cfg, errors.Join(resolveErr, err))
 	}
 	jobContext := pipeline.NewJobContext(assignment.Job, source, asset, library)
+	jobContext.RenderDevice = cfg.Daemon.RenderDevice
 	jobContext.Attempt = attempt
 	jobContext.Resources = assignment.Resources
 	jobContext.Flow = flowSnapshot
@@ -361,14 +362,14 @@ func (r Runner) loadOccurrence(ctx context.Context, sourceID domain.MediaSourceI
 // DefaultPipeline is the fixed order of steps every job runs. The flow step
 // sits right after the probe: it needs nothing but the probe, and every step
 // behind it needs the profile it resolves.
-func DefaultPipeline(tempDir string, journal replacepkg.PublishJournal) pipeline.Runner {
+func DefaultPipeline(tempDir string, journal replacepkg.PublishJournal, capabilities func() ffmpeg.EncoderCapabilities) pipeline.Runner {
 	stageManager := staging.Manager{Root: staging.Root(tempDir)}
 	prober := probe.FFProbe{}
 	publishManager := replacepkg.Manager{Journal: journal}
 	return pipeline.Runner{
 		Blocks: []pipeline.Block{
 			probe.Block{Prober: prober},
-			flowstep.Block{},
+			flowstep.Block{EncoderCapabilities: capabilities},
 			crop.Block{},
 			audio.Block{},
 			subtitle.Block{},

@@ -80,9 +80,14 @@ func TestGarbageOptionValuesNeverPanic(t *testing.T) {
 					exercise(t, g)
 
 					// A value of the wrong type is a field-level issue.
-					_, message := decodeValue(field, value)
 					decoded, problems := decodeOptions(def, node.Options)
-					if message != "" && visible(field, decoded) {
+					resolved := resolveField(field, decoded)
+					set := true
+					if resolved.normalize != nil {
+						value, set = resolved.normalize(value)
+					}
+					_, message := decodeValue(resolved, value)
+					if set && message != "" && visible(resolved, decoded) {
 						if len(problems) == 0 || problems[0].Field != field.Key {
 							t.Errorf("%s.%s = %#v: problems = %+v, want one for the field", def.ID, field.Key, value, problems)
 						}

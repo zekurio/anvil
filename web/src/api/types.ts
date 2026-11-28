@@ -103,6 +103,12 @@ export interface Field {
   /** Lets two short fields share a row. */
   half?: boolean;
   visible_when?: Visibility;
+  /**
+   * Overrides this field when all of a variant's conditions match. Variants
+   * are tried in order and the first match wins; omitted properties inherit
+   * the base field.
+   */
+  variants?: FieldVariant[];
 }
 
 export interface Choice {
@@ -114,6 +120,54 @@ export interface Choice {
 export interface Visibility {
   key: string;
   in: OptionValue[];
+}
+
+/** Overrides a Field while its conditions match; see Field.variants. */
+export interface FieldVariant {
+  when: Visibility[];
+  label?: string;
+  hint?: string;
+  /** An empty list is a field with no choices for the current settings. */
+  choices?: Choice[];
+  min?: number;
+  max?: number;
+  /** Replaces the field default, so it is the value in effect when the option is absent. */
+  default?: OptionValue;
+  placeholder?: string;
+  /** Hides the control. The field is still in effect and still validated. */
+  hidden?: boolean;
+}
+
+/* ---------- pkg/ffmpeg/capabilities.go, served by pkg/webapi/encoders.go ---------- */
+
+/** Only a ready report gives conclusive availability. */
+export type EncoderProbeState = "probing" | "ready" | "failed";
+
+export interface Encoders {
+  state: EncoderProbeState;
+  render_device: string;
+  encoders: EncoderCapability[];
+  /** Why the probe failed. */
+  reason?: string;
+}
+
+export interface EncoderCapability {
+  /** The ffmpeg encoder name, e.g. "hevc_vaapi". */
+  name: string;
+  codec: string;
+  backend: string;
+  /** What the encoder calls its quality setting, e.g. "CRF" or "QP". */
+  quality_label: string;
+  available: boolean;
+  bit_depths: BitDepthCapability[];
+  /** Why the encoder as a whole is unavailable. */
+  reason?: string;
+}
+
+export interface BitDepthCapability {
+  bit_depth: number;
+  available: boolean;
+  reason?: string;
 }
 
 /* ---------- pkg/domain/job.go ---------- */

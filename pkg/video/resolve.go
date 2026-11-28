@@ -22,12 +22,15 @@ func NormalizeAccelerator(accelerator string) string {
 }
 
 func CanonicalCodec(codec string) string {
+	if encoder, ok := EncoderByName(codec); ok {
+		return encoder.Codec
+	}
 	switch NormalizeCodec(codec) {
-	case "", "av1", "libsvtav1", "svt-av1", "svtav1", "libaom-av1", "librav1e", "rav1e", "av1-qsv", "av1-vaapi", "av1-amf", "av1-nvenc", "av1-videotoolbox":
+	case "", "av1", "libsvtav1", "svt-av1", "svtav1", "libaom-av1", "librav1e", "rav1e":
 		return "av1"
-	case "hevc", "h265", "h.265", "libx265", "x265", "hevc-qsv", "hevc-vaapi", "hevc-amf", "hevc-nvenc", "hevc-videotoolbox":
+	case "hevc", "h265", "h.265", "libx265", "x265":
 		return "hevc"
-	case "h264", "h.264", "avc", "libx264", "x264", "h264-qsv", "h264-vaapi", "h264-amf", "h264-nvenc", "h264-videotoolbox":
+	case "h264", "h.264", "avc", "libx264", "x264":
 		return "h264"
 	default:
 		return NormalizeCodec(codec)
@@ -35,10 +38,8 @@ func CanonicalCodec(codec string) string {
 }
 
 func ResolveEncoder(codec string, accelerator string) string {
-	canonical := CanonicalCodec(codec)
-	accelerator = ResolveAccelerator(accelerator)
-	if encoder, ok := encoderFor(canonical, accelerator); ok {
-		return encoder
+	if encoder, ok := LookupEncoder(codec, accelerator); ok {
+		return encoder.Name
 	}
 	return "libsvtav1"
 }
@@ -75,28 +76,6 @@ func SoftwarePixelFormat(bitDepth int) string {
 	}
 }
 
-func QSVVPPFormat(bitDepth int) string {
-	switch NormalizeBitDepth(bitDepth) {
-	case 8:
-		return "nv12"
-	default:
-		return "p010le"
-	}
-}
-
-func EncoderAccelerator(encoder string) string {
-	switch {
-	case strings.HasSuffix(NormalizeCodec(encoder), "-qsv"):
-		return AcceleratorQSV
-	case strings.HasSuffix(NormalizeCodec(encoder), "-vaapi"):
-		return AcceleratorVAAPI
-	case strings.HasSuffix(NormalizeCodec(encoder), "-amf"):
-		return AcceleratorAMF
-	default:
-		return ""
-	}
-}
-
 func QSVDecoder(codec string) (string, bool) {
 	switch CanonicalCodec(codec) {
 	case "av1":
@@ -114,41 +93,11 @@ func QSVDecoder(codec string) (string, bool) {
 	}
 }
 
-// encoders maps an accelerator and canonical output codec to the FFmpeg
-// encoder that produces it.
-var encoders = map[string]map[string]string{
-	AcceleratorSoftware: {"av1": "libsvtav1", "hevc": "libx265", "h264": "libx264"},
-	AcceleratorQSV:      {"av1": "av1_qsv", "hevc": "hevc_qsv", "h264": "h264_qsv"},
-	AcceleratorVAAPI:    {"av1": "av1_vaapi", "hevc": "hevc_vaapi", "h264": "h264_vaapi"},
-	AcceleratorAMF:      {"av1": "av1_amf", "hevc": "hevc_amf", "h264": "h264_amf"},
-}
-
-func encoderFor(codec string, accelerator string) (string, bool) {
-	encoder, ok := encoders[accelerator][codec]
-	return encoder, ok
-}
-
-// QualityRange returns the lowest and highest value an encoder honors for the
-// quality option Anvil drives it with: -crf for software encoders,
-// -global_quality for QSV and VAAPI, and the -qp_* options for AMF.
-//
-// The software ranges are measured: libsvtav1 reads -crf 0 as "not set" and
-// encodes at its default, libx265 refuses values above 51, and libx264 clamps
-// them. The hardware ranges follow the quantizer scales FFmpeg declares, where
-// 0 means "not set" for -global_quality and AV1 counts to 255 instead of 51.
+// QualityRange returns the range used by the encoder's quality control.
 func QualityRange(encoder string) (int, int) {
-	highest := 51
-	if CanonicalCodec(encoder) == "av1" {
-		highest = 255
+	if encoder == "" {
+		encoder = "libsvtav1"
 	}
-	switch EncoderAccelerator(encoder) {
-	case AcceleratorQSV, AcceleratorVAAPI:
-		return 1, highest
-	case AcceleratorAMF:
-		return 0, highest
-	}
-	if CanonicalCodec(encoder) == "av1" {
-		return 1, 63
-	}
-	return 0, 51
+	e, _ := EncoderByName(encoder)
+	return e.Quality.Min, e.Quality.Max
 }

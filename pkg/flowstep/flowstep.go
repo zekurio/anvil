@@ -9,9 +9,11 @@ import (
 
 	"github.com/zekurio/anvil/pkg/audio"
 	"github.com/zekurio/anvil/pkg/domain"
+	"github.com/zekurio/anvil/pkg/ffmpeg"
 	"github.com/zekurio/anvil/pkg/flow"
 	"github.com/zekurio/anvil/pkg/pipeline"
 	"github.com/zekurio/anvil/pkg/subtitle"
+	"github.com/zekurio/anvil/pkg/video"
 )
 
 // StepName is the step's event name.
@@ -33,13 +35,15 @@ var ErrSkipped = fmt.Errorf("the flow ended at a skip node: %w", pipeline.ErrSto
 // pure function of the flow, the probe, and the metadata, so running it again
 // on every attempt is what keeps a resumed attempt honest: the profile it
 // continues with is the one the flow gives now.
-type Block struct{}
+type Block struct {
+	EncoderCapabilities func() ffmpeg.EncoderCapabilities
+}
 
 func (Block) Name() string {
 	return StepName
 }
 
-func (Block) Run(_ context.Context, job *pipeline.JobContext) error {
+func (b Block) Run(_ context.Context, job *pipeline.JobContext) error {
 	if job.Probe == nil {
 		return errors.New("the flow needs the probe of the input, and none has run")
 	}
@@ -68,6 +72,18 @@ func (Block) Run(_ context.Context, job *pipeline.JobContext) error {
 	}
 
 	profile := resolution.Profile
+	if b.EncoderCapabilities != nil {
+		source, found := domain.PrimaryVideoStream(job.Probe.Streams)
+		settings := domain.EffectiveVideoProfile(profile, job.Metadata, source.Codec)
+		copyVideo, _ := ffmpeg.VideoCopyState(settings, source, nil)
+		capabilities := b.EncoderCapabilities()
+		if found && !copyVideo && capabilities.RenderDevice == job.RenderDevice {
+			encoder := video.ResolveEncoder(settings.Codec, settings.Accelerator)
+			if reason := capabilities.Unavailable(encoder, video.NormalizeBitDepth(settings.BitDepth)); reason != "" {
+				return fmt.Errorf("encoder %s is unavailable on this host: %s", encoder, reason)
+			}
+		}
+	}
 	if name := strings.TrimSpace(job.Flow.Name); name != "" {
 		profile.Name = domain.ProfileName(name)
 	}

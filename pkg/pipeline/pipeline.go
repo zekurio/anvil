@@ -14,11 +14,12 @@ import (
 )
 
 type JobContext struct {
-	Job     domain.Job
-	Attempt domain.Attempt
-	Source  domain.MediaSource
-	Asset   domain.MediaAsset
-	Library domain.Library
+	RenderDevice string
+	Job          domain.Job
+	Attempt      domain.Attempt
+	Source       domain.MediaSource
+	Asset        domain.MediaAsset
+	Library      domain.Library
 	// Flow is the library's flow as it was when the attempt started. The
 	// flow step evaluates it against the probe and sets Profile and
 	// FlowResolution; steps before it must not read Profile.

@@ -8,6 +8,7 @@ import type {
   ArrWrite,
   DaemonSettingsWrite,
   Directory,
+  Encoders,
   FileList,
   FileQuery,
   Flow,
@@ -47,6 +48,8 @@ export const api = {
   /** Lists one directory; `files` also lists media files. An empty path asks for the default root. */
   fs: (path: string, files = false) => request<Directory>("GET", "/fs", { query: { path, files: files ? 1 : undefined } }),
 
+  /** What this host's encoders can do. Only a ready answer is conclusive. */
+  encoders: () => request<Encoders>("GET", "/encoders"),
   nodeTypes: () => request<NodeTypes>("GET", "/node-types"),
 
   flows: {

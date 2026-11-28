@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/zekurio/anvil/pkg/config"
+	"github.com/zekurio/anvil/pkg/ffmpeg"
 	"github.com/zekurio/anvil/pkg/store"
 )
 
@@ -149,5 +150,53 @@ func TestShutdownOptionsPinTheirKeys(t *testing.T) {
 	}
 	if merged.ShutdownTimeout().String() != "1m30s" || merged.DaemonSource("shutdown_timeout") != config.SourceFlag {
 		t.Errorf("shutdown_timeout = %s from %s, want the option's 90s", merged.ShutdownTimeout(), merged.DaemonSource("shutdown_timeout"))
+	}
+}
+
+func TestReloadReplacesProbeForChangedRenderDevice(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	runtime := newRuntimeConfig(&fakeSnapshotStore{}, nil)
+	defer func() {
+		cancel()
+		runtime.probeWorkers.Wait()
+	}()
+	started := make(chan string, 2)
+	finish := make(chan struct{})
+	runtime.probeEncoders = func(ctx context.Context, path string) ffmpeg.EncoderCapabilities {
+		started <- path
+		select {
+		case <-ctx.Done():
+		case <-finish:
+		}
+		return ffmpeg.EncoderCapabilities{State: ffmpeg.EncoderProbeReady, RenderDevice: path, Encoders: []ffmpeg.EncoderCapability{}}
+	}
+	for _, path := range []string{"/dev/dri/renderD128", "/dev/dri/renderD129"} {
+		cfg := loadFile(t, "", options{})
+		cfg.Daemon.RenderDevice = path
+		if err := runtime.Reload(ctx, cfg); err != nil {
+			t.Fatal(err)
+		}
+		if report := runtime.Encoders(); report.State != ffmpeg.EncoderProbeProbing || report.RenderDevice != path || report.Encoders == nil {
+			t.Fatalf("immediately after reload: %+v", report)
+		}
+		select {
+		case got := <-started:
+			if got != path {
+				t.Fatalf("probing %s, want %s", got, path)
+			}
+		case <-t.Context().Done():
+			t.Fatal(t.Context().Err())
+		}
+	}
+	if err := runtime.Refresh(ctx); err != nil {
+		t.Fatal(err)
+	}
+	close(finish)
+	runtime.probeWorkers.Wait()
+	if report := runtime.Encoders(); report.State != ffmpeg.EncoderProbeReady || report.RenderDevice != "/dev/dri/renderD129" {
+		t.Fatalf("final report: %+v", report)
+	}
+	if len(started) != 0 {
+		t.Fatal("refresh started a probe with the same render device")
 	}
 }

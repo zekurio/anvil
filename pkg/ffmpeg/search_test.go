@@ -6,12 +6,13 @@ import (
 	"testing"
 
 	"github.com/zekurio/anvil/pkg/domain"
+	"github.com/zekurio/anvil/pkg/video"
 )
 
 func TestSampleAndFinalVideoSettingsMatch(t *testing.T) {
-	for _, encoder := range []string{"libsvtav1", "hevc_qsv", "av1_vaapi", "h264_amf"} {
-		t.Run(encoder, func(t *testing.T) {
-			plan := domain.EncodePlan{InputPath: "input.mkv", OutputPath: "output.mkv", VideoCodec: encoder, InputVideoCodec: "hevc", CRF: 0, Preset: "6", BitDepth: 10, PixelFormat: "yuv420p10le", Threads: 2, FFmpegArgs: []string{"-g", "120"}}
+	for _, encoder := range video.Encoders() {
+		t.Run(encoder.Name, func(t *testing.T) {
+			plan := domain.EncodePlan{InputPath: "input.mkv", OutputPath: "output.mkv", VideoCodec: encoder.Name, InputVideoCodec: "hevc", CRF: 0, BitDepth: encoder.BitDepths[0], Threads: 2, FFmpegArgs: []string{"-g", "120"}}
 			shared := videoOutputArgs(plan, "")
 			for _, args := range [][]string{Args(plan), SampleArgs(plan)} {
 				start := slices.Index(args, "-c:v")
@@ -107,7 +108,7 @@ func TestEncoderArgumentsCannotOverrideSearch(t *testing.T) {
 		{"-vf", "scale=128:128"}, {"-passlogfile", "/tmp/pass"}, {"-progress", "pipe:1"}, {"-y", "output.mkv"},
 		{"output.mkv"}, {"-tune"}, {"-c:v", "copy"}, {"-r", "25"}, {"-tune", "-film"},
 	} {
-		if err := ValidateEncoderArgs(args); err == nil {
+		if err := ValidateEncoderArgs(bundleTestEncoder(args), args); err == nil {
 			t.Fatalf("accepted %q", args)
 		}
 	}
@@ -117,7 +118,7 @@ func TestEncoderArgumentsCannotOverrideSearch(t *testing.T) {
 		{"-x265-params", "aq-mode=3:info=0"},
 		{"-x264-params", "ref=4:me=umh"},
 	} {
-		if err := ValidateEncoderArgs(args); err != nil {
+		if err := ValidateEncoderArgs(bundleTestEncoder(args), args); err != nil {
 			t.Fatalf("rejected %q: %v", args, err)
 		}
 	}
@@ -133,7 +134,7 @@ func TestEncoderArgumentsCannotOverrideSearch(t *testing.T) {
 		{"-x264-params", "bitrate=5000"},
 		{"-svtav1-params", "CRF=60"},
 	} {
-		if err := ValidateEncoderArgs(args); err == nil {
+		if err := ValidateEncoderArgs(bundleTestEncoder(args), args); err == nil {
 			t.Fatalf("accepted %q", args)
 		}
 	}
@@ -152,7 +153,7 @@ func TestEncoderParamBundlesAreAnAllowList(t *testing.T) {
 		{"-x265-params:v", "info=0"},
 	}
 	for _, args := range accepted {
-		if err := ValidateEncoderArgs(args); err != nil {
+		if err := ValidateEncoderArgs(bundleTestEncoder(args), args); err != nil {
 			t.Errorf("rejected %q: %v", args, err)
 		}
 	}
@@ -197,7 +198,7 @@ func TestEncoderParamBundlesAreAnAllowList(t *testing.T) {
 		{[]string{"-x265-params", "deblock=1=2"}, `may only contain`},
 	}
 	for _, test := range refused {
-		err := ValidateEncoderArgs(test.args)
+		err := ValidateEncoderArgs(bundleTestEncoder(test.args), test.args)
 		if err == nil || !strings.Contains(err.Error(), test.want) {
 			t.Errorf("ValidateEncoderArgs(%q) = %v, want an error containing %s", test.args, err, test.want)
 		}
@@ -206,13 +207,42 @@ func TestEncoderParamBundlesAreAnAllowList(t *testing.T) {
 
 func TestEncoderArgumentValuesMayBeNegativeNumbers(t *testing.T) {
 	for _, args := range [][]string{{"-g", "-1"}, {"-bf", "-1"}, {"-sc_threshold", "-1"}, {"-aq-strength", "-0.5"}} {
-		if err := ValidateEncoderArgs(args); err != nil {
+		if err := ValidateEncoderArgs(bundleTestEncoder(args), args); err != nil {
 			t.Errorf("rejected %q: %v", args, err)
 		}
 	}
 	for _, args := range [][]string{{"-g", "-i"}, {"-g", "-1x"}, {"-g", "-"}, {"-g", "--1"}, {"-g", "-1.5.2"}, {"-tune", "-inf"}} {
-		if err := ValidateEncoderArgs(args); err == nil {
+		if err := ValidateEncoderArgs(bundleTestEncoder(args), args); err == nil {
 			t.Errorf("accepted %q", args)
+		}
+	}
+}
+
+// The bundle safety cases exercise the parser for each option's owning encoder.
+func bundleTestEncoder(args []string) string {
+	option, _, _ := strings.Cut(args[0], ":")
+	switch option {
+	case "-svtav1-params":
+		return "libsvtav1"
+	case "-x265-params":
+		return "libx265"
+	default:
+		return "libx264"
+	}
+}
+
+func TestEncoderOptionsBelongToOneEncoder(t *testing.T) {
+	for _, test := range []struct {
+		encoder string
+		args    []string
+	}{
+		{"av1_qsv", []string{"-svtav1-params", "lp=2"}},
+		{"libx265", []string{"-look_ahead", "1"}},
+		{"hevc_qsv", []string{"-look_ahead", "1"}},
+		{"av1_amf", []string{"-quality", "speed"}},
+	} {
+		if err := ValidateEncoderArgs(test.encoder, test.args); err == nil || !strings.Contains(err.Error(), test.encoder) {
+			t.Errorf("ValidateEncoderArgs(%s, %q) = %v", test.encoder, test.args, err)
 		}
 	}
 }

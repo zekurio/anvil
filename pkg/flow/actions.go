@@ -14,20 +14,19 @@ import (
 	"github.com/zekurio/anvil/pkg/video"
 )
 
-// The defaults below come from pkg/config, so a node left at its defaults
-// behaves like the same section of the built-in TOML profile.
+// Defaults come from pkg/config and the encoder registry in pkg/video.
 
 func videoEncodeNode() nodeDef {
 	search := func() *Visibility {
 		return when("quality_mode", string(domain.VideoQualitySearch))
 	}
-	return nodeDef{
+	def := nodeDef{
 		NodeType: NodeType{
 			ID:          typeVideoEncode,
 			Kind:        KindVideo,
 			Group:       groupVideo,
 			Label:       "Encode video",
-			Description: "Re-encodes the video. With a quality target, anvil picks the highest CRF whose samples still meet it.",
+			Description: "With a quality target, anvil picks the highest encoder setting that meets it.",
 			Outputs:     []string{""},
 			Sections: []Section{
 				{Title: "Encoder", Fields: []Field{
@@ -57,20 +56,18 @@ func videoEncodeNode() nodeDef {
 						Half: true,
 					},
 					{
-						Key:     "preset",
-						Label:   "Preset",
-						Type:    FieldString,
-						Hint:    "libsvtav1 takes 0 to 13. Lower is slower and smaller.",
-						Default: "6",
-						Mono:    true,
-						Half:    true,
+						Key:       "preset",
+						Label:     "Preset",
+						Type:      FieldEnum,
+						normalize: normalizePreset,
+						Mono:      true,
+						Half:      true,
 					},
 					{
-						Key:       "bit_depth",
-						Label:     "Bit depth",
-						Type:      FieldEnum,
-						Default:   strconv.Itoa(video.DefaultBitDepth),
-						Choices:   []Choice{{Value: "10", Label: "10-bit"}, {Value: "8", Label: "8-bit"}},
+						Key:   "bit_depth",
+						Label: "Bit depth",
+						Type:  FieldEnum,
+
 						Segmented: true,
 						Half:      true,
 					},
@@ -78,23 +75,21 @@ func videoEncodeNode() nodeDef {
 				{Title: "Quality", Fields: []Field{
 					{
 						Key:     "quality_mode",
-						Label:   "Quality",
+						Label:   "Mode",
 						Type:    FieldEnum,
 						Default: string(domain.VideoQualitySearch),
 						Choices: []Choice{
 							{Value: string(domain.VideoQualitySearch), Label: "Quality target"},
-							{Value: string(domain.VideoQualityFixed), Label: "Fixed CRF"},
+							{Value: string(domain.VideoQualityFixed), Label: "Fixed quality"},
 						},
 						Segmented: true,
 					},
 					{
-						Key:         "crf",
-						Label:       "CRF",
-						Type:        FieldInt,
-						Hint:        "Lower is better quality and a larger file.",
-						Default:     28,
-						Min:         bound(0),
-						Max:         bound(255),
+						Key:   "crf",
+						Label: "CRF",
+						Type:  FieldInt,
+						Hint:  "Lower is better quality and a larger file.",
+
 						Mono:        true,
 						VisibleWhen: when("quality_mode", string(domain.VideoQualityFixed)),
 					},
@@ -120,23 +115,19 @@ func videoEncodeNode() nodeDef {
 						VisibleWhen: search(),
 					},
 					{
-						Key:         "crf_min",
-						Label:       "Lowest CRF",
-						Type:        FieldInt,
-						Default:     config.DefaultCRFMin,
-						Min:         bound(0),
-						Max:         bound(255),
+						Key:   "crf_min",
+						Label: "Lowest CRF",
+						Type:  FieldInt,
+
 						Mono:        true,
 						Half:        true,
 						VisibleWhen: search(),
 					},
 					{
-						Key:         "crf_max",
-						Label:       "Highest CRF",
-						Type:        FieldInt,
-						Default:     config.DefaultCRFMax,
-						Min:         bound(0),
-						Max:         bound(255),
+						Key:   "crf_max",
+						Label: "Highest CRF",
+						Type:  FieldInt,
+
 						Mono:        true,
 						Half:        true,
 						VisibleWhen: search(),
@@ -155,9 +146,9 @@ func videoEncodeNode() nodeDef {
 					},
 					{
 						Key:     "on_no_fit",
-						Label:   "When no CRF fits",
+						Label:   "When no setting fits",
 						Type:    FieldEnum,
-						Hint:    "A CRF fits when it meets both the target and the saving.",
+						Hint:    "A setting must meet both the quality target and the minimum saving.",
 						Default: "copy",
 						Choices: []Choice{
 							{Value: "copy", Label: "Copy the video"},
@@ -170,7 +161,7 @@ func videoEncodeNode() nodeDef {
 				{Title: "Advanced", Collapsible: true, Collapsed: true, Fields: []Field{
 					{
 						Key:         "samples",
-						Label:       "Samples per CRF",
+						Label:       "Samples per quality value",
 						Type:        FieldInt,
 						Hint:        "0 uses one sample per 12 minutes of runtime.",
 						Default:     0,
@@ -190,20 +181,19 @@ func videoEncodeNode() nodeDef {
 						VisibleWhen: search(),
 					},
 					{
-						Key:         "ffmpeg_args",
-						Label:       "Extra encoder arguments",
-						Type:        FieldStringList,
-						Hint:        "An option and its value are separate entries, such as -g then 240. Only encoder parameter bundles and value-only tuning options are allowed.",
-						Default:     []string{},
-						Mono:        true,
-						Placeholder: "-svtav1-params",
+						Key:   "ffmpeg_args",
+						Label: "Extra encoder arguments",
+						Type:  FieldStringList,
+
+						Default: []string{},
+						Mono:    true,
 					},
 				}},
 			},
 		},
 		check: func(o options) []optionProblem {
 			settings := encodeSettings(o)
-			problems := ruleProblems(config.VideoConfig{
+			return ruleProblems(config.VideoConfig{
 				Codec:             settings.Codec,
 				Accelerator:       settings.Accelerator,
 				Preset:            settings.Preset,
@@ -217,7 +207,6 @@ func videoEncodeNode() nodeDef {
 				MinSavingsPercent: settings.MinSavingsPercent,
 				FFmpegArgs:        settings.FFmpegArgs,
 			}.Problems())
-			return append(problems, qualityRangeProblems(settings)...)
 		},
 		warn: func(o options) []optionProblem {
 			settings := encodeSettings(o)
@@ -234,7 +223,8 @@ func videoEncodeNode() nodeDef {
 			settings := encodeSettings(o)
 			parts := []string{video.ResolveEncoder(settings.Codec, settings.Accelerator)}
 			if settings.QualityMode == domain.VideoQualityFixed {
-				parts = append(parts, "crf "+strconv.Itoa(settings.CRF))
+				encoder, _ := video.LookupEncoder(settings.Codec, settings.Accelerator)
+				parts = append(parts, encoder.Quality.Label+" "+strconv.Itoa(settings.CRF))
 			} else {
 				parts = append(parts, string(settings.Metric)+" "+formatNumber(settings.Target))
 			}
@@ -247,6 +237,24 @@ func videoEncodeNode() nodeDef {
 			profile.Video = encodeSettings(o)
 		},
 	}
+	defaultEncoder, _ := video.LookupEncoder("av1", video.AcceleratorSoftware)
+	encoders := video.Encoders()
+	for _, section := range def.Sections {
+		for i, field := range section.Fields {
+			fallback, ok := encoderFieldVariant(field.Key, defaultEncoder)
+			if !ok {
+				continue
+			}
+			field = applyVariant(field, fallback)
+			for _, encoder := range encoders {
+				variant, _ := encoderFieldVariant(field.Key, encoder)
+				variant.When = []Visibility{*when("codec", encoder.Codec), *when("accelerator", encoder.Backend)}
+				field.Variants = append(field.Variants, variant)
+			}
+			section.Fields[i] = field
+		}
+	}
+	return def
 }
 
 // xpsnrPlausibleMax is the highest XPSNR target, in dB, that is not flagged.
@@ -254,45 +262,82 @@ func videoEncodeNode() nodeDef {
 // 100 because the VMAF scale shares it.
 const xpsnrPlausibleMax = 60
 
-// qualityRangeProblems checks the CRF values in effect against what the
-// encoder the node resolves to accepts. Outside that range an encoder either
-// refuses to start or silently substitutes its default.
-func qualityRangeProblems(settings domain.VideoProfile) []optionProblem {
-	if !slices.Contains([]string{"av1", "hevc", "h264"}, settings.Codec) {
-		// The codec already has its own problem, and no encoder to ask.
-		return nil
+// normalizePreset preserves the empty preset used by legacy graphs to
+// request the encoder default.
+func normalizePreset(value any) (any, bool) {
+	preset, ok := value.(string)
+	if !ok {
+		return value, true
 	}
-	encoder := video.ResolveEncoder(settings.Codec, settings.Accelerator)
-	lowest, highest := video.QualityRange(encoder)
-	fields := []struct {
-		key   string
-		value int
-	}{{"crf_min", settings.CRFMin}, {"crf_max", settings.CRFMax}}
-	if settings.QualityMode == domain.VideoQualityFixed {
-		fields = fields[:1]
-		fields[0].key, fields[0].value = "crf", settings.CRF
+	preset = strings.TrimSpace(preset)
+	if number, err := strconv.Atoi(preset); err == nil {
+		preset = strconv.Itoa(number)
 	}
-	var problems []optionProblem
-	for _, field := range fields {
-		if field.value < lowest || field.value > highest {
-			problems = append(problems, optionProblem{
-				Field:   field.key,
-				Message: fmt.Sprintf("Must be between %d and %d for %s.", lowest, highest, encoder),
-			})
+	return preset, preset != ""
+}
+
+func encoderFieldVariant(key string, encoder video.Encoder) (FieldVariant, bool) {
+	quality := encoder.Quality
+	switch key {
+	case "preset":
+		speed := encoder.Speed
+		choices := make([]Choice, 0, len(speed.Choices))
+		for _, value := range speed.Choices {
+			choices = append(choices, Choice{Value: value, Label: value})
 		}
+		if speed.Option != "" && len(choices) == 0 {
+			for n := speed.Min; n <= speed.Max; n++ {
+				value := strconv.Itoa(n)
+				choices = append(choices, Choice{Value: value, Label: value})
+			}
+		}
+		return FieldVariant{Choices: choices, Default: speed.Default, Hidden: speed.Option == ""}, true
+	case "bit_depth":
+		choices := make([]Choice, 0, len(encoder.BitDepths))
+		for _, depth := range encoder.BitDepths {
+			choices = append(choices, Choice{Value: strconv.Itoa(depth), Label: fmt.Sprintf("%d-bit", depth)})
+		}
+		depth := video.DefaultBitDepth
+		if !slices.Contains(encoder.BitDepths, depth) {
+			depth = encoder.BitDepths[0]
+		}
+		return FieldVariant{Choices: choices, Default: strconv.Itoa(depth), Hidden: len(choices) == 1}, true
+	case "crf":
+		return FieldVariant{Label: quality.Label, Min: bound(float64(quality.Min)), Max: bound(float64(quality.Max)), Default: quality.Default, rangeContext: encoder.Name}, true
+	case "crf_min":
+		return FieldVariant{Label: "Lowest " + quality.Label, Min: bound(float64(quality.Min)), Max: bound(float64(quality.Max)), Default: quality.SearchMin, rangeContext: encoder.Name}, true
+	case "crf_max":
+		return FieldVariant{Label: "Highest " + quality.Label, Min: bound(float64(quality.Min)), Max: bound(float64(quality.Max)), Default: quality.SearchMax, rangeContext: encoder.Name}, true
+	case "ffmpeg_args":
+		accepts := make([]string, 0, len(encoder.TuningOptions)+1)
+		if encoder.ParamsOption != "" {
+			accepts = append(accepts, "-"+encoder.ParamsOption)
+		}
+		for _, option := range encoder.TuningOptions {
+			accepts = append(accepts, "-"+option)
+		}
+		if len(accepts) == 0 {
+			return FieldVariant{Hidden: true}, true
+		}
+		return FieldVariant{Placeholder: accepts[0], Hint: "Enter each option and value separately. Accepted options: " + strings.Join(accepts, ", ") + "."}, true
+	default:
+		return FieldVariant{}, false
 	}
-	return problems
 }
 
 // encodeSettings reads a video.encode node. Search mode leaves QualityMode
 // at its zero value, which means search, so the result equals what the TOML
 // profile path produces for the same settings.
 func encodeSettings(o options) domain.VideoProfile {
+	depth, err := strconv.Atoi(o.text("bit_depth"))
+	if err != nil {
+		depth = video.DefaultBitDepth
+	}
 	settings := domain.VideoProfile{
 		Codec:              o.text("codec"),
 		Accelerator:        o.text("accelerator"),
 		Preset:             strings.TrimSpace(o.text("preset")),
-		BitDepth:           8,
+		BitDepth:           depth,
 		CRFMin:             o.whole("crf_min"),
 		CRFMax:             o.whole("crf_max"),
 		Samples:            o.whole("samples"),
@@ -302,9 +347,6 @@ func encodeSettings(o options) domain.VideoProfile {
 		MinSavingsPercent:  o.number("min_savings_percent"),
 		ForceEncodeOnNoFit: o.text("on_no_fit") == "encode",
 		FFmpegArgs:         cloneList(o.list("ffmpeg_args")),
-	}
-	if o.text("bit_depth") == "10" {
-		settings.BitDepth = 10
 	}
 	if o.text("quality_mode") == string(domain.VideoQualityFixed) {
 		settings.QualityMode = domain.VideoQualityFixed
@@ -939,4 +981,16 @@ func sentence(rule string) string {
 // path leaves it.
 func cloneList(entries []string) []string {
 	return append([]string(nil), entries...)
+}
+
+// VideoEncodeSettings resolves the settings of a single valid encode node.
+func (n Node) VideoEncodeSettings() (domain.VideoProfile, bool) {
+	if n.Type != typeVideoEncode {
+		return domain.VideoProfile{}, false
+	}
+	decoded, problems := decodeOptions(nodeDefsByID[typeVideoEncode], n.Options)
+	if len(problems) != 0 {
+		return domain.VideoProfile{}, false
+	}
+	return encodeSettings(decoded), true
 }

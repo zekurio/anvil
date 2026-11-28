@@ -27,7 +27,9 @@ for looking at loading states and at Solid's `SILENT_HOLD` and
 The mock keeps its state in memory and resets when the dev server restarts.
 `POST /api/v1/_mock/jobs/{id}/step` with `{"step": "publish"}` is a mock-only
 route that moves a running job to the start of a step, for looking at the
-short ones.
+short ones. `POST /api/v1/_mock/encoders` with `{"state": "probing"}` (or
+`"failed"`) switches what `GET /api/v1/encoders` says, to look at the flow
+editor's encoder options before the host probe has an answer.
 
 `/_dev/components` shows every component in both themes. It exists in dev
 builds only.

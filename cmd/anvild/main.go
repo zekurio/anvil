@@ -19,6 +19,7 @@ import (
 	"github.com/zekurio/anvil/pkg/config"
 	"github.com/zekurio/anvil/pkg/controlapi"
 	"github.com/zekurio/anvil/pkg/domain"
+	"github.com/zekurio/anvil/pkg/ffmpeg"
 	"github.com/zekurio/anvil/pkg/metadata"
 	"github.com/zekurio/anvil/pkg/scanner"
 	"github.com/zekurio/anvil/pkg/scheduler"
@@ -312,6 +313,11 @@ func runDaemon(ctx context.Context, cfg config.Config, opts options) error {
 	}
 	warnLegacySections(cfg)
 	runtimeCfg := newRuntimeConfig(state, &activeLogLevel)
+	runtimeCfg.probeEncoders = (ffmpeg.EncoderProber{}).Probe
+	defer func() {
+		stopServices()
+		runtimeCfg.probeWorkers.Wait()
+	}()
 	if err := runtimeCfg.Reload(serviceCtx, loaded); err != nil {
 		return err
 	}
@@ -371,7 +377,7 @@ func runDaemon(ctx context.Context, cfg config.Config, opts options) error {
 	startReloadLoop(serviceCtx, &wg, opts, runtimeCfg, webServer, reloadSignals)
 	runInitialScan(serviceCtx, runtimeCfg.Get(), state, completion, jobs)
 	startRecoveryLoop(serviceCtx, &wg, runtimeCfg.Get, jobs)
-	planner := startSchedulerLoop(serviceCtx, workerCtx, &wg, runtimeCfg.Get, state, progress, schedulerReconfigured)
+	planner := startSchedulerLoop(serviceCtx, workerCtx, &wg, runtimeCfg, state, progress, schedulerReconfigured)
 	plannerRef.Store(planner)
 	startScannerLoop(serviceCtx, &wg, runtimeCfg.Get, state, completion, jobs, planner.ActiveCount, monitorReconfigured, watcherReconfigured)
 
@@ -670,12 +676,13 @@ func startRecoveryLoop(ctx context.Context, wg *sync.WaitGroup, cfgProvider func
 	})
 }
 
-func startSchedulerLoop(ctx context.Context, workerCtx context.Context, wg *sync.WaitGroup, cfgProvider func() config.Config, state *store.SQLiteStore, progress *worker.ProgressTracker, reconfigured <-chan struct{}) *scheduler.Scheduler {
+func startSchedulerLoop(ctx context.Context, workerCtx context.Context, wg *sync.WaitGroup, runtime *runtimeConfig, state *store.SQLiteStore, progress *worker.ProgressTracker, reconfigured <-chan struct{}) *scheduler.Scheduler {
+	cfgProvider := runtime.Get
 	runner := worker.Runner{
 		Store:            state,
 		ConfigProvider:   cfgProvider,
 		MetadataResolver: metadata.Resolver{},
-		Pipeline:         worker.DefaultPipeline(cfgProvider().Daemon.TempDir, state),
+		Pipeline:         worker.DefaultPipeline(cfgProvider().Daemon.TempDir, state, runtime.Encoders),
 		Progress:         progress,
 		TempDir:          cfgProvider().Daemon.TempDir,
 	}

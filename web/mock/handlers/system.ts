@@ -1,7 +1,8 @@
-// Session, status, settings and filesystem routes.
+// Session, status, settings, host capabilities and filesystem routes.
 
-import type { DaemonKey, DaemonKeyName, DaemonValues, Session, Settings, Status } from "../../src/api/types.ts";
+import type { DaemonKey, DaemonKeyName, DaemonValues, Encoders, Session, Settings, Status } from "../../src/api/types.ts";
 import { db, progressOf, queueCounts, VERSION, WORKERS } from "../db.ts";
+import { encodersView } from "../fixtures/encoders.ts";
 import { parseDuration } from "../flowcheck.ts";
 import { listDirectory } from "../fs.ts";
 import { HttpError, invalid, noContent, notFound, objectBody, type Router } from "../http.ts";
@@ -95,6 +96,17 @@ export function systemRoutes(router: Router, auth: boolean): void {
   router.on("DELETE", "/session", () => {
     db.authenticated = false;
     return noContent();
+  });
+
+  router.on("GET", "/encoders", (): Encoders => encodersView(db.encoderProbe));
+
+  // Mock only: looks at the sheet while the probe is running or has failed.
+  //   curl -X POST localhost:5173/api/v1/_mock/encoders -d '{"state":"probing"}'
+  router.on("POST", "/_mock/encoders", (ctx) => {
+    const { state } = objectBody<{ state?: unknown }>(ctx);
+    if (state !== "probing" && state !== "ready" && state !== "failed") throw invalid('Must be "probing", "ready", or "failed".', "state");
+    db.encoderProbe = state;
+    return encodersView(db.encoderProbe);
   });
 
   router.on("GET", "/status", (): Status => {

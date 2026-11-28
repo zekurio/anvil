@@ -57,6 +57,8 @@ a.av-btn { box-sizing: border-box; text-decoration: none; }
 .av-field-label { font: 500 12px/16px var(--font-sans); color: var(--text); }
 .av-field-hint { font: 400 12px/16px var(--font-sans); color: var(--text-muted); }
 .av-field-error { font: 400 12px/16px var(--font-sans); color: var(--danger); display: flex; gap: var(--space-1); align-items: center; }
+.av-field-warning { font: 400 12px/16px var(--font-sans); color: var(--warn); display: flex; gap: var(--space-1); align-items: flex-start; overflow-wrap: anywhere; }
+.av-field-warning > .av-icon { flex: none; margin-top: 2px; }
 .av-field-inline { flex-direction: row; align-items: center; justify-content: space-between; gap: var(--space-4); }
 .av-field-inline .av-field-text { display: flex; flex-direction: column; gap: 2px; }
 

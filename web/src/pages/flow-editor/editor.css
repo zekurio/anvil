@@ -47,8 +47,8 @@
 
 /* node options */
 .fe-about { display: flex; flex-direction: column; gap: var(--space-1); padding: var(--space-3) var(--space-4) var(--space-4); }
-.fe-about-type { font: var(--text-label); color: var(--text); }
 .fe-about-text { margin: 0 0 var(--space-3); font: var(--text-caption); color: var(--text-muted); }
+.fe-field-reset { align-self: flex-start; }
 .fe-issues { display: flex; flex-direction: column; gap: var(--space-2); margin: 0; padding: var(--space-3) var(--space-4); list-style: none; border-bottom: 1px solid var(--line); }
 .fe-issue { display: flex; align-items: flex-start; gap: var(--space-2); font: var(--text-small); }
 .fe-issue > .av-icon { flex: none; margin-top: 2px; }

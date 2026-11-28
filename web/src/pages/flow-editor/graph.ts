@@ -27,7 +27,8 @@ export const snap = (value: number) => Math.round(value / GRID) * GRID;
 
 /* ---------- equality ---------- */
 
-function sameValue(a: OptionValue | undefined, b: OptionValue | undefined): boolean {
+/** Whether two option values mean the same: primitives by identity, lists entry by entry. */
+export function sameOptionValue(a: OptionValue | undefined, b: OptionValue | undefined): boolean {
   if (a === b) return true;
   if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
   return a.every((entry, index) => entry === b[index]);
@@ -38,7 +39,7 @@ function sameOptions(a: GraphNode["options"], b: GraphNode["options"]): boolean 
   const left = a ?? {};
   const right = b ?? {};
   const keys = Object.keys(left);
-  return keys.length === Object.keys(right).length && keys.every((key) => key in right && sameValue(left[key], right[key]));
+  return keys.length === Object.keys(right).length && keys.every((key) => key in right && sameOptionValue(left[key], right[key]));
 }
 
 /** Whether two nodes mean the same to the daemon: everything but where they sit and what they are called. */
@@ -170,16 +171,46 @@ export function fieldsOf(type: NodeType): Field[] {
   return type.sections.flatMap((section) => section.fields);
 }
 
+/** A catalog field with the first matching variant applied over it. */
+export interface ResolvedField extends Field {
+  /** A matched variant hides the control; the value stays in effect and is still validated. */
+  hidden?: boolean;
+}
+
+/**
+ * The field with its first variant whose conditions all match applied over
+ * it, as pkg/flow/options.go resolveField does. `values` holds the effective
+ * values of the fields before it, which effectiveOptions fills in catalog
+ * order.
+ */
+export function resolveField(field: Field, values: Map<string, OptionValue>): ResolvedField {
+  for (const variant of field.variants ?? []) {
+    if (!variant.when.every((condition) => condition.in.includes(values.get(condition.key) ?? null))) continue;
+    const resolved: ResolvedField = { ...field };
+    if (variant.label !== undefined) resolved.label = variant.label;
+    if (variant.hint !== undefined) resolved.hint = variant.hint;
+    if (variant.choices !== undefined) resolved.choices = variant.choices;
+    if (variant.min !== undefined) resolved.min = variant.min;
+    if (variant.max !== undefined) resolved.max = variant.max;
+    if (variant.default !== undefined) resolved.default = variant.default;
+    if (variant.placeholder !== undefined) resolved.placeholder = variant.placeholder;
+    if (variant.hidden) resolved.hidden = true;
+    return resolved;
+  }
+  return field;
+}
+
 /**
  * The value each field of a node is in effect with, as the daemon decodes
- * it: the stored option, or the default when the key is missing or the
- * field is hidden by `visible_when`.
+ * it: the stored option, or the default the field resolves to when the key
+ * is missing or the field is hidden by `visible_when`.
  */
 export function effectiveOptions(type: NodeType, node: GraphNode): Map<string, OptionValue> {
   const values = new Map<string, OptionValue>();
   for (const field of fieldsOf(type)) {
+    const resolved = resolveField(field, values);
     const stored = node.options?.[field.key];
-    values.set(field.key, stored !== undefined && isVisible(field, values) ? stored : field.default);
+    values.set(field.key, stored !== undefined && isVisible(resolved, values) ? stored : resolved.default);
   }
   return values;
 }
@@ -188,6 +219,17 @@ export function effectiveOptions(type: NodeType, node: GraphNode): Map<string, O
 export function isVisible(field: Field, values: Map<string, OptionValue>): boolean {
   const when = field.visible_when;
   return !when || when.in.includes(values.get(when.key) ?? null);
+}
+
+/**
+ * The options whose meaning depends on `key`: a field with a variant that
+ * tests it has its choices, bounds, or default change with it, so a stored
+ * value there is dropped when `key` changes.
+ */
+export function dependentOptions(type: NodeType, key: string): string[] {
+  return fieldsOf(type)
+    .filter((field) => field.key !== key && field.variants?.some((variant) => variant.when.some((condition) => condition.key === key)))
+    .map((field) => field.key);
 }
 
 const DURATION = /^[-+]?(\d+(\.\d*)?|\.\d+)(ns|us|µs|μs|ms|s|m|h)((\d+(\.\d*)?|\.\d+)(ns|us|µs|μs|ms|s|m|h))*$/;

@@ -10,30 +10,40 @@ export interface FieldProps {
   hint?: string;
   /** Replaces the hint. Say what is valid: "Must be between 1 and 51." */
   error?: string | null;
+  /** A warning about the value, such as an unavailable encoder. Shown under the hint or error. */
+  warning?: string | null;
   /** Label left, control right. For Switch. */
   inline?: boolean;
   children: JSX.Element;
 }
 
-function Note(props: Pick<FieldProps, "hint" | "error">) {
+function Note(props: Pick<FieldProps, "hint" | "error" | "warning">) {
   return (
-    <Show
-      when={props.error}
-      fallback={
-        <Show when={props.hint}>
-          <div class="av-field-hint">{props.hint}</div>
-        </Show>
-      }
-    >
-      <div class="av-field-error" role="alert">
-        <Icon name="triangle-alert" size={12} />
-        {props.error}
-      </div>
-    </Show>
+    <>
+      <Show
+        when={props.error}
+        fallback={
+          <Show when={props.hint}>
+            <div class="av-field-hint">{props.hint}</div>
+          </Show>
+        }
+      >
+        <div class="av-field-error" role="alert">
+          <Icon name="triangle-alert" size={12} />
+          {props.error}
+        </div>
+      </Show>
+      <Show when={props.warning}>
+        <div class="av-field-warning" role="status">
+          <Icon name="triangle-alert" size={12} />
+          {props.warning}
+        </div>
+      </Show>
+    </>
   );
 }
 
-/** Label, control, and one line of hint or error. */
+/** Label, control, and one line of hint or error, plus a warning when there is one. */
 export function Field(props: FieldProps) {
   const label = () => (
     <label class="av-field-label" for={props.htmlFor}>
@@ -47,14 +57,14 @@ export function Field(props: FieldProps) {
         <div class="av-field">
           {label()}
           {props.children}
-          <Note hint={props.hint} error={props.error} />
+          <Note hint={props.hint} error={props.error} warning={props.warning} />
         </div>
       }
     >
       <div class="av-field av-field-inline">
         <div class="av-field-text">
           {label()}
-          <Note hint={props.hint} error={props.error} />
+          <Note hint={props.hint} error={props.error} warning={props.warning} />
         </div>
         {props.children}
       </div>
