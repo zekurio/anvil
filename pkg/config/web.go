@@ -54,12 +54,40 @@ func (w WebConfig) validate(p *problems) {
 	if number, err := strconv.Atoi(port); err != nil || number < 0 || number > 65535 {
 		p.addf("web.listen %q has an invalid port; write host:port, such as %q", w.Listen, DefaultWebListen)
 	}
+	if !validBasePath(w.BasePath) {
+		p.addf("web.base_path %q is invalid; write a path such as \"/anvil\", or leave it empty to serve from the root", w.BasePath)
+	}
 	if w.Password != "" && w.PasswordFile != "" {
 		p.addf("web.password and web.password_file are both set; keep only one")
 	}
 	if !w.AuthRequired() && !w.AllowUnauthenticated && !LoopbackHost(host) {
 		p.addf("web.listen %q is reachable from other machines, but no password is set; set web.password_file (or web.password), or set web.allow_unauthenticated = true to serve the UI without sign-in", w.Listen)
 	}
+}
+
+// validBasePath accepts "" and absolute paths of plain segments. The daemon
+// writes the path into the page it serves, so nothing in it may need escaping
+// in a URL or in HTML.
+func validBasePath(base string) bool {
+	if base == "" {
+		return true
+	}
+	if !strings.HasPrefix(base, "/") {
+		return false
+	}
+	for _, segment := range strings.Split(base[1:], "/") {
+		if segment == "" || segment == "." || segment == ".." {
+			return false
+		}
+		for _, r := range segment {
+			switch {
+			case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '-', r == '_', r == '.', r == '~':
+			default:
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // LoopbackHost reports whether a host name or address can only be reached

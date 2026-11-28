@@ -3,6 +3,7 @@ import type { JSX } from "@solidjs/web";
 import { Errored, Loading, Show } from "solid-js";
 
 import { unreachable } from "../api";
+import { appHref } from "../lib/base";
 import { Banner, ErrorState, LinkButton, LoadingState } from "../ui";
 import { AddLibraryDialog } from "./AddLibraryDialog";
 import { AppSidebar } from "./AppSidebar";
@@ -58,7 +59,7 @@ export function BareShell(props: { children?: JSX.Element }) {
     <div class="av-main av-main-full" aria-busy={routing() ? "true" : undefined}>
       <ConnectionBanner />
       {/* A view that failed to load has no Topbar, so the way back is offered here. */}
-      <PageBoundary escape={<LinkButton href="/flows">Back to flows</LinkButton>}>{props.children}</PageBoundary>
+      <PageBoundary escape={<LinkButton href={appHref("/flows")}>Back to flows</LinkButton>}>{props.children}</PageBoundary>
     </div>
   );
 }

@@ -1,6 +1,7 @@
 import { createSignal, Errored, For, Loading, Show } from "solid-js";
 
 import { api, createQuery, keys, POLL_LIST, type FileFacts, type HDRKind, type JobDetail, type StreamFacts } from "../../api";
+import { appHref } from "../../lib/base";
 import { formatBitrate, formatBytes, formatCount, formatDateTime, formatDuration, formatRelative, formatSizeChange, joinDot } from "../../lib/format";
 import { useAppData } from "../../shell/data";
 import { Button, confirm, ErrorState, LoadingState, SheetSection, SideSheet } from "../../ui";
@@ -113,7 +114,7 @@ function LoadedSheet(props: { detail: JobDetail; catalog: NodeCatalog; onClose: 
       <div class="av-jobhead">
         <JobBadge status={props.detail.status} state={job().state} progress={progress()} message={job().last_error} />
         <span class="av-muted">in</span>
-        <a class="av-link" href={`/libraries/${encodeURIComponent(job().library)}`}>
+        <a class="av-link" href={appHref(`/libraries/${encodeURIComponent(job().library)}`)}>
           {job().library}
         </a>
       </div>

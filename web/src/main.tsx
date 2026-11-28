@@ -3,6 +3,7 @@ import { render } from "@solidjs/web";
 import "./ui/styles/index.css";
 
 import { App } from "./app";
+import { appHref } from "./lib/base";
 
 // A page that stayed open across an upgrade of the daemon still names the
 // chunks of the old build, and the new daemon does not have them: the first
@@ -20,7 +21,7 @@ window.addEventListener("vite:preloadError", () => {
     return;
   }
   if (Date.now() - last < 10_000) return;
-  void fetch("/", { cache: "no-store" }).then(
+  void fetch(appHref("/"), { cache: "no-store" }).then(
     (response) => {
       if (!response.ok) return;
       sessionStorage.setItem(RELOADED_AT, String(Date.now()));

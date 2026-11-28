@@ -111,6 +111,11 @@ type WebConfig struct {
 	Enabled bool `toml:"enabled"`
 	// TCP address to listen on; "host:port". Changing it needs a restart.
 	Listen string `toml:"listen"`
+	// URL path the UI and API are served under, such as "/anvil", for a
+	// reverse proxy that serves anvil beside other sites on one host. The
+	// proxy passes the path on unchanged. Empty serves from the root.
+	// Changing it needs a restart.
+	BasePath string `toml:"base_path"`
 	// File holding the single shared password, preferred over password. Its
 	// trailing newline is ignored. Re-read on SIGHUP.
 	PasswordFile string `toml:"password_file"`

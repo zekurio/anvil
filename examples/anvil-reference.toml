@@ -36,6 +36,7 @@ log_level = "info" # Keep logs useful without excessive detail; "debug", "info",
 [web]
 enabled = true # Serve the web UI and API; false runs the daemon with anvilctl alone.
 listen = "127.0.0.1:8484" # TCP address to listen on; "host:port". Changing it needs a restart.
+base_path = "" # URL path the UI and API are served under, such as "/anvil", for a reverse proxy that serves anvil beside other sites on one host. The proxy passes the path on unchanged. Empty serves from the root. Changing it needs a restart.
 # password_file = "/run/secrets/anvil-web" # File holding the single shared password, preferred over password. Its trailing newline is ignored. Re-read on SIGHUP.
 # password = "change-me" # Literal password, redacted by check-config --show. Set this or password_file; with neither, the UI asks for no sign-in.
 allow_unauthenticated = false # Accept a listen address other machines can reach without a password. Only for a network where everyone may change and delete the media.

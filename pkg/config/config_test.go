@@ -41,6 +41,18 @@ target = 0
 	}
 }
 
+func TestLoadTrimsWebBasePath(t *testing.T) {
+	for raw, want := range map[string]string{"": "", "/": "", " /anvil/ ": "/anvil", "/a/b": "/a/b"} {
+		cfg, err := load(t, "[web]\nbase_path = \""+raw+"\"\n")
+		if err != nil {
+			t.Fatalf("base_path %q: %v", raw, err)
+		}
+		if cfg.Web.BasePath != want {
+			t.Errorf("base_path %q resolved to %q, want %q", raw, cfg.Web.BasePath, want)
+		}
+	}
+}
+
 func TestLoadRejectsZeroLibraryScanInterval(t *testing.T) {
 	_, err := load(t, `
 [libraries.movies]

@@ -1,6 +1,7 @@
 package webapi
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"net/http"
@@ -472,7 +473,7 @@ func TestSecurityHeadersOnEveryAnswer(t *testing.T) {
 // themeScript is the kind of inline script a built index.html carries.
 const themeScript = `document.documentElement.dataset.theme = localStorage.getItem("theme") || "dark";`
 
-const builtIndex = `<!doctype html><html><head><meta property="csp-nonce"><script>` + themeScript + `</script><script type="module" src="/assets/app-1a2b.js"></script></head><body><div id="root"></div></body></html>`
+const builtIndex = `<!doctype html><html><head><base href="/" /><meta property="csp-nonce"><script>` + themeScript + `</script><script type="module" src="/assets/app-1a2b.js"></script></head><body><div id="root"></div></body></html>`
 
 func testUI() fstest.MapFS {
 	return fstest.MapFS{
@@ -551,6 +552,61 @@ func TestStaticUI(t *testing.T) {
 	revalidated := f.do(call{method: http.MethodGet, path: "/flows/3", header: map[string]string{"If-None-Match": page.Header().Get("ETag")}})
 	if page.Header().Get("ETag") == "" || revalidated.Code != http.StatusNotModified || revalidated.Body.Len() != 0 {
 		t.Fatalf("revalidating the page = %d with %d bytes, want 304 and none", revalidated.Code, revalidated.Body.Len())
+	}
+}
+
+func TestUIAndAPIUnderABasePath(t *testing.T) {
+	f := newFixture(t, "open sesame", testUI())
+	f.server.BasePath = "/tools/anvil"
+	f.handler = f.server.Handler()
+
+	// The page names the base, and nothing else in it changes, so the hash
+	// of its inline script still holds.
+	page := f.get("/tools/anvil/flows/3")
+	if page.Code != http.StatusOK || page.Body.String() != strings.Replace(builtIndex, `<base href="/"`, `<base href="/tools/anvil/"`, 1) {
+		t.Fatalf("GET under the base = %d %s, want the page with its base rewritten", page.Code, page.Body.String())
+	}
+	if asset := f.get("/tools/anvil/assets/app-1a2b.js"); asset.Code != http.StatusOK || asset.Body.String() != `console.log("anvil")` {
+		t.Fatalf("asset under the base = %d %s", asset.Code, asset.Body.String())
+	}
+
+	// The base without its slash goes to the page, keeping the query.
+	redirect := f.get("/tools/anvil?x=1")
+	if redirect.Code != http.StatusPermanentRedirect || redirect.Header().Get("Location") != "/tools/anvil/?x=1" {
+		t.Fatalf("GET the bare base = %d %q, want a redirect to the base with a slash", redirect.Code, redirect.Header().Get("Location"))
+	}
+	// Outside the base is not the daemon's, and neither is a path that only
+	// starts with the same letters.
+	for _, path := range []string{"/", "/api/v1/status", "/tools/anvilx/", "/tools"} {
+		if recorder := f.get(path); recorder.Code != http.StatusNotFound {
+			t.Fatalf("GET %s = %d, want 404 outside the base", path, recorder.Code)
+		}
+	}
+
+	// The API is under the base, guarded as ever, and the session cookie is
+	// scoped to the base.
+	wantError(t, f.get("/tools/anvil/api/v1/status"), http.StatusUnauthorized, CodeUnauthenticated)
+	signedIn := f.send(http.MethodPost, "/tools/anvil/api/v1/session", LoginRequest{Password: "open sesame"})
+	want[Session](t, signedIn, http.StatusOK)
+	cookies := signedIn.Result().Cookies()
+	if len(cookies) != 1 || cookies[0].Path != "/tools/anvil/" {
+		t.Fatalf("cookies = %+v, want one scoped to /tools/anvil/", cookies)
+	}
+	f.cookie = cookies[0]
+	want[Status](t, f.get("/tools/anvil/api/v1/status"), http.StatusOK)
+	wantError(t, f.get("/tools/anvil/api/v1/nope"), http.StatusNotFound, CodeNotFound)
+}
+
+// The daemon rewrites the <base href="/"> of the built page to serve it under
+// web.base_path, and the frontend resolves its files, routes, and API against
+// it.
+func TestTheFrontendPageNamesTheRootAsItsBase(t *testing.T) {
+	source, err := os.ReadFile(filepath.Join("..", "..", "web", "index.html"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(source, rootBase) {
+		t.Fatal("web/index.html has no <base href=\"/\">; the daemon could not serve it under web.base_path")
 	}
 }
 

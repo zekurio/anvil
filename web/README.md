@@ -58,6 +58,10 @@ scripts/      vendor-icons.mjs
 - **Route.** Add a `pages/<name>/index.tsx` with a default export and one
   entry in `src/routes.tsx`. Pages render their own `<Topbar>` and call
   `useTitle`.
+- **Links.** The daemon may serve the UI under `web.base_path`, such as
+  `/anvil`. `navigate("/flows")` adds the base itself; a plain `href` does
+  not, so write `href={appHref("/flows")}` (`lib/base`). Never hardcode a
+  root path for a file or a request.
 - **Read.** `createQuery(() => keys.x(...), () => api.x(...), { poll })`,
   read under the page's `<Loading>`/`<Errored>` (the shell provides both).
   Session, status, libraries and flows are already polled: `useAppData()`.

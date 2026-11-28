@@ -4,6 +4,7 @@ import { createMemo, createSignal, Match, Show, Switch } from "solid-js";
 
 import { api, keys, type Library, type LibraryWrite } from "../../api";
 import { isScanning, replacesInPlace, resumeConsequence, scanLibrary, toWrite } from "../../features/libraries/library";
+import { appHref } from "../../lib/base";
 import { formatBytes, formatCount, formatRelative, joinDot, plural } from "../../lib/format";
 import { run } from "../../lib/mutate";
 import { useTitle } from "../../lib/title";
@@ -66,7 +67,7 @@ function LibraryLoader(props: { name: string; tab: LibraryTab }) {
         <>
           <Topbar title={props.name} />
           <ErrorState title="This library does not exist" error={new Error(`No library is named "${props.name}". It may have been deleted.`)}>
-            <LinkButton href="/">Open the first library</LinkButton>
+            <LinkButton href={appHref("/")}>Open the first library</LinkButton>
           </ErrorState>
         </>
       }
@@ -86,7 +87,7 @@ function LibraryView(props: { library: Library; tab: LibraryTab; children: JSX.E
   const library = () => props.library;
   // Constant for this component: the page is keyed by library name.
   const name = () => props.library.name;
-  const base = () => `/libraries/${encodeURIComponent(name())}`;
+  const base = () => appHref(`/libraries/${encodeURIComponent(name())}`);
   const stats = () => library().stats;
 
   // The status poll carries the server's clock, so "4 min ago" keeps counting without a timer.

@@ -24,6 +24,7 @@ type webServiceDeps struct {
 	runtime    *runtimeConfig
 	progress   *worker.ProgressTracker
 	configPath string
+	basePath   string
 }
 
 // webClaim is what the web UI needs from outside the daemon: its address and
@@ -92,6 +93,7 @@ func newWebServer(password string, deps webServiceDeps) *webapi.Server {
 		Progress:   deps.progress,
 		UI:         ui,
 		UIBuilt:    built,
+		BasePath:   deps.basePath,
 		ConfigPath: deps.configPath,
 		Version:    control.BuildVersion,
 	}
@@ -108,7 +110,7 @@ func startWebService(ctx context.Context, wg *sync.WaitGroup, listener net.Liste
 			slog.Error("web service stopped", "error", err)
 		}
 	})
-	slog.Info("web UI listening", "address", listener.Addr().String(), "sign_in", cfg.Web.AuthRequired(), "ui_built", server.UIBuilt)
+	slog.Info("web UI listening", "address", listener.Addr().String(), "base_path", cfg.Web.BasePath, "sign_in", cfg.Web.AuthRequired(), "ui_built", server.UIBuilt)
 	if !cfg.Web.AuthRequired() && !config.LoopbackHost(cfg.Web.ListenHost()) {
 		slog.Warn("the web UI is reachable from other machines without a password (web.allow_unauthenticated); anyone who can reach it can replace and delete media", "address", listener.Addr().String())
 	}
