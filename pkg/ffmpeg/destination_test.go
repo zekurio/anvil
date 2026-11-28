@@ -27,15 +27,12 @@ func TestBlockCreatesHandoffDirectoryBeforeEncode(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			root := t.TempDir()
 			job := &pipeline.JobContext{
-				Job: domain.Job{ID: 42},
-				Library: domain.Library{
-					Kind: domain.LibraryKindDownload,
-					Download: domain.DownloadLibraryPolicy{
-						HandoffPath: filepath.Join(root, "handoff"),
-					},
-				},
+				Job:       domain.Job{ID: 42},
 				InputPath: filepath.Join(root, "episode.mkv"),
-				Profile:   domain.Profile{Container: "mkv"},
+				Profile: domain.Profile{
+					Container: "mkv",
+					Publish:   domain.PublishPolicy{Mode: domain.PublishMove, Destination: filepath.Join(root, "handoff")},
+				},
 			}
 			if err := os.WriteFile(job.InputPath, []byte("source"), 0o600); err != nil {
 				t.Fatal(err)

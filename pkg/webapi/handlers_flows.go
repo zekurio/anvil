@@ -5,10 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"unicode/utf8"
 
+	"github.com/zekurio/anvil/pkg/config"
 	"github.com/zekurio/anvil/pkg/flow"
 	"github.com/zekurio/anvil/pkg/store"
 )
@@ -121,6 +123,9 @@ func (s *Server) createFlow(_ http.ResponseWriter, r *http.Request) (int, any, e
 	}
 	s.mutations.Lock()
 	defer s.mutations.Unlock()
+	if err := s.checkMoveTargets(r.Context(), input.Graph, nil); err != nil {
+		return fail(err)
+	}
 	stored, err := s.Store.CreateFlow(r.Context(), input, s.now())
 	if errors.Is(err, store.ErrNameTaken) {
 		return fail(flowNameTaken(input.Name))
@@ -133,6 +138,58 @@ func (s *Server) createFlow(_ http.ResponseWriter, r *http.Request) (int, any, e
 		return fail(err)
 	}
 	return created(response)
+}
+
+// checkMoveTargets refuses a move output whose folder the daemon must not
+// publish into: one outside the administrator's media roots, which a browser
+// must never widen, or one that overlaps a library folder or temp_dir (see
+// config.MoveDestinationConflicts). A folder the stored flow already moves
+// to is not checked again, as an unchanged library folder is not, so the
+// rest of such a flow stays editable. kept lists those folders.
+func (s *Server) checkMoveTargets(ctx context.Context, graph flow.Graph, kept []string) error {
+	targets := flow.MoveTargets(graph)
+	if len(targets) == 0 {
+		return nil
+	}
+	stored, err := s.Store.ListLibraries(ctx)
+	if err != nil {
+		return err
+	}
+	libraries := make(map[string]config.LibraryConfig, len(stored))
+	for _, library := range stored {
+		libraries[library.Name] = library.LibraryConfig
+	}
+	daemon := s.Config().Daemon
+	var issues []flow.Issue
+	add := func(target flow.MoveTarget, message string) {
+		issues = append(issues, flow.Issue{Severity: flow.SeverityError, NodeID: target.NodeID, Field: "destination", Message: message})
+	}
+	for _, target := range targets {
+		if slices.Contains(kept, target.Folder) {
+			continue
+		}
+		if len(daemon.MediaRoots) > 0 {
+			allowed, err := pathWithinMediaRoots(target.Folder, daemon.MediaRoots)
+			switch {
+			case err != nil:
+				add(target, sentence(fmt.Sprintf("The folder cannot be resolved inside an administrator-declared media root: %v", err)))
+				continue
+			case !allowed:
+				add(target, "The folder must be inside one of the administrator-declared media roots.")
+				continue
+			}
+		}
+		for _, conflict := range config.MoveDestinationConflicts(daemon.TempDir, libraries, target.Folder) {
+			add(target, conflict)
+		}
+	}
+	if len(issues) == 0 {
+		return nil
+	}
+	return &apiError{
+		status: http.StatusUnprocessableEntity, code: CodeInvalidFlow, issues: issues,
+		message: "Fix the problems in this flow before saving it.",
+	}
 }
 
 func flowNameTaken(name string) error {
@@ -154,6 +211,13 @@ func (s *Server) updateFlow(_ http.ResponseWriter, r *http.Request) (int, any, e
 	}
 	s.mutations.Lock()
 	defer s.mutations.Unlock()
+	current, err := s.storedFlow(r.Context(), id)
+	if err != nil {
+		return fail(err)
+	}
+	if err := s.checkMoveTargets(r.Context(), input.Graph, flow.MoveDestinations(current.Graph)); err != nil {
+		return fail(err)
+	}
 	stored, err := s.Store.UpdateFlow(r.Context(), id, input, write.Revision, s.now())
 	switch {
 	case errors.Is(err, store.ErrNotFound):

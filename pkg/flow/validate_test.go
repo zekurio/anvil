@@ -19,7 +19,7 @@ func warning(nodeID, message string) Issue {
 
 // simple is the smallest valid flow around one node.
 func simple(node Node) Graph {
-	return chain(newNode("in", typeInput, nil), node, newNode("out", typeOutputPublish, nil))
+	return chain(newNode("in", typeInput, nil), node, newNode("out", typeOutputReplace, nil))
 }
 
 func TestValidateAcceptsAValidGraph(t *testing.T) {
@@ -30,7 +30,7 @@ func TestValidateAcceptsAValidGraph(t *testing.T) {
 			newNode("copy", typeVideoCopy, nil),
 			newNode("encode", typeVideoEncode, nil),
 			newNode("audio", typeAudioKeep, nil),
-			newNode("out", typeOutputPublish, nil),
+			newNode("out", typeOutputReplace, nil),
 		},
 		Edges: []Edge{
 			{From: "in", To: "check"},
@@ -57,13 +57,13 @@ func TestValidateStructure(t *testing.T) {
 	}{
 		{
 			name:  "no input node",
-			graph: Graph{Nodes: []Node{newNode("out", typeOutputPublish, nil)}},
+			graph: Graph{Nodes: []Node{newNode("out", typeOutputReplace, nil)}},
 			want:  []Issue{problem("", "", "A flow needs an input node. Add one.")},
 		},
 		{
 			name: "two input nodes",
 			graph: Graph{
-				Nodes: []Node{newNode("in", typeInput, nil), newNode("again", typeInput, nil), newNode("out", typeOutputPublish, nil)},
+				Nodes: []Node{newNode("in", typeInput, nil), newNode("again", typeInput, nil), newNode("out", typeOutputReplace, nil)},
 				Edges: []Edge{{From: "in", To: "out"}, {From: "again", To: "out"}},
 			},
 			want: []Issue{
@@ -74,7 +74,7 @@ func TestValidateStructure(t *testing.T) {
 		{
 			name: "node without an ID",
 			graph: Graph{
-				Nodes: []Node{newNode("in", typeInput, nil), newNode("", typeVideoCopy, nil), newNode("out", typeOutputPublish, nil)},
+				Nodes: []Node{newNode("in", typeInput, nil), newNode("", typeVideoCopy, nil), newNode("out", typeOutputReplace, nil)},
 				Edges: []Edge{{From: "in", To: "out"}},
 			},
 			want: []Issue{problem("", "", "Every node needs an ID.")},
@@ -82,7 +82,7 @@ func TestValidateStructure(t *testing.T) {
 		{
 			name: "duplicate node ID",
 			graph: Graph{
-				Nodes: []Node{newNode("in", typeInput, nil), newNode("out", typeOutputPublish, nil), newNode("out", typeOutputSkip, nil)},
+				Nodes: []Node{newNode("in", typeInput, nil), newNode("out", typeOutputReplace, nil), newNode("out", typeOutputSkip, nil)},
 				Edges: []Edge{{From: "in", To: "out"}},
 			},
 			want: []Issue{problem("out", "", `Node ID "out" is used more than once.`)},
@@ -97,7 +97,7 @@ func TestValidateStructure(t *testing.T) {
 		{
 			name: "edge from a missing node",
 			graph: Graph{
-				Nodes: []Node{newNode("in", typeInput, nil), newNode("out", typeOutputPublish, nil)},
+				Nodes: []Node{newNode("in", typeInput, nil), newNode("out", typeOutputReplace, nil)},
 				Edges: []Edge{{From: "in", To: "out"}, {From: "ghost", To: "out"}},
 			},
 			want: []Issue{problem("", "", `An edge starts at "ghost", which is not a node of this flow. Remove the edge.`)},
@@ -105,19 +105,19 @@ func TestValidateStructure(t *testing.T) {
 		{
 			name: "edge to a missing node",
 			graph: Graph{
-				Nodes: []Node{newNode("in", typeInput, nil), newNode("out", typeOutputPublish, nil)},
+				Nodes: []Node{newNode("in", typeInput, nil), newNode("out", typeOutputReplace, nil)},
 				Edges: []Edge{{From: "in", To: "ghost"}},
 			},
 			want: []Issue{
 				problem("in", "", `An edge from "Input file" leads to "ghost", which is not a node of this flow. Remove the edge.`),
 				problem("in", "", `Output of "Input file" is not connected.`),
-				warning("out", `"Publish result" is not connected to the input, so no file reaches it.`),
+				warning("out", `"Replace file" is not connected to the input, so no file reaches it.`),
 			},
 		},
 		{
 			name: "port index out of range",
 			graph: Graph{
-				Nodes: []Node{newNode("in", typeInput, nil), check, newNode("out", typeOutputPublish, nil)},
+				Nodes: []Node{newNode("in", typeInput, nil), check, newNode("out", typeOutputReplace, nil)},
 				Edges: []Edge{
 					{From: "in", To: "check"},
 					{From: "check", Port: 0, To: "out"},
@@ -130,7 +130,7 @@ func TestValidateStructure(t *testing.T) {
 		{
 			name: "negative port index",
 			graph: Graph{
-				Nodes: []Node{newNode("in", typeInput, nil), newNode("out", typeOutputPublish, nil)},
+				Nodes: []Node{newNode("in", typeInput, nil), newNode("out", typeOutputReplace, nil)},
 				Edges: []Edge{{From: "in", To: "out"}, {From: "in", Port: -1, To: "out"}},
 			},
 			want: []Issue{problem("in", "", `"Input file" has outputs 0 to 0, and an edge uses output -1. Remove the edge.`)},
@@ -138,18 +138,18 @@ func TestValidateStructure(t *testing.T) {
 		{
 			name: "edge leaving an output node",
 			graph: Graph{
-				Nodes: []Node{newNode("in", typeInput, nil), newNode("out", typeOutputPublish, nil), newNode("skip", typeOutputSkip, nil)},
+				Nodes: []Node{newNode("in", typeInput, nil), newNode("out", typeOutputReplace, nil), newNode("skip", typeOutputSkip, nil)},
 				Edges: []Edge{{From: "in", To: "out"}, {From: "out", To: "skip"}},
 			},
 			want: []Issue{
-				problem("out", "", `"Publish result" ends the flow and has no outputs. Remove the edge that leaves it.`),
+				problem("out", "", `"Replace file" ends the flow and has no outputs. Remove the edge that leaves it.`),
 				warning("skip", `"Skip file" is not connected to the input, so no file reaches it.`),
 			},
 		},
 		{
 			name: "two edges from one output",
 			graph: Graph{
-				Nodes: []Node{newNode("in", typeInput, nil), check, newNode("out", typeOutputPublish, nil), newNode("skip", typeOutputSkip, nil)},
+				Nodes: []Node{newNode("in", typeInput, nil), check, newNode("out", typeOutputReplace, nil), newNode("skip", typeOutputSkip, nil)},
 				Edges: []Edge{
 					{From: "in", To: "check"},
 					{From: "check", Port: 0, To: "out"},
@@ -173,7 +173,7 @@ func TestValidateStructure(t *testing.T) {
 		{
 			name: "cycle",
 			graph: Graph{
-				Nodes: []Node{newNode("in", typeInput, nil), check, newNode("copy", typeVideoCopy, nil), newNode("out", typeOutputPublish, nil)},
+				Nodes: []Node{newNode("in", typeInput, nil), check, newNode("copy", typeVideoCopy, nil), newNode("out", typeOutputReplace, nil)},
 				Edges: []Edge{
 					{From: "in", To: "check"},
 					{From: "check", Port: 0, To: "copy"},
@@ -191,7 +191,7 @@ func TestValidateStructure(t *testing.T) {
 		{
 			name: "dangling labeled output",
 			graph: Graph{
-				Nodes: []Node{newNode("in", typeInput, nil), check, newNode("out", typeOutputPublish, nil)},
+				Nodes: []Node{newNode("in", typeInput, nil), check, newNode("out", typeOutputReplace, nil)},
 				Edges: []Edge{{From: "in", To: "check"}, {From: "check", Port: 0, To: "out"}},
 			},
 			want: []Issue{problem("check", "", `"false" output of "Video is hevc?" is not connected.`)},
@@ -204,7 +204,7 @@ func TestValidateStructure(t *testing.T) {
 		{
 			name: "unreachable nodes only warn, dangling or not",
 			graph: Graph{
-				Nodes: []Node{newNode("in", typeInput, nil), newNode("out", typeOutputPublish, nil), newNode("spare", typeAudioKeep, nil), newNode("skip", typeOutputSkip, nil)},
+				Nodes: []Node{newNode("in", typeInput, nil), newNode("out", typeOutputReplace, nil), newNode("spare", typeAudioKeep, nil), newNode("skip", typeOutputSkip, nil)},
 				Edges: []Edge{{From: "in", To: "out"}},
 			},
 			want: []Issue{
@@ -221,7 +221,7 @@ func TestValidateStructure(t *testing.T) {
 					check,
 					newNode("copy", typeVideoCopy, nil),
 					newNode("encode", typeVideoEncode, nil),
-					newNode("out", typeOutputPublish, nil),
+					newNode("out", typeOutputReplace, nil),
 				},
 				Edges: []Edge{
 					{From: "in", To: "crop"},
@@ -259,7 +259,7 @@ func TestValidateCropIsFineWhereEveryPathEncodes(t *testing.T) {
 		newNode("copy", typeVideoCopy, nil),
 		newNode("crop", typeVideoCrop, nil),
 		newNode("encode", typeVideoEncode, nil),
-		newNode("out", typeOutputPublish, nil),
+		newNode("out", typeOutputReplace, nil),
 	)
 	if issues := Validate(g); len(issues) != 0 {
 		t.Fatalf("Validate() = %s", printIssues(issues))
@@ -626,7 +626,7 @@ func TestValidateOptions(t *testing.T) {
 				t.Fatal(err)
 			}
 			// Keep the graph valid apart from the node under test.
-			g := chain(newNode("in", typeInput, nil), newNode("n", test.nodeType, values), newNode("encode", typeVideoEncode, nil), newNode("out", typeOutputPublish, nil))
+			g := chain(newNode("in", typeInput, nil), newNode("n", test.nodeType, values), newNode("encode", typeVideoEncode, nil), newNode("out", typeOutputReplace, nil))
 			if nodeDefsByID[test.nodeType].Kind == KindCondition {
 				g.Edges = append(g.Edges, Edge{From: "n", Port: 1, To: "out"})
 			}
@@ -647,7 +647,7 @@ func TestValidateMessagesFollowTheCopyRules(t *testing.T) {
 			newNode("mystery", "video.upscale", nil),
 			newNode("check", typeCheckVideoCodec, map[string]any{"codecs": []any{}, "extra": 1}),
 			newNode("encode", typeVideoEncode, map[string]any{"crf_min": 99, "preset": 1, "target": 400, "ffmpeg_args": []any{"-crf", "1"}}),
-			newNode("out", typeOutputPublish, nil),
+			newNode("out", typeOutputReplace, nil),
 			newNode("spare", typeOutputSkip, nil),
 		},
 		Edges: []Edge{
@@ -737,7 +737,7 @@ func uselessCropsByPath(g Graph) map[string]bool {
 			current.encodes = false
 		case typeVideoCrop:
 			current.crop = current.node
-		case typeOutputPublish:
+		case typeOutputReplace:
 			if !current.encodes && current.crop != "" {
 				useless[current.crop] = true
 			}
@@ -768,7 +768,7 @@ func TestCropAnalysisAgreesWithWalkingEveryPath(t *testing.T) {
 		for i := 1; i <= count; i++ {
 			g.Nodes = append(g.Nodes, newNode(fmt.Sprintf("n%d", i), middle[random.Intn(len(middle))], nil))
 		}
-		g.Nodes = append(g.Nodes, newNode("publish", typeOutputPublish, nil), newNode("skip", typeOutputSkip, nil))
+		g.Nodes = append(g.Nodes, newNode("publish", typeOutputReplace, nil), newNode("skip", typeOutputSkip, nil))
 		for i, node := range g.Nodes[:count+1] {
 			for port := range nodeDefsByID[node.Type].Outputs {
 				target := i + 1 + random.Intn(len(g.Nodes)-i-1)
@@ -805,7 +805,7 @@ func TestValidateBoundsTheSizeOfAGraph(t *testing.T) {
 		g.Edges = append(g.Edges, Edge{From: previous, To: id})
 		previous = id
 	}
-	g.Nodes = append(g.Nodes, newNode("out", typeOutputPublish, nil))
+	g.Nodes = append(g.Nodes, newNode("out", typeOutputReplace, nil))
 	g.Edges = append(g.Edges, Edge{From: previous, To: "out"})
 	issues := Validate(g)
 	if errs := errorIssues(issues); len(errs) != 0 {
@@ -831,7 +831,7 @@ func TestValidateBoundsTheSizeOfAGraph(t *testing.T) {
 		t.Error("Canonical() accepted a graph over the node limit")
 	}
 
-	tooManyEdges := Graph{Nodes: []Node{newNode("in", typeInput, nil), newNode("out", typeOutputPublish, nil)}}
+	tooManyEdges := Graph{Nodes: []Node{newNode("in", typeInput, nil), newNode("out", typeOutputReplace, nil)}}
 	for range MaxEdges + 1 {
 		tooManyEdges.Edges = append(tooManyEdges.Edges, Edge{From: "in", To: "out"})
 	}

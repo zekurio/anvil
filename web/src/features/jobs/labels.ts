@@ -285,12 +285,15 @@ const PUBLISH_STAGES: Record<string, string> = {
 
 /**
  * Where a job's publication stands, as a sentence. `kind` is "replacement" or
- * "handoff", `mode` the library's replace/copy or move/copy, `stage` the
- * journal stage. An unknown stage keeps its raw name.
+ * "handoff", and `mode` follows the output node the flow ended at: "replace"
+ * for a replacement (Replace file), "move" or "copy" for a handoff (Move file,
+ * "copy" when it keeps the source). A replacement journal from before flows
+ * decided this may still say "copy": published beside the original. `stage`
+ * is the journal stage; an unknown one keeps its raw name.
  */
 export function publishSentence(kind: string, mode: string, stage: string): string {
   if (stage !== "committed") return PUBLISH_STAGES[stage] ?? `Publishing: stage ${stage}.`;
-  if (kind === "handoff") return "Handed off to the importer.";
+  if (kind === "handoff") return mode === "copy" ? "Copied to its destination folder." : "Moved to its destination folder.";
   return mode === "copy" ? "Published beside the original." : "Published in place of the original.";
 }
 

@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-const currentSchemaVersion = 8
+const currentSchemaVersion = 9
 
 // minUpgradableSchemaVersion is the oldest schema version schemaMigrations can
 // still upgrade in place. Anything older predates the migration chain and is
@@ -22,11 +22,12 @@ const minUpgradableSchemaVersion = 5
 // reads, so preflight fails with ErrIncompatibleSchema instead of a raw SQL
 // error from deep inside a query.
 //
-// It is 8 because preflight reads the libraries it plans against from the
-// libraries table, which version 8 added. A database the daemon has not
-// migrated yet has no libraries to plan against; starting the daemon once
-// migrates it and imports the libraries of anvil.toml.
-const minReadOnlySchemaVersion = 8
+// It is 9 because preflight reads the libraries it plans against from the
+// libraries table, which version 8 added and version 9 took the kind column
+// out of. A database the daemon has not migrated yet has no libraries to plan
+// against; starting the daemon once migrates it and imports the libraries of
+// anvil.toml.
+const minReadOnlySchemaVersion = 9
 
 const currentSchema = `
 CREATE TABLE schema_migrations (
@@ -61,7 +62,6 @@ CREATE TABLE arrs (
 
 CREATE TABLE libraries (
 	name TEXT PRIMARY KEY,
-	kind TEXT NOT NULL CHECK (kind IN ('media', 'download')),
 	path TEXT NOT NULL,
 	flow_id INTEGER NOT NULL REFERENCES flows(id) ON DELETE RESTRICT,
 	arr_name TEXT REFERENCES arrs(name) ON DELETE RESTRICT,
@@ -272,6 +272,7 @@ var schemaMigrations = []schemaMigration{
 	{version: 6, apply: addCanceledJobState},
 	{version: 7, apply: addSourceScans},
 	{version: 8, apply: upgradeToVersion8},
+	{version: 9, apply: dropLibraryKind},
 }
 
 func (s *SQLiteStore) migrate(ctx context.Context) error {
@@ -581,6 +582,38 @@ CREATE INDEX libraries_arr_idx ON libraries(arr_name) WHERE arr_name IS NOT NULL
 
 // upgradeToVersion8 is everything version 8 changed. The version was not
 // released between its two halves, so they are one migration.
+// dropLibraryKind takes the kind out of libraries. A flow's output node now
+// decides how a result is published, and what a download library did
+// differently at intake became settings every library has: reprocessing
+// what a scan finds again, the quiet period, the package mode, and the
+// residue globs. A download library keeps its values for those; its handoff
+// settings are dropped, as is a media library's replacement mode.
+func dropLibraryKind(ctx context.Context, tx *sql.Tx) error {
+	statements := []string{`
+UPDATE libraries SET settings_json = CASE kind
+	WHEN 'download' THEN json_remove(json_set(settings_json,
+		'$.reprocess', json('true'),
+		'$.stable_for', COALESCE(json_extract(settings_json, '$.download.stable_for'), ''),
+		'$.package_mode', COALESCE(json_extract(settings_json, '$.download.package_mode'), 'auto'),
+		'$.ignorable_globs', COALESCE(json_extract(settings_json, '$.download.ignorable_globs'), json('[]'))),
+		'$.download', '$.replacement_mode')
+	ELSE json_remove(json_set(settings_json,
+		'$.reprocess', json('false'),
+		'$.stable_for', '',
+		'$.package_mode', 'file',
+		'$.ignorable_globs', json('[]')),
+		'$.download', '$.replacement_mode')
+END`, `
+ALTER TABLE libraries DROP COLUMN kind`,
+	}
+	for _, statement := range statements {
+		if _, err := tx.ExecContext(ctx, statement); err != nil {
+			return fmt.Errorf("drop library kind: %w", err)
+		}
+	}
+	return nil
+}
+
 func upgradeToVersion8(ctx context.Context, tx *sql.Tx) error {
 	if err := addFlowsLibrariesArrs(ctx, tx); err != nil {
 		return err

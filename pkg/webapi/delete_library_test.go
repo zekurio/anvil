@@ -13,13 +13,15 @@ import (
 
 	"github.com/zekurio/anvil/pkg/controlapi"
 	"github.com/zekurio/anvil/pkg/domain"
+	"github.com/zekurio/anvil/pkg/flow"
 	"github.com/zekurio/anvil/pkg/pipeline"
 	replacepkg "github.com/zekurio/anvil/pkg/replace"
 	"github.com/zekurio/anvil/pkg/store"
 )
 
-// stagedJob is a job of a download library whose attempt staged an artifact
-// the way the pipeline does, up to the point where it would publish.
+// stagedJob is a job of a download library (one whose flow moves its results
+// to a handoff folder) whose attempt staged an artifact the way the pipeline
+// does, up to the point where it would publish.
 type stagedJob struct {
 	job     *pipeline.JobContext
 	source  string
@@ -38,7 +40,8 @@ func (f *fixture) stageDownload(name string) stagedJob {
 }
 
 // queueDownload creates a download library holding one file and scans it, so
-// its job waits in the queue. It returns the file and the handoff folder.
+// its job waits in the queue. Its flow moves results to a handoff folder and
+// deletes the source. It returns the file and the handoff folder.
 func (f *fixture) queueDownload(name string) (string, string) {
 	f.t.Helper()
 	handoff, err := filepath.EvalSymlinks(f.t.TempDir())
@@ -46,9 +49,9 @@ func (f *fixture) queueDownload(name string) (string, string) {
 		f.t.Fatal(err)
 	}
 	source := f.writeMedia("film.mp4")
+	moves := want[Flow](f.t, f.send(http.MethodPost, "/api/v1/flows", FlowWrite{Name: "Hand off " + name, Graph: moveTo(handoff)}), http.StatusCreated)
 	want[Library](f.t, f.send(http.MethodPost, "/api/v1/libraries", LibraryWrite{
-		Name: name, Kind: "download", Path: f.media, FlowID: f.defaultFlow().ID,
-		Download: DownloadOptions{HandoffPath: handoff},
+		Name: name, Path: f.media, FlowID: moves.ID, Reprocess: true,
 	}), http.StatusCreated)
 	if scan := want[ScanResult](f.t, f.send(http.MethodPost, "/api/v1/libraries/"+name+"/scan", nil), http.StatusOK); scan.EnqueuedJobs != 1 {
 		f.t.Fatalf("scan = %+v, want one job", scan)
@@ -75,7 +78,18 @@ func (f *fixture) stageQueued() stagedJob {
 	if err != nil {
 		f.t.Fatal(err)
 	}
-	attempt, err := f.state.StartAttempt(ctx, leased.ID, "worker-1", snapshot, nil, []byte(`{"Name":"flow"}`), now)
+	// The flow step records the profile, its publish policy with it, before
+	// anything is staged. These flows publish one way only.
+	assigned, err := f.state.GetFlow(ctx, library.FlowID)
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	profile := domain.Profile{Name: "flow", Container: "mkv", Publish: flow.PublishPolicies(assigned.Graph)[0]}
+	resolved, err := json.Marshal(profile)
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	attempt, err := f.state.StartAttempt(ctx, leased.ID, "worker-1", snapshot, nil, resolved, now)
 	if err != nil {
 		f.t.Fatal(err)
 	}
@@ -89,6 +103,7 @@ func (f *fixture) stageQueued() stagedJob {
 	}
 	job := pipeline.NewJobContext(*leased, mediaSource, asset, library)
 	job.Attempt = attempt
+	job.Profile = profile
 	if err := replacepkg.PlanArtifactPaths(job); err != nil {
 		f.t.Fatal(err)
 	}

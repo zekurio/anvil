@@ -284,9 +284,9 @@ func (a *analysis) findUselessCrops(g Graph) {
 			return result
 		}
 		result := false
-		switch a.nodes[s.node].Type {
-		case typeVideoCrop:
-		case typeOutputPublish:
+		switch nodeType := a.nodes[s.node].Type; {
+		case nodeType == typeVideoCrop:
+		case nodeDefsByID[nodeType].outcome == OutcomeProcess:
 			result = !s.encodes
 		default:
 			for _, target := range a.targets[s.node] {

@@ -36,7 +36,8 @@ func TestCatalogListsEveryNodeTypeInPaletteOrder(t *testing.T) {
 		{"subtitles.drop_bitmap", KindSubtitles, "Subtitles", "Remove image subtitles", []string{""}},
 		{"subtitles.remove_all", KindSubtitles, "Subtitles", "Remove all subtitles", []string{""}},
 		{"container.metadata", KindContainer, "Container", "Clean metadata", []string{""}},
-		{"output.publish", KindOutput, "Output", "Publish result", []string{}},
+		{"output.replace", KindOutput, "Output", "Replace file", []string{}},
+		{"output.move", KindOutput, "Output", "Move file", []string{}},
 		{"output.skip", KindOutput, "Output", "Skip file", []string{}},
 	}
 	catalog := Catalog()
@@ -113,7 +114,15 @@ func TestCatalogFieldsAreSelfConsistent(t *testing.T) {
 		if def.outcome != "" {
 			behaviors++
 		}
-		if wantBehaviors := map[bool]int{true: 0, false: 1}[def.ID == typeInput]; behaviors != wantBehaviors {
+		wantBehaviors := 1
+		switch {
+		case def.ID == typeInput:
+			wantBehaviors = 0
+		case def.outcome == OutcomeProcess:
+			// A publishing output also writes Profile.Publish.
+			wantBehaviors = 2
+		}
+		if behaviors != wantBehaviors {
 			t.Errorf("%s has %d behaviors, want %d", def.ID, behaviors, wantBehaviors)
 		}
 		if (def.test != nil) != (def.Kind == KindCondition) || (def.outcome != "") != (def.Kind == KindOutput) {
@@ -146,8 +155,15 @@ func TestCatalogFieldsAreSelfConsistent(t *testing.T) {
 			}
 		}
 
+		// A node is valid at its defaults, so dropping it on the canvas never
+		// starts with an error, except where no default can be right: only
+		// the operator knows where a move goes.
 		decoded, problems := decodeOptions(def, nil)
-		if len(problems) != 0 {
+		wantProblems := 0
+		if def.ID == typeOutputMove {
+			wantProblems = 1
+		}
+		if len(problems) != wantProblems {
 			t.Errorf("%s defaults have problems: %+v", def.ID, problems)
 		}
 		if len(decoded) != len(fields) {
@@ -173,7 +189,7 @@ func checkFieldDefault(t *testing.T, name string, field Field) {
 	}
 	ok := false
 	switch field.Type {
-	case FieldString, FieldEnum, FieldDuration:
+	case FieldString, FieldEnum, FieldDuration, FieldPath:
 		_, ok = wire.(string)
 	case FieldInt:
 		number, isNumber := wire.(float64)

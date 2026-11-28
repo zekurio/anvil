@@ -21,8 +21,8 @@ import (
 // part file is never imported half-written.
 const PartSuffix = ".anvil-part"
 
-// HandoffWorkDir is the Anvil-owned directory directly below a download
-// library's handoff_path where its artifacts are encoded. An importer that
+// HandoffWorkDir is the Anvil-owned directory directly below a move's
+// destination folder where its artifacts are encoded. An importer that
 // takes media from the handoff tree deletes a package directory once it has
 // imported what it recognises, and a season pack publishes one episode at a
 // time, so an artifact written inside the package directory can be swept
@@ -51,34 +51,33 @@ func PartPath(destination string, jobLabel string) string {
 }
 
 // ArtifactPath returns the working path for the artifact that will be
-// published to destination. Media libraries write beside the destination;
-// download libraries write under HandoffWorkDir so the artifact never sits in
-// an importer-visible package directory before publication. Package-relative
-// structure is dropped inside the work directory: the job label already keeps
-// the name unique, and a flat directory leaves no empty parents to prune.
-func ArtifactPath(library domain.Library, destination string, jobLabel string) string {
-	if library.Kind != domain.LibraryKindDownload {
+// published to destination. A replacement writes beside the destination; a
+// move writes under HandoffWorkDir of its destination folder, so the artifact
+// never sits in an importer-visible package directory before publication.
+// Package-relative structure is dropped inside the work directory: the job
+// label already keeps the name unique, and a flat directory leaves no empty
+// parents to prune.
+func ArtifactPath(publish domain.PublishPolicy, destination string, jobLabel string) string {
+	if !publish.Moves() {
 		return PartPath(destination, jobLabel)
 	}
-	return PartPath(filepath.Join(library.Download.HandoffPath, HandoffWorkDir, filepath.Base(destination)), jobLabel)
+	return PartPath(filepath.Join(publish.Destination, HandoffWorkDir, filepath.Base(destination)), jobLabel)
 }
 
-// PlanDestination resolves the final publish path for a job. It runs at stage
-// time so the artifact can be written on the destination filesystem; publish
+// PlanDestination resolves the final publish path for a job from the publish
+// policy of its profile, which the flow step set. It runs at stage time so
+// the artifact can be written on the destination filesystem; publish
 // consumes the same value from the job context instead of re-deriving it.
 func PlanDestination(job *pipeline.JobContext) (string, error) {
 	if job == nil {
 		return "", errors.New("destination job context is required")
 	}
-	if job.Library.Kind == domain.LibraryKindDownload {
+	if job.Profile.Publish.Moves() {
 		return handoffDestination(job, ".mkv")
 	}
-	plan, err := PlanReplacement(job.InputPath, ".mkv", job.Library.Media.ReplacementMode)
+	plan, err := PlanReplacement(job.InputPath, ".mkv")
 	if err != nil {
 		return "", err
-	}
-	if plan.Action == replacementActionCopy {
-		return plan.CopyPath, nil
 	}
 	return plan.ReplaceTarget, nil
 }
@@ -96,13 +95,13 @@ func PlanArtifactPaths(job *pipeline.JobContext) error {
 		return err
 	}
 	job.DestinationPath = destination
-	job.OutputPath = ArtifactPath(job.Library, destination, PartJobLabel(job.Job.ID))
+	job.OutputPath = ArtifactPath(job.Profile.Publish, destination, PartJobLabel(job.Job.ID))
 	return nil
 }
 
 // PrepareDestination creates the directory the artifact is encoded into and
-// removes the job's stale part just before encoding. For download libraries
-// that is the handoff work directory, never the package directory: the package
+// removes the job's stale part just before encoding. For a move that is the
+// handoff work directory, never the package directory: the package
 // directory first appears at publish time, so an importer cannot delete it
 // under a running encode. Media managers can still remove handoff folders at
 // any time, so this must run after the quality search.
@@ -114,14 +113,14 @@ func PrepareDestination(job *pipeline.JobContext) error {
 		return errors.New("destination and output paths are required")
 	}
 	dir := filepath.Dir(job.OutputPath)
-	if job.Library.Kind == domain.LibraryKindDownload {
-		if err := prepareHandoffDestination(job.Library.Download.HandoffPath, dir); err != nil {
+	if job.Profile.Publish.Moves() {
+		if err := prepareHandoffDestination(job.Profile.Publish.Destination, dir); err != nil {
 			return err
 		}
 	} else if err := os.MkdirAll(dir, 0o750); err != nil {
 		return fmt.Errorf("create destination dir: %w", err)
 	}
-	if err := CleanupPartFiles(job.Library, job.DestinationPath, PartJobLabel(job.Job.ID)); err != nil {
+	if err := CleanupPartFiles(job.Profile.Publish, job.DestinationPath, PartJobLabel(job.Job.ID)); err != nil {
 		return fmt.Errorf("remove stale artifact parts: %w", err)
 	}
 	return nil
@@ -134,15 +133,15 @@ func PartJobLabel(id domain.JobID) string {
 
 // CleanupPartFiles removes the job's unpublished artifact for destination.
 // The job label makes ownership unambiguous, so the published destination,
-// legacy unscoped artifacts, and other jobs' parts are untouched. Download
-// libraries also reclaim the part beside the destination, where attempts
-// that ran before the handoff work directory existed wrote it.
-func CleanupPartFiles(library domain.Library, destination string, jobLabel string) error {
+// legacy unscoped artifacts, and other jobs' parts are untouched. A move also
+// reclaims the part beside the destination, where attempts that ran before
+// the handoff work directory existed wrote it.
+func CleanupPartFiles(publish domain.PublishPolicy, destination string, jobLabel string) error {
 	destination = strings.TrimSpace(destination)
 	if destination == "" || strings.TrimSpace(jobLabel) == "" {
 		return nil
 	}
-	parts := []string{ArtifactPath(library, destination, jobLabel)}
+	parts := []string{ArtifactPath(publish, destination, jobLabel)}
 	if beside := PartPath(destination, jobLabel); beside != parts[0] {
 		parts = append(parts, beside)
 	}

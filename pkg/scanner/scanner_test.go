@@ -9,13 +9,6 @@ import (
 	"github.com/zekurio/anvil/pkg/config"
 )
 
-func TestDownloadStableForKeepsZero(t *testing.T) {
-	library := config.LibraryConfig{Kind: "download"}
-	if got := downloadStableFor(library); got != 0 {
-		t.Fatalf("downloadStableFor = %v, want 0", got)
-	}
-}
-
 func TestDiscoverCandidatesSkipsHardlinks(t *testing.T) {
 	original := filepath.Join(t.TempDir(), "episode.mkv")
 	if err := os.WriteFile(original, []byte("video"), 0o600); err != nil {
@@ -26,7 +19,7 @@ func TestDiscoverCandidatesSkipsHardlinks(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	candidates, _, skipped, err := discoverCandidates(context.Background(), root, config.LibraryConfig{Kind: "media"}, &CompletionTracker{})
+	candidates, _, skipped, err := discoverCandidates(context.Background(), root, config.LibraryConfig{}, &CompletionTracker{})
 	if err != nil {
 		t.Fatal(err)
 	}

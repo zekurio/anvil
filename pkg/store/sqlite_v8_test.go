@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -244,9 +245,8 @@ func defaultFlowID(t *testing.T, state *SQLiteStore) int64 {
 
 func testLibrary(name string, flowID int64) config.LibraryConfig {
 	return config.LibraryConfig{
-		Name: name, Kind: "media", Path: "/media/" + name, FlowID: flowID,
-		Media: config.MediaLibraryConfig{ReplacementMode: "replace"},
-	}
+		Name: name, Path: "/media/" + name, FlowID: flowID,
+	}.WithDefaults()
 }
 
 // storedLibrary is the snapshot of a stored library a scan or requeue is
@@ -444,9 +444,16 @@ stable_for = "90s"
 	if len(libraries) != 3 {
 		t.Fatalf("libraries = %+v", libraries)
 	}
+	// A download library handed its files off, and the flow its profile
+	// becomes replaces in place, so it waits for a flow that moves.
 	for _, library := range libraries {
-		if library.Paused {
-			t.Errorf("imported library %q is paused", library.Name)
+		if library.Paused != (library.Name == "inbox") {
+			t.Errorf("imported library %q paused = %t", library.Name, library.Paused)
+		}
+	}
+	for _, imported := range result.Libraries {
+		if wantPaused := imported.Name == "inbox"; (imported.PausedFor != "") != wantPaused || wantPaused && !strings.Contains(imported.PausedFor, "/srv/import") {
+			t.Errorf("imported library %q paused for %q", imported.Name, imported.PausedFor)
 		}
 	}
 	movies, err := state.GetLibrary(ctx, "movies")
@@ -455,7 +462,7 @@ stable_for = "90s"
 	}
 	wantRules, wantFallback := config.LegacyRules([]string{"Films/**"}, []string{"**/Extras/**"}, []string{`\.sample\.`})
 	if movies.FlowID != byName[DefaultFlowName].ID || movies.Arr != "radarr" || movies.Priority != 3 ||
-		movies.RuleFallback != wantFallback || len(movies.Rules) != len(wantRules) || movies.Media.ReplacementMode != "replace" {
+		movies.RuleFallback != wantFallback || len(movies.Rules) != len(wantRules) || movies.Reprocess || movies.PackageMode != config.DefaultLibraryPackageMode {
 		t.Fatalf("movies = %+v", movies)
 	}
 	for i := range wantRules {
@@ -467,8 +474,8 @@ stable_for = "90s"
 	if err != nil {
 		t.Fatal(err)
 	}
-	if inbox.FlowID != byName["fast"].ID || inbox.Download.HandoffPath != "/srv/import" ||
-		inbox.Download.StableFor.Duration != 90*time.Second || len(inbox.Download.IgnorableGlobs) == 0 {
+	if inbox.FlowID != byName["fast"].ID || !inbox.Reprocess || inbox.PackageMode != config.DefaultPackageMode ||
+		inbox.StableFor.Duration != 90*time.Second || len(inbox.IgnorableGlobs) == 0 {
 		t.Fatalf("inbox = %+v", inbox)
 	}
 	if arr, err := state.GetArr(ctx, "radarr"); err != nil || arr.APIKey != "secret" || arr.Type != "radarr" {
@@ -606,11 +613,11 @@ path = "/srv/media/movies"
 	}
 }
 
-func TestFreshDatabaseHasSchema8AndTheDefaultFlow(t *testing.T) {
+func TestFreshDatabaseHasTheCurrentSchemaAndTheDefaultFlow(t *testing.T) {
 	ctx := context.Background()
 	state := openTestStore(t)
 	version, exists, err := state.schemaVersion(ctx)
-	if err != nil || !exists || version != 8 {
+	if err != nil || !exists || version != currentSchemaVersion {
 		t.Fatalf("schemaVersion = %d, %t, %v", version, exists, err)
 	}
 	flows, err := state.ListFlows(ctx)
@@ -662,6 +669,79 @@ func TestDeletedDefaultFlowStaysDeleted(t *testing.T) {
 	}()
 	if flows, err := state.ListFlows(ctx); err != nil || len(flows) != 0 {
 		t.Fatalf("flows after reopen = %+v, %v", flows, err)
+	}
+}
+
+// Version 9 takes the kind out of libraries. A download library keeps what
+// it did differently at intake as settings of its own, and both kinds lose
+// their publish settings: the flow decides those now.
+func TestMigratesVersion8LibrariesWithoutTheirKind(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "anvil.db")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := encodeTime(time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC))
+	if _, err := db.ExecContext(ctx, schemaVersion7); err != nil {
+		t.Fatalf("prepare version 7 database: %v", err)
+	}
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := upgradeToVersion8(ctx, tx); err != nil {
+		t.Fatalf("upgrade to version 8: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	statements := []string{
+		`INSERT INTO schema_migrations (version, applied_at) VALUES (5, '` + now + `'), (6, '` + now + `'), (7, '` + now + `'), (8, '` + now + `')`,
+		`INSERT INTO flows (id, name, graph_json, created_at, updated_at) VALUES (1, 'plain', CAST('{"nodes":[],"edges":[]}' AS BLOB), '` + now + `', '` + now + `')`,
+		`INSERT INTO libraries (name, kind, path, flow_id, paused, settings_json, created_at, updated_at) VALUES
+			('movies', 'media', '/media/movies', 1, 0, CAST('{"scan_interval":"","priority":2,"concurrency_limit":0,"rules":[],"rule_fallback":"allow","replacement_mode":"copy","download":{"handoff_path":"","stable_for":"","package_mode":"","handoff_mode":"","preserve_relative_path":false,"cleanup_source_media":false,"prune_empty_dirs":false,"ignorable_globs":[]}}' AS BLOB), '` + now + `', '` + now + `'),
+			('inbox', 'download', '/downloads', 1, 1, CAST('{"scan_interval":"","priority":0,"concurrency_limit":1,"rules":[],"rule_fallback":"allow","replacement_mode":"","download":{"handoff_path":"/import","stable_for":"90s","package_mode":"directory","handoff_mode":"move","preserve_relative_path":true,"cleanup_source_media":true,"prune_empty_dirs":true,"ignorable_globs":["**/*.nfo"]}}' AS BLOB), '` + now + `', '` + now + `')`,
+	}
+	for _, statement := range statements {
+		if _, err := db.ExecContext(ctx, statement); err != nil {
+			t.Fatalf("prepare version 8 database: %v", err)
+		}
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	state, err := Open(ctx, path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() {
+		if err := state.Close(); err != nil {
+			t.Error(err)
+		}
+	}()
+	movies, err := state.GetLibrary(ctx, "movies")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if movies.Reprocess || movies.StableFor.Duration != 0 || movies.PackageMode != "file" || len(movies.IgnorableGlobs) != 0 || movies.Priority != 2 {
+		t.Errorf("movies after migration = %+v", movies)
+	}
+	inbox, err := state.GetLibrary(ctx, "inbox")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !inbox.Reprocess || inbox.StableFor.Duration != 90*time.Second || inbox.PackageMode != "directory" ||
+		!slices.Equal(inbox.IgnorableGlobs, []string{"**/*.nfo"}) || !inbox.Paused || inbox.ConcurrencyLimit != 1 {
+		t.Errorf("inbox after migration = %+v", inbox)
+	}
+	var leftover int
+	if err := state.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM pragma_table_info('libraries') WHERE name = 'kind'`).Scan(&leftover); err != nil || leftover != 0 {
+		t.Errorf("libraries still has a kind column: %d, %v", leftover, err)
+	}
+	if err := state.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM libraries WHERE json_type(settings_json, '$.download') IS NOT NULL OR json_type(settings_json, '$.replacement_mode') IS NOT NULL`).Scan(&leftover); err != nil || leftover != 0 {
+		t.Errorf("%d libraries kept their publish settings, %v", leftover, err)
 	}
 }
 
@@ -723,7 +803,7 @@ func TestMigratesVersion7WithJobsInPlace(t *testing.T) {
 			t.Error(err)
 		}
 	}()
-	if version, _, err := state.schemaVersion(ctx); err != nil || version != 8 {
+	if version, _, err := state.schemaVersion(ctx); err != nil || version != currentSchemaVersion {
 		t.Fatalf("schemaVersion = %d, %v", version, err)
 	}
 	job, err := state.GetJob(ctx, 1)
@@ -849,19 +929,17 @@ func TestFlowAndArrInUseCannotBeDeleted(t *testing.T) {
 	}
 }
 
-func TestLibraryRoundTripAndImmutableKind(t *testing.T) {
+func TestLibraryRoundTrip(t *testing.T) {
 	ctx := context.Background()
 	state := openTestStore(t)
 	flowID := defaultFlowID(t, state)
 	download := config.LibraryConfig{
-		Name: "inbox", Kind: "download", Path: "/downloads", FlowID: flowID, Paused: true,
+		Name: "inbox", Path: "/downloads", FlowID: flowID, Paused: true,
 		ScanInterval: config.Duration{Duration: 10 * time.Minute}, Priority: 5, ConcurrencyLimit: 2,
 		Rules:        []config.Rule{{Action: config.RuleDeny, Field: config.RuleFieldSize, Op: config.RuleOpLess, Value: "200 MB"}},
 		RuleFallback: config.RuleAllow,
-		Download: config.DownloadLibraryConfig{
-			HandoffPath: "/import", StableFor: config.Duration{Duration: 0}, PackageMode: "auto", HandoffMode: "move",
-			PreserveRelativePath: true, CleanupSourceMedia: true, PruneEmptyDirs: true, IgnorableGlobs: []string{"**/*.nfo"},
-		},
+		Reprocess:    true, StableFor: config.Duration{Duration: 45 * time.Second}, PackageMode: "auto",
+		IgnorableGlobs: []string{"**/*.nfo"},
 	}
 	created, err := state.CreateLibrary(ctx, download, time.Now())
 	if err != nil {
@@ -871,21 +949,15 @@ func TestLibraryRoundTripAndImmutableKind(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if loaded.Kind != "download" || !loaded.Paused || loaded.ScanInterval.Duration != 10*time.Minute ||
+	if !loaded.Reprocess || !loaded.Paused || loaded.ScanInterval.Duration != 10*time.Minute ||
 		loaded.Priority != 5 || loaded.ConcurrencyLimit != 2 || len(loaded.Rules) != 1 || loaded.Rules[0] != download.Rules[0] ||
-		loaded.Download.HandoffPath != "/import" || loaded.Download.StableFor.Duration != 0 || loaded.Download.HandoffMode != "move" ||
-		!loaded.Download.PreserveRelativePath || !loaded.Download.CleanupSourceMedia || !loaded.Download.PruneEmptyDirs ||
-		len(loaded.Download.IgnorableGlobs) != 1 || loaded.CreatedAt.IsZero() || !loaded.CreatedAt.Equal(created.CreatedAt) {
+		loaded.StableFor.Duration != 45*time.Second || loaded.PackageMode != "auto" ||
+		len(loaded.IgnorableGlobs) != 1 || loaded.CreatedAt.IsZero() || !loaded.CreatedAt.Equal(created.CreatedAt) {
 		t.Fatalf("loaded = %+v", loaded)
 	}
 
 	if _, err := state.CreateLibrary(ctx, download, time.Now()); !errors.Is(err, ErrNameTaken) {
 		t.Fatalf("duplicate library = %v, want ErrNameTaken", err)
-	}
-	asMedia := download
-	asMedia.Kind = "media"
-	if _, err := state.UpdateLibrary(ctx, asMedia, time.Now()); !errors.Is(err, ErrImmutable) {
-		t.Fatalf("kind change = %v, want ErrImmutable", err)
 	}
 	dangling := download
 	dangling.FlowID = 9999

@@ -41,6 +41,7 @@ type Store interface {
 	GetFlow(ctx context.Context, id int64) (store.Flow, error)
 	StartAttempt(ctx context.Context, jobID domain.JobID, workerID string, resolvedLibrary []byte, resolvedFlow []byte, resolvedProfile []byte, now time.Time) (domain.Attempt, error)
 	SaveAttemptProfile(ctx context.Context, attemptID domain.AttemptID, resolvedProfile []byte) error
+	ListAttemptsForJob(ctx context.Context, jobID domain.JobID) ([]domain.Attempt, error)
 	FinishAttempt(ctx context.Context, attemptID domain.AttemptID, state domain.AttemptState, message string, finishedAt time.Time) (domain.Attempt, error)
 	TransitionJob(ctx context.Context, jobID domain.JobID, to domain.JobState, now time.Time, lastError string) (domain.Job, error)
 	GetJob(ctx context.Context, id domain.JobID) (domain.Job, error)
@@ -188,7 +189,7 @@ func (r Runner) Run(ctx context.Context, assignment scheduler.Assignment) error 
 			return r.skipProcessed(context.WithoutCancel(ctx), assignment.Job, attempt)
 		}
 		if errors.Is(err, flowstep.ErrSkipped) {
-			return r.skipByFlow(context.WithoutCancel(ctx), jobContext, cfg)
+			return r.skipByFlow(context.WithoutCancel(ctx), jobContext)
 		}
 		if !errors.Is(err, replacepkg.ErrPublishPending) {
 			// A pending publish keeps its staging artifact so a resumed job can
@@ -245,7 +246,10 @@ func shouldSkipProcessed(job *pipeline.JobContext) bool {
 	if !processedInput(job) {
 		return false
 	}
-	return job.Library.Kind != domain.LibraryKindMedia || job.Source.Generation <= 1
+	// A library that reprocesses what it finds again would loop on its own
+	// output, so it skips every marked input. Otherwise only a first
+	// generation is skipped: a forced requeue starts a new one and runs.
+	return job.Library.Reprocess || job.Source.Generation <= 1
 }
 
 func (r Runner) skipProcessed(ctx context.Context, job domain.Job, attempt domain.Attempt) error {
@@ -265,15 +269,24 @@ func (r Runner) skipProcessed(ctx context.Context, job domain.Job, attempt domai
 //
 // The flow step runs before anything is staged, so this attempt has nothing
 // to clean up. An earlier attempt of the same job may have: one that crashed
-// mid-encode leaves its part file beside the destination, and the next
-// attempt would have overwritten it. A skipped job has no next attempt, so
-// the part is reclaimed here. It cannot belong to a publish in flight; that
-// would have been recovered before the pipeline started.
-func (r Runner) skipByFlow(ctx context.Context, job *pipeline.JobContext, cfg config.Config) error {
-	if destination, err := replacepkg.PlanDestination(job); err == nil {
-		job.DestinationPath = destination
+// mid-encode leaves its part file where it staged, and the next attempt
+// would have overwritten it. A skipped job has no next attempt, so the part
+// is reclaimed here. It cannot belong to a publish in flight; that would
+// have been recovered before the pipeline started.
+//
+// Where an earlier attempt staged follows from what it recorded, its library
+// snapshot and the profile its flow resolved, not from this attempt: the
+// flow that now skips the file says nothing about where a move it made
+// before put its part.
+func (r Runner) skipByFlow(ctx context.Context, job *pipeline.JobContext) error {
+	attempts, err := r.Store.ListAttemptsForJob(ctx, job.Job.ID)
+	errs := []error{err}
+	destinations, err := replacepkg.StagedDestinations(job.Job, job.Source, job.Asset, attempts)
+	errs = append(errs, err)
+	for _, destination := range destinations {
+		errs = append(errs, replacepkg.CleanupPartFiles(destination.Publish, destination.Path, replacepkg.PartJobLabel(job.Job.ID)))
 	}
-	r.cleanupFailedStaging(ctx, job, cfg)
+	r.recordCleanupFailure(ctx, job, errors.Join(errs...))
 	reason := flowstep.SkipReason(job.FlowResolution)
 	if _, err := r.Store.FinishAttempt(ctx, job.Attempt.ID, domain.AttemptStateSucceeded, "", r.now()); err != nil {
 		return fmt.Errorf("finish skipped attempt: %w", err)
@@ -619,8 +632,12 @@ func (r Runner) cleanupFailedStaging(ctx context.Context, job *pipeline.JobConte
 		errs = append(errs, err)
 	}
 	// The artifact lives on the destination filesystem, not in scratch.
-	errs = append(errs, replacepkg.CleanupPartFiles(job.Library, job.DestinationPath, replacepkg.PartJobLabel(job.Job.ID)))
-	err := errors.Join(errs...)
+	errs = append(errs, replacepkg.CleanupPartFiles(job.Profile.Publish, job.DestinationPath, replacepkg.PartJobLabel(job.Job.ID)))
+	r.recordCleanupFailure(ctx, job, errors.Join(errs...))
+}
+
+// recordCleanupFailure notes on the attempt what a cleanup could not remove.
+func (r Runner) recordCleanupFailure(ctx context.Context, job *pipeline.JobContext, err error) {
 	if err == nil || r.Store == nil {
 		return
 	}

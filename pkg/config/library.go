@@ -14,7 +14,7 @@ import (
 // FieldProblem is one thing wrong with a library or an Arr connection. Field
 // names the setting at fault the way the web API spells it: the JSON path of
 // the field, object keys and 0-based list indexes joined by dots, such as
-// "download.handoff_path" or "rules.2.value". Message is a full sentence for
+// "ignorable_globs.0" or "rules.2.value". Message is a full sentence for
 // the operator that does not repeat the field's name: the web UI shows it
 // right under the field.
 type FieldProblem struct {
@@ -23,24 +23,14 @@ type FieldProblem struct {
 }
 
 // WithDefaults fills the settings a library may leave unset: the rule
-// fallback, the replacement mode of a media library, and the modes, quiet
-// period, and residue globs of a download library. Settings of the other
-// kind are cleared, so a stored library never carries values that do not
-// apply to it.
+// fallback, the package mode, and the residue globs.
 func (l LibraryConfig) WithDefaults() LibraryConfig {
 	l.RuleFallback = NormalizeRuleFallback(l.RuleFallback)
 	if l.Rules == nil {
 		l.Rules = []Rule{}
 	}
-	if !l.IsDownload() {
-		l.Media.ReplacementMode = orDefault(l.Media.ReplacementMode, DefaultReplacementMode)
-		l.Download = DownloadLibraryConfig{}
-		return l
-	}
-	l.Media = MediaLibraryConfig{}
-	l.Download.PackageMode = orDefault(l.Download.PackageMode, DefaultPackageMode)
-	l.Download.HandoffMode = orDefault(l.Download.HandoffMode, DefaultHandoffMode)
-	l.Download.IgnorableGlobs = EffectiveIgnorableGlobs(l.Download.IgnorableGlobs)
+	l.PackageMode = orDefault(l.PackageMode, DefaultLibraryPackageMode)
+	l.IgnorableGlobs = EffectiveIgnorableGlobs(l.IgnorableGlobs)
 	return l
 }
 
@@ -51,9 +41,6 @@ func (l LibraryConfig) Problems() []FieldProblem {
 	var found []FieldProblem
 	add := func(field, format string, args ...any) {
 		found = append(found, FieldProblem{Field: field, Message: fmt.Sprintf(format, args...)})
-	}
-	if !slices.Contains(libraryKinds, l.Kind) {
-		add("kind", "The kind must be \"media\" or \"download\", not %q.", l.Kind)
 	}
 	switch {
 	case strings.TrimSpace(l.Path) == "":
@@ -77,32 +64,15 @@ func (l LibraryConfig) Problems() []FieldProblem {
 		}
 		add(fmt.Sprintf("rules.%d.%s", problem.Index, problem.Key), "%s", sentence(problem.Message))
 	}
-	if !l.IsDownload() {
-		if !slices.Contains(replacementModes, l.Media.ReplacementMode) {
-			add("media.replacement_mode", "The replacement mode must be \"replace\" or \"copy\", not %q.", l.Media.ReplacementMode)
-		}
-		return found
+	if l.StableFor.Duration < 0 {
+		add("stable_for", "Enter a duration of zero or more, such as \"45s\" or \"5m\".")
 	}
-
-	download := l.Download
-	switch {
-	case strings.TrimSpace(download.HandoffPath) == "":
-		add("download.handoff_path", "A download library needs a handoff folder, the folder its importer watches. Enter an absolute path such as /srv/imports/tv.")
-	case !filepath.IsAbs(download.HandoffPath):
-		add("download.handoff_path", "%q is not an absolute path. Enter one that starts with /, such as /srv/imports/tv.", download.HandoffPath)
+	if !slices.Contains(packageModes, l.PackageMode) {
+		add("package_mode", "The package mode must be \"auto\", \"directory\", or \"file\", not %q.", l.PackageMode)
 	}
-	if download.StableFor.Duration < 0 {
-		add("download.stable_for", "Enter a duration of zero or more, such as \"45s\" or \"5m\".")
-	}
-	if !slices.Contains(packageModes, download.PackageMode) {
-		add("download.package_mode", "The package mode must be \"auto\", \"directory\", or \"file\", not %q.", download.PackageMode)
-	}
-	if !slices.Contains(handoffModes, download.HandoffMode) {
-		add("download.handoff_mode", "The handoff mode must be \"copy\" or \"move\", not %q.", download.HandoffMode)
-	}
-	for index, glob := range download.IgnorableGlobs {
+	for index, glob := range l.IgnorableGlobs {
 		if strings.TrimSpace(glob) == "" || !doublestar.ValidatePattern(filepath.ToSlash(strings.TrimSpace(glob))) {
-			add(fmt.Sprintf("download.ignorable_globs.%d", index), "%q is not a valid glob. Write a pattern such as \"**/*.nfo\" or \"**/sample*/**\".", glob)
+			add(fmt.Sprintf("ignorable_globs.%d", index), "%q is not a valid glob. Write a pattern such as \"**/*.nfo\" or \"**/sample*/**\".", glob)
 		}
 	}
 	return found
@@ -121,42 +91,25 @@ func sentence(message string) string {
 	return message + "."
 }
 
-// LibraryPathConflicts reports where a library's directories collide with
-// those of the other libraries or with the daemon's temp_dir. The engine
-// assumes they are disjoint: a file below two library roots would be queued
-// twice and replaced under the second job's feet, and a handoff directory
-// inside a library root would be scanned as that library's media, part files
-// included. temp_dir holds the daemon's own working files, search samples
-// among them: a library around or inside it would have those scanned as
-// media, and a handoff folder there would mix published files into a
-// directory the daemon cleans up after itself. An empty tempDir is not
-// compared.
-func LibraryPathConflicts(tempDir string, others map[string]LibraryConfig, candidate LibraryConfig) []FieldProblem {
+// LibraryPathConflicts reports where a library's folder collides with the
+// folders of the other libraries, with the folders flows move results to, or
+// with the daemon's temp_dir. The engine assumes they are disjoint: a file
+// below two library roots would be queued twice and replaced under the
+// second job's feet, and a library around a move destination would scan the
+// published files, part files included. temp_dir holds the daemon's own
+// working files, search samples among them: a library around or inside it
+// would have those scanned as media. An empty tempDir is not compared.
+// moveDestinations are the folders of every stored flow's move outputs
+// (flow.MoveDestinations); MoveDestinationConflicts checks the same pairs
+// from the flow's side.
+func LibraryPathConflicts(tempDir string, others map[string]LibraryConfig, moveDestinations []string, candidate LibraryConfig) []FieldProblem {
 	var found []FieldProblem
 	add := func(field, format string, args ...any) {
 		found = append(found, FieldProblem{Field: field, Message: fmt.Sprintf(format, args...)})
 	}
 	root := filepath.Clean(candidate.Path)
-	handoff := ""
-	if candidate.IsDownload() && strings.TrimSpace(candidate.Download.HandoffPath) != "" {
-		handoff = filepath.Clean(candidate.Download.HandoffPath)
-		if pathsOverlap(root, handoff) {
-			add("download.handoff_path", "%s overlaps the library's own folder %s. The importer's folder must be outside the scanned one.", handoff, root)
-		}
-	}
-	if strings.TrimSpace(tempDir) != "" {
-		// A relative temp_dir is resolved against the working directory, as
-		// the daemon itself resolves it when it creates the directory.
-		if absolute, err := filepath.Abs(tempDir); err == nil {
-			tempDir = absolute
-		}
-		tempDir = filepath.Clean(tempDir)
-		if pathsOverlap(root, tempDir) {
-			add("path", "%s overlaps %s, where anvil keeps its working files (daemon.temp_dir). A library folder must be outside it.", root, tempDir)
-		}
-		if handoff != "" && pathsOverlap(handoff, tempDir) {
-			add("download.handoff_path", "%s overlaps %s, where anvil keeps its working files (daemon.temp_dir). A handoff folder must be outside it.", handoff, tempDir)
-		}
+	if tempDir = absoluteTempDir(tempDir); tempDir != "" && pathsOverlap(root, tempDir) {
+		add("path", "%s overlaps %s, where anvil keeps its working files (daemon.temp_dir). A library folder must be outside it.", root, tempDir)
 	}
 	for _, name := range sortedKeys(others) {
 		other := others[name]
@@ -167,16 +120,45 @@ func LibraryPathConflicts(tempDir string, others map[string]LibraryConfig, candi
 		if pathsOverlap(root, otherRoot) {
 			add("path", "%s overlaps the library %q at %s. Library folders must not contain each other.", root, name, otherRoot)
 		}
-		if handoff != "" && pathsOverlap(handoff, otherRoot) {
-			add("download.handoff_path", "%s overlaps the library %q at %s. A handoff folder must be outside every library folder.", handoff, name, otherRoot)
-		}
-		if other.IsDownload() && strings.TrimSpace(other.Download.HandoffPath) != "" {
-			if otherHandoff := filepath.Clean(other.Download.HandoffPath); pathsOverlap(root, otherHandoff) {
-				add("path", "%s overlaps %s, the handoff folder of the library %q. A library folder must be outside every handoff folder.", root, otherHandoff, name)
-			}
+	}
+	for _, destination := range moveDestinations {
+		if destination = filepath.Clean(destination); pathsOverlap(root, destination) {
+			add("path", "%s overlaps %s, a folder a flow moves results to. A library folder must be outside every move destination.", root, destination)
 		}
 	}
 	return found
+}
+
+// MoveDestinationConflicts reports why a folder cannot be a move
+// destination: it overlaps a library folder, whose scan would pick up the
+// published files and part files, or the daemon's temp_dir, which the daemon
+// cleans up after itself. An empty tempDir is not compared. The messages are
+// full sentences for the operator.
+func MoveDestinationConflicts(tempDir string, libraries map[string]LibraryConfig, destination string) []string {
+	var found []string
+	destination = filepath.Clean(destination)
+	if tempDir = absoluteTempDir(tempDir); tempDir != "" && pathsOverlap(destination, tempDir) {
+		found = append(found, fmt.Sprintf("%s overlaps %s, where anvil keeps its working files (daemon.temp_dir). A move destination must be outside it.", destination, tempDir))
+	}
+	for _, name := range sortedKeys(libraries) {
+		if root := filepath.Clean(libraries[name].Path); pathsOverlap(destination, root) {
+			found = append(found, fmt.Sprintf("%s overlaps the library %q at %s. A move destination must be outside every library folder.", destination, name, root))
+		}
+	}
+	return found
+}
+
+// absoluteTempDir resolves a relative temp_dir against the working
+// directory, as the daemon itself resolves it when it creates the directory.
+// An empty one stays empty.
+func absoluteTempDir(tempDir string) string {
+	if strings.TrimSpace(tempDir) == "" {
+		return ""
+	}
+	if absolute, err := filepath.Abs(tempDir); err == nil {
+		tempDir = absolute
+	}
+	return filepath.Clean(tempDir)
 }
 
 // pathsOverlap reports whether two cleaned absolute paths are the same or
@@ -218,15 +200,8 @@ func (arr ArrConfig) Problems() []FieldProblem {
 	return found
 }
 
-// IsDownload reports whether the library processes downloader output and
-// hands it off instead of replacing media in place.
-func (l LibraryConfig) IsDownload() bool {
-	return l.Kind == string(domain.LibraryKindDownload)
-}
-
 // GroupsPackages reports whether each top-level directory is one package
-// source. Media libraries and file-mode downloads treat every file as its own
-// source.
+// source. In file mode, and in a zero value, every file is its own source.
 func (l LibraryConfig) GroupsPackages() bool {
-	return l.IsDownload() && l.Download.PackageMode != string(domain.DownloadPackageModeFile)
+	return l.PackageMode == string(domain.PackageModeAuto) || l.PackageMode == string(domain.PackageModeDirectory)
 }

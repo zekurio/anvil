@@ -64,10 +64,14 @@ func writeLibraries(out io.Writer, response control.LibraryListResponse) error {
 			if library.Paused {
 				state = "paused"
 			}
+			reprocess := "no"
+			if library.Reprocess {
+				reprocess = "yes"
+			}
 			queued := library.Jobs["pending"] + library.Jobs["leased"] + library.Jobs["retrying"]
 			running := library.Jobs["running"] + library.Jobs["validating"] + library.Jobs["replacing"]
 			rows = append(rows, []string{
-				library.Name, library.Kind, state, library.FlowName,
+				library.Name, state, reprocess, library.FlowName,
 				strconv.FormatInt(library.Files, 10),
 				strconv.FormatInt(queued, 10),
 				strconv.FormatInt(running, 10),
@@ -75,15 +79,15 @@ func writeLibraries(out io.Writer, response control.LibraryListResponse) error {
 				strconv.FormatInt(library.Jobs["failed"], 10),
 			})
 		}
-		w.Table([]string{"Name", "Kind", "State", "Flow", "Files", "Queued", "Running", "Done", "Failed"}, rows)
+		w.Table([]string{"Name", "State", "Reprocess", "Flow", "Files", "Queued", "Running", "Done", "Failed"}, rows)
 		// Paths are as long as they are; in the table above they would squeeze
 		// every count next to them.
 		w.Println()
 		var paths [][]string
 		for _, library := range response.Libraries {
-			paths = append(paths, []string{library.Name, library.Path, library.HandoffPath})
+			paths = append(paths, []string{library.Name, library.Path})
 		}
-		w.Table([]string{"Name", "Path", "Hands off to"}, paths)
+		w.Table([]string{"Name", "Path"}, paths)
 	})
 }
 

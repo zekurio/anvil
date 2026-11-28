@@ -26,14 +26,15 @@ type Resolution struct {
 	// OutcomeProcess.
 	Profile domain.Profile
 	// Plan states the result in words, one line per aspect: Video, Audio,
-	// Subtitles, Container. A skipped file has a single line saying so.
+	// Subtitles, Container, Output. A skipped file has a single line saying
+	// so.
 	Plan []string
 }
 
 // Evaluate walks the graph for one file. Starting at the input node it
 // follows the edges: a condition continues on its true or false port, an
 // action sets the part of the profile its node type owns, and an output node
-// ends the walk. When several nodes on the path set the same part, the last
+// decides how the result is published and ends the walk. When several nodes on the path set the same part, the last
 // one wins; video.encode and video.copy share the video part. Whatever no
 // node sets stays as it is in a plain remux: video, audio, and subtitles
 // copied, every track kept, nothing cropped or stripped.
@@ -62,10 +63,9 @@ func Evaluate(g Graph, facts Facts) (Resolution, error) {
 			resolution.Decisions = append(resolution.Decisions, fmt.Sprintf("%s → %t (%s)", a.label(id), ok, reason))
 		case def.apply != nil:
 			def.apply(a.options[id], &profile)
-		case def.outcome != "":
-			resolution.Outcome = def.outcome
 		}
-		if resolution.Outcome != "" {
+		if def.outcome != "" {
+			resolution.Outcome = def.outcome
 			break
 		}
 		id = a.targets[id][port]
@@ -88,6 +88,7 @@ func Evaluate(g Graph, facts Facts) (Resolution, error) {
 		audioPlan(profile.Audio),
 		subtitlePlan(profile.Subtitles),
 		containerPlan(profile),
+		outputPlan(profile.Publish),
 	}
 	return resolution, nil
 }
@@ -105,6 +106,25 @@ func baseProfile() domain.Profile {
 	profile.Crop.Disabled = true
 	profile.Metadata.TrackTitles = domain.TrackTitleModePreserve
 	return profile
+}
+
+func outputPlan(publish domain.PublishPolicy) string {
+	if !publish.Moves() {
+		return "Output: replace the source in place"
+	}
+	plan := "Output: move to " + publish.Destination
+	if !publish.PreserveStructure {
+		plan += ", without the library's folders"
+	}
+	switch {
+	case publish.KeepSource:
+		plan += "; keep the source"
+	case publish.PruneEmptyDirs:
+		plan += "; delete the source and the folders it leaves empty"
+	default:
+		plan += "; delete the source"
+	}
+	return plan
 }
 
 func videoPlan(profile domain.Profile, cropWanted bool) string {

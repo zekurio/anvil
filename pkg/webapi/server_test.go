@@ -332,13 +332,12 @@ func TestErrorShapes(t *testing.T) {
 
 	// Library validation names the field at fault.
 	library := func(change func(*LibraryWrite)) LibraryWrite {
-		write := LibraryWrite{Name: "shows", Kind: "media", Path: filepath.Join(filepath.Dir(f.media), "shows"), FlowID: seeded.ID}
+		write := LibraryWrite{Name: "shows", Path: filepath.Join(filepath.Dir(f.media), "shows"), FlowID: seeded.ID}
 		change(&write)
 		return write
 	}
 	for field, write := range map[string]LibraryWrite{
 		"name":              library(func(w *LibraryWrite) { w.Name = "TV Shows" }),
-		"kind":              library(func(w *LibraryWrite) { w.Kind = "archive" }),
 		"path":              library(func(w *LibraryWrite) { w.Path = "relative/path" }),
 		"flow_id":           library(func(w *LibraryWrite) { w.FlowID = 999 }),
 		"arr":               library(func(w *LibraryWrite) { w.Arr = "ghost" }),
@@ -349,8 +348,9 @@ func TestErrorShapes(t *testing.T) {
 		"rules.1.op": library(func(w *LibraryWrite) {
 			w.Rules = []Rule{{Action: "allow", Field: "path", Op: "matches", Value: "**"}, {Action: "deny", Field: "size", Op: "is", Value: "1 GB"}}
 		}),
-		"media.replacement_mode": library(func(w *LibraryWrite) { w.Media.ReplacementMode = "shred" }),
-		"download.handoff_path":  library(func(w *LibraryWrite) { w.Kind = "download" }),
+		"stable_for":        library(func(w *LibraryWrite) { w.StableFor = "-5s" }),
+		"package_mode":      library(func(w *LibraryWrite) { w.PackageMode = "bundle" }),
+		"ignorable_globs.0": library(func(w *LibraryWrite) { w.IgnorableGlobs = []string{"[a-"} }),
 	} {
 		refused := wantError(t, f.send(http.MethodPost, "/api/v1/libraries", write), http.StatusBadRequest, CodeInvalid)
 		if refused.Field != field {
@@ -358,38 +358,39 @@ func TestErrorShapes(t *testing.T) {
 		}
 	}
 
-	// Library roots must not contain each other, in either direction, and a
-	// handoff directory must stay out of every root.
-	for field, write := range map[string]LibraryWrite{
-		"path": library(func(w *LibraryWrite) { w.Path = filepath.Join(f.media, "nested") }),
-		"download.handoff_path": library(func(w *LibraryWrite) {
-			w.Kind, w.Download.HandoffPath = "download", filepath.Join(f.media, "import")
-		}),
-	} {
-		refused := wantError(t, f.send(http.MethodPost, "/api/v1/libraries", write), http.StatusBadRequest, CodeInvalid)
-		if refused.Field != field || !strings.Contains(refused.Message, "movies") {
-			t.Errorf("overlapping %s: %+v, want it to name the other library", field, refused)
-		}
+	// Library roots must not contain each other, in either direction.
+	nested := wantError(t, f.send(http.MethodPost, "/api/v1/libraries", library(func(w *LibraryWrite) { w.Path = filepath.Join(f.media, "nested") })), http.StatusBadRequest, CodeInvalid)
+	if nested.Field != "path" || !strings.Contains(nested.Message, "movies") {
+		t.Errorf("overlapping path: %+v, want it to name the other library", nested)
 	}
 	if parent := wantError(t, f.send(http.MethodPost, "/api/v1/libraries", library(func(w *LibraryWrite) { w.Path = filepath.Dir(f.media) })), http.StatusBadRequest, CodeInvalid); parent.Field != "path" {
 		t.Errorf("a root above another library: %+v", parent)
 	}
-	// Neither may overlap the daemon's temp_dir, which holds its own files.
+	// Nor may it overlap the daemon's temp_dir, which holds its own files.
 	tempDir := f.config().Daemon.TempDir
-	for field, write := range map[string]LibraryWrite{
-		"path": library(func(w *LibraryWrite) { w.Path = filepath.Join(tempDir, "samples") }),
-		"download.handoff_path": library(func(w *LibraryWrite) {
-			w.Kind, w.Download.HandoffPath = "download", tempDir
-		}),
+	if refused := wantError(t, f.send(http.MethodPost, "/api/v1/libraries", library(func(w *LibraryWrite) { w.Path = filepath.Join(tempDir, "samples") })), http.StatusBadRequest, CodeInvalid); refused.Field != "path" || !strings.Contains(refused.Message, "daemon.temp_dir") {
+		t.Errorf("path overlapping temp_dir: %+v, want it to name daemon.temp_dir", refused)
+	}
+	// A move output may not publish into a library folder or temp_dir, and
+	// a library may not take a folder a flow moves results to.
+	for _, test := range []struct{ folder, names string }{
+		{filepath.Join(f.media, "import"), "movies"},
+		{tempDir, "daemon.temp_dir"},
 	} {
-		refused := wantError(t, f.send(http.MethodPost, "/api/v1/libraries", write), http.StatusBadRequest, CodeInvalid)
-		if refused.Field != field || !strings.Contains(refused.Message, "daemon.temp_dir") {
-			t.Errorf("%s overlapping temp_dir: %+v, want it to name daemon.temp_dir", field, refused)
+		refused := wantError(t, f.send(http.MethodPost, "/api/v1/flows", FlowWrite{Name: "Into " + test.names, Graph: moveTo(test.folder)}), http.StatusUnprocessableEntity, CodeInvalidFlow)
+		if len(refused.Issues) != 1 || refused.Issues[0].NodeID != "move" || refused.Issues[0].Field != "destination" || !strings.Contains(refused.Issues[0].Message, test.names) {
+			t.Errorf("move into %s: %+v, want one issue on the destination naming %s", test.folder, refused, test.names)
 		}
 	}
+	importFolder := filepath.Join(filepath.Dir(f.media), "import")
+	moves := want[Flow](t, f.send(http.MethodPost, "/api/v1/flows", FlowWrite{Name: "Hand off", Graph: moveTo(importFolder)}), http.StatusCreated)
+	if refused := wantError(t, f.send(http.MethodPost, "/api/v1/libraries", library(func(w *LibraryWrite) { w.Path = filepath.Join(importFolder, "tv") })), http.StatusBadRequest, CodeInvalid); refused.Field != "path" || !strings.Contains(refused.Message, importFolder) {
+		t.Errorf("library inside a move destination: %+v, want it to name the folder", refused)
+	}
+	wantNoContent(t, f.send(http.MethodDelete, fmt.Sprintf("/api/v1/flows/%d", moves.ID), nil))
 	// A library the anvil.toml import paused over its folders can be edited
 	// while it stays paused, and resumed only once they are fixed.
-	misplaced := config.LibraryConfig{Name: "scratch", Kind: "media", Path: filepath.Join(tempDir, "scratch"), FlowID: seeded.ID, Paused: true}.WithDefaults()
+	misplaced := config.LibraryConfig{Name: "scratch", Path: filepath.Join(tempDir, "scratch"), FlowID: seeded.ID, Paused: true}.WithDefaults()
 	if _, err := f.state.CreateLibrary(context.Background(), misplaced, time.Now()); err != nil {
 		t.Fatal(err)
 	}
@@ -404,21 +405,16 @@ func TestErrorShapes(t *testing.T) {
 	want[Library](t, f.send(http.MethodPut, "/api/v1/libraries/scratch", imported), http.StatusOK)
 	wantNoContent(t, f.send(http.MethodDelete, "/api/v1/libraries/scratch", nil))
 
-	if taken := wantError(t, f.send(http.MethodPost, "/api/v1/libraries", LibraryWrite{Name: "movies", Kind: "media", Path: "/srv/other", FlowID: seeded.ID}), http.StatusConflict, CodeConflict); taken.Field != "name" {
+	if taken := wantError(t, f.send(http.MethodPost, "/api/v1/libraries", LibraryWrite{Name: "movies", Path: "/srv/other", FlowID: seeded.ID}), http.StatusConflict, CodeConflict); taken.Field != "name" {
 		t.Errorf("taken library name = %+v, want field name", taken)
 	}
 
-	// An update cannot rename a library or change its kind.
+	// An update cannot rename a library.
 	current := want[Library](t, f.get("/api/v1/libraries/movies"), http.StatusOK).LibraryWrite
 	renamed := current
 	renamed.Name = "films"
 	if refused := wantError(t, f.send(http.MethodPut, "/api/v1/libraries/movies", renamed), http.StatusBadRequest, CodeInvalid); refused.Field != "name" {
 		t.Errorf("rename = %+v", refused)
-	}
-	rekinded := current
-	rekinded.Kind, rekinded.Download.HandoffPath = "download", "/srv/import"
-	if refused := wantError(t, f.send(http.MethodPut, "/api/v1/libraries/movies", rekinded), http.StatusBadRequest, CodeInvalid); refused.Field != "kind" {
-		t.Errorf("kind change = %+v", refused)
 	}
 
 	// Arr connections.

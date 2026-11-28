@@ -3,7 +3,7 @@
 // same job always shows the same history.
 
 import type { AttemptDetail, AttemptEventDetail, AttemptStreamSelection, EventPayload, Job, JobDetail, JobFlow, StreamDecision, StreamSelectionDecision } from "../src/api/types.ts";
-import { absolutePath, db, factsOf, findLibrary, progressOf } from "./db.ts";
+import { absolutePath, db, factsOf, findLibrary, progressOf, publishOf } from "./db.ts";
 import type { MockFile } from "./fixtures/files.ts";
 import { testGraph } from "./flowcheck.ts";
 
@@ -50,13 +50,22 @@ function attemptTimes(file: MockFile): { started_at?: string; finished_at?: stri
   return { started_at: iso(file.completed_at - seconds * 1000), finished_at: iso(file.completed_at) };
 }
 
-/** Where the encode was published: the handoff folder, beside the source in copy mode, or over the source. */
+const asMkv = (path: string) => path.replace(/\.[^./]+$/, ".mkv");
+
+/** Where the result is published: below the move's folder, with or without the library's folders, or over the source. */
 function destinationOf(file: MockFile): string {
-  const library = findLibrary(file.library);
-  const source = absolutePath(file);
-  if (library?.kind === "download") return `${library.download.handoff_path}/${file.path}`;
-  if (library?.media.replacement_mode === "copy") return source.replace(/\.[^.]+$/, ".av1.mkv");
-  return source.replace(/\.[^.]+$/, ".mkv");
+  const publish = publishOf(file);
+  if (publish.mode === "replace") return asMkv(absolutePath(file));
+  const relative = publish.preserve_structure ? file.path : file.path.slice(file.path.lastIndexOf("/") + 1);
+  return asMkv(`${publish.destination}/${relative}`);
+}
+
+/** Where the encode is written before it is published: beside the destination, or in the move folder's .anvil-work (replace.ArtifactPath). */
+function artifactPath(file: MockFile): string {
+  const publish = publishOf(file);
+  const destination = destinationOf(file);
+  const name = publish.mode === "move" ? `${publish.destination}/.anvil-work/${destination.slice(destination.lastIndexOf("/") + 1)}` : destination;
+  return `${name}.job-${file.job_id}.anvil-part`;
 }
 
 function slugOf(file: MockFile): string {
@@ -162,7 +171,7 @@ function attempts(file: MockFile, flow: JobFlow | undefined): { attempts: Attemp
       const input = ["ffmpeg", "-hide_banner", "-nostdin", "-i", absolutePath(file)];
       if (name === "crop-detect") return [...input, "-vf", "cropdetect=24:2:0", "-frames:v", "240", "-f", "null", "-"];
       if (name === "crf-search") return [...input, "-ss", "00:12:00", "-t", "20", "-c:v", "libsvtav1", "-preset", "6", "-crf", String(chosen.crf), "-an", "-sn", `/var/lib/anvil/staging/job-${file.job_id}/sample-3.mkv`];
-      return [...input, "-map", "0:v:0", "-map", "0:a", "-map", "0:s?", "-c:v", "libsvtav1", "-preset", "6", "-crf", String(chosen.crf), "-c:a", "copy", "-c:s", "copy", `${absolutePath(file)}.job-${file.job_id}.anvil-part`];
+      return [...input, "-map", "0:v:0", "-map", "0:a", "-map", "0:s?", "-c:v", "libsvtav1", "-preset", "6", "-crf", String(chosen.crf), "-c:a", "copy", "-c:s", "copy", artifactPath(file)];
     };
     // The daemon records one "process-output" artifact per ffmpeg run, with the log paths rather than the logs.
     const processOutput = (name: string, seconds: number, exitCode: number) => {
@@ -180,7 +189,7 @@ function attempts(file: MockFile, flow: JobFlow | undefined): { attempts: Attemp
       ["crop-detect", 6, file.height === 2160 ? "crop=3840:1600:0:280 keeps 74.1% of the frame" : "no crop: the frame has no black bars"],
       ["audio-cleanup", 1, `kept ${file.audio.filter((a) => a.title !== "Commentary").length} of ${file.audio.length} audio streams`],
       ["subtitle-cleanup", 1, `kept ${file.subtitles.length} of ${file.subtitles.length} subtitle streams`],
-      ["stage", 1, "planned the destination beside the source"],
+      ["stage", 1, publishOf(file).mode === "move" ? `planned the destination ${destinationOf(file)}` : "planned the destination beside the source"],
       ["crf-search", 50, chosen.mode === "fixed" ? `fixed CRF ${chosen.crf}, search skipped` : `crf ${chosen.crf} reaches vmaf ${chosen.score ?? 95}`],
       ["encode", 400, "encoded 1 video, 1 audio, 1 subtitle stream"],
       ["validate", 6, "duration and stream counts match the source"],
@@ -246,7 +255,8 @@ export function jobDetail(file: MockFile): JobDetail {
   }
   const history = attempts(file, flow);
   const done = file.status === "done";
-  const download = library?.kind === "download";
+  const publish = publishOf(file);
+  const moves = publish.mode === "move";
   return {
     api_version: "v1",
     server_time: iso(Date.now()),
@@ -259,7 +269,7 @@ export function jobDetail(file: MockFile): JobDetail {
       updated_at: iso(file.updated_at),
       created_at: iso(file.created_at),
       ...(file.completed_at ? { completed_at: iso(file.completed_at) } : {}),
-      source_kind: download ? "package" : "file",
+      source_kind: library?.package_mode === "file" ? "file" : "package",
       source_path: file.path,
       asset_path: file.path,
       asset_role: "primary",
@@ -270,7 +280,7 @@ export function jobDetail(file: MockFile): JobDetail {
       ? { pipeline_context: { version: 7, crop_evaluated: true, crop_no_op: file.height !== 2160, ...(file.height === 2160 ? { crop_filter: "crop=3840:1600:0:280", crop_source_width: 3840, crop_source_height: 2160, crop_output_width: 3840, crop_output_height: 1600, crop_retained_area_percent: 74.1 } : {}), ...(done ? searchContext(quality(file, flow)) : {}) } }
       : {}),
     ...(done
-      ? { publish_operation: { kind: download ? "handoff" : "replacement", mode: download ? library.download.handoff_mode : (library?.media.replacement_mode ?? "replace"), stage: "committed", artifact_path: `${absolutePath(file)}.job-${file.job_id}.anvil-part`, destination_path: destinationOf(file), artifact_size_bytes: file.output_size_bytes ?? 0, digest_algorithm: "blake3", updated_at: iso(file.completed_at ?? file.updated_at) } }
+      ? { publish_operation: { kind: moves ? "handoff" : "replacement", mode: moves ? (publish.keep_source ? "copy" : "move") : "replace", stage: "committed", artifact_path: artifactPath(file), destination_path: destinationOf(file), artifact_size_bytes: file.output_size_bytes ?? 0, digest_algorithm: "blake3", updated_at: iso(file.completed_at ?? file.updated_at) } }
       : {}),
     ...(history.selections.length > 0 ? { stream_selection: history.selections } : {}),
     attempts: history.attempts,

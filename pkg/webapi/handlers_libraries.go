@@ -114,29 +114,23 @@ func (s *Server) checkLibrary(ctx context.Context, library config.LibraryConfig,
 		if current != nil {
 			kept = current.LibraryConfig
 		}
-		for _, candidate := range []struct{ field, path, stored string }{
-			{"path", library.Path, kept.Path},
-			{"download.handoff_path", library.Download.HandoffPath, kept.Download.HandoffPath},
-		} {
-			if candidate.path == "" || candidate.path == candidate.stored {
-				continue
-			}
-			allowed, err := pathWithinMediaRoots(candidate.path, roots)
+		if library.Path != "" && library.Path != kept.Path {
+			allowed, err := pathWithinMediaRoots(library.Path, roots)
 			if err != nil {
-				return invalidf(candidate.field, "The path cannot be resolved inside an administrator-declared media root: %v.", err)
+				return invalidf("path", "The path cannot be resolved inside an administrator-declared media root: %v.", err)
 			}
 			if !allowed {
-				return invalidf(candidate.field, "The path must be inside one of the administrator-declared media roots.")
+				return invalidf("path", "The path must be inside one of the administrator-declared media roots.")
 			}
 		}
 	}
-	// The directories are compared against the stored libraries, not the
+	// The folder is compared against the stored libraries and flows, not the
 	// runtime snapshot: the store is what this write is about to change. An
-	// update that leaves both directories alone is not checked again, so a
-	// library can always be paused or given another flow. Resuming is the
-	// exception: the one-time import of anvil.toml pauses a library whose
-	// directories conflict, and it must not run again until they are fixed.
-	moved := current == nil || current.Path != library.Path || current.Download.HandoffPath != library.Download.HandoffPath
+	// update that leaves the folder alone is not checked again, so a library
+	// can always be paused or given another flow. Resuming is the exception:
+	// the one-time import of anvil.toml pauses a library whose folder
+	// conflicts, and it must not run again until that is fixed.
+	moved := current == nil || current.Path != library.Path
 	resumed := current != nil && current.Paused && !library.Paused
 	if moved || resumed {
 		stored, err := s.Store.ListLibraries(ctx)
@@ -147,7 +141,15 @@ func (s *Server) checkLibrary(ctx context.Context, library config.LibraryConfig,
 		for _, other := range stored {
 			others[other.Name] = other.LibraryConfig
 		}
-		if err := fieldProblem(config.LibraryPathConflicts(s.Config().Daemon.TempDir, others, library)); err != nil {
+		flows, err := s.Store.ListFlows(ctx)
+		if err != nil {
+			return err
+		}
+		var destinations []string
+		for _, stored := range flows {
+			destinations = append(destinations, flow.MoveDestinations(stored.Graph)...)
+		}
+		if err := fieldProblem(config.LibraryPathConflicts(s.Config().Daemon.TempDir, others, destinations, library)); err != nil {
 			return err
 		}
 	}
@@ -228,9 +230,6 @@ func (s *Server) updateLibrary(_ http.ResponseWriter, r *http.Request) (int, any
 	current, err := s.storedLibrary(r.Context(), name)
 	if err != nil {
 		return fail(err)
-	}
-	if library.Kind != current.Kind {
-		return fail(invalidf("kind", "Library %q is a %s library, and the kind cannot change. Create a new library instead.", name, current.Kind))
 	}
 	if err := s.checkLibrary(r.Context(), library, &current); err != nil {
 		return fail(err)

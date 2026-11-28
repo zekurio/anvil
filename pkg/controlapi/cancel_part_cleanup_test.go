@@ -5,42 +5,18 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
-	"reflect"
-	"strings"
 	"testing"
 
 	"github.com/zekurio/anvil/pkg/domain"
 	replacepkg "github.com/zekurio/anvil/pkg/replace"
 )
 
-func TestStagedDestinationsUseAttemptSnapshots(t *testing.T) {
-	job := domain.Job{ID: 42}
-	source := domain.MediaSource{Kind: domain.SourceKindFile, RelativePath: "season/movie.mp4"}
-	profile := domain.Profile{Name: "encode", Container: "mkv"}
-	oldRoot := filepath.Join(t.TempDir(), "old")
-	newRoot := filepath.Join(t.TempDir(), "new")
-	attempts := []domain.Attempt{
-		snapshotAttempt(t, 1, domain.Library{Kind: domain.LibraryKindDownload, Path: "/source", Download: domain.DownloadLibraryPolicy{HandoffPath: oldRoot, PreserveRelativePath: true}}, profile),
-		snapshotAttempt(t, 2, domain.Library{Kind: domain.LibraryKindDownload, Path: "/source", Download: domain.DownloadLibraryPolicy{HandoffPath: newRoot, PreserveRelativePath: true}}, profile),
-		snapshotAttempt(t, 3, domain.Library{Kind: domain.LibraryKindDownload, Path: "/source", Download: domain.DownloadLibraryPolicy{HandoffPath: newRoot, PreserveRelativePath: true}}, profile),
-		{Number: 4}, // Resolution failed before the pipeline ran, so it never staged.
-		{Number: 5, ResolvedLibrary: []byte("{"), ResolvedFlow: []byte("{}"), ResolvedProfile: []byte("{}")},
-	}
-
-	destinations, err := stagedDestinations(job, source, domain.MediaAsset{}, attempts)
-	if err == nil || !strings.Contains(err.Error(), "decode attempt 5 resolved library") {
-		t.Fatalf("stagedDestinations error = %v, want malformed snapshot error", err)
-	}
-	want := []string{
-		filepath.Join(oldRoot, "season", "movie.mkv"),
-		filepath.Join(newRoot, "season", "movie.mkv"),
-	}
-	var paths []string
-	for _, destination := range destinations {
-		paths = append(paths, destination.Path)
-	}
-	if !reflect.DeepEqual(paths, want) {
-		t.Fatalf("stagedDestinations = %#v, want %#v", paths, want)
+// moveProfile is a profile whose flow moves to folder, keeping the library's
+// folders.
+func moveProfile(folder string) domain.Profile {
+	return domain.Profile{
+		Name: "encode", Container: "mkv",
+		Publish: domain.PublishPolicy{Mode: domain.PublishMove, Destination: folder, PreserveStructure: true},
 	}
 }
 
@@ -48,15 +24,12 @@ func TestCleanupOrphanedPartProtectsAnotherJobsLegacyArtifact(t *testing.T) {
 	job := domain.Job{ID: 42, SourceID: 7}
 	source := domain.MediaSource{ID: 7, Kind: domain.SourceKindFile, RelativePath: "movie.mp4"}
 	handoffRoot := t.TempDir()
-	attempt := snapshotAttempt(t, 1,
-		domain.Library{Kind: domain.LibraryKindDownload, Path: "/source", Download: domain.DownloadLibraryPolicy{HandoffPath: handoffRoot, PreserveRelativePath: true}},
-		domain.Profile{Name: "encode", Container: "mkv"},
-	)
+	attempt := snapshotAttempt(t, 1, domain.Library{Path: "/source"}, moveProfile(handoffRoot))
 	destination := filepath.Join(handoffRoot, "movie.mkv")
 	// A part beside the destination predates the handoff work directory and
 	// must still be reclaimed alongside the current work-directory part.
 	scoped := replacepkg.PartPath(destination, replacepkg.PartJobLabel(job.ID))
-	workPart := replacepkg.ArtifactPath(domain.Library{Kind: domain.LibraryKindDownload, Download: domain.DownloadLibraryPolicy{HandoffPath: handoffRoot}}, destination, replacepkg.PartJobLabel(job.ID))
+	workPart := replacepkg.ArtifactPath(moveProfile(handoffRoot).Publish, destination, replacepkg.PartJobLabel(job.ID))
 	if err := os.MkdirAll(filepath.Dir(workPart), 0o750); err != nil {
 		t.Fatal(err)
 	}

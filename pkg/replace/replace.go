@@ -10,15 +10,15 @@ import (
 	"strings"
 
 	"github.com/bmatcuk/doublestar/v4"
-	"github.com/zekurio/anvil/pkg/domain"
 	"github.com/zekurio/anvil/pkg/mediapath"
 	"github.com/zekurio/anvil/pkg/pipeline"
 )
 
 const (
-	replacementActionCopy    = "copy"
 	replacementActionReplace = "replace"
-	anvilCopySuffix          = ".anvil"
+	// anvilCopySuffix marked the copies the retired replacement copy mode
+	// published beside their sources. Scans still leave such files alone.
+	anvilCopySuffix = ".anvil"
 
 	handoffActionCopy = "copy"
 	handoffActionMove = "move"
@@ -28,16 +28,14 @@ const (
 )
 
 type ReplacementPlan struct {
-	Action        string
-	Mode          domain.ReplacementMode
-	CopyPath      string
 	ReplaceTarget string
 	BackupPath    string
 }
 
+// HandoffPlan is how a move publishes: the journal calls a move a handoff,
+// and its Action is "move" when the source goes and "copy" when it stays.
 type HandoffPlan struct {
 	Action             string
-	Mode               domain.HandoffMode
 	Destination        string
 	CleanupSourceMedia bool
 	PruneEmptyDirs     bool
@@ -45,28 +43,21 @@ type HandoffPlan struct {
 	PruneStart         string
 }
 
-// PlanReplacement maps a replacement mode to its publish action and backup
-// path. The destination itself comes from PlanDestination at stage time;
-// outputExt is the container extension the destination carries.
-func PlanReplacement(inputPath string, outputExt string, mode domain.ReplacementMode) (ReplacementPlan, error) {
+// PlanReplacement returns the destination and backup path of an in-place
+// replacement. The destination itself comes from PlanDestination at stage
+// time; outputExt is the container extension the destination carries.
+func PlanReplacement(inputPath string, outputExt string) (ReplacementPlan, error) {
 	if inputPath == "" {
 		return ReplacementPlan{}, errors.New("replace input path is required")
 	}
-	plan := ReplacementPlan{Mode: mode}
-	switch mode {
-	case domain.ReplacementModeCopy:
-		plan.Action = replacementActionCopy
-		plan.CopyPath = replacementCopyPath(inputPath, outputExt)
-	default:
-		plan.Action = replacementActionReplace
-		plan.ReplaceTarget = replaceExtension(inputPath, outputExt)
-		plan.BackupPath = inputPath + ".anvil.bak"
-	}
-	return plan, nil
+	return ReplacementPlan{
+		ReplaceTarget: replaceExtension(inputPath, outputExt),
+		BackupPath:    inputPath + ".anvil.bak",
+	}, nil
 }
 
-// PlanHandoff describes how a download-library artifact publishes. The
-// destination must already be planned on the job context by the stage step.
+// PlanHandoff describes how a moved artifact publishes. The destination must
+// already be planned on the job context by the stage step.
 func PlanHandoff(job *pipeline.JobContext) (HandoffPlan, error) {
 	if job == nil {
 		return HandoffPlan{}, errors.New("handoff job context is required")
@@ -75,17 +66,16 @@ func PlanHandoff(job *pipeline.JobContext) (HandoffPlan, error) {
 	if destination == "" {
 		return HandoffPlan{}, errors.New("handoff destination is required; the stage step must plan it first")
 	}
-	mode := job.Library.Download.HandoffMode
-	action := handoffActionCopy
-	if mode == domain.HandoffModeMove {
-		action = handoffActionMove
+	publish := job.Profile.Publish
+	action := handoffActionMove
+	if publish.KeepSource {
+		action = handoffActionCopy
 	}
 	return HandoffPlan{
 		Action:             action,
-		Mode:               mode,
 		Destination:        destination,
-		CleanupSourceMedia: job.Library.Download.CleanupSourceMedia,
-		PruneEmptyDirs:     job.Library.Download.PruneEmptyDirs,
+		CleanupSourceMedia: !publish.KeepSource,
+		PruneEmptyDirs:     !publish.KeepSource && publish.PruneEmptyDirs,
 		SourceMediaPath:    job.InputPath,
 		PruneStart:         filepath.Dir(job.InputPath),
 	}, nil
@@ -102,7 +92,7 @@ func (PublishBlock) Name() string {
 func (b PublishBlock) Run(ctx context.Context, job *pipeline.JobContext) error {
 	var finalPath string
 	var err error
-	if job.Library.Kind == domain.LibraryKindDownload {
+	if job.Profile.Publish.Moves() {
 		finalPath, err = b.Manager.Handoff(ctx, job)
 	} else {
 		finalPath, err = b.Manager.Replace(ctx, job)
@@ -119,11 +109,12 @@ func (b PublishBlock) Recover(ctx context.Context, job *pipeline.JobContext) (bo
 }
 
 func handoffDestination(job *pipeline.JobContext, ext string) (string, error) {
-	if strings.TrimSpace(job.Library.Download.HandoffPath) == "" {
-		return "", errors.New("download handoff path is required")
+	root := strings.TrimSpace(job.Profile.Publish.Destination)
+	if root == "" || !filepath.IsAbs(root) {
+		return "", fmt.Errorf("the move needs an absolute destination folder, not %q", root)
 	}
 	var rel string
-	if job.Library.Download.PreserveRelativePath {
+	if job.Profile.Publish.PreserveStructure {
 		rel = mediapath.Relative(job.Source, job.Asset)
 	} else {
 		rel = filepath.Base(job.InputPath)
@@ -134,15 +125,7 @@ func handoffDestination(job *pipeline.JobContext, ext string) (string, error) {
 	if unsafeRelativePath(rel) {
 		return "", fmt.Errorf("unsafe handoff relative path %q", rel)
 	}
-	return filepath.Join(job.Library.Download.HandoffPath, rel), nil
-}
-
-func replacementCopyPath(inputPath string, ext string) string {
-	if ext == "" {
-		ext = filepath.Ext(inputPath)
-	}
-	base := strings.TrimSuffix(inputPath, filepath.Ext(inputPath))
-	return base + anvilCopySuffix + ext
+	return filepath.Join(root, rel), nil
 }
 
 func IsAnvilCopyOutputPath(path string) bool {

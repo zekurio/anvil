@@ -466,7 +466,7 @@ func (m Manager) replacementOperation(job *pipeline.JobContext) (PublishOperatio
 	if destination == "" {
 		return PublishOperation{}, errors.New("replacement destination is required; the stage step must plan it first")
 	}
-	plan, err := PlanReplacement(job.InputPath, filepath.Ext(destination), job.Library.Media.ReplacementMode)
+	plan, err := PlanReplacement(job.InputPath, filepath.Ext(destination))
 	if err != nil {
 		return PublishOperation{}, err
 	}
@@ -481,10 +481,6 @@ func (m Manager) replacementOperation(job *pipeline.JobContext) (PublishOperatio
 		ArtifactIdentity: identity,
 		DestinationPath:  destination,
 		CleanupArtifact:  true,
-	}
-	if plan.Action == replacementActionCopy {
-		op.Mode = replacementActionCopy
-		return op, nil
 	}
 	originalIdentity, err := StatFileIdentity(job.InputPath)
 	if err != nil {
@@ -516,13 +512,13 @@ func (m Manager) handoffOperation(job *pipeline.JobContext) (PublishOperation, e
 		CleanupSourcePath: plan.SourceMediaPath,
 		PruneRoot:         job.Library.Path,
 		PruneStart:        plan.PruneStart,
-		IgnorableGlobs:    append([]string(nil), job.Library.Download.IgnorableGlobs...),
+		IgnorableGlobs:    append([]string(nil), job.Library.IgnorableGlobs...),
 		ArtifactIdentity:  identity,
 		CleanupArtifact:   true,
 		CleanupSource:     plan.CleanupSourceMedia,
 		PruneEmptyDirs:    plan.CleanupSourceMedia && plan.PruneEmptyDirs,
 		SetHandoffModes:   true,
-		HandoffRoot:       job.Library.Download.HandoffPath,
+		HandoffRoot:       job.Profile.Publish.Destination,
 	}
 	if op.CleanupSource {
 		sourceIdentity, err := StatFileIdentity(plan.SourceMediaPath)

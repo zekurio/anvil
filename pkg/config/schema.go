@@ -8,11 +8,14 @@ const (
 	DefaultReplacementMode = "replace"
 	DefaultShutdownPolicy  = "drain"
 	DefaultLogLevel        = "info"
-	DefaultPackageMode     = "auto"
-	DefaultHandoffMode     = "copy"
-	DefaultStreamFallback  = "keep_all"
-	DefaultMetadataMode    = "preserve"
-	DefaultTrackTitleMode  = "strip"
+	// DefaultPackageMode is the package mode of a legacy download library;
+	// a stored library defaults to DefaultLibraryPackageMode.
+	DefaultPackageMode        = "auto"
+	DefaultLibraryPackageMode = "file"
+	DefaultHandoffMode        = "copy"
+	DefaultStreamFallback     = "keep_all"
+	DefaultMetadataMode       = "preserve"
+	DefaultTrackTitleMode     = "strip"
 
 	DefaultMaxAttempts            = 3
 	DefaultMinSavingsPct          = 20
@@ -48,7 +51,7 @@ const (
 	DefaultStableFor       = 5 * time.Minute
 )
 
-// DefaultIgnorableGlobs are excluded from download-package discovery and stability handling.
+// DefaultIgnorableGlobs are excluded from package discovery and stability handling.
 // External subtitle sidecars are intentionally preserved by default.
 var DefaultIgnorableGlobs = []string{
 	"**/samples/**",
@@ -138,8 +141,8 @@ type DaemonConfig struct {
 	MediaRoots []string `toml:"media_roots"`
 	// Scratch directory for search samples and process logs. Encode artifacts
 	// are written on the destination filesystem as <name>.job-<id>.anvil-part:
-	// beside the destination for media libraries, under
-	// <handoff_path>/.anvil-work for download libraries. Defaults to anvil
+	// beside the destination when a flow replaces the file, under
+	// <destination>/.anvil-work when it moves the result. Defaults to anvil
 	// inside the system temporary directory.
 	TempDir string `toml:"temp_dir"`
 	// SQLite state path, on persistent storage: the store is the only copy of
@@ -362,9 +365,6 @@ type LibraryConfig struct {
 	// (a scan, a requeue) is told apart from work meant for the new one. Only
 	// the store sets it; it is not a setting.
 	CreatedAt time.Time
-	// Replace media in place or process downloader output; "media" or
-	// "download". It cannot change once the library exists.
-	Kind string
 	// Absolute root scanned for source files.
 	Path string
 	// FlowID is the flow every file of the library runs through.
@@ -383,8 +383,21 @@ type LibraryConfig struct {
 	// queued; RuleFallback ("allow" or "deny") decides when none match.
 	Rules        []Rule
 	RuleFallback string
-	Media        MediaLibraryConfig
-	Download     DownloadLibraryConfig
+	// Reprocess queues a file a scan finds changed, or written again at a
+	// path the library has seen before, as a download folder needs. Off,
+	// such a file is recorded as processed and only a requeue runs it.
+	Reprocess bool
+	// Quiet period a file must go without changes before it is queued, when
+	// no completion event (close-write, moved-in) was observed; 0 queues at
+	// once.
+	StableFor Duration
+	// Treat each top-level entry as a package or each file on its own;
+	// "auto", "directory", or "file".
+	PackageMode string
+	// Residue excluded from discovery and stability handling, and removable
+	// when a move prunes the folders its source leaves empty. Empty uses
+	// DefaultIgnorableGlobs; doublestar glob patterns.
+	IgnorableGlobs []string
 }
 
 // LegacyLibraryConfig is a [libraries.NAME] table of anvil.toml. It is

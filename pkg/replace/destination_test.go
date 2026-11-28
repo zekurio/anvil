@@ -18,39 +18,85 @@ func (f artifactProtectionFunc) PublishArtifactProtected(ctx context.Context, pa
 	return f(ctx, path)
 }
 
-func TestPlanDestinationUsesLibraryKind(t *testing.T) {
-	mediaInput := filepath.Join(t.TempDir(), "movie.mp4")
+// movePolicy is a move to folder that keeps the library's folders.
+func movePolicy(folder string) domain.PublishPolicy {
+	return domain.PublishPolicy{Mode: domain.PublishMove, Destination: folder, PreserveStructure: true}
+}
+
+func TestPlanDestinationFollowsThePublishPolicy(t *testing.T) {
+	libraryRoot := t.TempDir()
+	mediaInput := filepath.Join(libraryRoot, "Show", "Season 1", "episode.mp4")
 	handoffRoot := t.TempDir()
+	source := domain.MediaSource{Kind: domain.SourceKindFile, RelativePath: "Show/Season 1/episode.mp4"}
+	flat := movePolicy(handoffRoot)
+	flat.PreserveStructure = false
 	tests := []struct {
-		name string
-		job  *pipeline.JobContext
-		want string
+		name    string
+		publish domain.PublishPolicy
+		want    string
 	}{
-		{
-			name: "media",
-			job: &pipeline.JobContext{
-				Library:   domain.Library{Kind: domain.LibraryKindMedia},
-				InputPath: mediaInput,
-			},
-			want: strings.TrimSuffix(mediaInput, ".mp4") + ".mkv",
-		},
-		{
-			name: "download",
-			job: &pipeline.JobContext{
-				Library:   domain.Library{Kind: domain.LibraryKindDownload, Download: domain.DownloadLibraryPolicy{HandoffPath: handoffRoot}},
-				InputPath: mediaInput,
-			},
-			want: filepath.Join(handoffRoot, "movie.mkv"),
-		},
+		{"zero value replaces", domain.PublishPolicy{}, strings.TrimSuffix(mediaInput, ".mp4") + ".mkv"},
+		{"replace", domain.PublishPolicy{Mode: domain.PublishReplace}, strings.TrimSuffix(mediaInput, ".mp4") + ".mkv"},
+		{"move keeping the folders", movePolicy(handoffRoot), filepath.Join(handoffRoot, "Show", "Season 1", "episode.mkv")},
+		{"move without the folders", flat, filepath.Join(handoffRoot, "episode.mkv")},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			got, err := PlanDestination(test.job)
+			job := &pipeline.JobContext{
+				Library:   domain.Library{Path: libraryRoot},
+				Source:    source,
+				InputPath: mediaInput,
+				Profile:   domain.Profile{Publish: test.publish},
+			}
+			got, err := PlanDestination(job)
 			if err != nil {
 				t.Fatal(err)
 			}
 			if got != test.want {
 				t.Fatalf("PlanDestination() = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
+func TestPlanDestinationRefusesAMoveWithoutAnAbsoluteFolder(t *testing.T) {
+	for _, folder := range []string{"", "relative/imports"} {
+		job := &pipeline.JobContext{
+			InputPath: filepath.Join(t.TempDir(), "movie.mkv"),
+			Profile:   domain.Profile{Publish: domain.PublishPolicy{Mode: domain.PublishMove, Destination: folder}},
+		}
+		if got, err := PlanDestination(job); err == nil {
+			t.Errorf("PlanDestination() with folder %q = %q, want an error", folder, got)
+		}
+	}
+}
+
+func TestPlanHandoffFollowsKeepSource(t *testing.T) {
+	job := &pipeline.JobContext{
+		InputPath:       "/downloads/Show/episode.mkv",
+		DestinationPath: "/imports/Show/episode.mkv",
+	}
+	tests := []struct {
+		name    string
+		publish domain.PublishPolicy
+		want    HandoffPlan
+	}{
+		{"delete the source", domain.PublishPolicy{Mode: domain.PublishMove}, HandoffPlan{Action: handoffActionMove, CleanupSourceMedia: true}},
+		{"delete and prune", domain.PublishPolicy{Mode: domain.PublishMove, PruneEmptyDirs: true}, HandoffPlan{Action: handoffActionMove, CleanupSourceMedia: true, PruneEmptyDirs: true}},
+		{"keep the source", domain.PublishPolicy{Mode: domain.PublishMove, KeepSource: true, PruneEmptyDirs: true}, HandoffPlan{Action: handoffActionCopy}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			job.Profile.Publish = test.publish
+			got, err := PlanHandoff(job)
+			if err != nil {
+				t.Fatal(err)
+			}
+			test.want.Destination = job.DestinationPath
+			test.want.SourceMediaPath = job.InputPath
+			test.want.PruneStart = "/downloads/Show"
+			if got != test.want {
+				t.Fatalf("PlanHandoff() = %+v, want %+v", got, test.want)
 			}
 		})
 	}
@@ -63,7 +109,7 @@ func TestCleanupPartFilesRemovesOnlyTheJobsArtifact(t *testing.T) {
 	legacyPart := destination + PartSuffix
 
 	writePaths(t, destination, jobPart, otherJobPart, legacyPart)
-	if err := CleanupPartFiles(domain.Library{Kind: domain.LibraryKindMedia}, destination, "42"); err != nil {
+	if err := CleanupPartFiles(domain.PublishPolicy{}, destination, "42"); err != nil {
 		t.Fatalf("CleanupPartFiles: %v", err)
 	}
 	assertMissing(t, jobPart)
@@ -172,18 +218,17 @@ func assertPresent(t *testing.T, paths ...string) {
 	}
 }
 
-func TestArtifactPathKeepsDownloadArtifactsOutOfPackageDirectories(t *testing.T) {
+func TestArtifactPathKeepsMovedArtifactsOutOfPackageDirectories(t *testing.T) {
 	handoffRoot := t.TempDir()
 	destination := filepath.Join(handoffRoot, "Show.S01", "Show.S01E02.mkv")
-	library := domain.Library{Kind: domain.LibraryKindDownload, Download: domain.DownloadLibraryPolicy{HandoffPath: handoffRoot}}
 
-	got := ArtifactPath(library, destination, "42")
+	got := ArtifactPath(movePolicy(handoffRoot), destination, "42")
 	want := filepath.Join(handoffRoot, HandoffWorkDir, "Show.S01E02.mkv.job-42"+PartSuffix)
 	if got != want {
 		t.Fatalf("ArtifactPath() = %q, want %q", got, want)
 	}
-	if media := ArtifactPath(domain.Library{Kind: domain.LibraryKindMedia}, destination, "42"); media != PartPath(destination, "42") {
-		t.Fatalf("media ArtifactPath() = %q, want %q", media, PartPath(destination, "42"))
+	if replaced := ArtifactPath(domain.PublishPolicy{Mode: domain.PublishReplace}, destination, "42"); replaced != PartPath(destination, "42") {
+		t.Fatalf("replace ArtifactPath() = %q, want %q", replaced, PartPath(destination, "42"))
 	}
 }
 
@@ -191,10 +236,10 @@ func TestPrepareDestinationDoesNotCreateHandoffPackageDirectory(t *testing.T) {
 	handoffRoot := filepath.Join(t.TempDir(), "converted")
 	job := &pipeline.JobContext{
 		Job:     domain.Job{ID: 42},
-		Library: domain.Library{Kind: domain.LibraryKindDownload, Download: domain.DownloadLibraryPolicy{HandoffPath: handoffRoot}},
+		Profile: domain.Profile{Publish: movePolicy(handoffRoot)},
 	}
 	job.DestinationPath = filepath.Join(handoffRoot, "Show.S01", "Show.S01E02.mkv")
-	job.OutputPath = ArtifactPath(job.Library, job.DestinationPath, PartJobLabel(job.Job.ID))
+	job.OutputPath = ArtifactPath(job.Profile.Publish, job.DestinationPath, PartJobLabel(job.Job.ID))
 	stale := job.OutputPath
 	if err := os.MkdirAll(filepath.Dir(stale), 0o750); err != nil {
 		t.Fatal(err)
@@ -211,9 +256,9 @@ func TestPrepareDestinationDoesNotCreateHandoffPackageDirectory(t *testing.T) {
 	}
 }
 
-func TestCleanupPartFilesReclaimsDownloadPartBesideDestination(t *testing.T) {
+func TestCleanupPartFilesReclaimsMovedPartBesideDestination(t *testing.T) {
 	handoffRoot := t.TempDir()
-	library := domain.Library{Kind: domain.LibraryKindDownload, Download: domain.DownloadLibraryPolicy{HandoffPath: handoffRoot}}
+	library := movePolicy(handoffRoot)
 	destination := filepath.Join(handoffRoot, "movie.mkv")
 	workPart := ArtifactPath(library, destination, "42")
 	if err := os.MkdirAll(filepath.Dir(workPart), 0o750); err != nil {

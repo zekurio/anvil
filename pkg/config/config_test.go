@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -221,9 +222,15 @@ stable_for = "90s"
 	if len(cfg.Libraries) != 0 {
 		t.Fatalf("Load filled the runtime libraries: %+v", cfg.Libraries)
 	}
-	cfg.Libraries["downloads"] = library.Runtime()
+	runtime := library.Runtime()
+	cfg.Libraries["downloads"] = runtime
 	if got := cfg.ScanIntervalForLibrary("downloads"); got != 5*time.Minute {
 		t.Fatalf("ScanIntervalForLibrary = %v", got)
+	}
+	// A download library keeps its intake settings and reprocesses what a
+	// scan finds again.
+	if !runtime.Reprocess || runtime.StableFor.Duration != 90*time.Second || runtime.PackageMode != DefaultPackageMode || len(runtime.IgnorableGlobs) == 0 {
+		t.Fatalf("Runtime() = %+v", runtime)
 	}
 	if got := cfg.Legacy.Sections; len(got) != 1 || got[0] != "libraries" {
 		t.Fatalf("Sections = %v", got)
@@ -231,24 +238,24 @@ stable_for = "90s"
 }
 
 func TestLibraryProblemsAndPathConflicts(t *testing.T) {
-	valid := LibraryConfig{Name: "movies", Kind: "media", Path: "/media/movies", FlowID: 1}.WithDefaults()
+	valid := LibraryConfig{Name: "movies", Path: "/media/movies", FlowID: 1}.WithDefaults()
 	if problems := valid.Problems(); len(problems) != 0 {
 		t.Fatalf("valid library has problems: %+v", problems)
 	}
-	if valid.Media.ReplacementMode != DefaultReplacementMode || valid.RuleFallback != RuleAllow {
+	if valid.PackageMode != DefaultLibraryPackageMode || valid.RuleFallback != RuleAllow || !slices.Equal(valid.IgnorableGlobs, DefaultIgnorableGlobs) || valid.Reprocess {
 		t.Fatalf("defaults = %+v", valid)
 	}
 
 	broken := LibraryConfig{
-		Name: "inbox", Kind: "download", Path: "relative/inbox", ConcurrencyLimit: -1,
-		Rules:    []Rule{{Action: RuleDeny, Field: RuleFieldSize, Op: RuleOpLess, Value: "small"}},
-		Download: DownloadLibraryConfig{HandoffPath: "also/relative", HandoffMode: "teleport", IgnorableGlobs: []string{"[a-"}},
+		Name: "inbox", Path: "relative/inbox", ConcurrencyLimit: -1,
+		Rules:     []Rule{{Action: RuleDeny, Field: RuleFieldSize, Op: RuleOpLess, Value: "small"}},
+		StableFor: Duration{Duration: -time.Second}, PackageMode: "bundle", IgnorableGlobs: []string{"[a-"},
 	}.WithDefaults()
 	fields := make(map[string]string)
 	for _, problem := range broken.Problems() {
 		fields[problem.Field] = problem.Message
 	}
-	for _, field := range []string{"path", "flow_id", "concurrency_limit", "rules.0.value", "download.handoff_path", "download.handoff_mode", "download.ignorable_globs.0"} {
+	for _, field := range []string{"path", "flow_id", "concurrency_limit", "rules.0.value", "stable_for", "package_mode", "ignorable_globs.0"} {
 		if fields[field] == "" {
 			t.Errorf("no problem reported for %s: %+v", field, fields)
 		}
@@ -259,11 +266,12 @@ func TestLibraryProblemsAndPathConflicts(t *testing.T) {
 
 	others := map[string]LibraryConfig{
 		"movies": valid,
-		"inbox":  {Name: "inbox", Kind: "download", Path: "/downloads", Download: DownloadLibraryConfig{HandoffPath: "/import/movies"}},
+		"inbox":  {Name: "inbox", Path: "/downloads"},
 	}
+	destinations := []string{"/import/movies"}
 	conflicts := func(candidate LibraryConfig) string {
 		var fields []string
-		for _, problem := range LibraryPathConflicts("/var/lib/anvil/tmp", others, candidate) {
+		for _, problem := range LibraryPathConflicts("/var/lib/anvil/tmp", others, destinations, candidate) {
 			fields = append(fields, problem.Field)
 		}
 		return strings.Join(fields, ",")
@@ -273,21 +281,19 @@ func TestLibraryProblemsAndPathConflicts(t *testing.T) {
 		candidate LibraryConfig
 		want      string
 	}{
-		{"disjoint", LibraryConfig{Name: "shows", Kind: "media", Path: "/media/shows"}, ""},
-		{"sibling with a shared prefix", LibraryConfig{Name: "m2", Kind: "media", Path: "/media/movies2"}, ""},
-		{"same root", LibraryConfig{Name: "dup", Kind: "media", Path: "/media/movies/"}, "path"},
-		{"below another root", LibraryConfig{Name: "sub", Kind: "media", Path: "/media/movies/4k"}, "path"},
-		{"above another root", LibraryConfig{Name: "all", Kind: "media", Path: "/media"}, "path"},
-		{"on another library's handoff directory", LibraryConfig{Name: "imp", Kind: "media", Path: "/import"}, "path"},
-		{"handoff into a library", LibraryConfig{Name: "dl", Kind: "download", Path: "/dl", Download: DownloadLibraryConfig{HandoffPath: "/media/movies/new"}}, "download.handoff_path"},
-		{"handoff inside its own root", LibraryConfig{Name: "dl", Kind: "download", Path: "/dl", Download: DownloadLibraryConfig{HandoffPath: "/dl/done"}}, "download.handoff_path"},
+		{"disjoint", LibraryConfig{Name: "shows", Path: "/media/shows"}, ""},
+		{"sibling with a shared prefix", LibraryConfig{Name: "m2", Path: "/media/movies2"}, ""},
+		{"same root", LibraryConfig{Name: "dup", Path: "/media/movies/"}, "path"},
+		{"below another root", LibraryConfig{Name: "sub", Path: "/media/movies/4k"}, "path"},
+		{"above another root", LibraryConfig{Name: "all", Path: "/media"}, "path"},
+		{"around a move destination", LibraryConfig{Name: "imp", Path: "/import"}, "path"},
+		{"inside a move destination", LibraryConfig{Name: "imp", Path: "/import/movies/new"}, "path"},
+		{"beside a move destination", LibraryConfig{Name: "imp", Path: "/import/shows"}, ""},
 		{"itself is not a conflict", valid, ""},
-		{"same as temp_dir", LibraryConfig{Name: "tmp", Kind: "media", Path: "/var/lib/anvil/tmp/"}, "path"},
-		{"inside temp_dir", LibraryConfig{Name: "tmp", Kind: "media", Path: "/var/lib/anvil/tmp/samples"}, "path"},
-		{"around temp_dir", LibraryConfig{Name: "var", Kind: "media", Path: "/var/lib"}, "path"},
-		{"beside temp_dir with a shared prefix", LibraryConfig{Name: "tmp2", Kind: "media", Path: "/var/lib/anvil/tmp2"}, ""},
-		{"handoff inside temp_dir", LibraryConfig{Name: "dl", Kind: "download", Path: "/dl", Download: DownloadLibraryConfig{HandoffPath: "/var/lib/anvil/tmp/done"}}, "download.handoff_path"},
-		{"handoff around temp_dir", LibraryConfig{Name: "dl", Kind: "download", Path: "/dl", Download: DownloadLibraryConfig{HandoffPath: "/var/lib/anvil"}}, "download.handoff_path"},
+		{"same as temp_dir", LibraryConfig{Name: "tmp", Path: "/var/lib/anvil/tmp/"}, "path"},
+		{"inside temp_dir", LibraryConfig{Name: "tmp", Path: "/var/lib/anvil/tmp/samples"}, "path"},
+		{"around temp_dir", LibraryConfig{Name: "var", Path: "/var/lib"}, "path"},
+		{"beside temp_dir with a shared prefix", LibraryConfig{Name: "tmp2", Path: "/var/lib/anvil/tmp2"}, ""},
 	}
 	for _, test := range tests {
 		if got := conflicts(test.candidate); got != test.want {
@@ -295,8 +301,37 @@ func TestLibraryProblemsAndPathConflicts(t *testing.T) {
 		}
 	}
 	// Without a temp_dir there is nothing to compare against.
-	if problems := LibraryPathConflicts("", nil, LibraryConfig{Name: "tmp", Kind: "media", Path: "/var/lib/anvil/tmp"}); len(problems) != 0 {
+	if problems := LibraryPathConflicts("", nil, nil, LibraryConfig{Name: "tmp", Path: "/var/lib/anvil/tmp"}); len(problems) != 0 {
 		t.Errorf("conflicts without a temp_dir: %+v", problems)
+	}
+}
+
+func TestMoveDestinationConflicts(t *testing.T) {
+	libraries := map[string]LibraryConfig{
+		"movies":    {Name: "movies", Path: "/media/movies"},
+		"downloads": {Name: "downloads", Path: "/downloads"},
+	}
+	tests := []struct {
+		name        string
+		destination string
+		want        int
+	}{
+		{"disjoint", "/import/movies", 0},
+		{"sibling with a shared prefix", "/media/movies2", 0},
+		{"a library folder", "/media/movies/", 1},
+		{"inside a library", "/downloads/done", 1},
+		{"around a library", "/media", 1},
+		{"temp_dir", "/var/lib/anvil/tmp", 1},
+		{"around temp_dir and nothing else", "/var/lib", 1},
+		{"around everything", "/", 3},
+	}
+	for _, test := range tests {
+		if got := MoveDestinationConflicts("/var/lib/anvil/tmp", libraries, test.destination); len(got) != test.want {
+			t.Errorf("%s: %q, want %d conflicts", test.name, got, test.want)
+		}
+	}
+	if got := MoveDestinationConflicts("", nil, "/var/lib/anvil/tmp"); len(got) != 0 {
+		t.Errorf("conflicts without a temp_dir or libraries: %q", got)
 	}
 }
 

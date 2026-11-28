@@ -2,14 +2,6 @@ package domain
 
 import (
 	"encoding/json"
-	"time"
-)
-
-type LibraryKind string
-
-const (
-	LibraryKindMedia    LibraryKind = "media"
-	LibraryKindDownload LibraryKind = "download"
 )
 
 // Library is a library as the pipeline sees it. Every attempt keeps a JSON
@@ -17,16 +9,25 @@ const (
 // resumable checkpoints, so the type holds only what processing a file
 // depends on: pausing a library, changing its priority or concurrency limit,
 // or editing its scan rules must not make the daemon redo work, and
-// credentials have no place in a job's history.
+// credentials have no place in a job's history. How the result is published
+// is not a library setting: the flow decides it (Profile.Publish).
 type Library struct {
 	Name LibraryName
-	Kind LibraryKind
 	Path string
 	// FlowID is the flow assigned when the attempt started.
 	FlowID   int64
 	Metadata MetadataProviderPolicy
-	Media    MediaLibraryPolicy
-	Download DownloadLibraryPolicy
+	// Reprocess queues a file a scan finds changed, or written again at a
+	// path the library has seen before, as a download folder needs. Off,
+	// such a file is recorded as processed and only a requeue runs it. An
+	// unchanged file is never queued twice either way. A library that
+	// reprocesses also skips every input that carries anvil's processed
+	// marker, so its own output never loops; without Reprocess only a first
+	// generation is skipped, and a forced requeue runs again.
+	Reprocess bool
+	// IgnorableGlobs are the residue patterns of the library: excluded from
+	// discovery, and removable when a move prunes the emptied folders.
+	IgnorableGlobs []string
 }
 
 type MetadataProviderPolicy struct {
@@ -45,41 +46,13 @@ const (
 	MetadataProviderSonarr MetadataProviderKind = "sonarr"
 )
 
-type MediaLibraryPolicy struct {
-	ReplacementMode ReplacementMode
-}
-
-type ReplacementMode string
+// PackageMode decides how a library groups the files it finds into sources.
+type PackageMode string
 
 const (
-	ReplacementModeReplace ReplacementMode = "replace"
-	ReplacementModeCopy    ReplacementMode = "copy"
-)
-
-type DownloadLibraryPolicy struct {
-	HandoffPath          string
-	StableFor            time.Duration
-	PackageMode          DownloadPackageMode
-	HandoffMode          HandoffMode
-	PreserveRelativePath bool
-	CleanupSourceMedia   bool
-	PruneEmptyDirs       bool
-	IgnorableGlobs       []string
-}
-
-type DownloadPackageMode string
-
-const (
-	DownloadPackageModeAuto      DownloadPackageMode = "auto"
-	DownloadPackageModeDirectory DownloadPackageMode = "directory"
-	DownloadPackageModeFile      DownloadPackageMode = "file"
-)
-
-type HandoffMode string
-
-const (
-	HandoffModeMove HandoffMode = "move"
-	HandoffModeCopy HandoffMode = "copy"
+	PackageModeAuto      PackageMode = "auto"
+	PackageModeDirectory PackageMode = "directory"
+	PackageModeFile      PackageMode = "file"
 )
 
 // FlowSnapshot is the flow an attempt ran, as it was when the attempt

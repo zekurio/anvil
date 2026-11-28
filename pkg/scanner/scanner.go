@@ -57,7 +57,6 @@ type LibraryPlan struct {
 
 type CandidatePlan struct {
 	LibraryName         domain.LibraryName
-	LibraryKind         string
 	LibraryRoot         string
 	LibraryRelativePath string
 	SourceRelativePath  string
@@ -136,7 +135,7 @@ func (s Scanner) planPaths(ctx context.Context, library config.LibraryConfig, ro
 		return LibraryPlan{}, err
 	}
 
-	stableFor := downloadStableFor(library)
+	stableFor := library.StableFor.Duration
 
 	plan := LibraryPlan{
 		Library:        library,
@@ -152,7 +151,7 @@ func (s Scanner) planPaths(ctx context.Context, library config.LibraryConfig, ro
 				stat.pendingModTime = candidate.info.ModTime()
 			}
 		}
-		unstable := library.IsDownload() && !stable(stat.pendingModTime, now, stableFor)
+		unstable := !stable(stat.pendingModTime, now, stableFor)
 		if candidate.ignored {
 			unstable = false
 		}
@@ -166,7 +165,6 @@ func (s Scanner) planPaths(ctx context.Context, library config.LibraryConfig, ro
 		}
 		plan.Candidates = append(plan.Candidates, CandidatePlan{
 			LibraryName:         domain.LibraryName(library.Name),
-			LibraryKind:         library.Kind,
 			LibraryRoot:         root,
 			LibraryRelativePath: candidate.libraryRelativePath,
 			SourceRelativePath:  candidate.sourceRelativePath,
@@ -212,7 +210,7 @@ func (s Scanner) applyPlan(ctx context.Context, plan LibraryPlan) (ScanResult, e
 	}
 	applied, err := s.Store.ApplyLibraryScan(ctx, plan.ScanToken, store.ApplyScanInput{
 		SourcePaths: plan.SourcePaths, LibraryName: domain.LibraryName(plan.Library.Name),
-		RequeueExisting: plan.Library.IsDownload(), Entries: entries, CompletedAt: now,
+		RequeueExisting: plan.Library.Reprocess, Entries: entries, CompletedAt: now,
 	})
 	if err != nil {
 		return result, fmt.Errorf("apply library scan: %w", err)
@@ -496,13 +494,9 @@ func buildCandidate(library config.LibraryConfig, absPath string, rel string, in
 	}
 }
 
-// ignorableGlobs are the residue patterns of a download library. Media
-// libraries have none.
+// ignorableGlobs are the residue patterns of a library.
 func ignorableGlobs(library config.LibraryConfig) []string {
-	if !library.IsDownload() {
-		return nil
-	}
-	return library.Download.IgnorableGlobs
+	return library.IgnorableGlobs
 }
 
 // ignorablePath reports whether a path, or a directory above it, matches an

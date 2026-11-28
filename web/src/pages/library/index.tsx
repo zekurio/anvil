@@ -3,7 +3,7 @@ import type { JSX } from "@solidjs/web";
 import { createMemo, createSignal, Match, Show, Switch } from "solid-js";
 
 import { api, keys, type Library, type LibraryWrite } from "../../api";
-import { isScanning, replacesInPlace, resumeConsequence, scanLibrary, toWrite } from "../../features/libraries/library";
+import { flowReplacesInPlace, isScanning, resumeConsequence, scanLibrary, toWrite } from "../../features/libraries/library";
 import { appHref } from "../../lib/base";
 import { formatBytes, formatCount, formatRelative, joinDot, plural } from "../../lib/format";
 import { run } from "../../lib/mutate";
@@ -121,7 +121,10 @@ function LibraryView(props: { library: Library; tab: LibraryTab; children: JSX.E
   const pause = () => update("pause", { paused: true }, `Paused ${name()}. Running jobs finish.`, "The library could not be paused.");
 
   const resume = async () => {
-    if (replacesInPlace(library())) {
+    setBusy("pause");
+    const replaces = await flowReplacesInPlace(library().flow_id);
+    setBusy(null);
+    if (replaces) {
       const agreed = await confirm({ title: `Resume ${name()}?`, description: resumeConsequence(stats().pending), confirmLabel: "Resume library", cancelLabel: "Keep it paused" });
       if (!agreed) return;
     }

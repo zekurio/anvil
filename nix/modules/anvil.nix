@@ -273,8 +273,8 @@ in
       ];
       description = ''
         Directories the daemon may write to. List every library root and every
-        download library's handoff directory that is or will be configured in
-        the web UI. A parent directory covers everything below it.
+        folder a flow moves results to that is or will be configured in the
+        web UI. A parent directory covers everything below it.
 
         The unit runs with ProtectSystem=strict, which leaves the rest of the
         filesystem read-only to it, and the module cannot see what the
@@ -285,8 +285,8 @@ in
         The list is also rendered as daemon.media_roots, without the "-"
         prefix, without a trailing slash, and with duplicates dropped, unless
         settings.daemon.media_roots is set. The web UI then
-        refuses a library or handoff directory outside these paths, and its
-        folder picker shows nothing else. With media_roots set to [ ] a
+        refuses a library folder or move destination outside these paths, and
+        its folder picker shows nothing else. With media_roots set to [ ] a
         library outside these paths can be added and scanned, but its jobs
         fail with a read-only file system or permission error as soon as
         Anvil writes the encode beside the source.
@@ -294,7 +294,8 @@ in
         Each path must exist when the service starts, or the unit fails.
         Prefix a path with "-" to let it be missing. The module also makes
         the path and download.handoff_path of every legacy settings.libraries
-        entry writable, but does not add them to media_roots.
+        entry writable, so a flow can move results to the old handoff
+        directory, but does not add them to media_roots.
       '';
     };
 

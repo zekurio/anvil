@@ -44,8 +44,9 @@ type LegacyImportedFlow struct {
 type LegacyImportedLibrary struct {
 	Name string
 	Flow string
-	// PausedFor is the first validation issue of the library's flow. When it
-	// is set, the library was imported paused.
+	// PausedFor is the first validation issue of the library's flow, or for
+	// a download library that it needs a flow that moves its results. When
+	// it is set, the library was imported paused.
 	PausedFor string
 	// PathConflict is the first thing config.LibraryPathConflicts objects to
 	// about the library's directories. When it is set, the library was
@@ -58,9 +59,12 @@ type LegacyImportedLibrary struct {
 // becomes a flow that resolves to the same profile; the unmodified built-in
 // profile maps onto the seeded default flow. Library names stay as they are,
 // so existing sources and jobs keep belonging to them, and imported libraries
-// are not paused: they were already running. The exception is a library whose
-// flow does not validate, for example because a rule stricter than the TOML
-// one rejects a setting. Every file of such a library would fail until its
+// are not paused: they were already running. There are three exceptions. A
+// download library is imported paused with Reprocess on: its flow would
+// replace the downloader's files in place, where the TOML handed them off,
+// and only the operator can give it a flow that moves them. Another is a
+// library whose flow does not validate, for example because a rule stricter
+// than the TOML one rejects a setting. Every file of such a library would fail until its
 // attempts ran out, so the library is imported paused and waits for the flow
 // to be fixed. A library whose directories overlap another library's or
 // tempDir, the daemon's temp_dir, is imported paused for the same reason:
@@ -133,19 +137,25 @@ func (s *SQLiteStore) ImportLegacyConfig(ctx context.Context, legacy config.Lega
 		if library.Path, err = filepath.Abs(library.Path); err != nil {
 			return LegacyImport{}, fmt.Errorf("import library %q: resolve path: %w", name, err)
 		}
-		if library.IsDownload() && library.Download.HandoffPath != "" {
-			if library.Download.HandoffPath, err = filepath.Abs(library.Download.HandoffPath); err != nil {
-				return LegacyImport{}, fmt.Errorf("import library %q: resolve handoff_path: %w", name, err)
-			}
-		}
 		pausedFor := ""
-		if len(imported.Issues) > 0 {
+		switch {
+		case source.IsDownload():
+			// The flow a profile becomes replaces in place, and a download
+			// handed its files off instead. Running it would rewrite the
+			// downloader's files where they lie, so the library waits for a
+			// flow that moves its results.
+			library.Paused = true
+			pausedFor = fmt.Sprintf("A download library hands its files off. Give it a flow that ends in a move to %s, then resume it.", source.Download.HandoffPath)
+		case len(imported.Issues) > 0:
 			library.Paused = true
 			pausedFor = imported.Issues[0]
 		}
 		pathConflict := ""
 		if _, taken := others[name]; !taken {
-			if conflicts := config.LibraryPathConflicts(tempDir, others, library); len(conflicts) > 0 {
+			// The flows a profile becomes never move, and the import runs
+			// before anyone could have stored one that does, so there is no
+			// move destination to compare against.
+			if conflicts := config.LibraryPathConflicts(tempDir, others, nil, library); len(conflicts) > 0 {
 				library.Paused = true
 				pathConflict = conflicts[0].Message
 			}

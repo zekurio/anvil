@@ -1,41 +1,34 @@
 import { createSignal, Errored, flush, Loading, Show } from "solid-js";
 
-import { api, createQuery, errorMessage, invalidate, keys, type ApiError, type Arr, type DownloadOptions, type Library, type LibraryWrite, type Settings } from "../../../api";
+import { api, createQuery, errorMessage, invalidate, keys, type ApiError, type Arr, type Library, type LibraryWrite, type Settings } from "../../../api";
 import { FormBar, FormSection } from "../../../features/layout/Form";
 import { homeTarget } from "../../../features/libraries/home";
-import { replacesInPlace, resumeConsequence, toWrite } from "../../../features/libraries/library";
+import { flowReplacesInPlace, resumeConsequence, toWrite } from "../../../features/libraries/library";
+import { IntakeFields, ReprocessField, type IntakeField } from "../../../features/libraries/LibraryFields";
 import { useAppNavigate } from "../../../lib/base";
 import { createDraft } from "../../../lib/draft";
 import { formatCount, formatGoDuration, plural } from "../../../lib/format";
 import { useUnsavedChanges } from "../../../lib/guard";
 import { run } from "../../../lib/mutate";
 import { useAppData } from "../../../shell/data";
-import { Banner, Button, confirm, Dialog, ErrorState, Field, FolderPicker, Input, LoadingState, NumberInput, Segmented, Select, Switch, toast, TokenInput } from "../../../ui";
+import { Banner, Button, confirm, Dialog, ErrorState, Field, FolderPicker, Input, LoadingState, NumberInput, Select, Switch, toast } from "../../../ui";
 
 /** Everything the Settings tab edits: the library without its identity and its rules. */
-type SettingsDraft = Omit<LibraryWrite, "name" | "kind" | "rules" | "rule_fallback">;
+type SettingsDraft = Omit<LibraryWrite, "name" | "rules" | "rule_fallback">;
 
 function toDraft(library: Library): SettingsDraft {
-  const { name: _name, kind: _kind, rules: _rules, rule_fallback: _fallback, ...rest } = toWrite(library);
+  const { name: _name, rules: _rules, rule_fallback: _fallback, ...rest } = toWrite(library);
   return rest;
 }
 
 /** The fields this form can show an error on, by the path the daemon reports (webapi.Error.Field). */
-const SHOWN_FIELDS = new Set([
-  "path",
-  "flow_id",
-  "paused",
-  "priority",
-  "concurrency_limit",
-  "scan_interval",
-  "arr",
-  "media.replacement_mode",
-  "download.handoff_path",
-  "download.stable_for",
-  "download.package_mode",
-  "download.handoff_mode",
-  "download.ignorable_globs",
-]);
+const SHOWN_FIELDS = new Set(["path", "flow_id", "paused", "priority", "concurrency_limit", "scan_interval", "arr", "reprocess", "stable_for", "package_mode", "ignorable_globs"]);
+
+const INTAKE_IDS: Record<IntakeField, string> = {
+  stable_for: "library-stable-for",
+  package_mode: "library-package-mode",
+  ignorable_globs: "library-globs",
+};
 
 /**
  * The Settings tab: everything about the library except its rules, and
@@ -66,26 +59,36 @@ function SettingsForm(props: { library: Library; daemon: Settings; arrs: Arr[] }
   const draft = createDraft(() => toDraft(props.library));
   const [errors, setErrors] = createSignal<Record<string, string>>({});
   const [saving, setSaving] = createSignal(false);
-  const [browsing, setBrowsing] = createSignal<"path" | "handoff_path" | null>(null);
+  const [browsing, setBrowsing] = createSignal(false);
   const [deleting, setDeleting] = createSignal(false);
   useUnsavedChanges(draft.dirty, { title: "Discard unsaved settings?" });
 
   const form = () => draft.value();
-  const download = () => form().download;
-  const isDownload = () => props.library.kind === "download";
 
   /** Changes fields and clears the error the daemon reported for them. */
   const set = (change: Partial<SettingsDraft>, ...fields: string[]) => {
     draft.patch(change);
     if (fields.some((field) => errors()[field])) setErrors((current) => Object.fromEntries(Object.entries(current).filter(([field]) => !fields.includes(field))));
   };
-  const setDownload = (change: Partial<DownloadOptions>, field: keyof DownloadOptions) => set({ download: { ...download(), ...change } }, `download.${field}`);
+
+  /**
+   * Whether saving is what starts rewriting files in place: unpausing a library
+   * whose flow replaces them, or giving a running library such a flow in place
+   * of one that does not.
+   */
+  const startsReplacing = async (next: LibraryWrite): Promise<boolean> => {
+    if (next.paused) return false;
+    if (!props.library.paused && next.flow_id === props.library.flow_id) return false;
+    if (!(await flowReplacesInPlace(next.flow_id))) return false;
+    return props.library.paused || !(await flowReplacesInPlace(props.library.flow_id));
+  };
 
   const save = async () => {
     const next: LibraryWrite = { ...toWrite(props.library), ...form() };
-    // Saving may be what starts the rewriting: unpausing, or switching a running library to replace.
-    const startsReplacing = !next.paused && replacesInPlace(next) && (props.library.paused || !replacesInPlace(props.library));
-    if (startsReplacing && !(await confirm({ title: `Save and start processing ${props.library.name}?`, description: resumeConsequence(props.library.stats.pending), confirmLabel: "Save settings", cancelLabel: "Keep editing" }))) return;
+    setSaving(true);
+    const asks = await startsReplacing(next);
+    setSaving(false);
+    if (asks && !(await confirm({ title: `Save and start processing ${props.library.name}?`, description: resumeConsequence(props.library.stats.pending), confirmLabel: "Save settings", cancelLabel: "Keep editing" }))) return;
     setSaving(true);
     setErrors({});
     const saved = await run(() => api.libraries.update(props.library.name, next), {
@@ -93,7 +96,7 @@ function SettingsForm(props: { library: Library; daemon: Settings; arrs: Arr[] }
       success: `Saved the settings of ${props.library.name}.`,
       failure: "The settings could not be saved.",
       onError: (error: ApiError) => {
-        // A list entry ("download.ignorable_globs.2") is reported on its list.
+        // A list entry ("ignorable_globs.2") is reported on its list.
         const field = error.field?.replace(/\.\d+$/, "");
         // Anything this form has no field for (the rules, the name) goes to the toast.
         if (!field || !SHOWN_FIELDS.has(field)) return false;
@@ -111,19 +114,14 @@ function SettingsForm(props: { library: Library; daemon: Settings; arrs: Arr[] }
   return (
     <>
       <div class="av-form">
-        <FormSection title="Library" description="Name and kind cannot be changed.">
-          <div class="av-grid-2">
-            <Field label="Name">
-              <p class="av-readonly">{props.library.name}</p>
-            </Field>
-            <Field label="Kind" hint={isDownload() ? "Encodes are handed to an importer." : "Files are encoded in place."}>
-              <p class="av-readonly">{props.library.kind}</p>
-            </Field>
-          </div>
+        <FormSection title="Library" description="The name cannot be changed.">
+          <Field label="Name">
+            <p class="av-readonly">{props.library.name}</p>
+          </Field>
           <Field label="Folder" htmlFor="library-path" error={errors().path}>
             <div class="av-field-row">
               <Input id="library-path" mono autocomplete="off" spellcheck={false} invalid={!!errors().path} value={form().path} onInput={(event) => set({ path: event.currentTarget.value }, "path")} />
-              <Button icon="folder" onClick={() => setBrowsing("path")}>
+              <Button icon="folder" onClick={() => setBrowsing(true)}>
                 Browse
               </Button>
             </div>
@@ -131,10 +129,11 @@ function SettingsForm(props: { library: Library; daemon: Settings; arrs: Arr[] }
           <Show when={pathChanged()}>
             <Banner tone="warning">The new folder is scanned from scratch. The job history keeps the old paths. No file is moved.</Banner>
           </Show>
+          <ReprocessField id="library-reprocess" checked={form().reprocess} error={errors().reprocess} onChange={(reprocess) => set({ reprocess }, "reprocess")} />
         </FormSection>
 
         <FormSection title="Processing">
-          <Field label="Flow" htmlFor="library-flow" hint="Queued files use a new flow from their next attempt." error={errors().flow_id}>
+          <Field label="Flow" htmlFor="library-flow" hint="Queued files use a new flow from their next attempt. The flow also decides where results go." error={errors().flow_id}>
             <Select id="library-flow" value={String(form().flow_id)} invalid={!!errors().flow_id} options={flows().map((flow) => ({ value: String(flow.id), label: flow.name }))} onChange={(event) => set({ flow_id: Number(event.currentTarget.value) }, "flow_id")} />
           </Field>
           <Field inline label="Paused" htmlFor="library-paused" hint="Scans still queue files, but no new job starts." error={errors().paused}>
@@ -166,84 +165,9 @@ function SettingsForm(props: { library: Library; daemon: Settings; arrs: Arr[] }
           </Field>
         </FormSection>
 
-        <Show
-          when={isDownload()}
-          fallback={
-            <FormSection title="Publishing">
-              <Field
-                label="Replacement mode"
-                hint={form().media.replacement_mode === "replace" ? "The original is deleted once its encode is published." : "The encode is published beside the original. Needs room for both."}
-                error={errors()["media.replacement_mode"]}
-              >
-                <div>
-                  <Segmented
-                    label="Replacement mode"
-                    value={form().media.replacement_mode}
-                    onChange={(mode) => set({ media: { replacement_mode: mode as "replace" | "copy" } }, "media.replacement_mode")}
-                    options={[
-                      { value: "replace", label: "Replace the original" },
-                      { value: "copy", label: "Keep the original" },
-                    ]}
-                  />
-                </div>
-              </Field>
-            </FormSection>
-          }
-        >
-          <FormSection title="Handoff">
-            <Field label="Handoff folder" htmlFor="library-handoff" hint="The folder Sonarr or Radarr imports from." error={errors()["download.handoff_path"]}>
-              <div class="av-field-row">
-                <Input id="library-handoff" mono autocomplete="off" spellcheck={false} invalid={!!errors()["download.handoff_path"]} value={download().handoff_path} onInput={(event) => setDownload({ handoff_path: event.currentTarget.value }, "handoff_path")} />
-                <Button icon="folder" onClick={() => setBrowsing("handoff_path")}>
-                  Browse
-                </Button>
-              </div>
-            </Field>
-            <div class="av-grid-2">
-              <Field label="Stable for" htmlFor="library-stable-for" hint="Time without change before a download counts as complete, such as 45s. Empty uses the default." error={errors()["download.stable_for"]}>
-                <Input id="library-stable-for" mono autocomplete="off" spellcheck={false} invalid={!!errors()["download.stable_for"]} value={download().stable_for} onInput={(event) => setDownload({ stable_for: event.currentTarget.value.trim() }, "stable_for")} />
-              </Field>
-              <Field label="Package mode" htmlFor="library-package-mode" hint="One file or a release folder. Auto decides per download." error={errors()["download.package_mode"]}>
-                <Select
-                  id="library-package-mode"
-                  value={download().package_mode}
-                  invalid={!!errors()["download.package_mode"]}
-                  options={[
-                    { value: "auto", label: "Auto" },
-                    { value: "directory", label: "Directory" },
-                    { value: "file", label: "File" },
-                  ]}
-                  onChange={(event) => setDownload({ package_mode: event.currentTarget.value as DownloadOptions["package_mode"] }, "package_mode")}
-                />
-              </Field>
-            </div>
-            <Field label="Handoff mode" hint={download().handoff_mode === "move" ? "For downloads the downloader no longer needs." : "For downloads that are still seeding."} error={errors()["download.handoff_mode"]}>
-              <div>
-                <Segmented
-                  label="Handoff mode"
-                  value={download().handoff_mode}
-                  onChange={(mode) => setDownload({ handoff_mode: mode as DownloadOptions["handoff_mode"] }, "handoff_mode")}
-                  options={[
-                    { value: "move", label: "Move" },
-                    { value: "copy", label: "Copy" },
-                  ]}
-                />
-              </div>
-            </Field>
-            <Field inline label="Preserve relative path" htmlFor="library-preserve-path" hint="Keeps the download's folder structure.">
-              <Switch id="library-preserve-path" label="Preserve relative path" checked={download().preserve_relative_path} onChange={(value) => setDownload({ preserve_relative_path: value }, "preserve_relative_path")} />
-            </Field>
-            <Field inline label="Clean up source media" htmlFor="library-cleanup" hint="Deletes the downloaded media after a successful handoff.">
-              <Switch id="library-cleanup" label="Clean up source media" checked={download().cleanup_source_media} onChange={(value) => setDownload({ cleanup_source_media: value }, "cleanup_source_media")} />
-            </Field>
-            <Field inline label="Prune empty folders" htmlFor="library-prune" hint="Removes release folders that cleanup left empty.">
-              <Switch id="library-prune" label="Prune empty folders" checked={download().prune_empty_dirs} onChange={(value) => setDownload({ prune_empty_dirs: value }, "prune_empty_dirs")} />
-            </Field>
-            <Field label="Ignorable globs" htmlFor="library-globs" hint="Non-media files that never hold a download back. Cleanup may delete them. Empty uses the built-in list." error={errors()["download.ignorable_globs"]}>
-              <TokenInput id="library-globs" mono placeholder="*.nfo" invalid={!!errors()["download.ignorable_globs"]} value={download().ignorable_globs} onChange={(globs) => setDownload({ ignorable_globs: globs }, "ignorable_globs")} />
-            </Field>
-          </FormSection>
-        </Show>
+        <FormSection title="Intake" description="For folders a downloader writes into. The defaults suit a media library.">
+          <IntakeFields ids={INTAKE_IDS} value={form()} errors={errors()} onChange={(change, field) => set(change, field)} />
+        </FormSection>
 
         <FormSection danger title="Delete library" description="Removes the library, its queue and its history. No media file is deleted or changed.">
           <div>
@@ -255,13 +179,12 @@ function SettingsForm(props: { library: Library; daemon: Settings; arrs: Arr[] }
       </div>
       <FormBar dirty={draft.dirty()} saving={saving()} saveLabel="Save settings" onSave={save} onDiscard={() => (setErrors({}), draft.reset())} />
       <FolderPicker
-        open={browsing() !== null}
-        onClose={() => setBrowsing(null)}
-        initialPath={(browsing() === "handoff_path" ? download().handoff_path : form().path) || undefined}
+        open={browsing()}
+        onClose={() => setBrowsing(false)}
+        initialPath={form().path || undefined}
         onPick={(path) => {
-          if (browsing() === "handoff_path") setDownload({ handoff_path: path }, "handoff_path");
-          else set({ path }, "path");
-          setBrowsing(null);
+          set({ path }, "path");
+          setBrowsing(false);
         }}
       />
       <Show when={deleting()}>

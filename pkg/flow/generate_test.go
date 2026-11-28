@@ -396,7 +396,7 @@ func TestDefaultReproducesTheDefaultProfile(t *testing.T) {
 		{ID: "audio", Type: typeAudioKeep, X: 288, Y: 368},
 		{ID: "subtitles", Type: typeSubtitlesKeep, X: 288, Y: 480},
 		{ID: "metadata", Type: typeContainerMetadata, X: 288, Y: 592},
-		{ID: "publish", Type: typeOutputPublish, X: 288, Y: 704},
+		{ID: "publish", Type: typeOutputReplace, X: 288, Y: 704},
 	}
 	if len(g.Nodes) != len(want) {
 		t.Fatalf("Default() has %d nodes, want %d", len(g.Nodes), len(want))
@@ -445,6 +445,7 @@ func TestDefaultReproducesTheDefaultProfile(t *testing.T) {
 		"Audio: keep every track; copy",
 		"Subtitles: keep every track",
 		"Container: mkv; strip track titles",
+		"Output: replace the source in place",
 	}
 	if got := mustEvaluate(t, g, probeOf()).Plan; !slices.Equal(got, wantPlan) {
 		t.Errorf("Plan = %q, want %q", got, wantPlan)
@@ -509,7 +510,7 @@ func TestGeneratedLayoutRules(t *testing.T) {
 				}
 			}
 		}
-		if first, last := g.Nodes[0], g.Nodes[len(g.Nodes)-1]; first.Type != typeInput || last.Type != typeOutputPublish || first.X != last.X {
+		if first, last := g.Nodes[0], g.Nodes[len(g.Nodes)-1]; first.Type != typeInput || last.Type != typeOutputReplace || first.X != last.X {
 			t.Errorf("%s: the flow does not run from an input to a publish node in one column", name)
 		}
 		for _, edge := range g.Edges {

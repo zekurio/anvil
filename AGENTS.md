@@ -6,7 +6,7 @@
   and its JSON API (`pkg/webapi`, `127.0.0.1:8484` by default). `anvilctl`
   (`cmd/anvilctl`) is the terminal client and talks to the daemon over a Unix
   socket. The scanner uses recursive inotify watches, including close-write and
-  moved-in completion signals for download libraries. Orchestration packages
+  moved-in completion signals for download folders. Orchestration packages
   live under `pkg/*`; `internal/textout` holds shared operator output helpers.
 - The unit of behavior is the flow, not a profile. Flows, libraries, and Arr
   connections live in the store and are edited in the web UI. `pkg/flow` models
@@ -215,19 +215,34 @@ process output goes to per-attempt log files plus artifact events
   `LibraryPathConflicts`, `ValidateRules`, `VideoConfig.Problems`,
   `CropConfig.Problems`). The web API and flow validation call these. Do not
   restate a rule in a handler, a node, or the frontend. `LibraryPathConflicts`
-  also keeps library and handoff folders out of `temp_dir`, and the legacy
-  import goes through it too: a conflicting library is imported paused.
+  also keeps library folders out of `temp_dir` and away from every stored
+  flow's move destinations (`flow.MoveDestinations`), and the legacy import
+  goes through it too: a conflicting library is imported paused.
+  `MoveDestinationConflicts` checks the same pairs from the flow's side when
+  a flow is saved (`webapi` `checkMoveTargets`).
 - `[daemon] media_roots` confines what a browser can name. When it is not
-  empty, `GET /fs` lists nothing outside the roots and `checkLibrary` refuses
-  a library or handoff path that does not resolve inside one
-  (`pathWithinMediaRoots`, symlinks resolved). A folder an update leaves
-  unchanged is not checked again, so an imported library outside the roots
-  stays editable. Empty means unrestricted. The
+  empty, `GET /fs` lists nothing outside the roots, `checkLibrary` refuses a
+  library path, and `checkMoveTargets` a move destination, that does not
+  resolve inside one (`pathWithinMediaRoots`, symlinks resolved). A folder an
+  update leaves unchanged is not checked again, so an imported library
+  outside the roots stays editable, and so does a flow whose move
+  destination the operator did not touch. Empty means unrestricted. The
   Nix module fills it from `mediaPaths`.
 - Pipeline step order is fixed in `worker.DefaultPipeline`. A block's `Name()`
-  is its event and checkpoint name. The publish block selects replace or
-  handoff from the library kind. Staging, validation, and the journaled
-  publish are engine-owned: no flow node may skip or weaken them.
+  is its event and checkpoint name. Publication is the flow's choice: the
+  output node a file reaches writes `Profile.Publish` (`output.replace`, or
+  `output.move` with its destination, keep-source, structure, and prune
+  options), and the publish block reads it. A move is the journal's
+  `handoff`, with mode `move` or, when it keeps the source, `copy`. A library
+  has no kind; `Reprocess` (requeue a changed file at a known path, and skip
+  every input with the processed marker) is what a download folder needs from
+  it. Staging, validation, and the journaled publish are engine-owned: no
+  flow node may skip or weaken them.
+- Part-file cleanup and the job detail rebuild where an attempt staged from
+  what that attempt recorded: its library snapshot and resolved profile
+  (`replace.StagedDestinations`, used by `controlapi` and by the worker when
+  the flow skips a retried job). The library alone no longer says where a
+  job publishes, and an attempt with no resolved profile never staged.
 - `pkg/store` is SQLite via `modernc.org/sqlite` with `SetMaxOpenConns(1)`, WAL,
   and `foreign_keys` pragmas, split into `sqlite_*.go` by concern. Schema
   changes are versioned in-code migrations in `pkg/store/migrations.go`; bump
@@ -253,6 +268,11 @@ process output goes to per-attempt log files plus artifact events
   (`store.DeletedJob`); the web API removes those part files after the
   delete (`controlapi.Service.RemoveParts`). A flow or Arr connection still
   assigned to a library is not deleted (`InUseError`).
+- Schema version 9 dropped `libraries.kind`. A download library's
+  `stable_for`, `package_mode`, and `ignorable_globs` moved to the top of its
+  settings JSON with `reprocess` on; its handoff settings and a media
+  library's replacement mode were dropped. A legacy TOML download library is
+  imported paused, because the flow its profile becomes replaces in place.
 - A scan that finds a file denied skips every job of it that only waits
   (`pending` or `retrying`, whatever its attempt count) and has no unresolved
   publish journal. A job a worker holds is left alone. The skipped ids go
@@ -308,9 +328,8 @@ process output goes to per-attempt log files plus artifact events
   overwrite an existing destination, and record intent before mutating the
   filesystem. The `stage` step plans the destination (`replace.PlanDestination`)
   and the artifact is written on the destination filesystem as
-  `<name>.job-<id>.anvil-part` (beside the destination for media libraries,
-  under `<handoff_path>/.anvil-work` for download libraries, so an importer
-  never sees it), so publish is fsync + hardlink + unlink, never a bulk copy; `pkg/staging` keeps only
+  `<name>.job-<id>.anvil-part` (beside the destination for a replace, under
+  `<destination>/.anvil-work` for a move, so an importer never sees it), so publish is fsync + hardlink + unlink, never a bulk copy; `pkg/staging` keeps only
   scratch (search samples) under `temp_dir`.
 - The default `store_path` is persistent, never under a temporary directory:
   `config.SystemStorePath` (`/var/lib/anvil/anvil.db`) as root, otherwise
@@ -361,7 +380,8 @@ const typeSubtitlesDropImage = "subtitles.drop_image"
 
 - One node type owns one part of `domain.Profile`, and its `apply` writes only
   that part. This is what makes "the last node on the path wins" true.
-  `video.encode` and `video.copy` share the video part on purpose.
+  `video.encode` and `video.copy` share the video part on purpose, and
+  `output.replace` and `output.move` the publish part.
 - Whatever no node sets comes from `baseProfile`: a remux that copies and
   keeps everything. A new profile field needs a base value that leaves the
   file alone.
@@ -396,7 +416,8 @@ Adding a node type:
 
 1. Add a `nodeDef` to `nodeDefs()` in palette order, with its `NodeType`,
    a `summary` that is never empty, and exactly one of `test` (condition),
-   `apply` (action), or `outcome` (output).
+   `apply` (action), or `outcome` (output). An output that processes the
+   file also has an `apply` that writes `Profile.Publish`.
 2. If it sets something new, extend the plan lines in `pkg/flow/evaluate.go`,
    and `FromProfile` in `pkg/flow/generate.go` when a legacy profile field
    maps onto it.

@@ -60,23 +60,23 @@ func TestLibraryAndFlowTables(t *testing.T) {
 	var out bytes.Buffer
 	if err := writeLibraries(&out, control.LibraryListResponse{Libraries: []control.LibraryEntry{
 		{
-			Name: "movies", Kind: "media", Path: "/srv/media/movies", FlowID: 1, FlowName: "Default AV1", Files: 120,
+			Name: "movies", Path: "/srv/media/movies", FlowID: 1, FlowName: "Default AV1", Files: 120,
 			Jobs: map[string]int64{"pending": 4, "retrying": 1, "running": 2, "complete": 90, "failed": 3}, SavedBytes: 5 << 30, LastScanAt: &scanned,
 		},
-		{Name: "usenet", Kind: "download", Path: "/srv/downloads", HandoffPath: "/srv/import", FlowID: 2, FlowName: "Skip HEVC", Paused: true, Jobs: map[string]int64{}},
+		{Name: "usenet", Path: "/srv/downloads", Reprocess: true, FlowID: 2, FlowName: "Skip HEVC", Paused: true, Jobs: map[string]int64{}},
 	}}); err != nil {
 		t.Fatal(err)
 	}
 	text := out.String()
 	t.Log("\n" + text)
-	for _, value := range []string{"movies", "Default AV1", "active", "120", "/srv/media/movies", "usenet", "paused", "Skip HEVC", "Queued", "Running", "Failed", "/srv/downloads", "/srv/import", "Hands off to"} {
+	for _, value := range []string{"movies", "Default AV1", "active", "120", "/srv/media/movies", "usenet", "paused", "Skip HEVC", "Queued", "Running", "Failed", "/srv/downloads", "Reprocess", "yes"} {
 		if !strings.Contains(text, value) {
 			t.Errorf("libraries: missing %q\n%s", value, text)
 		}
 	}
 	for _, line := range strings.Split(text, "\n") {
 		// Queued is pending plus retrying, running stands alone.
-		if strings.Contains(line, "media ") && (!strings.Contains(line, " 5 ") || !strings.Contains(line, " 2 ") || !strings.Contains(line, " 90 ")) {
+		if strings.Contains(line, "Default AV1") && (!strings.Contains(line, " 5 ") || !strings.Contains(line, " 2 ") || !strings.Contains(line, " 90 ")) {
 			t.Errorf("libraries: job counts are off in %q", line)
 		}
 	}

@@ -26,7 +26,7 @@ func branching(condition Node) Graph {
 		Nodes: []Node{
 			newNode("in", typeInput, nil),
 			condition,
-			newNode("publish", typeOutputPublish, nil),
+			newNode("publish", typeOutputReplace, nil),
 			newNode("skip", typeOutputSkip, nil),
 		},
 		Edges: []Edge{

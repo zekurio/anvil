@@ -35,7 +35,7 @@ func (s Service) ListLibraries(ctx context.Context) (control.LibraryListResponse
 		overview := overviews[library.Name]
 		entry := control.LibraryEntry{
 			Name:             library.Name,
-			Kind:             library.Kind,
+			Reprocess:        library.Reprocess,
 			Path:             library.Path,
 			FlowID:           library.FlowID,
 			FlowName:         flows[library.FlowID],
@@ -48,9 +48,6 @@ func (s Service) ListLibraries(ctx context.Context) (control.LibraryListResponse
 			Jobs:             make(map[string]int64, len(overview.Jobs)),
 			SavedBytes:       overview.SavedBytes,
 			LastScanAt:       overview.LastScanAt,
-		}
-		if library.IsDownload() {
-			entry.HandoffPath = library.Download.HandoffPath
 		}
 		for state, count := range overview.Jobs {
 			entry.Jobs[string(state)] = count

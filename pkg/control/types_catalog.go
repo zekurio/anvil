@@ -13,10 +13,10 @@ type LibraryListResponse struct {
 // LibraryEntry is one library with what the store knows about it.
 type LibraryEntry struct {
 	Name string `json:"name"`
-	Kind string `json:"kind"`
 	Path string `json:"path"`
-	// HandoffPath is set for download libraries only.
-	HandoffPath      string `json:"handoff_path,omitempty"`
+	// Reprocess queues a file a scan finds changed, or written again at a
+	// path the library has seen before.
+	Reprocess        bool   `json:"reprocess"`
 	FlowID           int64  `json:"flow_id"`
 	FlowName         string `json:"flow_name"`
 	Paused           bool   `json:"paused"`

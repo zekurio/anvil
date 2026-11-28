@@ -22,19 +22,21 @@ func TestProcessedInput(t *testing.T) {
 	}
 }
 
-func TestForcedMediaGenerationDoesNotSkipProcessedInput(t *testing.T) {
+func TestForcedGenerationDoesNotSkipProcessedInput(t *testing.T) {
 	job := &pipeline.JobContext{
-		Library: domain.Library{Kind: domain.LibraryKindMedia},
+		Library: domain.Library{},
 		Source:  domain.MediaSource{Generation: 2},
 		Probe: &domain.ProbeResult{Streams: []domain.MediaStream{{
 			Type: "video", Tags: map[string]string{marker.TagProcessed: "true"},
 		}}},
 	}
 	if shouldSkipProcessed(job) {
-		t.Fatal("forced media generation was skipped")
+		t.Fatal("forced generation was skipped")
 	}
-	job.Library.Kind = domain.LibraryKindDownload
+	// A library that reprocesses what it finds again would loop on its own
+	// output.
+	job.Library.Reprocess = true
 	if !shouldSkipProcessed(job) {
-		t.Fatal("processed download generation was not skipped")
+		t.Fatal("processed generation of a reprocessing library was not skipped")
 	}
 }
